@@ -37,7 +37,7 @@ TBD — `beckon -d` will tell you).
 ### Nix flake
 
 ```sh
-nix run github:l3n4k4/beckon -- -l
+nix run github:xom11/beckon -- -l
 nix build .#beckon          # binary at ./result/bin/beckon
 nix develop                 # dev shell with rustfmt / clippy / rust-analyzer
 ```
@@ -46,7 +46,7 @@ To pull beckon into your own flake, add the overlay:
 
 ```nix
 {
-  inputs.beckon.url = "github:l3n4k4/beckon";
+  inputs.beckon.url = "github:xom11/beckon";
 
   outputs = { nixpkgs, beckon, ... }: {
     # ...

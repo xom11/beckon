@@ -31,7 +31,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Cross-platform focus-or-launch app switcher (sway/i3, more later)";
-    homepage = "https://github.com/l3n4k4/beckon";
+    homepage = "https://github.com/xom11/beckon";
     license = with lib.licenses; [
       mit
       asl20
