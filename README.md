@@ -18,8 +18,8 @@ press hotkey
 | Linux / i3 (X11) | ✅ Phase 1b — same backend (shared protocol) |
 | Linux / X11 generic (GNOME-X11, KDE-X11, ...) | ⏳ Deferred |
 | Linux / Hyprland | ⏳ Pending |
-| macOS | ⏳ Pending |
-| Windows | ⏳ Pending |
+| macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
+| Windows | ⏳ Pending (next) |
 | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
 
 ## Build
@@ -64,16 +64,28 @@ The hot path is `beckon <id>` — invoke from a hotkey binding:
 beckon Claude            # focus / launch / cycle Claude
 ```
 
-`<id>` resolves against installed-app metadata. On Linux this means
-`.desktop` files. Priority:
+`<id>` resolves against installed-app metadata. Priority per OS:
+
+**Linux** (`.desktop` files in `$XDG_DATA_DIRS/applications/`):
 
 1. `Name=` exact (case-insensitive, normalized) — **recommended for dotfiles**
 2. `.desktop` filename
 3. `StartupWMClass=`
 4. `Name=` substring (alphabetical first wins, like rofi)
 
+**macOS** (`NSWorkspace.runningApplications` + scan of `/Applications`,
+`/System/Applications`, `~/Applications` — including one level into
+non-.app subdirs to catch `~/Applications/{Brave,Chrome,Vivaldi}
+Apps.localized/*.app`):
+
+1. Running app — `localizedName` exact (case-insensitive, normalized)
+2. Running app — `bundleIdentifier`
+3. Installed app — `CFBundleDisplayName`/`CFBundleName` exact
+4. Installed app — `CFBundleIdentifier`
+5. Installed app — name substring (alphabetical first wins)
+
 Names are stable across machines. Brave PWA hashes are not — bind to `Claude`,
-not `brave-fmpnliohj...-Default`.
+not `brave-fmpnliohj...-Default` or `com.vivaldi.Vivaldi.app.<hash>`.
 
 ### Discovery
 
@@ -99,6 +111,36 @@ bindsym $mod+t     $focus "Telegram Web"
 If `beckon -L` shows two apps with the same Name (e.g. native Telegram +
 Telegram Web PWA), bind to the more specific Name to disambiguate.
 
+### Hammerspoon (macOS) dotfile example
+
+```lua
+local hyper = { "cmd", "ctrl", "alt" }
+
+-- Use hs.task with the absolute path. Do NOT use `hs.execute(cmd, true)` —
+-- the `true` flag sources the user login shell (~/.zshrc) before each
+-- invocation, which can run several hundred ms to several seconds and
+-- swamps the actual focus latency.
+local function beckon(name)
+  hs.task.new("/etc/profiles/per-user/" .. os.getenv("USER") .. "/bin/beckon",
+    function(exitCode, _, stderr)
+      if exitCode ~= 0 then
+        hs.alert.show("beckon " .. name .. ": " .. (stderr or ""), 3)
+      end
+    end, { name }):start()
+end
+
+hs.hotkey.bind(hyper, "space", function() beckon("kitty") end)
+hs.hotkey.bind(hyper, "c",     function() beckon("Claude") end)
+hs.hotkey.bind(hyper, "d",     function() beckon("Discord") end)
+```
+
+beckon needs **Accessibility permission** to cycle between windows of the
+same app (step 5a). Grant in System Settings → Privacy & Security →
+Accessibility, adding the binary path that Hammerspoon invokes (typically
+the Nix profile path above). Without it, beckon still focuses / launches /
+hides — only the cycle step degrades to "toggle to other app". Run
+`beckon -d` to check trust state.
+
 ## What `beckon <id>` actually does
 
 Single algorithm, not configurable:
@@ -123,6 +165,7 @@ on stderr instead.
 crates/
 ├── beckon-core/    # Backend trait, shared types
 ├── beckon-linux/   # sway + i3 (i3-IPC), .desktop parser, MRU state
+├── beckon-macos/   # NSWorkspace + AX (cycle) + CGWindowList (z-order)
 └── beckon-cli/     # binary, clap CLI, doctor / search / resolve
 ```
 

@@ -274,7 +274,7 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
 4. **`-s` search scope and ranking**
    Should `beckon -s claude` match against window titles too, or only app id / app name? Title match is more forgiving but volatile. Default likely: id + name only, `--include-titles` opt-in.
 
-## Crate dependencies (planned)
+## Crate dependencies
 
 ```toml
 # core / cli
@@ -282,20 +282,29 @@ anyhow    = "1"
 thiserror = "2"
 clap      = { version = "4", features = ["derive"] }
 
-# macOS
-objc2         = "0.5"
-objc2-app-kit = "0.2"
+# macOS (in use as of phase 2)
+objc2            = "0.6"
+objc2-foundation = "0.3"   # NSString / NSURL / NSArray / NSDictionary
+objc2-app-kit    = "0.3"   # NSWorkspace / NSRunningApplication
+core-foundation  = "0.10"  # CF lifetime wrappers (CFType / CFArray / CFString)
+plist            = "1"     # parse .app/Contents/Info.plist
+# AX (Accessibility API) and CGWindowList — hand-rolled `extern "C"`
+# bindings in `crates/beckon-macos/src/ffi.rs`. Surface is ~6 functions, not
+# worth dragging in objc2-application-services.
 
-# windows
+# windows (planned, phase 3)
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Threading",
+    "Win32_System_Com",                # for IShellLink (.lnk parsing)
+    "Win32_UI_Shell",
 ] }
 
-# linux
-swayipc                    = "3"      # sway + i3 (same protocol)
-x11rb                      = "0.13"   # any X11 DE (GNOME-X11, KDE-X11, i3, awesome, XFCE, ...)
-freedesktop-desktop-entry  = "0.7"    # parse .desktop files for list-installed
+# linux (in use as of phase 1)
+swayipc = "3"   # sway + i3 (same protocol)
+# Future:
+# x11rb                     = "0.13"   # any X11 DE
+# freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
 ```
 
 No `serde` / `toml` — beckon does not read or write any config or cache file.
@@ -318,16 +327,36 @@ No `serde` / `toml` — beckon does not read or write any config or cache file.
 User's nix integration (flake-input pattern, no hand-rolled overlay):
 
 - `~/.nix/flake.nix` — `inputs.beckon.url = "github:xom11/beckon"; inputs.beckon.inputs.nixpkgs.follows = "nixpkgs";`
-- `~/.nix/lib/mkConfigs.nix` — `mkHomeManager` constructs pkgs with `overlays = [ (import ../overlays) inputs.beckon.overlays.default ];`. The first overlay covers user's hand-rolled packages (raiseorlaunch, etc.); the second is shipped by beckon's own `flake.nix` (`overlays.default`).
-- `~/.nix/home-manager/environments/sway/default.nix` — `home.packages` includes `beckon`.
-- `~/.nix/home-manager/environments/sway/sway.d/conf.d/launch-app.conf` — `set $focus exec beckon` (no path), bindings use Names.
+- `~/.nix/lib/mkConfigs.nix` — `mkArgs` does `args = inputs // { ... }`, which **spreads inputs flat at the top level of specialArgs**. So inside any host's `home.nix` the input is referenced directly as `beckon`, not `inputs.beckon`.
+- **Standalone HM hosts** (`mkHomeManager`, e.g. `rog`, `desktop`, `zenbook-a14`) — `pkgs` is constructed with `overlays = [ (import ../overlays) inputs.beckon.overlays.default ]`, so `pkgs.beckon` works without further wiring.
+- **nix-darwin / NixOS hosts** (`mkDarwin`, `mkNixos`, e.g. `airm3`, `macmini`) — overlay is **not** pre-baked. The host's `home.nix` adds it explicitly:
+  ```nix
+  {pkgs, beckon, ...}: {
+    nixpkgs.overlays = [
+      (import ../../overlays)
+      beckon.overlays.default
+    ];
+    home.packages = [ pkgs.beckon ];
+  }
+  ```
+- Linux/sway:
+  - `~/.nix/home-manager/environments/sway/default.nix` — `home.packages` includes `beckon`.
+  - `~/.nix/home-manager/environments/sway/sway.d/conf.d/launch-app.conf` — `set $focus exec beckon` (no path), bindings use Names.
+- macOS/Hammerspoon:
+  - `~/.nix/hosts/airm3/home.nix` — overlay + `pkgs.beckon` wired as above.
+  - `~/.nix/home-manager/dotfiles/macos/hammerspoon/MySpoons/LaunchApp.spoon/init.lua` — beckon-backed spoon. Uses `hs.task.new("/etc/profiles/per-user/$USER/bin/beckon", cb, {name}):start()`. **Do NOT use `hs.execute(cmd, true)`** — the second arg sources the user login shell, which on this user's setup runs >10s and was the source of the original "delay" perceived from hotkey presses.
+  - `~/.nix/home-manager/dotfiles/macos/hammerspoon/MySpoons/LaunchApp.spoon/init.lua.backup` — preserved original Lua impl for reference.
 
 To bump beckon to latest commit on `main`:
 
 ```sh
 cd ~/.nix
 nix flake update beckon
+# Linux / standalone HM:
 home-manager switch --flake .#<host>
+# macOS / nix-darwin (airm3):
+sudo darwin-rebuild switch --flake .#airm3 --impure
+hs -c "hs.reload()"   # reload Hammerspoon to pick up spoon changes
 ```
 
 That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pinned rev for reproducibility across machines.
@@ -335,18 +364,27 @@ That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pin
 ## Picking up next session
 
 State at session close:
-- ✅ Phase 1a (sway), 1b.i3 done, name-based MRU toggle, .desktop launch, notify-send on hotkey error, Nix flake + overlay
-- ✅ Phase 2 (macOS) done — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon -d` reports Accessibility trust state.
-- ⏳ Phase 3 (Windows) is the next big chunk
+- ✅ Phase 1a (sway), 1b.i3 done — name-based MRU toggle, `.desktop` launch, `notify-send` on hotkey error, Nix flake + overlay.
+- ✅ Phase 2 (macOS) done **and deployed on `airm3`** — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon -d` reports Accessibility trust state. Hammerspoon spoon ported and live.
+- ⏳ Phase 3 (Windows) is the next big chunk.
 
 Reasonable next-session order:
-1. **Phase 3 Windows** — port the AHK script. Adds `crates/beckon-windows/` with `windows` crate. Start Menu `.lnk` parsing for Name resolution (mirrors `.desktop` parsing). Anti-focus-stealing workaround (`AllowSetForegroundWindow` + `AttachThreadInput`).
-2. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos.
+1. **Phase 3 Windows** — port the AHK script (`~/.nix/windows/ahk/launch-app.ahk`). Adds `crates/beckon-windows/` with `windows` crate. See "Reference implementations" → "Windows — AHK script" section above for the full porting plan. Key gotchas:
+   - Start Menu `.lnk` parsing via `IShellLink` for Name resolution (mirrors `.desktop` / `Info.plist`).
+   - Match running windows by `AppUserModelID` (preferred) — `GetApplicationUserModelId` from `Win32_System_Com` for windows, walk `EnumWindows` for the candidates.
+   - **Anti-focus-stealing**: Win10+ blocks `SetForegroundWindow` from a background process. Standard workaround is `AllowSetForegroundWindow(GetCurrentProcessId())` from a foreground process before sending; for our case (CLI launched by AHK keypress) the AHK side is foreground, but we still typically need the `AttachThreadInput` trick to be safe.
+   - z-order from `EnumWindows` is already MRU front-to-back → no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`).
+   - PWAs: detect via `--app=URL` / `--app-id=` in `.lnk` arguments. Match running PWA windows by `AppUserModelID` once running.
+   - Launch path: `ShellExecuteW` with the resolved exe + args from the `.lnk` is the cleanest sync launch.
+2. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos. Maybe `--include-titles` for `-s` (open question 4).
 
 ### Phase 2 macOS notes (for future maintenance)
 
-- **Accessibility permission**: bound to the binary's code signature. Each fresh `cargo build` produces a new unsigned binary with a different identity → permission resets. For development, sign the binary or use a stable wrapper. Production users via Nix get a stable binary path.
+- **Accessibility permission**: bound to the binary's code signature. Each fresh `cargo build` produces a new unsigned binary with a different identity → permission resets. For development, sign the binary or use a stable wrapper. Production users via Nix get a stable `/etc/profiles/per-user/<user>/bin/beckon` path that survives rebuilds (the Nix-store hash changes but the wrapper symlink does not, and macOS appears to accept that).
 - **`activate()` vs `activateWithOptions:`**: objc2-app-kit 0.3 only exposes `activateWithOptions:`. We pass empty options (no `ActivateAllWindows`) so step 5a's window-cycle decision survives the activation.
 - **Launch path**: We shell out to `/usr/bin/open -b <bundle_id>` instead of `NSWorkspace.openApplicationAtURL:configuration:completionHandler:` because the latter is async-only on modern macOS and would force us to spin a runloop. `open` returns in ~10–20 ms.
 - **Cycle algorithm**: `AXUIElementCopyAttributeValue(app, "AXWindows")` gives us a `CFArray<AXUIElement>`. We find the element with `AXMain == true` and `AXRaise` the next one (wrap-around). Returns `false` (falls through to step 5b) if there are <2 windows OR if the process is not AX-trusted — we can't distinguish those reliably.
 - **z-order other-app pick (5b)**: `CGWindowListCopyWindowInfo(.onScreenOnly | .excludeDesktopElements, kCGNullWindowID)` returns front-to-back layer-0 windows. Filter to those with PIDs not in the target's bundle PID set; first hit is the most-recent OTHER app.
+- **PWA scan recursion**: macOS browsers (Brave/Chrome/Vivaldi) install PWAs into `~/Applications/<Browser> Apps.localized/<Name>.app`, which is one level deeper than a flat `read_dir` of `~/Applications` reaches. `installed_apps()` therefore descends one extra level into any non-`.app` directory child of each root, but stops there (going inside a `.app` would surface nested helper bundles like `Foo.app/Contents/Library/Bar.app` which are not user-launchable). PWAs ship with `CFBundleDisplayName=Discord` (etc.) — beckon's Name match works directly; the bundle ids contain a per-install hash and are not portable across machines (same caveat as Linux Brave PWAs).
+- **Hammerspoon spoon avoid `hs.execute(cmd, true)`**: the `true` second arg makes Hammerspoon source the user's login shell (`~/.zshrc`) before each invocation. On a typical setup that's hundreds of ms; on a heavily customized zsh (this user) it can exceed 10 s — fully swamping beckon's own ~50 ms hot path. The spoon uses `hs.task.new("/etc/profiles/per-user/$USER/bin/beckon", cb, {name}):start()` instead — non-blocking, no shell startup. Deliberately chosen over `hs.execute` even with `false`, because `hs.task` also gives us `exitCode` and `stderr` in the callback for clean error surfacing.
+- **AX-cycle ref counting in `windows.rs`**: `AXUIElementCopyAttributeValue` returns CF refs under the create rule. We wrap the outer `AXWindows` array via `CFArray::wrap_under_create_rule` (from `windows_value`), then for each window AXUIElement we `wrap_under_get_rule` to take an extra retain so the per-window CF lifetime extends past the array. The `AxElement::from_borrowed` constructor is `unsafe` and must be paired with `mem::forget` — see the inline comment in `windows.rs` if changing this code.
