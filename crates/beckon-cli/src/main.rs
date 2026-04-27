@@ -117,9 +117,13 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     {
         beckon_linux::pick_backend().context("failed to pick a Linux backend")
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        Err(anyhow!("this OS is not yet supported (phases 2-3)"))
+        beckon_macos::pick_backend().context("failed to pick the macOS backend")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(anyhow!("this OS is not yet supported (phase 3 = Windows)"))
     }
 }
 
@@ -211,7 +215,13 @@ fn cmd_resolve(id: &str) -> Result<()> {
     {
         return cmd_resolve_linux(id);
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        return beckon_macos::print_resolve_report(id)
+            .map_err(|e| anyhow!("{}", e))
+            .context("resolve failed");
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let backend = pick_backend()?;
         let running = backend.list_running().unwrap_or_default();
@@ -321,9 +331,36 @@ fn cmd_doctor() -> Result<()> {
             Err(e) => println!("❌ {}", e),
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        println!("⚠️  This OS is not yet supported by beckon (phases 2-3 pending).");
+        println!("OS: macOS\n");
+        let trusted = beckon_macos::is_accessibility_trusted();
+        if trusted {
+            println!("✅ Accessibility permission granted — window cycling (5a) is available.");
+        } else {
+            println!("⚠️  Accessibility permission NOT granted.");
+            println!("    Cycling between windows of the same app (step 5a) requires it.");
+            println!("    Without it, beckon falls back to toggle-back / hide.");
+            println!();
+            println!("    Grant in: System Settings → Privacy & Security → Accessibility");
+            println!("    Add the binary you invoke from Hammerspoon (the path that runs `beckon`).");
+            println!("    macOS binds the permission to the binary's code signature, so a fresh");
+            println!("    `cargo build` may invalidate the grant — re-add after rebuilds.");
+        }
+        println!();
+
+        let backend = pick_backend()?;
+        match backend.list_running() {
+            Ok(apps) => println!(
+                "✅ NSWorkspace working — {} regular running app(s).",
+                apps.len()
+            ),
+            Err(e) => println!("⚠️  list_running failed: {}", e),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        println!("⚠️  This OS is not yet supported by beckon (phase 3 = Windows).");
     }
     Ok(())
 }

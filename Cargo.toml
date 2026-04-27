@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/beckon-core",
     "crates/beckon-linux",
+    "crates/beckon-macos",
     "crates/beckon-cli",
 ]
 

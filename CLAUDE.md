@@ -21,7 +21,7 @@ beckon/
 ├── Cargo.toml                # workspace root
 ├── crates/
 │   ├── beckon-core/          # Backend trait, shared types (RunningApp, WindowId)
-│   ├── beckon-macos/         # Cocoa/AppKit (planned, phase 2)
+│   ├── beckon-macos/         # NSWorkspace + AX + CGWindowList — phase 2 done
 │   ├── beckon-windows/       # windows-rs (planned, phase 3)
 │   ├── beckon-linux/         # multi-backend, dispatch by env at runtime
 │   │   └── src/
@@ -161,7 +161,7 @@ The dotfiles are inherently per-OS already (sway runs only on Linux, AHK only on
 | 1b.i3 | Linux / i3 (X11) | ✅ Done — same `I3IpcBackend` (shared protocol) |
 | 1b.x11 | Linux / X11 generic via x11rb (GNOME-X11, KDE-X11, openbox, awesome, XFCE) | ⏳ Deferred |
 | 1c | Linux / Hyprland | ⏳ Pending |
-| 2 | macOS | ⏳ Pending — must handle Accessibility permission UX |
+| 2 | macOS | ✅ Done — `beckon-macos` via `objc2-app-kit` + AX + CGWindowList |
 | 3 | Windows | ⏳ Pending — anti-focus-stealing has quirks |
 | — | GNOME / KDE Wayland | ❌ Out of scope — compositor blocks external focus |
 
@@ -336,9 +336,17 @@ That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pin
 
 State at session close:
 - ✅ Phase 1a (sway), 1b.i3 done, name-based MRU toggle, .desktop launch, notify-send on hotkey error, Nix flake + overlay
-- ⏳ Phase 2 (macOS) is the next big chunk
+- ✅ Phase 2 (macOS) done — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon -d` reports Accessibility trust state.
+- ⏳ Phase 3 (Windows) is the next big chunk
 
 Reasonable next-session order:
-1. **Phase 2 macOS** — port the Hammerspoon spoon. Reference impl already exists, OS APIs are clean. Plan to add `crates/beckon-macos/` with `objc2`/`objc2-app-kit` deps, mirror the i3ipc structure but use `NSWorkspace` + `CGWindowList`. Accessibility permission needs UX in `-d`.
-2. **Phase 3 Windows** — port the AHK script. Adds `crates/beckon-windows/` with `windows` crate. Start Menu `.lnk` parsing for Name resolution (mirrors `.desktop` parsing). Anti-focus-stealing workaround (`AllowSetForegroundWindow` + `AttachThreadInput`).
-3. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos.
+1. **Phase 3 Windows** — port the AHK script. Adds `crates/beckon-windows/` with `windows` crate. Start Menu `.lnk` parsing for Name resolution (mirrors `.desktop` parsing). Anti-focus-stealing workaround (`AllowSetForegroundWindow` + `AttachThreadInput`).
+2. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos.
+
+### Phase 2 macOS notes (for future maintenance)
+
+- **Accessibility permission**: bound to the binary's code signature. Each fresh `cargo build` produces a new unsigned binary with a different identity → permission resets. For development, sign the binary or use a stable wrapper. Production users via Nix get a stable binary path.
+- **`activate()` vs `activateWithOptions:`**: objc2-app-kit 0.3 only exposes `activateWithOptions:`. We pass empty options (no `ActivateAllWindows`) so step 5a's window-cycle decision survives the activation.
+- **Launch path**: We shell out to `/usr/bin/open -b <bundle_id>` instead of `NSWorkspace.openApplicationAtURL:configuration:completionHandler:` because the latter is async-only on modern macOS and would force us to spin a runloop. `open` returns in ~10–20 ms.
+- **Cycle algorithm**: `AXUIElementCopyAttributeValue(app, "AXWindows")` gives us a `CFArray<AXUIElement>`. We find the element with `AXMain == true` and `AXRaise` the next one (wrap-around). Returns `false` (falls through to step 5b) if there are <2 windows OR if the process is not AX-trusted — we can't distinguish those reliably.
+- **z-order other-app pick (5b)**: `CGWindowListCopyWindowInfo(.onScreenOnly | .excludeDesktopElements, kCGNullWindowID)` returns front-to-back layer-0 windows. Filter to those with PIDs not in the target's bundle PID set; first hit is the most-recent OTHER app.

@@ -16,3 +16,6 @@ clap        = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 beckon-linux = { path = "../beckon-linux" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+beckon-macos = { path = "../beckon-macos" }

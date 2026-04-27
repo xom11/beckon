@@ -1,0 +1,17 @@
+[package]
+name         = "beckon-macos"
+version      = { workspace = true }
+edition      = { workspace = true }
+license      = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+beckon-core = { path = "../beckon-core" }
+thiserror   = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2            = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSDictionary", "NSError", "NSObject", "NSEnumerator", "NSValue"] }
+objc2-app-kit    = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+core-foundation  = "0.10"
+plist            = "1"
