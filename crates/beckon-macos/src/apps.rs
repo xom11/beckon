@@ -101,16 +101,20 @@ pub fn running_apps() -> Vec<RunningAppInfo> {
 
 /// All installed `.app` bundles in the standard search paths.
 ///
-/// We do **not** recurse arbitrarily — only one level inside the search root,
-/// plus `/System/Applications/Utilities`. Going deeper would pick up nested
-/// helper bundles like `Foo.app/Contents/Library/Bar.app` which are not
-/// user-launchable. Matches what `mdfind kMDItemContentType==com.apple.application-bundle`
-/// would return at the top level, without depending on Spotlight indexing.
+/// We descend at most one level into non-.app subdirectories of each root,
+/// which catches:
+///   - Browser PWA folders: `~/Applications/{Brave Browser,Chrome,Vivaldi}
+///     Apps.localized/*.app` — these contain the user's Chrome/Brave/Vivaldi
+///     PWAs (Discord, Gmail, YouTube, ...).
+///   - `/System/Applications/Utilities/*.app` — the standard utilities folder.
+///
+/// We do NOT recurse beyond one level — that would pick up nested helper
+/// bundles like `Foo.app/Contents/Library/Bar.app` which are not
+/// user-launchable.
 pub fn installed_apps() -> Vec<InstalledAppInfo> {
     let mut roots: Vec<PathBuf> = vec![
         PathBuf::from("/Applications"),
         PathBuf::from("/System/Applications"),
-        PathBuf::from("/System/Applications/Utilities"),
     ];
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(&home).join("Applications"));
@@ -118,6 +122,17 @@ pub fn installed_apps() -> Vec<InstalledAppInfo> {
 
     let mut out: Vec<InstalledAppInfo> = Vec::new();
     let mut seen_bundles = std::collections::HashSet::<String>::new();
+    let mut process = |path: &Path, out: &mut Vec<InstalledAppInfo>| {
+        let Some(info) = read_bundle_info(path) else {
+            return;
+        };
+        // Multiple roots can list the same bundle (e.g. /Applications
+        // shadowing a /System default). Keep the first occurrence, which
+        // matches our root order: /Applications → /System → ~/Applications.
+        if seen_bundles.insert(info.bundle_id.clone()) {
+            out.push(info);
+        }
+    };
 
     for root in &roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -125,17 +140,25 @@ pub fn installed_apps() -> Vec<InstalledAppInfo> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("app") {
+            let is_app = path.extension().and_then(|e| e.to_str()) == Some("app");
+            if is_app {
+                process(&path, &mut out);
                 continue;
             }
-            let Some(info) = read_bundle_info(&path) else {
+            // Non-.app entry — descend one level if it's a directory. This
+            // catches `Vivaldi Apps.localized/*.app`, `Utilities/*.app`, etc.
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_dir() {
+                continue;
+            }
+            let Ok(sub_entries) = std::fs::read_dir(&path) else {
                 continue;
             };
-            // Multiple roots can list the same bundle (e.g. /Applications
-            // shadowing a /System default). Keep the first occurrence,
-            // which matches our root order: user → system.
-            if seen_bundles.insert(info.bundle_id.clone()) {
-                out.push(info);
+            for sub in sub_entries.flatten() {
+                let sub_path = sub.path();
+                if sub_path.extension().and_then(|e| e.to_str()) == Some("app") {
+                    process(&sub_path, &mut out);
+                }
             }
         }
     }
