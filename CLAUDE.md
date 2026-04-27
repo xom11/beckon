@@ -173,6 +173,65 @@ sway and i3 share the i3-IPC protocol exactly — same `swayipc` crate, same JSO
 
 → No separate i3 module. `crates/beckon-linux/src/i3ipc.rs` serves both.
 
+## Reference implementations to port from (phase 2 / 3)
+
+When porting beckon to macOS and Windows, mirror the logic in the existing
+hand-rolled scripts. Both already handle the "is the app open?" → focus / launch
+flow; beckon's job is to add Name resolution against OS metadata, plus the
+cycle / toggle-back / hide algorithm.
+
+### macOS — Hammerspoon spoon
+
+`~/.nix/home-manager/dotfiles/hammerspoon/MySpoons/LaunchApp.spoon/init.lua`
+
+What it does today:
+- Takes app **display name** (e.g. `"Claude"`).
+- `hs.osascript.applescript('id of app "Claude"')` → bundle_id (free name resolution!).
+- `hs.application.launchOrFocusByBundleID(bundleID)` to focus / launch.
+- If already on this app: walk `hs.window.orderedWindows()` (MRU), focus first window of a *different* app; else hide.
+
+What beckon should add:
+- Replace `osascript` shell-out (~50ms) with native `objc2-app-kit` (`NSWorkspace.runningApplications`, `NSRunningApplication.activate`).
+- Add step 5a (cycle within same app) — Hammerspoon skipped this.
+- Use `CGWindowListCopyWindowInfo(.optionOnScreenOnly)` for z-order → free MRU, no state file needed (unlike Linux).
+- **Accessibility permission required**. Detect via `AXIsProcessTrusted()` and surface a clear message in `beckon -d` if missing.
+
+### Windows — AHK script
+
+`~/.nix/windows/ahk/launch-app.ahk`
+
+What it does today:
+- Takes a **window title** (e.g. `"Claude"`) plus an **exe path / shortcut path** as separate args:
+  ```
+  Launch(browser, "Claude", " --app=https://claude.ai/new")
+  ```
+- `WinExist(winTitle)` to check, `WinActivate` to focus, `Send("!{Esc}")` to hide.
+- Browser PWAs: launches via `--app=URL` against Vivaldi.
+
+Pain points beckon should fix:
+- Title-based matching is brittle: PWAs are titled after the page, not the app — unloaded tabs break it.
+- Two arguments (winTitle + launch cmd) means each binding repeats the launch URL.
+
+What beckon should do:
+- Resolve Names against Start Menu shortcuts (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\*.lnk`) — read the `.lnk` target to get exe + args. This mirrors Linux `.desktop` resolution.
+- For PWAs: detect via shortcut argument pattern (`--app=URL` or `--app-id=`) and match by AppUserModelID once running.
+- Match running windows by AppUserModelID (preferred) or `WM_CLASS` equivalent via `GetClassName()`.
+- z-order from `EnumWindows` gives MRU directly → no state file needed.
+- **Anti-focus-stealing**: Win10+ requires `AllowSetForegroundWindow(GetCurrentProcessId())` or a foreground-lock workaround (the `AttachThreadInput` trick) before `SetForegroundWindow`. Search nixpkgs / GitHub for "windows allow set foreground rust" — this is well-trodden.
+
+### Cross-OS dotfile shape after phase 2/3
+
+Same Name everywhere, OS-canonical id only when Names collide:
+
+```
+# sway      (Linux)
+bindsym $cap+c exec beckon Claude
+# Hammerspoon (macOS)
+hs.hotkey.bind(hyper, "c", function() hs.execute("beckon Claude") end)
+# AHK         (Windows)
+^#!c:: Run("beckon Claude")
+```
+
 ## Known constraints
 
 ### Wayland hotkey
@@ -249,3 +308,31 @@ No `serde` / `toml` — beckon does not read or write any config or cache file.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `-s` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.
 - **PWA install helper** — user installs PWAs manually via Brave/Chrome's "Install this site as an app". beckon does not wrap this.
+
+## Distribution
+
+- GitHub: https://github.com/xom11/beckon
+- Cargo build: `cargo build --release`
+- Nix flake: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+- User's local nix overlay: `~/.nix/overlays/beckon/` — pinned to a commit via `fetchFromGitHub`. To bump:
+  1. Push beckon changes
+  2. `nix-shell -p nix-prefetch-github --run "nix-prefetch-github xom11 beckon --rev <commit>"`
+  3. Update `rev` + `hash` in `~/.nix/overlays/beckon/default.nix`
+  4. If `Cargo.lock` changed, copy it: `cp ~/beckon/Cargo.lock ~/.nix/overlays/beckon/`
+  5. `home-manager switch --flake ~/.nix#<host>`
+
+User's nix integration (already wired):
+- `~/.nix/lib/mkConfigs.nix` — `mkHomeManager` imports nixpkgs with `overlays = [ ../overlays ]` (standalone HM ignores `nixpkgs.overlays` set in modules; this is the working alternative).
+- `~/.nix/home-manager/environments/sway/default.nix` — `home.packages` includes `beckon`.
+- `~/.nix/home-manager/environments/sway/sway.d/conf.d/launch-app.conf` — `set $focus exec beckon` (no path), bindings use Names.
+
+## Picking up next session
+
+State at session close:
+- ✅ Phase 1a (sway), 1b.i3 done, name-based MRU toggle, .desktop launch, notify-send on hotkey error, Nix flake + overlay
+- ⏳ Phase 2 (macOS) is the next big chunk
+
+Reasonable next-session order:
+1. **Phase 2 macOS** — port the Hammerspoon spoon. Reference impl already exists, OS APIs are clean. Plan to add `crates/beckon-macos/` with `objc2`/`objc2-app-kit` deps, mirror the i3ipc structure but use `NSWorkspace` + `CGWindowList`. Accessibility permission needs UX in `-d`.
+2. **Phase 3 Windows** — port the AHK script. Adds `crates/beckon-windows/` with `windows` crate. Start Menu `.lnk` parsing for Name resolution (mirrors `.desktop` parsing). Anti-focus-stealing workaround (`AllowSetForegroundWindow` + `AttachThreadInput`).
+3. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos.
