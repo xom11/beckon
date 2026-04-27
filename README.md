@@ -24,6 +24,8 @@ press hotkey
 
 ## Build
 
+### Cargo
+
 ```sh
 cargo build --release
 # binary: ./target/release/beckon
@@ -31,6 +33,28 @@ cargo build --release
 
 Requirements: Rust 1.75+. On Linux: a sway or i3 session (other compositors
 TBD — `beckon -d` will tell you).
+
+### Nix flake
+
+```sh
+nix run github:l3n4k4/beckon -- -l
+nix build .#beckon          # binary at ./result/bin/beckon
+nix develop                 # dev shell with rustfmt / clippy / rust-analyzer
+```
+
+To pull beckon into your own flake, add the overlay:
+
+```nix
+{
+  inputs.beckon.url = "github:l3n4k4/beckon";
+
+  outputs = { nixpkgs, beckon, ... }: {
+    # ...
+    nixpkgs.overlays = [ beckon.overlays.default ];
+    # then `pkgs.beckon` resolves
+  };
+}
+```
 
 ## Usage
 
