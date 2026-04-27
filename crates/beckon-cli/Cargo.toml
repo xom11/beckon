@@ -1,0 +1,18 @@
+[package]
+name         = "beckon-cli"
+version      = { workspace = true }
+edition      = { workspace = true }
+license      = { workspace = true }
+rust-version = { workspace = true }
+
+[[bin]]
+name = "beckon"
+path = "src/main.rs"
+
+[dependencies]
+beckon-core = { path = "../beckon-core" }
+anyhow      = { workspace = true }
+clap        = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+beckon-linux = { path = "../beckon-linux" }
