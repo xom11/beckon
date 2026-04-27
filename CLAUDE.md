@@ -22,7 +22,7 @@ beckon/
 ├── crates/
 │   ├── beckon-core/          # Backend trait, shared types (RunningApp, WindowId)
 │   ├── beckon-macos/         # NSWorkspace + AX + CGWindowList — phase 2 done
-│   ├── beckon-windows/       # windows-rs (planned, phase 3)
+│   ├── beckon-windows/       # Win32 API (EnumWindows + COM IShellLinkW) — phase 3 done
 │   ├── beckon-linux/         # multi-backend, dispatch by env at runtime
 │   │   └── src/
 │   │       ├── lib.rs        # detect compositor/DE, return Box<dyn Backend>
@@ -162,7 +162,7 @@ The dotfiles are inherently per-OS already (sway runs only on Linux, AHK only on
 | 1b.x11 | Linux / X11 generic via x11rb (GNOME-X11, KDE-X11, openbox, awesome, XFCE) | ⏳ Deferred |
 | 1c | Linux / Hyprland | ⏳ Pending |
 | 2 | macOS | ✅ Done — `beckon-macos` via `objc2-app-kit` + AX + CGWindowList |
-| 3 | Windows | ⏳ Pending — anti-focus-stealing has quirks |
+| 3 | Windows | ✅ Done — `beckon-windows` via Win32 EnumWindows + COM IShellLinkW |
 | — | GNOME / KDE Wayland | ❌ Out of scope — compositor blocks external focus |
 
 ### Phase 1b.i3 implementation note
@@ -292,12 +292,16 @@ plist            = "1"     # parse .app/Contents/Info.plist
 # bindings in `crates/beckon-macos/src/ffi.rs`. Surface is ~6 functions, not
 # worth dragging in objc2-application-services.
 
-# windows (planned, phase 3)
-windows = { version = "0.58", features = [
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Threading",
-    "Win32_System_Com",                # for IShellLink (.lnk parsing)
-    "Win32_UI_Shell",
+# windows (in use as of phase 3)
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",              # DwmGetWindowAttribute (cloaked detection)
+    "Win32_Storage_FileSystem",        # WIN32_FIND_DATAW (IShellLinkW::GetPath)
+    "Win32_System_Com",                # COM init + IPersistFile (.lnk parsing)
+    "Win32_System_Threading",          # OpenProcess, AttachThreadInput
+    "Win32_UI_Shell",                  # IShellLinkW, ShellExecuteW
+    "Win32_UI_Shell_Common",           # ITEMIDLIST
+    "Win32_UI_WindowsAndMessaging",    # EnumWindows, SetForegroundWindow, etc.
 ] }
 
 # linux (in use as of phase 1)
@@ -366,17 +370,25 @@ That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pin
 State at session close:
 - ✅ Phase 1a (sway), 1b.i3 done — name-based MRU toggle, `.desktop` launch, `notify-send` on hotkey error, Nix flake + overlay.
 - ✅ Phase 2 (macOS) done **and deployed on `airm3`** — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon -d` reports Accessibility trust state. Hammerspoon spoon ported and live.
-- ⏳ Phase 3 (Windows) is the next big chunk.
+- ✅ Phase 3 (Windows) done — `crates/beckon-windows/` ships full focus / launch / cycle / toggle / hide via Win32 `EnumWindows` (z-order = MRU), COM `IShellLinkW` for Start Menu `.lnk` parsing, `SetForegroundWindow` + `AttachThreadInput` for anti-focus-stealing, `ShellExecuteW` for launch. Toast notification on hotkey errors. Tested on ARM64 Windows 11.
 
 Reasonable next-session order:
-1. **Phase 3 Windows** — port the AHK script (`~/.nix/windows/ahk/launch-app.ahk`). Adds `crates/beckon-windows/` with `windows` crate. See "Reference implementations" → "Windows — AHK script" section above for the full porting plan. Key gotchas:
-   - Start Menu `.lnk` parsing via `IShellLink` for Name resolution (mirrors `.desktop` / `Info.plist`).
-   - Match running windows by `AppUserModelID` (preferred) — `GetApplicationUserModelId` from `Win32_System_Com` for windows, walk `EnumWindows` for the candidates.
-   - **Anti-focus-stealing**: Win10+ blocks `SetForegroundWindow` from a background process. Standard workaround is `AllowSetForegroundWindow(GetCurrentProcessId())` from a foreground process before sending; for our case (CLI launched by AHK keypress) the AHK side is foreground, but we still typically need the `AttachThreadInput` trick to be safe.
-   - z-order from `EnumWindows` is already MRU front-to-back → no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`).
-   - PWAs: detect via `--app=URL` / `--app-id=` in `.lnk` arguments. Match running PWA windows by `AppUserModelID` once running.
-   - Launch path: `ShellExecuteW` with the resolved exe + args from the `.lnk` is the cleanest sync launch.
-2. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos. Maybe `--include-titles` for `-s` (open question 4).
+1. **AHK integration** — wire beckon into `~/.nix/windows/ahk/launch-app.ahk` replacing the old title-match approach. Each binding becomes `Run("beckon <Name>")`.
+2. **AppUserModelID matching** — currently matches by exe filename. Adding AUMID matching would improve PWA support (browser PWAs share the browser exe but have distinct AUMIDs).
+3. **UWP/Store app support** — apps like Windows Terminal have no `.lnk` in Start Menu. Could enumerate via `Windows.Management.Deployment.PackageManager` or scan `shell:AppsFolder`.
+4. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos. Maybe `--include-titles` for `-s` (open question 4).
+
+### Phase 3 Windows notes (for future maintenance)
+
+- **Window enumeration**: `EnumWindows` returns windows in z-order (front-to-back), which gives us MRU order for free — no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`). We filter out invisible, cloaked (via `DwmGetWindowAttribute(DWMWA_CLOAKED)`), tool windows (`WS_EX_TOOLWINDOW`), and owner windows.
+- **Anti-focus-stealing**: Win10+ blocks `SetForegroundWindow` from background processes. We use the `AttachThreadInput` trick: attach our thread input to the foreground thread, call `SetForegroundWindow` + `BringWindowToTop`, then detach. This works because beckon is invoked from AHK which holds the foreground.
+- **Name resolution**: Start Menu `.lnk` files are parsed via COM `IShellLinkW` + `IPersistFile::Load`. Scans `%APPDATA%\...\Start Menu\Programs\` (per-user) and `%ProgramData%\...\Start Menu\Programs\` (system). Recursively walks subdirectories. Priority: shortcut display name (exact) > exe stem > display name (substring).
+- **Matching running windows**: Currently by exe filename (lowercased). If a `.lnk` resolves to `brave.exe`, all running windows with exe `brave.exe` are considered the same app. This works for most traditional desktop apps but not for PWAs sharing a browser exe — adding AppUserModelID matching would fix this.
+- **UWP/Store apps**: Apps installed via Microsoft Store (e.g. Windows Terminal) often don't have file-system `.lnk` shortcuts. They show up in `EnumWindows` but can't be resolved or launched via Start Menu scanning alone. `beckon <exe_name>` still works for focus/cycle/toggle if the app is already running.
+- **Launch path**: `ShellExecuteW` with the exe path and arguments extracted from the `.lnk`. This is synchronous and handles UAC elevation if the target requires it.
+- **COM initialization**: `CoInitializeEx(COINIT_APARTMENTTHREADED)` is called once per Start Menu scan. The call is idempotent (returns `S_FALSE` if already initialized on the thread).
+- **Toast notifications**: When stderr is not a terminal (hotkey invocation), errors are surfaced via PowerShell-spawned Windows toast notifications (best-effort, same pattern as Linux `notify-send`).
+- **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
 

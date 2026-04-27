@@ -106,7 +106,27 @@ fn notify_error(message: &str) {
             .stderr(std::process::Stdio::null())
             .spawn();
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Best-effort toast notification via PowerShell.
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+                     $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0); \
+                     $text = $xml.GetElementsByTagName('text'); \
+                     $text.Item(0).AppendChild($xml.CreateTextNode('beckon: {}')) > $null; \
+                     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('beckon').Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
+                    message.replace('\'', "''")
+                ),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         let _ = message;
     }
@@ -121,9 +141,13 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     {
         beckon_macos::pick_backend().context("failed to pick the macOS backend")
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
     {
-        Err(anyhow!("this OS is not yet supported (phase 3 = Windows)"))
+        beckon_windows::pick_backend().context("failed to pick the Windows backend")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err(anyhow!("this OS is not supported"))
     }
 }
 
@@ -221,15 +245,21 @@ fn cmd_resolve(id: &str) -> Result<()> {
             .map_err(|e| anyhow!("{}", e))
             .context("resolve failed");
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        return beckon_windows::print_resolve_report(id)
+            .map_err(|e| anyhow!("{}", e))
+            .context("resolve failed");
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let backend = pick_backend()?;
         let running = backend.list_running().unwrap_or_default();
         if let Some(app) = running.iter().find(|a| a.id == id) {
-            println!("✅ running: {} ({} window)", app.id, app.window_count);
+            println!("running: {} ({} window)", app.id, app.window_count);
             return Ok(());
         }
-        println!("❌ id `{}` not found", id);
+        println!("id `{}` not found", id);
         Ok(())
     }
 }
@@ -358,9 +388,38 @@ fn cmd_doctor() -> Result<()> {
             Err(e) => println!("⚠️  list_running failed: {}", e),
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
     {
-        println!("⚠️  This OS is not yet supported by beckon (phase 3 = Windows).");
+        println!("OS: Windows\n");
+
+        match beckon_windows::pick_backend() {
+            Ok(backend) => {
+                println!("Backend selected.\n");
+                match backend.list_running() {
+                    Ok(apps) => {
+                        let total_wins: usize = apps.iter().map(|a| a.window_count).sum();
+                        println!(
+                            "EnumWindows working -- {} app(s), {} window(s) detected.",
+                            apps.len(),
+                            total_wins
+                        );
+                    }
+                    Err(e) => println!("Backend selected but list_running failed: {}", e),
+                }
+                match backend.list_installed() {
+                    Ok(apps) => println!(
+                        "Start Menu scan working -- {} shortcut(s) found.",
+                        apps.len()
+                    ),
+                    Err(e) => println!("list_installed failed: {}", e),
+                }
+            }
+            Err(e) => println!("{}", e),
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        println!("This OS is not supported by beckon.");
     }
     Ok(())
 }

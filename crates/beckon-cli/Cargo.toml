@@ -19,3 +19,6 @@ beckon-linux = { path = "../beckon-linux" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 beckon-macos = { path = "../beckon-macos" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+beckon-windows = { path = "../beckon-windows" }
