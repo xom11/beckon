@@ -314,17 +314,23 @@ No `serde` / `toml` — beckon does not read or write any config or cache file.
 - GitHub: https://github.com/xom11/beckon
 - Cargo build: `cargo build --release`
 - Nix flake: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
-- User's local nix overlay: `~/.nix/overlays/beckon/` — pinned to a commit via `fetchFromGitHub`. To bump:
-  1. Push beckon changes
-  2. `nix-shell -p nix-prefetch-github --run "nix-prefetch-github xom11 beckon --rev <commit>"`
-  3. Update `rev` + `hash` in `~/.nix/overlays/beckon/default.nix`
-  4. If `Cargo.lock` changed, copy it: `cp ~/beckon/Cargo.lock ~/.nix/overlays/beckon/`
-  5. `home-manager switch --flake ~/.nix#<host>`
 
-User's nix integration (already wired):
-- `~/.nix/lib/mkConfigs.nix` — `mkHomeManager` imports nixpkgs with `overlays = [ ../overlays ]` (standalone HM ignores `nixpkgs.overlays` set in modules; this is the working alternative).
+User's nix integration (flake-input pattern, no hand-rolled overlay):
+
+- `~/.nix/flake.nix` — `inputs.beckon.url = "github:xom11/beckon"; inputs.beckon.inputs.nixpkgs.follows = "nixpkgs";`
+- `~/.nix/lib/mkConfigs.nix` — `mkHomeManager` constructs pkgs with `overlays = [ (import ../overlays) inputs.beckon.overlays.default ];`. The first overlay covers user's hand-rolled packages (raiseorlaunch, etc.); the second is shipped by beckon's own `flake.nix` (`overlays.default`).
 - `~/.nix/home-manager/environments/sway/default.nix` — `home.packages` includes `beckon`.
 - `~/.nix/home-manager/environments/sway/sway.d/conf.d/launch-app.conf` — `set $focus exec beckon` (no path), bindings use Names.
+
+To bump beckon to latest commit on `main`:
+
+```sh
+cd ~/.nix
+nix flake update beckon
+home-manager switch --flake .#<host>
+```
+
+That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pinned rev for reproducibility across machines.
 
 ## Picking up next session
 
