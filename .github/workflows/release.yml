@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0). Artifacts upload to a draft release.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked -p beckon-cli --target ${{ matrix.target }}
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ inputs.tag || github.ref_name }}"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+          echo "name=beckon-${ref#v}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          name='${{ steps.ver.outputs.name }}'
+          stage="$(mktemp -d)/${name}"
+          mkdir -p "${stage}"
+          cp 'target/${{ matrix.target }}/release/beckon' "${stage}/"
+          cp README.md "${stage}/" 2>/dev/null || true
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
+            [ -f "$f" ] && cp "$f" "${stage}/" || true
+          done
+          tar -czf "${name}.tar.gz" -C "$(dirname "${stage}")" "${name}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $name = '${{ steps.ver.outputs.name }}'
+          $stage = Join-Path $env:RUNNER_TEMP $name
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item 'target/${{ matrix.target }}/release/beckon.exe' -Destination $stage
+          if (Test-Path 'README.md') { Copy-Item 'README.md' -Destination $stage }
+          foreach ($f in @('LICENSE','LICENSE-MIT','LICENSE-APACHE')) {
+            if (Test-Path $f) { Copy-Item $f -Destination $stage }
+          }
+          $zip = "$name.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+          (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  $zip" | Out-File -Encoding ascii "$zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.name }}
+          path: ${{ steps.ver.outputs.name }}.*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            dist/beckon-*.tar.gz
+            dist/beckon-*.tar.gz.sha256
+            dist/beckon-*.zip
+            dist/beckon-*.zip.sha256
+          generate_release_notes: true
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: false
+          fail_on_unmatched_files: true
