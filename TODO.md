@@ -44,8 +44,10 @@ Order is ROI-descending.
 
 ## Round 4 — Cleanups
 
-- [ ] **4.1** Drop redundant `as isize` casts on `HWND.0`
-  `crates/beckon-windows/src/backend.rs:75,78` — `HWND.0` already `isize`.
+- [~] **4.1** ~~Drop redundant `as isize` casts on `HWND.0`~~
+  Cancelled. Audit was wrong: in `windows = "0.61"`, `HWND.0` is
+  `*mut c_void`, not `isize`. The casts are required for HashSet
+  hashing and Send-safety; leave them alone.
 
 ---
 
