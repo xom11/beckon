@@ -158,6 +158,21 @@ pub fn get_foreground_hwnd() -> HWND {
     unsafe { GetForegroundWindow() }
 }
 
+/// RAII guard for `AttachThreadInput` — guarantees the paired detach runs
+/// on every exit path, including early returns from `?`.
+struct ThreadInputDetach {
+    our: u32,
+    fg: u32,
+}
+
+impl Drop for ThreadInputDetach {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = AttachThreadInput(self.our, self.fg, false);
+        }
+    }
+}
+
 /// Focus a window with the `AttachThreadInput` trick to bypass
 /// Win10+ anti-focus-stealing.
 pub fn focus_window(hwnd: HWND) -> Result<()> {
@@ -166,10 +181,12 @@ pub fn focus_window(hwnd: HWND) -> Result<()> {
         let fg_thread = GetWindowThreadProcessId(fg, None);
         let our_thread = GetCurrentThreadId();
 
-        let attached = if fg_thread != 0 && fg_thread != our_thread {
-            AttachThreadInput(our_thread, fg_thread, true).as_bool()
+        let _detach = if fg_thread != 0 && fg_thread != our_thread
+            && AttachThreadInput(our_thread, fg_thread, true).as_bool()
+        {
+            Some(ThreadInputDetach { our: our_thread, fg: fg_thread })
         } else {
-            false
+            None
         };
 
         // Restore if minimised.
@@ -179,10 +196,6 @@ pub fn focus_window(hwnd: HWND) -> Result<()> {
 
         let _ = SetForegroundWindow(hwnd);
         BringWindowToTop(hwnd).ok().context("BringWindowToTop")?;
-
-        if attached {
-            let _ = AttachThreadInput(our_thread, fg_thread, false);
-        }
     }
     Ok(())
 }
