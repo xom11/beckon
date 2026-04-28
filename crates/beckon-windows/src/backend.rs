@@ -16,9 +16,8 @@ impl Backend for WindowsBackend {
         // installs); enum_visible_windows just iterates HWNDs. Run them
         // in parallel — they're independent and the hot path hits both.
         let scan_handle = std::thread::spawn(apps::scan_start_menu);
-        let all_windows = window_ops::enum_visible_windows().map_err(|e| {
-            BackendError::Other(format!("EnumWindows failed: {}", e))
-        })?;
+        let all_windows = window_ops::enum_visible_windows()
+            .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
         let installed = scan_handle.join().unwrap_or_default();
 
@@ -53,22 +52,17 @@ impl Backend for WindowsBackend {
 
         // Step 4: running but not focused -> focus.
         if !fg_is_target {
-            window_ops::focus_window(matching[0].hwnd).map_err(|e| {
-                BackendError::Other(format!("focus_window: {}", e))
-            })?;
+            window_ops::focus_window(matching[0].hwnd)
+                .map_err(|e| BackendError::Other(format!("focus_window: {}", e)))?;
             return Ok(BeckonAction::Focused);
         }
 
         // Step 5a: focused, multiple windows -> cycle to next.
         if matching.len() > 1 {
-            let current_idx = matching
-                .iter()
-                .position(|w| w.hwnd == fg_hwnd)
-                .unwrap_or(0);
+            let current_idx = matching.iter().position(|w| w.hwnd == fg_hwnd).unwrap_or(0);
             let next_idx = (current_idx + 1) % matching.len();
-            window_ops::focus_window(matching[next_idx].hwnd).map_err(|e| {
-                BackendError::Other(format!("cycle: {}", e))
-            })?;
+            window_ops::focus_window(matching[next_idx].hwnd)
+                .map_err(|e| BackendError::Other(format!("cycle: {}", e)))?;
             return Ok(BeckonAction::Cycled);
         }
 
@@ -81,23 +75,20 @@ impl Backend for WindowsBackend {
             .iter()
             .find(|w| !matching_hwnds.contains(&(w.hwnd.0 as isize)))
         {
-            window_ops::focus_window(other.hwnd).map_err(|e| {
-                BackendError::Other(format!("toggle-back: {}", e))
-            })?;
+            window_ops::focus_window(other.hwnd)
+                .map_err(|e| BackendError::Other(format!("toggle-back: {}", e)))?;
             return Ok(BeckonAction::ToggledBack);
         }
 
         // Step 5c: nothing else -> minimize.
-        window_ops::minimize_window(fg_hwnd).map_err(|e| {
-            BackendError::Other(format!("minimize: {}", e))
-        })?;
+        window_ops::minimize_window(fg_hwnd)
+            .map_err(|e| BackendError::Other(format!("minimize: {}", e)))?;
         Ok(BeckonAction::Hidden)
     }
 
     fn list_running(&self) -> Result<Vec<RunningApp>> {
-        let windows = window_ops::enum_visible_windows().map_err(|e| {
-            BackendError::Other(format!("EnumWindows: {}", e))
-        })?;
+        let windows = window_ops::enum_visible_windows()
+            .map_err(|e| BackendError::Other(format!("EnumWindows: {}", e)))?;
 
         // Group by exe name. When multiple windows share the same exe
         // (e.g. PWAs via chrome_proxy.exe), list each title separately.
@@ -113,9 +104,7 @@ impl Backend for WindowsBackend {
             } else {
                 w.exe_name.clone()
             };
-            let entry = groups
-                .entry(key)
-                .or_insert_with(|| (w.title.clone(), 0));
+            let entry = groups.entry(key).or_insert_with(|| (w.title.clone(), 0));
             entry.1 += 1;
         }
 
@@ -203,10 +192,7 @@ fn windows_by_literal_id<'a>(id: &str, windows: &'a [WindowInfo]) -> Vec<&'a Win
     };
 
     // Prefer exe name match over title match.
-    let by_exe: Vec<&WindowInfo> = windows
-        .iter()
-        .filter(|w| w.exe_name == with_exe)
-        .collect();
+    let by_exe: Vec<&WindowInfo> = windows.iter().filter(|w| w.exe_name == with_exe).collect();
     if !by_exe.is_empty() {
         return by_exe;
     }
@@ -253,9 +239,8 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
     let installed = apps::scan_start_menu();
     let resolved = apps::resolve(id, &installed);
     let subs = apps::name_substring_matches(id, &installed);
-    let all_windows = window_ops::enum_visible_windows().map_err(|e| {
-        BackendError::Other(format!("EnumWindows: {}", e))
-    })?;
+    let all_windows = window_ops::enum_visible_windows()
+        .map_err(|e| BackendError::Other(format!("EnumWindows: {}", e)))?;
 
     let Some(m) = resolved else {
         println!("  no match for `{}`\n", id);

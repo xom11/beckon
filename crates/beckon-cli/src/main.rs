@@ -276,7 +276,10 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
         }
         let direct: Vec<&_> = running.iter().filter(|a| a.id == id).collect();
         if !direct.is_empty() {
-            println!("Note: a running window has app_id=`{}` but no .desktop matches it.", id);
+            println!(
+                "Note: a running window has app_id=`{}` but no .desktop matches it.",
+                id
+            );
             println!("      Focus will work; launch will not.");
         }
         println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
@@ -308,15 +311,14 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
     // Ambiguity warning: more than one Name-substring candidate exists,
     // and the user picked one via priority. Other matches might be what
     // they meant.
-    let other_subs: Vec<&_> = subs
-        .iter()
-        .filter(|e| e.id != m.entry.id)
-        .collect();
+    let other_subs: Vec<&_> = subs.iter().filter(|e| e.id != m.entry.id).collect();
     if !other_subs.is_empty() {
         println!();
-        println!("⚠️  {} other entr{} also match by Name substring:",
+        println!(
+            "⚠️  {} other entr{} also match by Name substring:",
             other_subs.len(),
-            if other_subs.len() == 1 { "y" } else { "ies" });
+            if other_subs.len() == 1 { "y" } else { "ies" }
+        );
         for e in other_subs.iter().take(5) {
             println!("       {:<40} ({})", e.name, e.id);
         }
@@ -348,7 +350,10 @@ fn cmd_doctor() -> Result<()> {
             Ok(backend) => {
                 println!("✅ Backend selected.");
                 match backend.list_running() {
-                    Ok(apps) => println!("✅ IPC working — {} running window(s) detected.", apps.iter().map(|a| a.window_count).sum::<usize>()),
+                    Ok(apps) => println!(
+                        "✅ IPC working — {} running window(s) detected.",
+                        apps.iter().map(|a| a.window_count).sum::<usize>()
+                    ),
                     Err(e) => println!("⚠️  Backend selected but list_running failed: {}", e),
                 }
             }
@@ -367,7 +372,9 @@ fn cmd_doctor() -> Result<()> {
             println!("    Without it, beckon falls back to toggle-back / hide.");
             println!();
             println!("    Grant in: System Settings → Privacy & Security → Accessibility");
-            println!("    Add the binary you invoke from Hammerspoon (the path that runs `beckon`).");
+            println!(
+                "    Add the binary you invoke from Hammerspoon (the path that runs `beckon`)."
+            );
             println!("    macOS binds the permission to the binary's code signature, so a fresh");
             println!("    `cargo build` may invalidate the grant — re-add after rebuilds.");
         }

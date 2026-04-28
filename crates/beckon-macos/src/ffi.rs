@@ -75,10 +75,7 @@ pub fn ax_is_process_trusted() -> bool {
 pub fn ax_is_process_trusted_prompt() -> bool {
     let key = CFString::from_static_string("AXTrustedCheckOptionPrompt");
     let value = core_foundation::boolean::CFBoolean::true_value();
-    let dict = CFDictionary::from_CFType_pairs(&[(
-        key.as_CFType(),
-        value.as_CFType(),
-    )]);
+    let dict = CFDictionary::from_CFType_pairs(&[(key.as_CFType(), value.as_CFType())]);
     unsafe { AXIsProcessTrustedWithOptions(dict.as_concrete_TypeRef()) }
 }
 
@@ -122,9 +119,8 @@ impl AxElement {
     pub fn copy_attribute(&self, attribute: &str) -> Option<CFType> {
         let attr = CFString::new(attribute);
         let mut out: CFTypeRef = std::ptr::null();
-        let err = unsafe {
-            AXUIElementCopyAttributeValue(self.0, attr.as_concrete_TypeRef(), &mut out)
-        };
+        let err =
+            unsafe { AXUIElementCopyAttributeValue(self.0, attr.as_concrete_TypeRef(), &mut out) };
         if err != K_AX_ERROR_SUCCESS || out.is_null() {
             return None;
         }
@@ -135,11 +131,7 @@ impl AxElement {
     pub fn set_attribute(&self, attribute: &str, value: &CFType) -> AXError {
         let attr = CFString::new(attribute);
         unsafe {
-            AXUIElementSetAttributeValue(
-                self.0,
-                attr.as_concrete_TypeRef(),
-                value.as_CFTypeRef(),
-            )
+            AXUIElementSetAttributeValue(self.0, attr.as_concrete_TypeRef(), value.as_CFTypeRef())
         }
     }
 
@@ -166,8 +158,7 @@ impl Drop for AxElement {
 pub fn cg_window_list_on_screen() -> Vec<WindowSnapshot> {
     let raw = unsafe {
         CGWindowListCopyWindowInfo(
-            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY
-                | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
+            K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | K_CG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS,
             K_CG_NULL_WINDOW_ID,
         )
     };

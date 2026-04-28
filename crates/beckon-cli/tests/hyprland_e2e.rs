@@ -21,6 +21,7 @@
 //! thread and the test body so assertions can inspect what beckon mutated.
 
 #![cfg(target_os = "linux")]
+#![allow(clippy::field_reassign_with_default)]
 
 use std::fs;
 use std::io::{Read, Write};
@@ -438,7 +439,7 @@ fn toggle_back_uses_mru_state_file_when_present() {
     let mut state = State::default();
     state.clients = vec![
         FakeClient::new("0xA", "claude", 0),
-        FakeClient::new("0xB", "kitty", 5),    // older
+        FakeClient::new("0xB", "kitty", 5),   // older
         FakeClient::new("0xC", "firefox", 1), // newer
     ];
     state.active = Some("0xA".into());
@@ -549,12 +550,16 @@ fn list_running_emits_apps_grouped_by_class() {
     );
     // claude has 2 windows, kitty has 1. Look for the count column.
     assert!(
-        stdout.lines().any(|l| l.contains("claude") && l.contains("2")),
+        stdout
+            .lines()
+            .any(|l| l.contains("claude") && l.contains("2")),
         "claude count missing: {}",
         stdout
     );
     assert!(
-        stdout.lines().any(|l| l.contains("kitty") && l.contains("1")),
+        stdout
+            .lines()
+            .any(|l| l.contains("kitty") && l.contains("1")),
         "kitty count missing: {}",
         stdout
     );

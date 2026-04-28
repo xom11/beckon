@@ -13,9 +13,9 @@
 //! it, focus / launch / hide still work but cycle degrades to "do nothing
 //! visible". `beckon -d` reports state and how to grant.
 
-use beckon_core::{Backend, Result};
 #[cfg(not(target_os = "macos"))]
 use beckon_core::BackendError;
+use beckon_core::{Backend, Result};
 
 #[cfg(target_os = "macos")]
 mod apps;

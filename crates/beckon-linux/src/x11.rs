@@ -58,8 +58,8 @@ pub struct X11Backend {
 
 impl X11Backend {
     pub fn new() -> Result<Self> {
-        let (conn, screen_num) = x11rb::connect(None)
-            .map_err(|e| BackendError::Ipc(format!("X11 connect: {}", e)))?;
+        let (conn, screen_num) =
+            x11rb::connect(None).map_err(|e| BackendError::Ipc(format!("X11 connect: {}", e)))?;
         let root = conn.setup().roots[screen_num].root;
         let atoms = Atoms::new(&conn)
             .map_err(|e| BackendError::Ipc(format!("X11 intern atoms: {}", e)))?
@@ -126,7 +126,14 @@ fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result
 
 fn active_window(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result<Option<Window>> {
     let reply = conn
-        .get_property(false, root, atoms._NET_ACTIVE_WINDOW, AtomEnum::WINDOW, 0, 1)
+        .get_property(
+            false,
+            root,
+            atoms._NET_ACTIVE_WINDOW,
+            AtomEnum::WINDOW,
+            0,
+            1,
+        )
         .map_err(|e| BackendError::Ipc(format!("get _NET_ACTIVE_WINDOW: {}", e)))?
         .reply()
         .map_err(|e| BackendError::Ipc(format!("reply _NET_ACTIVE_WINDOW: {}", e)))?;
@@ -138,8 +145,8 @@ fn active_window(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result<O
 }
 
 fn read_wm_class(conn: &RustConnection, win: Window) -> Result<String> {
-    let cookie = WmClass::get(conn, win)
-        .map_err(|e| BackendError::Ipc(format!("WmClass cookie: {}", e)))?;
+    let cookie =
+        WmClass::get(conn, win).map_err(|e| BackendError::Ipc(format!("WmClass cookie: {}", e)))?;
     // WmClass::reply() is Result<Option<WmClass>>: outer error = X11 IO,
     // inner None = property missing (some chrome windows have no class).
     let reply = match cookie.reply() {
@@ -184,8 +191,8 @@ fn request_focus(
         target,
         atoms._NET_ACTIVE_WINDOW,
         [
-            2,                        // source indication: pager/taskbar
-            CURRENT_TIME,             // timestamp
+            2,            // source indication: pager/taskbar
+            CURRENT_TIME, // timestamp
             current_active.unwrap_or(0),
             0,
             0,
@@ -207,7 +214,12 @@ fn request_focus(
 /// the WM iconifies/minimizes the target. Restoration happens on the next
 /// beckon call: a focus request to the same window de-iconifies it (per
 /// EWMH §6.6 the WM SHOULD raise iconified windows on focus request).
-fn request_iconify(conn: &RustConnection, root: Window, atoms: &Atoms, target: Window) -> Result<()> {
+fn request_iconify(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+    target: Window,
+) -> Result<()> {
     const ICONIC_STATE: u32 = 3;
     let event = ClientMessageEvent::new(
         32,

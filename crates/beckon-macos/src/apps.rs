@@ -493,7 +493,10 @@ mod tests {
             },
             |_| None,
         );
-        assert!(!called.get(), "installed_loader was invoked despite running match");
+        assert!(
+            !called.get(),
+            "installed_loader was invoked despite running match"
+        );
     }
 
     #[test]
@@ -509,6 +512,9 @@ mod tests {
             },
             |_| None,
         );
-        assert!(called.get(), "installed_loader should run when running miss");
+        assert!(
+            called.get(),
+            "installed_loader should run when running miss"
+        );
     }
 }

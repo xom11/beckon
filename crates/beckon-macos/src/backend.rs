@@ -27,7 +27,11 @@ impl Backend for MacBackend {
 
         // Step 3: not running → launch
         let running_for_target: Vec<RunningAppInfo> = match &resolved {
-            Some(m) => running.iter().filter(|a| a.bundle_id == m.bundle_id).cloned().collect(),
+            Some(m) => running
+                .iter()
+                .filter(|a| a.bundle_id == m.bundle_id)
+                .cloned()
+                .collect(),
             None => Vec::new(),
         };
 
@@ -56,7 +60,9 @@ impl Backend for MacBackend {
         // What's frontmost right now (before any action)?
         let frontmost_pid = frontmost_pid();
         let target_is_focused = frontmost_pid == Some(target_pid)
-            || running_for_target.iter().any(|a| Some(a.pid) == frontmost_pid);
+            || running_for_target
+                .iter()
+                .any(|a| Some(a.pid) == frontmost_pid);
 
         // Step 4: running but not focused → activate
         if !target_is_focused {
@@ -182,7 +188,9 @@ fn ax_window_count(pid: i32) -> Option<usize> {
 fn launch_bundle(m: &ResolvedMatch) -> std::result::Result<(), String> {
     let mut cmd = std::process::Command::new("/usr/bin/open");
     cmd.arg("-b").arg(&m.bundle_id);
-    let status = cmd.status().map_err(|e| format!("failed to spawn `open`: {}", e))?;
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to spawn `open`: {}", e))?;
     if !status.success() {
         return Err(format!("`open -b {}` exited with {}", m.bundle_id, status));
     }
@@ -206,7 +214,10 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         }
         let direct: Vec<&_> = running.iter().filter(|a| a.bundle_id == id).collect();
         if !direct.is_empty() {
-            println!("Note: a running app has bundle id `{}` but no installed bundle matches.", id);
+            println!(
+                "Note: a running app has bundle id `{}` but no installed bundle matches.",
+                id
+            );
             println!("      Focus may work; launch will not.");
         }
         println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
@@ -226,16 +237,18 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
     match running_match {
         Some(app) => {
             let win_count = ax_window_count(app.pid).unwrap_or(0);
-            println!("   Status:       running (pid {}, {} window{})", app.pid, win_count, if win_count == 1 { "" } else { "s" });
+            println!(
+                "   Status:       running (pid {}, {} window{})",
+                app.pid,
+                win_count,
+                if win_count == 1 { "" } else { "s" }
+            );
         }
         None => println!("   Status:       not running"),
     }
 
     // Ambiguity warning when there are multiple substring matches.
-    let other_subs: Vec<&_> = subs
-        .iter()
-        .filter(|e| e.bundle_id != m.bundle_id)
-        .collect();
+    let other_subs: Vec<&_> = subs.iter().filter(|e| e.bundle_id != m.bundle_id).collect();
     if !other_subs.is_empty() && matches!(m.match_type, MatchType::InstalledNameSubstring) {
         println!();
         println!(
@@ -252,7 +265,9 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
     if !ffi::ax_is_process_trusted() {
         println!();
         println!("⚠️  Accessibility permission not granted — window cycling (5a) will fall back");
-        println!("    to toggle-back. Grant in System Settings → Privacy & Security → Accessibility,");
+        println!(
+            "    to toggle-back. Grant in System Settings → Privacy & Security → Accessibility,"
+        );
         println!("    or run `beckon -d` for the full check.");
     }
     Ok(())

@@ -62,9 +62,7 @@ struct ActiveWindow {
 
 fn socket_path() -> Result<PathBuf> {
     let sig = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").ok_or_else(|| {
-        BackendError::Ipc(
-            "HYPRLAND_INSTANCE_SIGNATURE not set (Hyprland not running?)".to_string(),
-        )
+        BackendError::Ipc("HYPRLAND_INSTANCE_SIGNATURE not set (Hyprland not running?)".to_string())
     })?;
 
     // Hyprland 0.40+ moved the socket under XDG_RUNTIME_DIR. Prefer that;
@@ -83,8 +81,7 @@ fn socket_path() -> Result<PathBuf> {
         return Ok(p);
     }
     Err(BackendError::Ipc(
-        "Hyprland socket not found in $XDG_RUNTIME_DIR/hypr/<sig> or /tmp/hypr/<sig>"
-            .to_string(),
+        "Hyprland socket not found in $XDG_RUNTIME_DIR/hypr/<sig> or /tmp/hypr/<sig>".to_string(),
     ))
 }
 
@@ -117,11 +114,7 @@ fn active_address() -> Result<Option<String>> {
 
 pub(crate) fn parse_clients(raw: &str) -> Result<Vec<Client>> {
     serde_json::from_str(raw).map_err(|e| {
-        BackendError::Ipc(format!(
-            "parse j/clients: {} (raw: {:.200})",
-            e,
-            raw.trim()
-        ))
+        BackendError::Ipc(format!("parse j/clients: {} (raw: {:.200})", e, raw.trim()))
     })
 }
 
@@ -301,10 +294,7 @@ mod tests {
 
     #[test]
     fn snapshots_from_maps_class_address_and_focus_history_id() {
-        let clients = vec![
-            client("0xA", "kitty", 0),
-            client("0xB", "claude", 3),
-        ];
+        let clients = vec![client("0xA", "kitty", 0), client("0xB", "claude", 3)];
         let snaps = snapshots_from(&clients);
         assert_eq!(snaps.len(), 2);
         assert_eq!(snaps[0].address, "0xA");

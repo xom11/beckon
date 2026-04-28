@@ -10,9 +10,9 @@
 //!
 //! Z-order from EnumWindows is front-to-back (MRU) -> no state file needed.
 
-use beckon_core::{Backend, Result};
 #[cfg(not(target_os = "windows"))]
 use beckon_core::BackendError;
+use beckon_core::{Backend, Result};
 
 #[cfg(target_os = "windows")]
 pub mod apps;

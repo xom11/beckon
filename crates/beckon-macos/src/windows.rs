@@ -55,9 +55,7 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
             let is_main = win
                 .copy_attribute("AXMain")
                 .map(|v| {
-                    let b = unsafe {
-                        CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _)
-                    };
+                    let b = unsafe { CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _) };
                     b.into()
                 })
                 .unwrap_or(false);

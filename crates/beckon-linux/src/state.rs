@@ -61,10 +61,8 @@ pub(crate) fn write_previous_at(path: &Path, app_id: &str) {
         let _ = fs::create_dir_all(parent);
     }
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    if fs::write(&tmp, app_id).is_ok() {
-        if fs::rename(&tmp, path).is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
+    if fs::write(&tmp, app_id).is_ok() && fs::rename(&tmp, path).is_err() {
+        let _ = fs::remove_file(&tmp);
     }
 }
 

@@ -131,8 +131,7 @@ fn build_window_info(
 
 fn get_exe_info(pid: u32) -> Option<(String, String)> {
     unsafe {
-        let process: HANDLE =
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let process: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
         let mut size = buf.len() as u32;
         let result = QueryFullProcessImageNameW(
@@ -144,11 +143,7 @@ fn get_exe_info(pid: u32) -> Option<(String, String)> {
         let _ = CloseHandle(process);
         result.ok()?;
         let path = String::from_utf16_lossy(&buf[..size as usize]);
-        let name = path
-            .rsplit('\\')
-            .next()
-            .unwrap_or(&path)
-            .to_lowercase();
+        let name = path.rsplit('\\').next().unwrap_or(&path).to_lowercase();
         Some((path, name))
     }
 }
@@ -181,10 +176,14 @@ pub fn focus_window(hwnd: HWND) -> Result<()> {
         let fg_thread = GetWindowThreadProcessId(fg, None);
         let our_thread = GetCurrentThreadId();
 
-        let _detach = if fg_thread != 0 && fg_thread != our_thread
+        let _detach = if fg_thread != 0
+            && fg_thread != our_thread
             && AttachThreadInput(our_thread, fg_thread, true).as_bool()
         {
-            Some(ThreadInputDetach { our: our_thread, fg: fg_thread })
+            Some(ThreadInputDetach {
+                our: our_thread,
+                fg: fg_thread,
+            })
         } else {
             None
         };

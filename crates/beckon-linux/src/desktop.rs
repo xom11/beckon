@@ -324,10 +324,7 @@ mod tests {
     fn strip_field_codes_drops_known_codes() {
         assert_eq!(strip_field_codes("brave %U"), "brave");
         assert_eq!(strip_field_codes("kitty %f"), "kitty");
-        assert_eq!(
-            strip_field_codes("foo %i %c %k --bar"),
-            "foo --bar"
-        );
+        assert_eq!(strip_field_codes("foo %i %c %k --bar"), "foo --bar");
     }
 
     #[test]
@@ -338,10 +335,7 @@ mod tests {
     #[test]
     fn strip_field_codes_collapses_left_over_spaces() {
         // Removing field codes between args must not leave double spaces.
-        assert_eq!(
-            strip_field_codes("vlc %U --intf qt"),
-            "vlc --intf qt"
-        );
+        assert_eq!(strip_field_codes("vlc %U --intf qt"), "vlc --intf qt");
     }
 
     #[test]
@@ -459,8 +453,8 @@ mod tests {
         // Two entries: one whose filename matches "Foo" exactly, one whose
         // Name= matches. NameExact should win.
         let entries = vec![
-            entry("Foo", "Other"),     // filename hit
-            entry("bar", "Foo"),       // Name=Foo
+            entry("Foo", "Other"), // filename hit
+            entry("bar", "Foo"),   // Name=Foo
         ];
         let m = resolve_detailed_in(&entries, "Foo").unwrap();
         assert_eq!(m.match_type, MatchType::NameExact);

@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 use windows::core::{Interface, GUID, PCWSTR};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED, STGM,
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    STGM,
 };
 use windows::Win32::UI::Shell::IShellLinkW;
 
@@ -177,7 +177,8 @@ fn parse_lnk(path: &Path) -> Option<InstalledAppInfo> {
 
         // Read target path.
         let mut target_buf = [0u16; 1024];
-        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0).ok()?;
+        link.GetPath(&mut target_buf, std::ptr::null_mut(), 0)
+            .ok()?;
         let target = wstr_to_string(&target_buf);
 
         // Skip shortcuts that don't point to an exe (e.g. URLs, folders).
@@ -194,11 +195,7 @@ fn parse_lnk(path: &Path) -> Option<InstalledAppInfo> {
         let name = path.file_stem()?.to_str()?.to_string();
 
         // Exe name from target path.
-        let exe_name = target
-            .rsplit('\\')
-            .next()
-            .unwrap_or(&target)
-            .to_lowercase();
+        let exe_name = target.rsplit('\\').next().unwrap_or(&target).to_lowercase();
 
         Some(InstalledAppInfo {
             name,
@@ -231,7 +228,8 @@ pub fn resolve(id: &str, installed: &[InstalledAppInfo]) -> Option<ResolvedMatch
         .filter(|a| normalize(&a.name).contains(&needle))
         .collect();
     subs.sort_by(|a, b| a.name.cmp(&b.name));
-    subs.first().map(|app| to_match(app, MatchType::InstalledNameSubstring))
+    subs.first()
+        .map(|app| to_match(app, MatchType::InstalledNameSubstring))
 }
 
 fn to_match(app: &InstalledAppInfo, match_type: MatchType) -> ResolvedMatch {
@@ -310,10 +308,7 @@ mod tests {
 
     #[test]
     fn resolve_name_exact_wins() {
-        let installed = vec![
-            app("Brave", "brave.exe"),
-            app("Brave Browser", "brave.exe"),
-        ];
+        let installed = vec![app("Brave", "brave.exe"), app("Brave Browser", "brave.exe")];
         let m = resolve("Brave", &installed).unwrap();
         assert_eq!(m.match_type, MatchType::InstalledName);
         assert_eq!(m.name, "Brave");
@@ -406,10 +401,8 @@ mod tests {
     #[test]
     fn collect_lnk_files_respects_max_depth() {
         // Build a deeply nested temp tree and verify the recursion bails.
-        let dir = std::env::temp_dir().join(format!(
-            "beckon-lnk-depth-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("beckon-lnk-depth-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

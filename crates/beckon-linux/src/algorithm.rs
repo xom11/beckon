@@ -109,13 +109,13 @@ pub fn decide(
         windows
             .iter()
             .filter(|w| w.class == app)
-            .min_by(|a, b| cmp_recency_then_address(a, b))
+            .min_by(cmp_recency_then_address)
     });
     let other = mru_choice.or_else(|| {
         windows
             .iter()
             .filter(|w| w.class != target)
-            .min_by(|a, b| cmp_recency_then_address(a, b))
+            .min_by(cmp_recency_then_address)
     });
     if let Some(win) = other {
         return Decision::ToggleBack(win.address.clone());
@@ -149,10 +149,7 @@ mod tests {
     #[test]
     fn launch_when_no_target_class_present() {
         let ws = vec![w("0x1", "kitty", 0)];
-        assert_eq!(
-            decide(&ws, Some("0x1"), "claude", None),
-            Decision::Launch
-        );
+        assert_eq!(decide(&ws, Some("0x1"), "claude", None), Decision::Launch);
     }
 
     // ---- step 4: focus ----
@@ -200,7 +197,7 @@ mod tests {
     fn toggle_back_uses_mru_previous() {
         let ws = vec![
             w("0xA", "claude", 0),
-            w("0xB", "kitty", 5),    // older
+            w("0xB", "kitty", 5),   // older
             w("0xC", "firefox", 1), // more recent
         ];
         assert_eq!(

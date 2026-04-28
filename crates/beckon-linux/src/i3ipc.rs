@@ -52,10 +52,11 @@ fn collect_windows(node: &Node, out: &mut Vec<WindowInfo>) {
     if is_leaf && is_window {
         // Wayland windows expose `app_id`; XWayland windows expose
         // `window_properties.class`. Prefer the former, fall back to the latter.
-        let app_id = node
-            .app_id
-            .clone()
-            .or_else(|| node.window_properties.as_ref().and_then(|wp| wp.class.clone()));
+        let app_id = node.app_id.clone().or_else(|| {
+            node.window_properties
+                .as_ref()
+                .and_then(|wp| wp.class.clone())
+        });
 
         if let Some(app_id) = app_id {
             out.push(WindowInfo {
@@ -142,10 +143,7 @@ impl Backend for I3IpcBackend {
         // What's focused right now (before any action). Used at the end to
         // update the MRU file: after we change focus, this app becomes
         // "the one we left" — i.e. the previous app for the next call.
-        let pre_focused_app = windows
-            .iter()
-            .find(|w| w.focused)
-            .map(|w| w.app_id.clone());
+        let pre_focused_app = windows.iter().find(|w| w.focused).map(|w| w.app_id.clone());
 
         // What was focused before the most recent beckon action ran.
         // Used by step 5b to land on the app the user *actually* came from.
@@ -222,9 +220,7 @@ impl Backend for I3IpcBackend {
 
         let mut by_id: std::collections::BTreeMap<String, (String, usize)> = Default::default();
         for w in windows {
-            let entry = by_id
-                .entry(w.app_id)
-                .or_insert_with(|| (w.name.clone(), 0));
+            let entry = by_id.entry(w.app_id).or_insert_with(|| (w.name.clone(), 0));
             entry.1 += 1;
         }
 
