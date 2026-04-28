@@ -226,29 +226,61 @@ pub fn resolve(id: &str) -> Option<ResolvedMatch> {
     resolve_with_running(id, &running_apps())
 }
 
+/// Subset of `RunningAppInfo` that the resolver actually consults — no
+/// `Retained<NSRunningApplication>` so tests can build it on any host.
+#[derive(Debug, Clone)]
+pub(crate) struct RunningRef<'a> {
+    pub bundle_id: &'a str,
+    pub name: &'a str,
+}
+
+impl<'a> From<&'a RunningAppInfo> for RunningRef<'a> {
+    fn from(a: &'a RunningAppInfo) -> Self {
+        RunningRef {
+            bundle_id: &a.bundle_id,
+            name: &a.name,
+        }
+    }
+}
+
 /// Resolve, reusing a `running_apps()` snapshot the caller already has.
 /// Used by `beckon()` to avoid querying NSWorkspace twice in the hot path.
+/// Calls `bundle_path_for` for running matches (NSWorkspace lookup) so the
+/// `-r` debug output can show a path; `installed_apps()` is queried lazily.
 pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<ResolvedMatch> {
+    let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
+    resolve_inner(id, &refs, installed_apps, bundle_path_for)
+}
+
+/// Pure resolution against caller-supplied snapshots. Closures isolate the
+/// two NSWorkspace-touching operations (installed scan, bundle path lookup)
+/// so tests can pass stubs.
+pub(crate) fn resolve_inner(
+    id: &str,
+    running: &[RunningRef<'_>],
+    installed_loader: impl FnOnce() -> Vec<InstalledAppInfo>,
+    bundle_path_for: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<ResolvedMatch> {
     let needle = normalize(id);
 
-    if let Some(app) = running.iter().find(|a| normalize(&a.name) == needle) {
+    if let Some(app) = running.iter().find(|a| normalize(a.name) == needle) {
         return Some(ResolvedMatch {
-            bundle_id: app.bundle_id.clone(),
-            display_name: app.name.clone(),
-            bundle_path: bundle_path_for(&app.bundle_id),
+            bundle_id: app.bundle_id.to_string(),
+            display_name: app.name.to_string(),
+            bundle_path: bundle_path_for(app.bundle_id),
             match_type: MatchType::RunningName,
         });
     }
     if let Some(app) = running.iter().find(|a| a.bundle_id == id) {
         return Some(ResolvedMatch {
-            bundle_id: app.bundle_id.clone(),
-            display_name: app.name.clone(),
-            bundle_path: bundle_path_for(&app.bundle_id),
+            bundle_id: app.bundle_id.to_string(),
+            display_name: app.name.to_string(),
+            bundle_path: bundle_path_for(app.bundle_id),
             match_type: MatchType::RunningBundleId,
         });
     }
 
-    let installed = installed_apps();
+    let installed = installed_loader();
     if let Some(app) = installed.iter().find(|a| normalize(&a.name) == needle) {
         return Some(ResolvedMatch {
             bundle_id: app.bundle_id.clone(),
@@ -302,3 +334,181 @@ fn bundle_path_for(bundle_id: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_string()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rref<'a>(bundle_id: &'a str, name: &'a str) -> RunningRef<'a> {
+        RunningRef { bundle_id, name }
+    }
+
+    fn installed(bundle_id: &str, name: &str) -> InstalledAppInfo {
+        InstalledAppInfo {
+            bundle_id: bundle_id.to_string(),
+            name: name.to_string(),
+            bundle_path: PathBuf::from(format!("/Applications/{}.app", name)),
+        }
+    }
+
+    fn resolve_test(
+        id: &str,
+        running: &[RunningRef],
+        installed: Vec<InstalledAppInfo>,
+    ) -> Option<ResolvedMatch> {
+        resolve_inner(id, running, move || installed, |_| None)
+    }
+
+    // ---------- normalize ----------
+
+    #[test]
+    fn normalize_lowercases_and_collapses_whitespace() {
+        assert_eq!(normalize("Brave Browser"), "brave browser");
+        assert_eq!(normalize("  Visual   Studio   Code "), "visual studio code");
+    }
+
+    #[test]
+    fn normalize_strips_format_marks() {
+        assert_eq!(normalize("\u{200E}Claude"), "claude");
+        assert_eq!(normalize("\u{FEFF}Foo \u{2069}Bar"), "foo bar");
+    }
+
+    // ---------- priority: running over installed ----------
+
+    #[test]
+    fn running_name_beats_installed_name() {
+        // Both match "Claude" by name, but running wins.
+        let running = vec![rref("com.anthropic.claude", "Claude")];
+        let installed = vec![installed("com.anthropic.claude", "Claude")];
+        let m = resolve_test("Claude", &running, installed).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningName);
+        assert_eq!(m.bundle_id, "com.anthropic.claude");
+    }
+
+    #[test]
+    fn running_name_is_case_insensitive() {
+        let running = vec![rref("com.x.kitty", "Kitty")];
+        let m = resolve_test("KITTY", &running, vec![]).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningName);
+    }
+
+    #[test]
+    fn running_bundle_id_is_exact_only() {
+        // Bundle id matching is case-sensitive and exact, no normalization.
+        let running = vec![rref("com.example.foo", "Foo")];
+        // Wrong case -> doesn't match RunningBundleId; falls through.
+        assert!(resolve_test("COM.EXAMPLE.FOO", &running, vec![]).is_none());
+        // Exact -> matches.
+        let m = resolve_test("com.example.foo", &running, vec![]).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningBundleId);
+    }
+
+    #[test]
+    fn running_name_beats_running_bundle_id() {
+        // If a Name match exists, prefer it over a bundle-id match on a
+        // different running app.
+        let running = vec![
+            rref("com.example.bar", "Foo"),
+            rref("com.example.foo", "Bar"),
+        ];
+        let m = resolve_test("Foo", &running, vec![]).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningName);
+        assert_eq!(m.bundle_id, "com.example.bar");
+    }
+
+    // ---------- installed fallback ----------
+
+    #[test]
+    fn falls_through_to_installed_name_when_not_running() {
+        let installed = vec![installed("com.anthropic.claude", "Claude")];
+        let m = resolve_test("Claude", &[], installed).unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledName);
+        assert_eq!(m.bundle_id, "com.anthropic.claude");
+        // bundle_path comes from InstalledAppInfo, not bundle_path_for.
+        assert!(m.bundle_path.is_some());
+    }
+
+    #[test]
+    fn falls_through_to_installed_bundle_id() {
+        let installed = vec![installed("com.example.foo", "Foo App")];
+        // "Foo App" exact would hit InstalledName; the literal bundle id
+        // should hit InstalledBundleId.
+        let m = resolve_test("com.example.foo", &[], installed).unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledBundleId);
+    }
+
+    #[test]
+    fn falls_through_to_installed_substring_alphabetical_first() {
+        let installed = vec![
+            installed("com.zeta.browser", "Zeta Browser"),
+            installed("com.alpha.browser", "Alpha Browser"),
+        ];
+        let m = resolve_test("Browser", &[], installed).unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledNameSubstring);
+        // Alphabetical first by bundle_id wins.
+        assert_eq!(m.bundle_id, "com.alpha.browser");
+    }
+
+    // ---------- misses ----------
+
+    #[test]
+    fn miss_returns_none() {
+        let installed = vec![installed("com.example.foo", "Foo")];
+        assert!(resolve_test("nonexistent", &[], installed).is_none());
+    }
+
+    #[test]
+    fn empty_inputs_return_none() {
+        assert!(resolve_test("anything", &[], vec![]).is_none());
+    }
+
+    // ---------- bidi-prefixed Name (PWA case) ----------
+
+    #[test]
+    fn bidi_prefixed_running_name_matches_ascii_query() {
+        // Brave PWAs sometimes prefix Name with U+200E. The user types
+        // ASCII; normalize should strip the mark on both sides.
+        let running = vec![rref(
+            "brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default",
+            "\u{200E}Claude",
+        )];
+        let m = resolve_test("Claude", &running, vec![]).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningName);
+    }
+
+    // ---------- installed_loader laziness ----------
+
+    #[test]
+    fn installed_loader_not_invoked_when_running_matches() {
+        // If running matches, the closure should never be called — that's
+        // the whole point of lazy installed scan.
+        use std::cell::Cell;
+        let called = Cell::new(false);
+        let running = vec![rref("com.x.kitty", "Kitty")];
+        let _ = resolve_inner(
+            "Kitty",
+            &running,
+            || {
+                called.set(true);
+                Vec::new()
+            },
+            |_| None,
+        );
+        assert!(!called.get(), "installed_loader was invoked despite running match");
+    }
+
+    #[test]
+    fn installed_loader_is_invoked_on_running_miss() {
+        use std::cell::Cell;
+        let called = Cell::new(false);
+        let _ = resolve_inner(
+            "anything",
+            &[],
+            || {
+                called.set(true);
+                Vec::new()
+            },
+            |_| None,
+        );
+        assert!(called.get(), "installed_loader should run when running miss");
+    }
+}
