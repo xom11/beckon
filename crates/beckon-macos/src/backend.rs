@@ -16,13 +16,18 @@ impl MacBackend {
 
 impl Backend for MacBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
+        // Snapshot running apps once and reuse it for both resolve and the
+        // "running entries for the target bundle" filter — saves one
+        // NSWorkspace.runningApplications round-trip on the hot path.
+        let running = apps::running_apps();
+
         // Resolve to bundle id. Match by Name first (cross-OS portable),
         // bundle id second, installed-name fallback last (see apps::resolve).
-        let resolved = apps::resolve(id);
+        let resolved = apps::resolve_with_running(id, &running);
 
         // Step 3: not running → launch
         let running_for_target: Vec<RunningAppInfo> = match &resolved {
-            Some(m) => apps::all_running_for_bundle(&m.bundle_id),
+            Some(m) => running.iter().filter(|a| a.bundle_id == m.bundle_id).cloned().collect(),
             None => Vec::new(),
         };
 

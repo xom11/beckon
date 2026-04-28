@@ -25,9 +25,11 @@ Order is ROI-descending.
   `enum_visible_windows()` are independent. `thread::spawn` the scan, join
   before `apps::resolve`. Cuts hot-path latency ~40–50%.
 
-- [ ] **2.2** Parallelize installed-app scan with running query (macOS)
-  `crates/beckon-macos/src/backend.rs` — same shape: `installed_apps()`
-  vs `all_running_for_bundle()`.
+- [x] **2.2** Dedupe `running_apps()` calls in macOS hot path
+  Audit pointed at parallelizing scans, but `installed_apps()` is
+  already lazy (only runs when running misses). The real waste was
+  calling `running_apps()` twice — once in `resolve()`, once in
+  `all_running_for_bundle()`. Snapshot once and reuse.
 
 ## Round 3 — UX & error surfacing
 

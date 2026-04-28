@@ -223,8 +223,13 @@ fn is_format_mark(c: char) -> bool {
 
 /// Resolve a user-supplied id. See module docs for priority order.
 pub fn resolve(id: &str) -> Option<ResolvedMatch> {
+    resolve_with_running(id, &running_apps())
+}
+
+/// Resolve, reusing a `running_apps()` snapshot the caller already has.
+/// Used by `beckon()` to avoid querying NSWorkspace twice in the hot path.
+pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<ResolvedMatch> {
     let needle = normalize(id);
-    let running = running_apps();
 
     if let Some(app) = running.iter().find(|a| normalize(&a.name) == needle) {
         return Some(ResolvedMatch {
@@ -297,10 +302,3 @@ fn bundle_path_for(bundle_id: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path.to_string()))
 }
 
-/// All running processes for a bundle id. Different PIDs but same logical app.
-pub fn all_running_for_bundle(bundle_id: &str) -> Vec<RunningAppInfo> {
-    running_apps()
-        .into_iter()
-        .filter(|a| a.bundle_id == bundle_id)
-        .collect()
-}
