@@ -20,7 +20,7 @@ Order is ROI-descending.
 
 ## Round 2 — Performance
 
-- [ ] **2.1** Parallelize Start Menu scan with `EnumWindows` (Windows)
+- [x] **2.1** Parallelize Start Menu scan with `EnumWindows` (Windows)
   `crates/beckon-windows/src/backend.rs:15` — `scan_start_menu()` and
   `enum_visible_windows()` are independent. `thread::spawn` the scan, join
   before `apps::resolve`. Cuts hot-path latency ~40–50%.

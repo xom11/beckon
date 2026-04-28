@@ -12,11 +12,15 @@ pub struct WindowsBackend;
 
 impl Backend for WindowsBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        let installed = apps::scan_start_menu();
+        // scan_start_menu walks .lnk files via COM (~50–100ms on busy
+        // installs); enum_visible_windows just iterates HWNDs. Run them
+        // in parallel — they're independent and the hot path hits both.
+        let scan_handle = std::thread::spawn(apps::scan_start_menu);
         let all_windows = window_ops::enum_visible_windows().map_err(|e| {
             BackendError::Other(format!("EnumWindows failed: {}", e))
         })?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
+        let installed = scan_handle.join().unwrap_or_default();
 
         // Resolve id against installed apps.
         let resolved = apps::resolve(id, &installed);
