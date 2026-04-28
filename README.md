@@ -19,7 +19,7 @@ press hotkey
 | Linux / X11 generic (GNOME-X11, KDE-X11, ...) | ⏳ Deferred |
 | Linux / Hyprland | ⏳ Pending |
 | macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
-| Windows | ⏳ Pending (next) |
+| Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
 | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
 
 ## Build
@@ -32,7 +32,18 @@ cargo build --release
 ```
 
 Requirements: Rust 1.75+. On Linux: a sway or i3 session (other compositors
-TBD — `beckon -d` will tell you).
+TBD — `beckon -d` will tell you). On Windows: VS Build Tools 2022 with the
+C++ ARM64/x64 component and Windows SDK.
+
+### cargo install (from GitHub)
+
+```sh
+cargo install --git https://github.com/xom11/beckon
+# update to latest:
+cargo install --git https://github.com/xom11/beckon --force
+```
+
+Binary lands in `~/.cargo/bin/beckon` (already in PATH).
 
 ### Nix flake
 
@@ -84,6 +95,16 @@ Apps.localized/*.app`):
 4. Installed app — `CFBundleIdentifier`
 5. Installed app — name substring (alphabetical first wins)
 
+**Windows** (Start Menu `.lnk` shortcuts in `%APPDATA%\...\Start Menu\Programs\`
+and `%ProgramData%\...\Start Menu\Programs\`, parsed via COM `IShellLinkW`):
+
+1. Shortcut display name exact (case-insensitive, normalized)
+2. Exe filename stem (e.g. `brave` matches `brave.exe`)
+3. Shortcut display name substring (alphabetical first wins)
+
+When the resolved exe is a launcher stub (e.g. Brave PWA `chrome_proxy.exe` →
+`brave.exe`), beckon falls back to title matching against running windows.
+
 Names are stable across machines. Brave PWA hashes are not — bind to `Claude`,
 not `brave-fmpnliohj...-Default` or `com.vivaldi.Vivaldi.app.<hash>`.
 
@@ -134,6 +155,28 @@ hs.hotkey.bind(hyper, "c",     function() beckon("Claude") end)
 hs.hotkey.bind(hyper, "d",     function() beckon("Discord") end)
 ```
 
+### AutoHotkey (Windows) dotfile example
+
+```ahk
+#Requires AutoHotkey v2.0
+
+BeckonExe := A_UserProfile . "\.cargo\bin\beckon.exe"
+
+Beckon(name) {
+    try RunWait('"' BeckonExe '" "' name '"', , "Hide")
+}
+
+^#!c:: Beckon("Claude")
+^#!d:: Beckon("Discord")
+^#!b:: Beckon("Vivaldi")
+^#!Space:: Beckon("windowsterminal.exe")
+```
+
+Installed PWAs (via Brave/Chrome "Install as app") get their own Start Menu
+shortcut, so `Beckon("Claude")` resolves and launches correctly. The
+`AttachThreadInput` trick handles Win10+ anti-focus-stealing since the AHK
+process holds foreground when it invokes beckon.
+
 beckon needs **Accessibility permission** to cycle between windows of the
 same app (step 5a). Grant in System Settings → Privacy & Security →
 Accessibility, adding the binary path that Hammerspoon invokes (typically
@@ -146,27 +189,27 @@ hides — only the cycle step degrades to "toggle to other app". Run
 Single algorithm, not configurable:
 
 ```
-1. resolve id → desktop entry (Name match, etc.)
-2. if no window of this app  → launch via Exec line
+1. resolve id → app metadata (.desktop / Info.plist / .lnk)
+2. if no window of this app  → launch
 3. if running but unfocused  → focus first window
 4. if focused, more windows  → cycle to next window of same app
 5. if focused, sole window   → toggle to the previously focused app
-                               (tracked at $XDG_RUNTIME_DIR/beckon-mru)
-6. if nothing else exists    → hide via scratchpad
+6. if nothing else exists    → hide / minimize
 ```
 
 When a hotkey-bound invocation fails (id not found, IPC error), beckon fires
-a desktop notification via `notify-send`. Run from a terminal to see errors
-on stderr instead.
+a desktop notification (`notify-send` on Linux, toast on Windows). Run from a
+terminal to see errors on stderr instead.
 
 ## Project layout
 
 ```
 crates/
-├── beckon-core/    # Backend trait, shared types
-├── beckon-linux/   # sway + i3 (i3-IPC), .desktop parser, MRU state
-├── beckon-macos/   # NSWorkspace + AX (cycle) + CGWindowList (z-order)
-└── beckon-cli/     # binary, clap CLI, doctor / search / resolve
+├── beckon-core/      # Backend trait, shared types
+├── beckon-linux/     # sway + i3 (i3-IPC), .desktop parser, MRU state
+├── beckon-macos/     # NSWorkspace + AX (cycle) + CGWindowList (z-order)
+├── beckon-windows/   # Win32 EnumWindows + COM IShellLinkW (.lnk parsing)
+└── beckon-cli/       # binary, clap CLI, doctor / search / resolve
 ```
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full design rationale.

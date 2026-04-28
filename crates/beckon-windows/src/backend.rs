@@ -3,7 +3,7 @@
 use crate::apps::{self, InstalledAppInfo, MatchType, ResolvedMatch};
 use crate::window_ops::{self, WindowInfo};
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use windows::core::PCWSTR;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -69,12 +69,13 @@ impl Backend for WindowsBackend {
         }
 
         // Step 5b: single window -> toggle to most-recent OTHER app.
-        // `all_windows` is in z-order (front-to-back); first window whose exe
-        // differs from ours is the most recently used other app.
-        let target_exe = &matching[0].exe_name;
+        // `all_windows` is in z-order (front-to-back); first window NOT in our
+        // matching set is the most recently used other app. Using HWND set
+        // (not exe name) so PWAs sharing chrome_proxy.exe toggle correctly.
+        let matching_hwnds: HashSet<isize> = matching.iter().map(|w| w.hwnd.0 as isize).collect();
         if let Some(other) = all_windows
             .iter()
-            .find(|w| w.hwnd != fg_hwnd && w.exe_name != *target_exe)
+            .find(|w| !matching_hwnds.contains(&(w.hwnd.0 as isize)))
         {
             window_ops::focus_window(other.hwnd).map_err(|e| {
                 BackendError::Other(format!("toggle-back: {}", e))
@@ -94,24 +95,38 @@ impl Backend for WindowsBackend {
             BackendError::Other(format!("EnumWindows: {}", e))
         })?;
 
-        // Group by exe name.
+        // Group by exe name. When multiple windows share the same exe
+        // (e.g. PWAs via chrome_proxy.exe), list each title separately.
         let mut groups: HashMap<String, (String, usize)> = HashMap::new();
+        let mut exe_count: HashMap<String, usize> = HashMap::new();
         for w in &windows {
+            *exe_count.entry(w.exe_name.clone()).or_default() += 1;
+        }
+        for w in &windows {
+            let key = if exe_count.get(&w.exe_name).copied().unwrap_or(0) > 1 {
+                // Shared exe — use title as the identity so each PWA shows up.
+                format!("{}|{}", w.exe_name, w.title)
+            } else {
+                w.exe_name.clone()
+            };
             let entry = groups
-                .entry(w.exe_name.clone())
+                .entry(key)
                 .or_insert_with(|| (w.title.clone(), 0));
             entry.1 += 1;
         }
 
         let mut apps: Vec<RunningApp> = groups
             .into_iter()
-            .map(|(exe, (title, count))| RunningApp {
-                id: exe,
-                name: title,
-                window_count: count,
+            .map(|(key, (title, count))| {
+                let id = key.split('|').next().unwrap_or(&key).to_string();
+                RunningApp {
+                    id,
+                    name: title,
+                    window_count: count,
+                }
             })
             .collect();
-        apps.sort_by(|a, b| a.id.cmp(&b.id));
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(apps)
     }
 
@@ -129,13 +144,47 @@ impl Backend for WindowsBackend {
 }
 
 /// Find running windows matching a resolved Start Menu app.
+///
+/// Three-tier matching:
+///   1. Exe-only  — works for regular apps with unique exe names.
+///   2. Exe+title — when multiple windows share the same exe (PWAs via
+///      `chrome_proxy.exe` or `brave.exe`), narrows by title containing
+///      the app name.
+///   3. Title-only — when the .lnk target is a launcher stub that doesn't
+///      stay running (e.g. `chrome_proxy.exe` launches `brave.exe`), falls
+///      back to title match against all windows.
 fn windows_for_resolved<'a>(
     resolved: &ResolvedMatch,
     windows: &'a [WindowInfo],
 ) -> Vec<&'a WindowInfo> {
-    windows
+    let by_exe: Vec<&WindowInfo> = windows
         .iter()
         .filter(|w| w.exe_name == resolved.exe_name)
+        .collect();
+
+    // Tier 2: narrow by title when multiple windows share this exe.
+    if by_exe.len() > 1 {
+        let name_lower = apps::normalize(&resolved.name);
+        let by_title: Vec<&WindowInfo> = by_exe
+            .iter()
+            .filter(|w| apps::normalize(&w.title).contains(&name_lower))
+            .copied()
+            .collect();
+        if !by_title.is_empty() {
+            return by_title;
+        }
+    }
+
+    if !by_exe.is_empty() {
+        return by_exe;
+    }
+
+    // Tier 3: exe matched nothing — the .lnk target is likely a launcher
+    // stub (e.g. chrome_proxy.exe → brave.exe). Fall back to title match.
+    let name_lower = apps::normalize(&resolved.name);
+    windows
+        .iter()
+        .filter(|w| apps::normalize(&w.title).contains(&name_lower))
         .collect()
 }
 
