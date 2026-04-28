@@ -5,12 +5,12 @@ Order is ROI-descending.
 
 ## Round 1 — Bug fixes
 
-- [ ] **1.1** Fix `AttachThreadInput` leak on focus failure
+- [x] **1.1** Fix `AttachThreadInput` leak on focus failure
   `crates/beckon-windows/src/window_ops.rs:163` — `BringWindowToTop(...)?`
   early-returns without detaching. Wrap attach/detach in a `Drop` guard so
   every exit path detaches.
 
-- [ ] **1.2** Atomic write for MRU state file
+- [x] **1.2** Atomic write for MRU state file
   `crates/beckon-linux/src/state.rs:51` — `fs::write` is not atomic; concurrent
   invocations can produce torn reads. Write to `beckon-mru.tmp` and `rename`.
 

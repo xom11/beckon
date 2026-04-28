@@ -41,6 +41,9 @@ pub fn read_previous() -> Option<String> {
 
 /// Persist `app_id` as the new "previous". Best-effort: any I/O error is
 /// ignored — losing MRU is degraded UX, never a fatal error.
+///
+/// Writes to a sibling `.tmp` file then `rename`s into place so concurrent
+/// invocations never see a torn read.
 pub fn write_previous(app_id: &str) {
     let Some(path) = state_path() else {
         return;
@@ -48,5 +51,10 @@ pub fn write_previous(app_id: &str) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let _ = fs::write(path, app_id);
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    if fs::write(&tmp, app_id).is_ok() {
+        if fs::rename(&tmp, &path).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+    }
 }
