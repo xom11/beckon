@@ -80,6 +80,14 @@ impl Backend for MacBackend {
         if windows::cycle_to_next_window(target_pid) {
             return Ok(BeckonAction::Cycled);
         }
+        if beckon_core::verbose() {
+            eprintln!(
+                "verbose: cycle_to_next_window returned false for pid {} \
+                 (single-window app, OR Accessibility permission missing — \
+                 run `beckon -d` to check)",
+                target_pid
+            );
+        }
 
         // Step 5b: only one window of this app → toggle to most-recent other app.
         // CGWindowListCopyWindowInfo gives us the front-to-back stack; the

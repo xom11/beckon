@@ -1,4 +1,19 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
+
+/// Process-wide verbose flag. Backends consult `verbose()` from any thread
+/// to decide whether to surface "soft" failures (e.g. SetForegroundWindow
+/// returning false, AX permission missing) that the algorithm tolerates
+/// but the user often wants to see during debugging.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_verbose(v: bool) {
+    VERBOSE.store(v, Ordering::Relaxed);
+}
+
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowId(pub i64);

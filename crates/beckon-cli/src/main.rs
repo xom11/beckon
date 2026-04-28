@@ -53,6 +53,7 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    beckon_core::set_verbose(args.verbose);
     if let Err(e) = run(&args) {
         // Always to stderr.
         eprintln!("beckon: {:#}", e);

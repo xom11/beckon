@@ -194,7 +194,13 @@ pub fn focus_window(hwnd: HWND) -> Result<()> {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         }
 
-        let _ = SetForegroundWindow(hwnd);
+        let sfw_ok = SetForegroundWindow(hwnd).as_bool();
+        if !sfw_ok && beckon_core::verbose() {
+            eprintln!(
+                "verbose: SetForegroundWindow returned false (BringWindowToTop will follow up; \
+                 if focus stays put, another foreground-lock holder is blocking us)"
+            );
+        }
         BringWindowToTop(hwnd).ok().context("BringWindowToTop")?;
     }
     Ok(())

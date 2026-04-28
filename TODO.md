@@ -37,10 +37,10 @@ Order is ROI-descending.
   `crates/beckon-cli/src/main.rs:210` — `unwrap_or_default()` swallows IPC
   failures; print a stderr warning and continue with empty list.
 
-- [ ] **3.2** Verbose-mode logging for silent focus failures
+- [x] **3.2** Verbose-mode logging for silent focus failures
   - Windows: log `SetForegroundWindow` returning false
   - macOS: log `cycle_to_next_window` returning false (often AX denied)
-  Gate behind `-v`; default stays quiet.
+  Gate behind `-v` via `beckon_core::set_verbose` / `verbose()`.
 
 ## Round 4 — Cleanups
 
