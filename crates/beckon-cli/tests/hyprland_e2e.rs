@@ -5,15 +5,15 @@
 //! What this covers vs. what it doesn't:
 //!   - ✅ socket layout (`$XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock`)
 //!   - ✅ command wire format (`version`, `j/clients`, `j/activewindow`,
-//!        `dispatch focuswindow address:0xN`,
-//!        `dispatch movetoworkspacesilent <ws>,address:0xN`,
-//!        `dispatch exec <cmdline>`)
+//!     `dispatch focuswindow address:0xN`,
+//!     `dispatch movetoworkspacesilent <ws>,address:0xN`,
+//!     `dispatch exec <cmdline>`)
 //!   - ✅ algorithm wiring: launch / focus / cycle / toggle / hide
 //!   - ✅ MRU state file integration for step 5b
 //!   - ✅ .desktop resolution feeding the right target into the algorithm
 //!   - ❌ rendering and real focus changes (requires a live compositor —
-//!        out of reach on this Ubuntu 26.04 host because Hyprland 0.53.3
-//!        needs xdg_wm_base v6 while sway 1.11 / weston 14.0.2 only expose v5)
+//!     out of reach on this Ubuntu 26.04 host because Hyprland 0.53.3
+//!     needs xdg_wm_base v6 while sway 1.11 / weston 14.0.2 only expose v5)
 //!
 //! The fake server is intentionally tiny: it serves one command per accepted
 //! connection, then closes so the client sees EOF (Hyprland's actual wire

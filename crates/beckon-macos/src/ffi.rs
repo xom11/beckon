@@ -180,7 +180,7 @@ pub fn cg_window_list_on_screen() -> Vec<WindowSnapshot> {
         let Some(dict_ref) = array.get(i) else {
             continue;
         };
-        let dict: &CFDictionary = &*dict_ref;
+        let dict: &CFDictionary = &dict_ref;
         let pid = dict_get_i64(dict, "kCGWindowOwnerPID");
         let layer = dict_get_i64(dict, "kCGWindowLayer").unwrap_or(0);
         if let Some(pid) = pid {

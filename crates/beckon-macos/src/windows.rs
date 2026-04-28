@@ -54,11 +54,11 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
             // release. Forget the AxElement after using it.
             let is_main = win
                 .copy_attribute("AXMain")
-                .and_then(|v| {
+                .map(|v| {
                     let b = unsafe {
                         CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _)
                     };
-                    Some(b.into())
+                    b.into()
                 })
                 .unwrap_or(false);
             std::mem::forget(win);

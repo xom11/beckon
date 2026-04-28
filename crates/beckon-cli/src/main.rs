@@ -170,7 +170,7 @@ fn cmd_list() -> Result<()> {
         println!("(no running apps)");
         return Ok(());
     }
-    println!("{:<40} {:>5}  {}", "ID", "WINS", "NAME");
+    println!("{:<40} {:>5}  NAME", "ID", "WINS");
     for a in apps {
         println!("{:<40} {:>5}  {}", a.id, a.window_count, a.name);
     }
@@ -184,7 +184,7 @@ fn cmd_list_installed() -> Result<()> {
         println!("(no installed apps reported — backend may not implement list_installed yet)");
         return Ok(());
     }
-    println!("{:<40} {}", "ID", "NAME");
+    println!("{:<40} NAME", "ID");
     for a in apps {
         println!("{:<40} {}", a.id, a.name);
     }
@@ -221,7 +221,7 @@ fn cmd_search(name: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<10} {:<40} {}", "WHERE", "ID", "NAME");
+    println!("{:<10} {:<40} NAME", "WHERE", "ID");
     for (where_, id, name) in hits {
         println!("{:<10} {:<40} {}", where_, id, name);
     }
@@ -231,19 +231,19 @@ fn cmd_search(name: &str) -> Result<()> {
 fn cmd_resolve(id: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        return cmd_resolve_linux(id);
+        cmd_resolve_linux(id)
     }
     #[cfg(target_os = "macos")]
     {
-        return beckon_macos::print_resolve_report(id)
+        beckon_macos::print_resolve_report(id)
             .map_err(|e| anyhow!("{}", e))
-            .context("resolve failed");
+            .context("resolve failed")
     }
     #[cfg(target_os = "windows")]
     {
-        return beckon_windows::print_resolve_report(id)
+        beckon_windows::print_resolve_report(id)
             .map_err(|e| anyhow!("{}", e))
-            .context("resolve failed");
+            .context("resolve failed")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
