@@ -207,8 +207,14 @@ fn cmd_search(name: &str) -> Result<()> {
     let backend = pick_backend()?;
     let needle = name.to_lowercase();
 
-    let running = backend.list_running().unwrap_or_default();
-    let installed = backend.list_installed().unwrap_or_default();
+    let running = backend.list_running().unwrap_or_else(|e| {
+        eprintln!("warning: list_running failed: {}", e);
+        Vec::new()
+    });
+    let installed = backend.list_installed().unwrap_or_else(|e| {
+        eprintln!("warning: list_installed failed: {}", e);
+        Vec::new()
+    });
 
     let mut hits = Vec::new();
     for a in &running {

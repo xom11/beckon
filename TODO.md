@@ -33,7 +33,7 @@ Order is ROI-descending.
 
 ## Round 3 — UX & error surfacing
 
-- [ ] **3.1** Surface backend errors in `cmd_search`
+- [x] **3.1** Surface backend errors in `cmd_search`
   `crates/beckon-cli/src/main.rs:210` — `unwrap_or_default()` swallows IPC
   failures; print a stderr warning and continue with empty list.
 
