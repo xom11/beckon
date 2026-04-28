@@ -26,11 +26,12 @@ beckon/
 │   ├── beckon-linux/         # multi-backend, dispatch by env at runtime
 │   │   └── src/
 │   │       ├── lib.rs        # detect compositor/DE, return Box<dyn Backend>
+│   │       ├── algorithm.rs  # neutral focus algorithm shared by every backend
 │   │       ├── desktop.rs    # .desktop parser + Name resolution
 │   │       ├── state.rs      # single-app MRU state at $XDG_RUNTIME_DIR/beckon-mru
 │   │       ├── i3ipc.rs      # swayipc — handles BOTH sway and i3 (shared protocol)
-│   │       ├── hyprland.rs   # hyprctl — Hyprland (planned, phase 1c)
-│   │       └── x11.rs        # x11rb / EWMH — non-i3 X11 DEs (deferred)
+│   │       ├── hyprland.rs   # native Unix-socket IPC — Hyprland
+│   │       └── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
 │   └── beckon-cli/           # main binary, picks backend via cfg!(target_os)
 ├── test-i3-env.sh            # Xephyr+i3 dev sandbox (start/stop/xterm)
 └── README.md
@@ -95,8 +96,8 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 |--------------|---------|--------|
 | `SWAYSOCK` | sway (Wayland) — `i3ipc::I3IpcBackend` | ✅ Done |
 | `I3SOCK` | i3 (X11) — same `I3IpcBackend` (shared protocol) | ✅ Done |
-| `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland | ⏳ Phase 1c |
-| `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ⏳ Deferred (covers GNOME-X11, KDE-X11, openbox, ...) |
+| `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland | ✅ Done |
+| `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ✅ Done (covers GNOME-X11, KDE-X11, openbox, awesome, XFCE, ...) |
 | `WAYLAND_DISPLAY` w/o sway/Hyprland | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
 
 ### Focus algorithm
@@ -159,8 +160,8 @@ The dotfiles are inherently per-OS already (sway runs only on Linux, AHK only on
 |-------|--------|--------|
 | 1a | Linux / sway (Wayland) | ✅ Done — `i3ipc::I3IpcBackend` via swayipc |
 | 1b.i3 | Linux / i3 (X11) | ✅ Done — same `I3IpcBackend` (shared protocol) |
-| 1b.x11 | Linux / X11 generic via x11rb (GNOME-X11, KDE-X11, openbox, awesome, XFCE) | ⏳ Deferred |
-| 1c | Linux / Hyprland | ⏳ Pending |
+| 1b.x11 | Linux / X11 generic via x11rb (GNOME-X11, KDE-X11, openbox, awesome, XFCE) | ✅ Done — `x11::X11Backend` via EWMH ClientMessages |
+| 1c | Linux / Hyprland | ✅ Done — `hyprland::HyprlandBackend` via Unix-socket IPC |
 | 2 | macOS | ✅ Done — `beckon-macos` via `objc2-app-kit` + AX + CGWindowList |
 | 3 | Windows | ✅ Done — `beckon-windows` via Win32 EnumWindows + COM IShellLinkW |
 | — | GNOME / KDE Wayland | ❌ Out of scope — compositor blocks external focus |
@@ -172,6 +173,101 @@ sway and i3 share the i3-IPC protocol exactly — same `swayipc` crate, same JSO
 - **Socket env var**: `SWAYSOCK` for sway, `I3SOCK` for i3. The dispatcher accepts either.
 
 → No separate i3 module. `crates/beckon-linux/src/i3ipc.rs` serves both.
+
+### Shared focus algorithm
+
+Every Linux backend (sway/i3, Hyprland, X11 generic) feeds a neutral
+`Vec<algorithm::WindowSnapshot>` into `algorithm::decide` and dispatches
+the resulting `Decision` (`Launch` / `Focus` / `Cycle` / `ToggleBack` /
+`Hide`). The algorithm itself lives in `crates/beckon-linux/src/algorithm.rs`
+— that's the only place to change focus / cycle / toggle / hide policy.
+
+Each backend owns:
+- the projection from native window data to `WindowSnapshot` (the
+  `snapshots_from` helper at the top of every backend file), and
+- the translation from `Decision` to native commands.
+
+`recency` semantics in `WindowSnapshot`:
+- Hyprland: `focusHistoryID` straight through (0 = currently focused).
+- X11: inverted index into `_NET_CLIENT_LIST_STACKING` (top of stack → 0).
+- sway / i3: tree traversal index — degenerates to "first match wins" since
+  the tree carries no real focus history. The `algorithm::decide` ties on
+  recency are broken by address, so the deterministic order matches what
+  `i3ipc.rs` did before the refactor.
+
+### Phase 1b.x11 X11 generic implementation note
+
+`crates/beckon-linux/src/x11.rs` covers every EWMH-compliant X11 desktop —
+GNOME-X11, KDE-X11, XFCE, openbox, awesome, fluxbox. (i3 has its own faster
+path through `i3ipc.rs`.)
+
+- **Connection**: `x11rb::connect(None)` — pure-Rust, no `libxcb` link.
+  The connection lives for the life of `X11Backend` (one beckon invocation
+  is one connection — no daemon).
+- **Window list**: `_NET_CLIENT_LIST_STACKING` on root, reversed so index 0
+  is the topmost window (≈ most-recently focused). Windows without a
+  `WM_CLASS` are filtered out — they're typically transient chrome
+  (notifications, menus) that beckon shouldn't surface as "apps".
+- **Class matching**: `WM_CLASS[1]` (the second NUL-separated token, the
+  "class" component). When the resolved `.desktop` entry has
+  `StartupWMClass=` set, that wins over the filename — apps actually
+  advertise that string at runtime via `WM_CLASS`, so it's the correct
+  match key on X11.
+- **Active window**: `_NET_ACTIVE_WINDOW` root property; treats `0` as None.
+- **Focus**: `_NET_ACTIVE_WINDOW` ClientMessage to root with source = 2
+  (pager/taskbar). Source 2 is what `wmctrl -a` sends and what most WMs
+  treat as a legitimate user action — bypasses focus-stealing prevention.
+- **Hide**: ICCCM `WM_CHANGE_STATE` ClientMessage with `IconicState` (3).
+  Universal across X11 WMs. We deliberately don't toggle
+  `_NET_WM_STATE_HIDDEN` — that's spec'd as a hint the WM sets, not a
+  client-driven toggle.
+- **Restore from hidden**: not an explicit operation. Per EWMH §6.6 a
+  focus request via `_NET_ACTIVE_WINDOW` SHOULD raise iconified windows;
+  every WM in the wild honours this. So step 4 (focus a non-focused
+  window of `target`) just works whether the window is iconified or not.
+- **Launch**: `/bin/sh -c "setsid -f <Exec> >/dev/null 2>&1"`. `setsid -f`
+  detaches from beckon's process group so the launched app survives beckon
+  exiting. Stdout/stderr nulled to prevent stale fds keeping the parent
+  terminal alive when invoked from a hotkey.
+- **No focus-history MRU on X11**: `_NET_CLIENT_LIST_STACKING` already
+  reflects z-order, which is the closest standardised proxy for MRU
+  (focused windows rise to the top). No state file is needed for step 5a
+  cycling. Step 5b still consults the cross-backend MRU file at
+  `$XDG_RUNTIME_DIR/beckon-mru` so toggle-back lands on the same app the
+  user actually came from across multiple beckon invocations.
+
+### Phase 1c Hyprland implementation note
+
+`crates/beckon-linux/src/hyprland.rs` talks to the compositor via the request
+socket directly — no `hyprctl` shell-out, no `hyprland-rs` dep. Two queries
+(`j/clients`, `j/activewindow`) per invocation, parsed with `serde_json`.
+Window identity uses Hyprland's `class` field, which is set from Wayland
+`app_id` for native clients and from `WM_CLASS` for XWayland — one field, no
+fallback ladder.
+
+- **Socket path**: `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock`
+  (Hyprland 0.40+) with `/tmp/hypr/<sig>/.socket.sock` as fallback for older
+  installs. Each request opens a fresh `UnixStream` — Hyprland closes the
+  socket after responding.
+- **Cycle order (5a)**: pick the same-app window with the lowest non-current
+  `focusHistoryID`. Two-window apps end up oscillating between the most-recent
+  pair, mirroring the practical i3ipc behaviour.
+- **Hide (5c)**: `dispatch movetoworkspacesilent special:beckon,address:0xN`.
+  All apps that beckon hides land on the same shared `special:beckon`
+  workspace; the next `beckon <id>` finds the window in `j/clients`, sees
+  it's not focused, and `dispatch focuswindow` brings the special workspace
+  back into view automatically (Hyprland surfaces the window's workspace on
+  focus). No state file or per-app special workspaces required.
+- **MRU (5b)**: reuses the same `state.rs` file at
+  `$XDG_RUNTIME_DIR/beckon-mru` as the i3ipc backend. Sharing is safe — a
+  user runs only one Linux compositor at a time.
+- **Decision logic** is split into a pure `decide(clients, active, target,
+  previous_app) -> Decision` function that the IPC layer then translates
+  into dispatch commands. This is what makes the algorithm unit-testable
+  without a live Hyprland session (19 tests in `hyprland::tests`).
+- **No `hyprctl` dep**: keeps the hot path at a single short-lived socket
+  connection per query, and works in containers/Nix builds where `hyprctl`
+  may not be on PATH.
 
 ## Reference implementations to port from (phase 2 / 3)
 
@@ -305,9 +401,11 @@ windows = { version = "0.61", features = [
 ] }
 
 # linux (in use as of phase 1)
-swayipc = "3"   # sway + i3 (same protocol)
+swayipc    = "3"      # sway + i3 (same protocol)
+serde      = "1"      # serde_json for Hyprland JSON IPC payloads
+serde_json = "1"
+x11rb      = "0.13"   # any EWMH-compliant X11 DE (GNOME-X11, KDE-X11, XFCE, ...)
 # Future:
-# x11rb                     = "0.13"   # any X11 DE
 # freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
 ```
 

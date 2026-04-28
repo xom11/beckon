@@ -20,6 +20,8 @@
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use swayipc::{Connection, Node, NodeType};
 
+use crate::algorithm::{decide, Decision, WindowSnapshot};
+
 pub struct I3IpcBackend;
 
 impl I3IpcBackend {
@@ -100,6 +102,26 @@ fn hide_con(conn: &mut Connection, con_id: i64) -> Result<()> {
     )
 }
 
+/// Build the neutral snapshot list the shared algorithm consumes. Tree
+/// traversal order doubles as `recency`: the algorithm uses it for "most
+/// recent" picks, which preserves i3ipc.rs's previous "first match wins"
+/// behaviour because every window ends up with a unique increasing index.
+fn snapshots_from(windows: &[WindowInfo]) -> Vec<WindowSnapshot> {
+    windows
+        .iter()
+        .enumerate()
+        .map(|(idx, w)| WindowSnapshot::new(w.con_id.to_string(), &w.app_id, idx as i32))
+        .collect()
+}
+
+/// Parse a snapshot address back into the swayipc `con_id` it was minted
+/// from. Round-trip should never fail for addresses the backend itself
+/// produced; if it does, surface as IPC error rather than panicking.
+fn parse_con_id(addr: &str) -> Result<i64> {
+    addr.parse::<i64>()
+        .map_err(|e| BackendError::Ipc(format!("bad con_id `{}`: {}", addr, e)))
+}
+
 impl Backend for I3IpcBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
         let mut conn = self.connect()?;
@@ -109,6 +131,13 @@ impl Backend for I3IpcBackend {
 
         let mut windows = Vec::new();
         collect_windows(&tree, &mut windows);
+
+        // Snapshots feed the shared algorithm; `address` is con_id-as-string.
+        let snapshots = snapshots_from(&windows);
+        let active = windows
+            .iter()
+            .find(|w| w.focused)
+            .map(|w| w.con_id.to_string());
 
         // What's focused right now (before any action). Used at the end to
         // update the MRU file: after we change focus, this app becomes
@@ -135,66 +164,51 @@ impl Backend for I3IpcBackend {
             .unwrap_or(id)
             .to_string();
 
-        let app_windows: Vec<&WindowInfo> =
-            windows.iter().filter(|w| w.app_id == target).collect();
+        let decision = decide(
+            &snapshots,
+            active.as_deref(),
+            &target,
+            previous_app.as_deref(),
+        );
 
-        // Step 3: not running → launch
-        if app_windows.is_empty() {
-            let entry = entry.ok_or_else(|| BackendError::LaunchFailed {
-                id: id.to_string(),
-                reason: format!(
-                    "no .desktop entry matches `{}` and no running window has that app_id. \
-                     Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
-                    id, id
-                ),
-            })?;
-            run_sway(&mut conn, &format!("exec {}", entry.exec)).map_err(|e| {
-                BackendError::LaunchFailed {
+        let action = match decision {
+            Decision::Launch => {
+                let entry = entry.ok_or_else(|| BackendError::LaunchFailed {
                     id: id.to_string(),
-                    reason: e.to_string(),
-                }
-            })?;
-            persist_previous(pre_focused_app.as_deref());
-            return Ok(BeckonAction::Launched);
-        }
+                    reason: format!(
+                        "no .desktop entry matches `{}` and no running window has that app_id. \
+                         Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
+                        id, id
+                    ),
+                })?;
+                run_sway(&mut conn, &format!("exec {}", entry.exec)).map_err(|e| {
+                    BackendError::LaunchFailed {
+                        id: id.to_string(),
+                        reason: e.to_string(),
+                    }
+                })?;
+                BeckonAction::Launched
+            }
+            Decision::Focus(addr) => {
+                focus_con(&mut conn, parse_con_id(&addr)?)?;
+                BeckonAction::Focused
+            }
+            Decision::Cycle(addr) => {
+                focus_con(&mut conn, parse_con_id(&addr)?)?;
+                BeckonAction::Cycled
+            }
+            Decision::ToggleBack(addr) => {
+                focus_con(&mut conn, parse_con_id(&addr)?)?;
+                BeckonAction::ToggledBack
+            }
+            Decision::Hide(addr) => {
+                hide_con(&mut conn, parse_con_id(&addr)?)?;
+                BeckonAction::Hidden
+            }
+        };
 
-        let focused = windows.iter().find(|w| w.focused);
-        let focused_in_app = focused.map(|f| f.app_id == target).unwrap_or(false);
-
-        // Step 4: running, not focused on this app → focus first window of app
-        if !focused_in_app {
-            focus_con(&mut conn, app_windows[0].con_id)?;
-            persist_previous(pre_focused_app.as_deref());
-            return Ok(BeckonAction::Focused);
-        }
-
-        let focused_con_id = focused.expect("focused_in_app implies focused.is_some()").con_id;
-
-        // Step 5a: same app has another window → cycle to it
-        if let Some(next) = app_windows.iter().find(|w| w.con_id != focused_con_id) {
-            focus_con(&mut conn, next.con_id)?;
-            persist_previous(pre_focused_app.as_deref());
-            return Ok(BeckonAction::Cycled);
-        }
-
-        // Step 5b: only one window of this app. Prefer the MRU "previous app";
-        // fall back to any other-app window if MRU is empty / stale (the
-        // previous app may have been closed).
-        let mru_choice = previous_app
-            .as_deref()
-            .filter(|app| *app != target)
-            .and_then(|app| windows.iter().find(|w| w.app_id == app));
-        let other = mru_choice.or_else(|| windows.iter().find(|w| w.app_id != target));
-        if let Some(target_win) = other {
-            focus_con(&mut conn, target_win.con_id)?;
-            persist_previous(pre_focused_app.as_deref());
-            return Ok(BeckonAction::ToggledBack);
-        }
-
-        // Step 5c: nothing else exists → hide via scratchpad
-        hide_con(&mut conn, focused_con_id)?;
         persist_previous(pre_focused_app.as_deref());
-        Ok(BeckonAction::Hidden)
+        Ok(action)
     }
 
     fn list_running(&self) -> Result<Vec<RunningApp>> {

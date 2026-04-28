@@ -10,4 +10,7 @@ beckon-core = { path = "../beckon-core" }
 thiserror   = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-swayipc = { workspace = true }
+swayipc    = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+x11rb      = { workspace = true }

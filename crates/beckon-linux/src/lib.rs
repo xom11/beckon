@@ -8,6 +8,9 @@
 use beckon_core::{Backend, BackendError, Result};
 
 #[cfg(target_os = "linux")]
+pub mod algorithm;
+
+#[cfg(target_os = "linux")]
 pub mod desktop;
 
 #[cfg(target_os = "linux")]
@@ -17,6 +20,12 @@ pub mod state;
 pub mod i3ipc;
 
 #[cfg(target_os = "linux")]
+pub mod hyprland;
+
+#[cfg(target_os = "linux")]
+pub mod x11;
+
+#[cfg(target_os = "linux")]
 pub fn pick_backend() -> Result<Box<dyn Backend>> {
     // sway sets BOTH SWAYSOCK and I3SOCK (i3-compat). i3 sets only I3SOCK.
     // Either case → same backend, since the IPC protocol is identical.
@@ -24,9 +33,7 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
         return Ok(Box::new(i3ipc::I3IpcBackend::new()?));
     }
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
-        return Err(BackendError::UnsupportedEnvironment(
-            "Hyprland detected — backend not yet implemented (phase 1c)".to_string(),
-        ));
+        return Ok(Box::new(hyprland::HyprlandBackend::new()?));
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         return Err(BackendError::UnsupportedEnvironment(
@@ -37,9 +44,7 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
         ));
     }
     if std::env::var_os("DISPLAY").is_some() {
-        return Err(BackendError::UnsupportedEnvironment(
-            "X11 detected — generic X11 backend not yet implemented (phase 1b)".to_string(),
-        ));
+        return Ok(Box::new(x11::X11Backend::new()?));
     }
     Err(BackendError::UnsupportedEnvironment(
         "no supported display server detected".to_string(),
