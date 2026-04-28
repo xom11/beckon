@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use beckon_core::{Backend, BeckonAction};
+use beckon_core::Backend;
 use clap::Parser;
 use std::io::IsTerminal;
 
@@ -160,20 +160,7 @@ fn cmd_beckon(id: &str, verbose: bool) -> Result<()> {
     if verbose {
         eprintln!("action: {:?}", action);
     }
-    // Exit code conveys outcome category for scripting; 0 always for success.
-    let _ = action_exit_code(action);
     Ok(())
-}
-
-fn action_exit_code(action: BeckonAction) -> i32 {
-    // Reserved for future use if we need granular exit codes.
-    match action {
-        BeckonAction::Launched => 0,
-        BeckonAction::Focused => 0,
-        BeckonAction::Cycled => 0,
-        BeckonAction::ToggledBack => 0,
-        BeckonAction::Hidden => 0,
-    }
 }
 
 fn cmd_list() -> Result<()> {
