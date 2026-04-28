@@ -118,26 +118,35 @@ pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
     let mut seen_names = std::collections::HashSet::<String>::new();
 
     for root in &roots {
-        collect_lnk_files(root, &mut out, &mut seen_names);
+        collect_lnk_files(root, &mut out, &mut seen_names, 0);
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
-/// Recursively collect `.lnk` files from `dir`.
+/// Maximum directory depth to descend when scanning Start Menu. Real Start
+/// Menu trees are ≤4 deep; the cap is just a guardrail against junction
+/// loops or pathological structures that would otherwise hang the scan.
+const MAX_LNK_DEPTH: u8 = 8;
+
+/// Recursively collect `.lnk` files from `dir`, bounded by `MAX_LNK_DEPTH`.
 fn collect_lnk_files(
     dir: &Path,
     out: &mut Vec<InstalledAppInfo>,
     seen: &mut std::collections::HashSet<String>,
+    depth: u8,
 ) {
+    if depth > MAX_LNK_DEPTH {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_lnk_files(&path, out, seen);
+            collect_lnk_files(&path, out, seen, depth + 1);
             continue;
         }
         let ext = path.extension().and_then(|e| e.to_str());

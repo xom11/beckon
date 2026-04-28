@@ -14,7 +14,7 @@ Order is ROI-descending.
   `crates/beckon-linux/src/state.rs:51` — `fs::write` is not atomic; concurrent
   invocations can produce torn reads. Write to `beckon-mru.tmp` and `rename`.
 
-- [ ] **1.3** Bound recursion depth for `.lnk` scan
+- [x] **1.3** Bound recursion depth for `.lnk` scan
   `crates/beckon-windows/src/apps.rs:129` — `collect_lnk_files` recurses
   unbounded; junction loops would hang. Add `depth: u8`, bail at 8.
 
