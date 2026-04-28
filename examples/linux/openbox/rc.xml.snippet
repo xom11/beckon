@@ -1,0 +1,36 @@
+<!--
+  beckon bindings for openbox / awesome / fluxbox-style minimal X11 WMs.
+
+  Append this block inside the <keyboard>...</keyboard> section of
+  ~/.config/openbox/rc.xml, then reload:
+
+      openbox --reconfigure
+
+  W- = Super (Mod4). C-A- = Ctrl+Alt. Pick whichever modifier is
+  free in your existing config.
+
+  Discover ids on your machine:
+      beckon -L
+      beckon -l
+      beckon -r Claude
+-->
+
+<keybind key="W-space">
+  <action name="Execute"><command>beckon kitty</command></action>
+</keybind>
+
+<keybind key="W-c">
+  <action name="Execute"><command>beckon Claude</command></action>
+</keybind>
+
+<keybind key="W-b">
+  <action name="Execute"><command>beckon Brave</command></action>
+</keybind>
+
+<keybind key="W-e">
+  <action name="Execute"><command>beckon Cursor</command></action>
+</keybind>
+
+<keybind key="W-d">
+  <action name="Execute"><command>beckon Discord</command></action>
+</keybind>

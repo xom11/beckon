@@ -10,14 +10,36 @@ press hotkey
       if already focused    → cycle windows / toggle to previous app / hide
 ```
 
+## Quickstart
+
+```sh
+# 1. install (binary lands at ~/.cargo/bin/beckon)
+cargo install --git https://github.com/xom11/beckon
+
+# 2. discover the Names beckon sees on your machine
+beckon -L | grep -i claude     # is "Claude" the right Name?
+beckon -r Claude               # confirm: shows match type + Exec
+beckon -d                      # diagnose your environment
+
+# 3. wire a hotkey via your existing dotfile — pick yours from
+#    examples/ and follow its README:
+#       examples/linux/sway/         examples/linux/i3/
+#       examples/linux/hyprland/     examples/linux/gnome-x11/
+#       examples/linux/kde-x11/      examples/linux/xfce/
+#       examples/linux/openbox/      examples/macos/hammerspoon/
+#       examples/windows/ahk/
+
+# 4. press the hotkey. failures fire a desktop notification — you'll see them.
+```
+
 ## Status
 
 | Platform | Status |
 |----------|--------|
-| Linux / sway (Wayland) | ✅ Phase 1a |
+| Linux / sway (Wayland) | ✅ Phase 1a — i3-IPC |
 | Linux / i3 (X11) | ✅ Phase 1b — same backend (shared protocol) |
-| Linux / X11 generic (GNOME-X11, KDE-X11, ...) | ⏳ Deferred |
-| Linux / Hyprland | ⏳ Pending |
+| Linux / X11 generic (GNOME-X11, KDE-X11, XFCE, openbox, awesome) | ✅ Phase 1b.x11 — `x11rb` + EWMH |
+| Linux / Hyprland (Wayland) | ✅ Phase 1c — native Unix-socket IPC |
 | macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
 | Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
 | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
@@ -31,9 +53,11 @@ cargo build --release
 # binary: ./target/release/beckon
 ```
 
-Requirements: Rust 1.75+. On Linux: a sway or i3 session (other compositors
-TBD — `beckon -d` will tell you). On Windows: VS Build Tools 2022 with the
-C++ ARM64/x64 component and Windows SDK.
+Requirements: Rust 1.75+. Linux supports sway, i3, Hyprland and any
+EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome).
+GNOME and KDE on Wayland are unsupported — `beckon -d` reports it.
+On Windows: VS Build Tools 2022 with the C++ ARM64/x64 component and
+Windows SDK.
 
 ### cargo install (from GitHub)
 
@@ -118,71 +142,27 @@ beckon -r Claude    # show how an id resolves (match type, exec, status)
 beckon -d           # check environment (compositor / IPC / notification daemon)
 ```
 
-### Sway dotfile example
+### Dotfile examples — see [`examples/`](./examples/)
 
-```
-set $focus exec /path/to/beckon
+Drop-in configs for every supported setup (sway, i3, Hyprland,
+GNOME-X11, KDE-X11, XFCE, openbox / awesome / fluxbox, macOS
+Hammerspoon, Windows AHK) live under [`examples/`](./examples/) with
+short READMEs explaining where to place each file and how to reload.
 
-bindsym $mod+space $focus kitty
-bindsym $mod+c     $focus Claude
-bindsym $mod+g     $focus Gemini
-bindsym $mod+t     $focus "Telegram Web"
-```
+The examples wire the same five hotkeys everywhere so you only have to
+remember the letter, not the modifier:
 
-If `beckon -L` shows two apps with the same Name (e.g. native Telegram +
-Telegram Web PWA), bind to the more specific Name to disambiguate.
+| Letter | App |
+|---|---|
+| `Space` | terminal |
+| `C` | Claude |
+| `B` | Brave |
+| `E` | Cursor |
+| `D` | Discord |
 
-### Hammerspoon (macOS) dotfile example
-
-```lua
-local hyper = { "cmd", "ctrl", "alt" }
-
--- Use hs.task with the absolute path. Do NOT use `hs.execute(cmd, true)` —
--- the `true` flag sources the user login shell (~/.zshrc) before each
--- invocation, which can run several hundred ms to several seconds and
--- swamps the actual focus latency.
-local function beckon(name)
-  hs.task.new("/etc/profiles/per-user/" .. os.getenv("USER") .. "/bin/beckon",
-    function(exitCode, _, stderr)
-      if exitCode ~= 0 then
-        hs.alert.show("beckon " .. name .. ": " .. (stderr or ""), 3)
-      end
-    end, { name }):start()
-end
-
-hs.hotkey.bind(hyper, "space", function() beckon("kitty") end)
-hs.hotkey.bind(hyper, "c",     function() beckon("Claude") end)
-hs.hotkey.bind(hyper, "d",     function() beckon("Discord") end)
-```
-
-### AutoHotkey (Windows) dotfile example
-
-```ahk
-#Requires AutoHotkey v2.0
-
-BeckonExe := A_UserProfile . "\.cargo\bin\beckon.exe"
-
-Beckon(name) {
-    try RunWait('"' BeckonExe '" "' name '"', , "Hide")
-}
-
-^#!c:: Beckon("Claude")
-^#!d:: Beckon("Discord")
-^#!b:: Beckon("Vivaldi")
-^#!Space:: Beckon("windowsterminal.exe")
-```
-
-Installed PWAs (via Brave/Chrome "Install as app") get their own Start Menu
-shortcut, so `Beckon("Claude")` resolves and launches correctly. The
-`AttachThreadInput` trick handles Win10+ anti-focus-stealing since the AHK
-process holds foreground when it invokes beckon.
-
-beckon needs **Accessibility permission** to cycle between windows of the
-same app (step 5a). Grant in System Settings → Privacy & Security →
-Accessibility, adding the binary path that Hammerspoon invokes (typically
-the Nix profile path above). Without it, beckon still focuses / launches /
-hides — only the cycle step degrades to "toggle to other app". Run
-`beckon -d` to check trust state.
+Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
+`Ctrl+Win+Alt` on Windows. Replace the Names with whatever
+`beckon -L` reports on your machine.
 
 ## What `beckon <id>` actually does
 
@@ -206,10 +186,11 @@ terminal to see errors on stderr instead.
 ```
 crates/
 ├── beckon-core/      # Backend trait, shared types
-├── beckon-linux/     # sway + i3 (i3-IPC), .desktop parser, MRU state
+├── beckon-linux/     # algorithm.rs (shared) + i3-IPC + Hyprland + EWMH
 ├── beckon-macos/     # NSWorkspace + AX (cycle) + CGWindowList (z-order)
 ├── beckon-windows/   # Win32 EnumWindows + COM IShellLinkW (.lnk parsing)
 └── beckon-cli/       # binary, clap CLI, doctor / search / resolve
+examples/             # ready-to-use configs for every supported OS / WM
 ```
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full design rationale.
