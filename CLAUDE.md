@@ -288,6 +288,26 @@ Mutter has no public protocol for external focus.
 
 #### Installing / updating the extension
 
+**Declarative (recommended, nix users)**: the flake exposes
+`packages.<system>.beckon-gnome-extension` and the same name on
+`overlays.default`. The package puts the extension at
+`$out/share/gnome-shell/extensions/beckon@xom11.github.io/`. Drop it into
+home-manager via `xdg.dataFile`:
+
+```nix
+# in your home-manager config (only needed on GNOME hosts)
+xdg.dataFile."gnome-shell/extensions/beckon@xom11.github.io".source =
+  "${pkgs.beckon-gnome-extension}/share/gnome-shell/extensions/beckon@xom11.github.io";
+```
+
+Plus add `"beckon@xom11.github.io"` to dconf `org/gnome/shell.enabled-extensions`
+so gnome-shell turns it on at session start. After the first
+`home-manager switch`: log out and back in (Wayland can't reload shell
+live). Subsequent updates that change the extension code also need a
+relogin; updates that change only beckon-cli do not.
+
+**Manual (one-shot, useful for testing extension changes)**:
+
 ```sh
 cd extensions
 gnome-extensions pack beckon@xom11.github.io
@@ -297,10 +317,10 @@ gnome-extensions enable beckon@xom11.github.io
 # unsafe-mode and not available in normal sessions.)
 ```
 
-If the user runs Wayland under nix-managed dotfiles, a future packaging
-step can install the extension into `~/.local/share/gnome-shell/extensions/`
-declaratively. For now it's a manual step — that's why `pick_backend()`'s
-GNOME error message includes the install commands.
+`gnome-extensions install` writes a real directory under
+`~/.local/share/gnome-shell/extensions/`. If you later switch to the
+declarative path, remove that directory first — home-manager's symlink
+activation refuses to clobber an unmanaged file.
 
 ### Phase 1c Hyprland implementation note
 
