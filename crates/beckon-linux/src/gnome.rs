@@ -168,20 +168,21 @@ impl Backend for GnomeBackend {
             .unwrap_or(id)
             .to_string();
 
-        // GNOME Wayland window class: prefer StartupWMClass when the
-        // .desktop sets it (matches WM_CLASS for XWayland and most Wayland
-        // toolkits that honor the hint). Otherwise fall through to the
-        // resolved id, which equals the .desktop filename.
-        let target_class = entry
-            .as_ref()
-            .and_then(|e| e.startup_wm_class.clone())
-            .unwrap_or_else(|| target.clone());
-
+        // On GNOME Wayland, Mutter sets `WM_CLASS` (and the Wayland
+        // `app_id` for native clients) to the launching `.desktop` file's
+        // basename, *regardless* of any `StartupWMClass=` hint inside the
+        // file. Brave/Chrome PWAs are the most visible case: their
+        // `.desktop` files carry `StartupWMClass=crx_<hash>` while the
+        // window itself reports `brave-<hash>-Default`. Honouring
+        // `StartupWMClass` on GNOME would always misroute the lookup, so
+        // we match the running window by `target` (the .desktop filename)
+        // directly. Same approach as `i3ipc.rs` — Wayland clients agree on
+        // the filename, not on StartupWMClass.
         let snapshots = snapshots_from(&rows);
         let decision = decide(
             &snapshots,
             active_addr.as_deref(),
-            &target_class,
+            &target,
             previous_app.as_deref(),
         );
 
