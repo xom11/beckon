@@ -31,8 +31,13 @@ beckon/
 │   │       ├── state.rs      # single-app MRU state at $XDG_RUNTIME_DIR/beckon-mru
 │   │       ├── i3ipc.rs      # swayipc — handles BOTH sway and i3 (shared protocol)
 │   │       ├── hyprland.rs   # native Unix-socket IPC — Hyprland
-│   │       └── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
+│   │       ├── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
+│   │       └── gnome.rs      # zbus client → bundled GNOME Shell extension
 │   └── beckon-cli/           # main binary, picks backend via cfg!(target_os)
+├── extensions/
+│   └── beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
+│       ├── metadata.json
+│       └── extension.js          # exports D-Bus org.gnome.Shell.Extensions.Beckon
 ├── test-i3-env.sh            # Xephyr+i3 dev sandbox (start/stop/xterm)
 └── README.md
 ```
@@ -84,8 +89,10 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     if env::var("I3SOCK").is_ok()                         { return I3Backend::new(); }
     if env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()    { return HyprlandBackend::new(); }
     if env::var("WAYLAND_DISPLAY").is_ok() {
-        // GNOME/KDE Wayland — Mutter/KWin block external focus
-        bail!("Unsupported Wayland compositor. Run `beckon -d` for details.");
+        // GNOME Wayland: Mutter blocks external focus, but the bundled
+        // shell extension exposes the surface beckon needs over D-Bus.
+        // KDE Wayland: still unsupported (no equivalent bridge).
+        return GnomeBackend::new();   // probes extension; bails with hint if absent
     }
     if env::var("DISPLAY").is_ok()                        { return X11Backend::new(); }
     bail!("No supported display server detected.");
@@ -98,7 +105,8 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 | `I3SOCK` | i3 (X11) — same `I3IpcBackend` (shared protocol) | ✅ Done |
 | `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland | ✅ Done |
 | `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ✅ Done (covers GNOME-X11, KDE-X11, openbox, awesome, XFCE, ...) |
-| `WAYLAND_DISPLAY` w/o sway/Hyprland | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
+| `WAYLAND_DISPLAY` + GNOME extension on bus | GNOME Wayland — `gnome::GnomeBackend` via zbus → bundled shell extension | ✅ Done |
+| `WAYLAND_DISPLAY` w/o supported bridge | KDE Wayland (KWin blocks external focus, no extension bridge) | ❌ Out of scope |
 
 ### Focus algorithm
 
@@ -161,10 +169,11 @@ The dotfiles are inherently per-OS already (sway runs only on Linux, AHK only on
 | 1a | Linux / sway (Wayland) | ✅ Done — `i3ipc::I3IpcBackend` via swayipc |
 | 1b.i3 | Linux / i3 (X11) | ✅ Done — same `I3IpcBackend` (shared protocol) |
 | 1b.x11 | Linux / X11 generic via x11rb (GNOME-X11, KDE-X11, openbox, awesome, XFCE) | ✅ Done — `x11::X11Backend` via EWMH ClientMessages |
+| 1d | Linux / GNOME Wayland via bundled shell extension + zbus | ✅ Done — `gnome::GnomeBackend` |
 | 1c | Linux / Hyprland | ✅ Done — `hyprland::HyprlandBackend` via Unix-socket IPC |
 | 2 | macOS | ✅ Done — `beckon-macos` via `objc2-app-kit` + AX + CGWindowList |
 | 3 | Windows | ✅ Done — `beckon-windows` via Win32 EnumWindows + COM IShellLinkW |
-| — | GNOME / KDE Wayland | ❌ Out of scope — compositor blocks external focus |
+| — | KDE Wayland | ❌ Out of scope — KWin blocks external focus and there's no equivalent bridge |
 
 ### Phase 1b.i3 implementation note
 
@@ -235,6 +244,63 @@ path through `i3ipc.rs`.)
   cycling. Step 5b still consults the cross-backend MRU file at
   `$XDG_RUNTIME_DIR/beckon-mru` so toggle-back lands on the same app the
   user actually came from across multiple beckon invocations.
+
+### Phase 1d GNOME Wayland implementation note
+
+`crates/beckon-linux/src/gnome.rs` is a thin zbus client. The actual window
+work happens inside `extensions/beckon@xom11.github.io/extension.js`, which
+runs as a GNOME Shell extension (so it has direct access to Mutter via
+`global.display`, `global.get_window_actors()`, `Main.activateWindow`).
+Without an in-process collaborator there's no path at all on GNOME Wayland —
+Mutter has no public protocol for external focus.
+
+- **Bus surface** (`org.gnome.Shell` / `/com/github/xom11/beckon` /
+  `org.gnome.Shell.Extensions.Beckon`):
+    - `ListWindows() → a(tssbu)` — `(stable_seq, class, title, focused, monitor)`,
+      MRU-ordered (`Meta.TabList.NORMAL_ALL`).
+    - `GetFocusedWindow() → t` — `0` when no focus.
+    - `ActivateWindow(t) → b` — calls `Main.activateWindow`, which switches
+      workspace, unminimizes, raises and focuses in one shot. Mutter's own
+      timestamp is used so focus-stealing prevention doesn't reject it.
+    - `MinimizeWindow(t) → b` — `meta_window.minimize()`.
+    - property `Version` — read at startup by the Rust client to verify the
+      extension is loaded before trusting any other call.
+- **Window identity**: `MetaWindow.get_stable_sequence()`. `uint32` that
+  fits in the `t` (uint64) D-Bus type, stable for the window's lifetime,
+  available on every supported GNOME version (no need for the newer
+  `get_id()` API).
+- **Class fallback ladder**: `get_wm_class()` → `get_gtk_application_id()`
+  → `get_sandboxed_app_id()`. Wayland-native GTK apps frequently lack
+  `WM_CLASS` and only set the GTK app id (`org.gnome.Console` etc.).
+- **Recency**: `Meta.TabList.NORMAL_ALL` is exactly the order alt-tab walks,
+  i.e. real focus history. The shared algorithm reads it via
+  `WindowSnapshot.recency` (lower = more recent), so step 5a/5b behave the
+  same as on Hyprland.
+- **MRU file**: shares `$XDG_RUNTIME_DIR/beckon-mru` with the other Linux
+  backends. Cross-backend sharing is safe — only one compositor runs at
+  a time.
+- **Launch path**: same `/bin/sh -c "setsid -f <Exec>"` recipe as the X11
+  backend. Doesn't need to go through the extension because spawning a
+  new process isn't what Mutter is gating.
+- **Hot path cost**: 1 D-Bus connection (~10 ms) + 1 `ListWindows` round-
+  trip + 1 `ActivateWindow`/`MinimizeWindow` round-trip. Each call is
+  ~1 ms over the session bus, well under the 50 ms budget.
+
+#### Installing / updating the extension
+
+```sh
+cd extensions
+gnome-extensions pack beckon@xom11.github.io
+gnome-extensions install --force beckon@xom11.github.io.shell-extension.zip
+gnome-extensions enable beckon@xom11.github.io
+# Wayland: log out and back in. (`busctl ... ReloadExtension` is gated on
+# unsafe-mode and not available in normal sessions.)
+```
+
+If the user runs Wayland under nix-managed dotfiles, a future packaging
+step can install the extension into `~/.local/share/gnome-shell/extensions/`
+declaratively. For now it's a manual step — that's why `pick_backend()`'s
+GNOME error message includes the install commands.
 
 ### Phase 1c Hyprland implementation note
 
@@ -334,7 +400,18 @@ hs.hotkey.bind(hyper, "c", function() hs.execute("beckon Claude") end)
 Wayland has no standard global hotkey API. On sway/Hyprland the compositor itself must bind the key and `exec beckon`. There is no app-level workaround.
 
 ### GNOME / KDE Wayland focus restrictions
-Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary windows on Wayland — this is by design (Wayland security model). beckon explicitly does not support these compositors. `beckon -d` detects and reports this. Users on GNOME/KDE Wayland either switch to X11 session, use a supported compositor (sway/Hyprland), or rely on per-DE extensions (out of beckon's scope).
+Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary windows on Wayland — this is by design (Wayland security model).
+
+- **GNOME Wayland**: supported via the bundled shell extension at
+  `extensions/beckon@xom11.github.io/`. The extension runs inside
+  gnome-shell, so it bypasses the external-focus restriction by being
+  internal. The Rust client talks to it over the session bus. Install once
+  with `gnome-extensions install --force` + `enable`, then log out / log
+  back in (Wayland can't reload shell live).
+- **KDE Wayland**: still unsupported. KWin doesn't have an equivalent
+  extension API surface that we can ride on, and no third-party project
+  has filled that gap. `beckon -d` reports this and points users at a
+  supported compositor or session.
 
 ### macOS Accessibility permission
 Required to focus arbitrary apps. Permission is bound to the codesigned binary identity — rebuilding the binary may invalidate it and require re-granting in System Settings.
@@ -405,6 +482,7 @@ swayipc    = "3"      # sway + i3 (same protocol)
 serde      = "1"      # serde_json for Hyprland JSON IPC payloads
 serde_json = "1"
 x11rb      = "0.13"   # any EWMH-compliant X11 DE (GNOME-X11, KDE-X11, XFCE, ...)
+zbus       = "4"      # session bus client for the GNOME Shell extension bridge
 # Future:
 # freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
 ```

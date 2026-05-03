@@ -26,6 +26,9 @@ pub mod hyprland;
 pub mod x11;
 
 #[cfg(target_os = "linux")]
+pub mod gnome;
+
+#[cfg(target_os = "linux")]
 pub fn pick_backend() -> Result<Box<dyn Backend>> {
     // sway sets BOTH SWAYSOCK and I3SOCK (i3-compat). i3 sets only I3SOCK.
     // Either case → same backend, since the IPC protocol is identical.
@@ -36,12 +39,19 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
         return Ok(Box::new(hyprland::HyprlandBackend::new()?));
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        return Err(BackendError::UnsupportedEnvironment(
-            "Wayland compositor without sway/Hyprland — \
-             beckon does not work on GNOME/KDE Wayland (compositor blocks external focus). \
-             Switch to X11 session, or use sway/Hyprland."
-                .to_string(),
-        ));
+        // Mutter (GNOME) and KWin (KDE) block external focus by design.
+        // We work around that by talking to a small GNOME Shell extension
+        // we ship — try it before giving up. If the extension isn't loaded
+        // (KDE, or GNOME without our extension installed), the probe fails
+        // with a hint pointing the user at the install instructions.
+        return gnome::GnomeBackend::new()
+            .map(|b| Box::new(b) as Box<dyn Backend>)
+            .map_err(|e| BackendError::UnsupportedEnvironment(format!(
+                "Wayland compositor without sway/Hyprland. \
+                 Tried the GNOME Shell extension fallback and it was unreachable: {e} \
+                 (KDE Wayland is unsupported; on GNOME Wayland, install the \
+                 `beckon@xom11.github.io` extension shipped in the beckon repo)."
+            )));
     }
     if std::env::var_os("DISPLAY").is_some() {
         return Ok(Box::new(x11::X11Backend::new()?));
@@ -62,7 +72,16 @@ pub fn detect_compositor() -> Option<&'static str> {
     } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         Some("Hyprland")
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        Some("Wayland (unsupported compositor)")
+        // We can't tell GNOME from KDE without probing — leave that to the
+        // backend selector. This label is for `-d` only.
+        if std::env::var("XDG_CURRENT_DESKTOP")
+            .map(|v| v.to_uppercase().contains("GNOME"))
+            .unwrap_or(false)
+        {
+            Some("GNOME Wayland (via shell extension)")
+        } else {
+            Some("Wayland (unsupported compositor)")
+        }
     } else if std::env::var_os("DISPLAY").is_some() {
         Some("X11")
     } else {

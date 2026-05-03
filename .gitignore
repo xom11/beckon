@@ -4,3 +4,7 @@
 *.swo
 .DS_Store
 /.claude
+
+# Built GNOME Shell extension bundle (gnome-extensions pack output).
+# The source lives under extensions/beckon@xom11.github.io/.
+extensions/*.shell-extension.zip

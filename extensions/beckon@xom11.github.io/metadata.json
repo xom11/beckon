@@ -1,0 +1,8 @@
+{
+    "uuid": "beckon@xom11.github.io",
+    "name": "beckon",
+    "description": "Expose a D-Bus interface so the beckon CLI can list, focus, and minimize windows under GNOME Wayland (where Mutter blocks external focus). Required only on GNOME; the CLI talks to sway/Hyprland/X11 directly.",
+    "version-name": "0.1.0",
+    "shell-version": ["45", "46", "47", "48", "49", "50"],
+    "url": "https://github.com/xom11/beckon"
+}
