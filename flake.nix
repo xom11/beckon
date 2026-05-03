@@ -20,6 +20,9 @@
       {
         packages = rec {
           beckon = pkgs.callPackage ./nix/package.nix { };
+          # GNOME Shell extension that beckon-cli talks to on GNOME Wayland.
+          # Optional — only consume this on machines running GNOME.
+          beckon-gnome-extension = pkgs.callPackage ./nix/gnome-extension.nix { };
           default = beckon;
         };
 
@@ -43,6 +46,7 @@
       # Overlay other flakes / configs can add to nixpkgs.overlays.
       overlays.default = final: prev: {
         beckon = final.callPackage ./nix/package.nix { };
+        beckon-gnome-extension = final.callPackage ./nix/gnome-extension.nix { };
       };
     };
 }
