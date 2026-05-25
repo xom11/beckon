@@ -1,0 +1,106 @@
+name: Bump packagers
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to backfill (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ secrets.PACKAGER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve version + fetch sha256 files
+        id: hashes
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          mkdir -p _hashes
+          for tgt in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-unknown-linux-gnu \
+            x86_64-unknown-linux-gnu \
+            aarch64-pc-windows-msvc \
+            x86_64-pc-windows-msvc
+          do
+            ext=tar.gz
+            case "$tgt" in *windows*) ext=zip ;; esac
+            asset="beckon-${version}-${tgt}.${ext}.sha256"
+            gh release download "${TAG}" -R xom11/beckon -p "$asset" -D _hashes
+            hash="$(awk '{print $1}' "_hashes/${asset}")"
+            key="$(echo "$tgt" | tr 'a-z-' 'A-Z_')"
+            echo "SHA_${key}=${hash}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Render Formula
+        run: |
+          set -euo pipefail
+          v='${{ steps.hashes.outputs.version }}'
+          sed \
+            -e "s|{{VERSION}}|${v}|g" \
+            -e "s|{{SHA256_DARWIN_ARM}}|${{ steps.hashes.outputs.SHA_AARCH64_APPLE_DARWIN }}|g" \
+            -e "s|{{SHA256_DARWIN_X86}}|${{ steps.hashes.outputs.SHA_X86_64_APPLE_DARWIN }}|g" \
+            -e "s|{{SHA256_LINUX_ARM}}|${{ steps.hashes.outputs.SHA_AARCH64_UNKNOWN_LINUX_GNU }}|g" \
+            -e "s|{{SHA256_LINUX_X86}}|${{ steps.hashes.outputs.SHA_X86_64_UNKNOWN_LINUX_GNU }}|g" \
+            packaging/homebrew/beckon.rb.template > beckon.rb
+
+      - name: Render Scoop manifest
+        run: |
+          set -euo pipefail
+          v='${{ steps.hashes.outputs.version }}'
+          sed \
+            -e "s|{{VERSION}}|${v}|g" \
+            -e "s|{{SHA256_WIN_X86}}|${{ steps.hashes.outputs.SHA_X86_64_PC_WINDOWS_MSVC }}|g" \
+            -e "s|{{SHA256_WIN_ARM}}|${{ steps.hashes.outputs.SHA_AARCH64_PC_WINDOWS_MSVC }}|g" \
+            packaging/scoop/beckon.json.template > beckon.json
+
+      - name: Push Formula to homebrew-tap
+        run: |
+          set -euo pipefail
+          v='${{ steps.hashes.outputs.version }}'
+          tmp="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/xom11/homebrew-tap.git" "$tmp"
+          mkdir -p "$tmp/Formula"
+          mv beckon.rb "$tmp/Formula/beckon.rb"
+          cd "$tmp"
+          git config user.name  'beckon-release-bot'
+          git config user.email 'beckon-release-bot@users.noreply.github.com'
+          git add Formula/beckon.rb
+          if git diff --staged --quiet; then
+            echo "No changes to push"
+            exit 0
+          fi
+          git commit -m "beckon ${v}"
+          git push
+
+      - name: Push manifest to scoop-bucket
+        run: |
+          set -euo pipefail
+          v='${{ steps.hashes.outputs.version }}'
+          tmp="$(mktemp -d)"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/xom11/scoop-bucket.git" "$tmp"
+          mkdir -p "$tmp/bucket"
+          mv beckon.json "$tmp/bucket/beckon.json"
+          cd "$tmp"
+          git config user.name  'beckon-release-bot'
+          git config user.email 'beckon-release-bot@users.noreply.github.com'
+          git add bucket/beckon.json
+          if git diff --staged --quiet; then
+            echo "No changes to push"
+            exit 0
+          fi
+          git commit -m "beckon ${v}"
+          git push

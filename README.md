@@ -44,9 +44,22 @@ beckon -d                      # diagnose your environment
 | Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
 | GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
 
-## Build
+## Install
 
-### Cargo
+### Homebrew (macOS / Linux)
+
+```sh
+brew install xom11/tap/beckon
+```
+
+### Scoop (Windows)
+
+```sh
+scoop bucket add xom11 https://github.com/xom11/scoop-bucket
+scoop install xom11/beckon
+```
+
+### Cargo (build from source)
 
 ```sh
 cargo build --release

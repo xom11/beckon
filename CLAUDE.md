@@ -520,9 +520,13 @@ No `serde` / `toml` — beckon does not read or write any config or cache file.
 
 ## Distribution
 
-- GitHub: https://github.com/xom11/beckon
-- Cargo build: `cargo build --release`
-- Nix flake: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+- **GitHub**: https://github.com/xom11/beckon (source + tagged release artifacts; 6 prebuilt binaries per release: x86_64 + aarch64 × linux-gnu / apple-darwin / pc-windows-msvc).
+- **Homebrew tap** (macOS / Linux): `brew install xom11/tap/beckon` — tap repo `xom11/homebrew-tap`. Formula auto-bumped by `.github/workflows/bump-packagers.yml` on every release.
+- **Scoop bucket** (Windows, x86_64 + arm64): `scoop bucket add xom11 https://github.com/xom11/scoop-bucket && scoop install xom11/beckon` — bucket repo `xom11/scoop-bucket`. Manifest auto-bumped by the same workflow.
+- **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
+- **Nix flake**: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+
+The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Default expiry 90 days — renewal procedure documented in the tap repo's README.
 
 User's nix integration (flake-input pattern, no hand-rolled overlay):
 

@@ -1,0 +1,36 @@
+class Beckon < Formula
+  desc "Cross-platform focus-or-launch app switcher"
+  homepage "https://github.com/xom11/beckon"
+  version "{{VERSION}}"
+  license any_of: ["Apache-2.0", "MIT"]
+
+  on_macos do
+    on_arm do
+      url "https://github.com/xom11/beckon/releases/download/v#{version}/beckon-#{version}-aarch64-apple-darwin.tar.gz"
+      sha256 "{{SHA256_DARWIN_ARM}}"
+    end
+    on_intel do
+      url "https://github.com/xom11/beckon/releases/download/v#{version}/beckon-#{version}-x86_64-apple-darwin.tar.gz"
+      sha256 "{{SHA256_DARWIN_X86}}"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/xom11/beckon/releases/download/v#{version}/beckon-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "{{SHA256_LINUX_ARM}}"
+    end
+    on_intel do
+      url "https://github.com/xom11/beckon/releases/download/v#{version}/beckon-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "{{SHA256_LINUX_X86}}"
+    end
+  end
+
+  def install
+    bin.install "beckon"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/beckon --version")
+  end
+end
