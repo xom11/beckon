@@ -11,7 +11,7 @@ use std::io::IsTerminal;
 /// `<id>` is the raw OS identifier:
 ///   - sway / Wayland: `app_id` (e.g. `kitty`, `firefox`, `claude.ai__new`)
 ///   - macOS:          `bundle_id` (e.g. `com.anthropic.claudefordesktop`)
-///   - Windows:        `exe` (e.g. `Claude.exe`)
+///   - Windows:        display name / exe / AUMID (e.g. `Terminal`)
 ///
 /// Use `beckon -l` to discover ids on the current machine.
 #[derive(Parser, Debug)]
@@ -22,7 +22,7 @@ use std::io::IsTerminal;
     arg_required_else_help = true
 )]
 struct Args {
-    /// App identifier (sway app_id / macOS bundle_id / Windows exe).
+    /// App identifier (sway app_id / macOS bundle_id / Windows name or AUMID).
     #[arg(value_name = "ID")]
     id: Option<String>,
 
@@ -409,7 +409,7 @@ fn cmd_doctor() -> Result<()> {
                 }
                 match backend.list_installed() {
                     Ok(apps) => println!(
-                        "Start Menu scan working -- {} shortcut(s) found.",
+                        "Windows app catalog working -- {} app(s) found.",
                         apps.len()
                     ),
                     Err(e) => println!("list_installed failed: {}", e),

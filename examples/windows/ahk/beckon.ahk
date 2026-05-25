@@ -14,7 +14,7 @@
 ; rarely conflict with built-in Windows shortcuts.
 ;
 ; Discover ids on your machine:
-;   beckon -L            list installed apps (Start Menu shortcuts)
+;   beckon -L            list installed desktop and MSIX/AppX apps
 ;   beckon -l            list currently running apps
 ;   beckon -s claude     fuzzy search
 ;   beckon -r Claude     validate an id
@@ -27,7 +27,7 @@ Beckon(name) {
     try Run('"' BeckonExe '" "' name '"', , "Hide")
 }
 
-^#!Space:: Beckon("Windows Terminal")
+^#!Space:: Beckon("Terminal")
 ^#!c::     Beckon("Claude")
 ^#!b::     Beckon("Brave")
 ^#!e::     Beckon("Cursor")

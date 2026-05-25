@@ -47,9 +47,8 @@ pub struct GnomeBackend {
 
 impl GnomeBackend {
     pub fn new() -> Result<Self> {
-        let conn = Connection::session().map_err(|e| {
-            BackendError::Ipc(format!("session bus connect: {e}"))
-        })?;
+        let conn = Connection::session()
+            .map_err(|e| BackendError::Ipc(format!("session bus connect: {e}")))?;
 
         // Probe the extension. `Version` is a tiny read-only property we
         // expose specifically so this call costs near-nothing while still

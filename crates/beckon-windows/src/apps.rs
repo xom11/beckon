@@ -1,24 +1,34 @@
-//! Start Menu shortcut (.lnk) scanning and Name -> exe resolution.
+//! Windows installed-app scanning and Name -> launch-target resolution.
 //!
 //! Scan paths:
 //!   - `%APPDATA%\Microsoft\Windows\Start Menu\Programs\` (per-user)
 //!   - `%ProgramData%\Microsoft\Windows\Start Menu\Programs\` (system-wide)
+//!   - Shell application registrations exposed for the current user
 //!
 //! Resolution priority (mirrors Linux .desktop / macOS LaunchServices):
 //!   1. Installed name exact match (case-insensitive, normalised).
-//!   2. Exe filename stem match (e.g. `brave` matches `brave.exe`).
-//!   3. Installed name substring (alphabetical-first wins).
+//!   2. AppUserModelID exact match for packaged/system shell apps.
+//!   3. Exe filename stem/name match (e.g. `brave` matches `brave.exe`).
+//!   4. Installed name substring (alphabetical-first wins).
 
 use std::path::{Path, PathBuf};
-use windows::core::{Interface, GUID, PCWSTR};
+use windows::core::{Interface, GUID, PCWSTR, PWSTR};
+use windows::Win32::Foundation::PROPERTYKEY;
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-    STGM,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, IBindCtx, IPersistFile, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED, STGM,
 };
-use windows::Win32::UI::Shell::IShellLinkW;
+use windows::Win32::UI::Shell::{
+    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, IShellItem2, IShellLinkW,
+    SHGetKnownFolderItem, KNOWN_FOLDER_FLAG, SIGDN_NORMALDISPLAY,
+};
 
 /// CLSID for ShellLink COM class: {00021401-0000-0000-C000-000000000046}
 const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
+const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+    pid: 5,
+};
 
 #[derive(Debug, Clone)]
 pub struct InstalledAppInfo {
@@ -32,11 +42,14 @@ pub struct InstalledAppInfo {
     pub arguments: String,
     /// Path to the `.lnk` file itself (used for launching).
     pub shortcut_path: PathBuf,
+    /// AppUserModelID for packaged/system shell apps; empty for classic shortcuts.
+    pub aumid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchType {
     InstalledName,
+    InstalledAumid,
     InstalledExeStem,
     InstalledNameSubstring,
 }
@@ -44,9 +57,10 @@ pub enum MatchType {
 impl MatchType {
     pub fn describe(self) -> &'static str {
         match self {
-            MatchType::InstalledName => "Start Menu shortcut name (exact)",
+            MatchType::InstalledName => "Start Menu/app display name (exact)",
+            MatchType::InstalledAumid => "AppUserModelID",
             MatchType::InstalledExeStem => "exe filename stem",
-            MatchType::InstalledNameSubstring => "Start Menu shortcut name (substring)",
+            MatchType::InstalledNameSubstring => "Start Menu/app display name (substring)",
         }
     }
 }
@@ -58,6 +72,7 @@ pub struct ResolvedMatch {
     pub exe_name: String,
     pub arguments: String,
     pub shortcut_path: PathBuf,
+    pub aumid: Option<String>,
     pub match_type: MatchType,
 }
 
@@ -123,6 +138,81 @@ pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Scan classic Start Menu shortcuts together with registered shell apps.
+pub fn scan_installed_apps() -> Vec<InstalledAppInfo> {
+    let mut out = scan_start_menu();
+    out.extend(scan_shell_apps());
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.aumid.cmp(&b.aumid)));
+    out
+}
+
+/// Enumerate launchable shell apps through the native AppsFolder namespace.
+/// Packaged app AUMIDs contain `!`; Explorer is a built-in registered shell
+/// application with the stable AUMID `Microsoft.Windows.Explorer`.
+fn scan_shell_apps() -> Vec<InstalledAppInfo> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+
+    let Ok(folder) = (unsafe {
+        SHGetKnownFolderItem::<IShellItem>(&FOLDERID_AppsFolder, KNOWN_FOLDER_FLAG(0), None)
+    }) else {
+        return Vec::new();
+    };
+    let Ok(items) =
+        (unsafe { folder.BindToHandler::<_, IEnumShellItems>(None::<&IBindCtx>, &BHID_EnumItems) })
+    else {
+        return Vec::new();
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    loop {
+        let mut next = [None];
+        let mut fetched = 0;
+        if unsafe { items.Next(&mut next, Some(&mut fetched)) }.is_err() || fetched == 0 {
+            break;
+        }
+        let Some(app) = next[0].as_ref().and_then(shell_app_from_shell_item) else {
+            continue;
+        };
+        if seen.insert(app.aumid.as_deref().unwrap_or_default().to_lowercase()) {
+            out.push(app);
+        }
+    }
+    out
+}
+
+fn shell_app_from_shell_item(item: &IShellItem) -> Option<InstalledAppInfo> {
+    let item2: IShellItem2 = item.cast().ok()?;
+    let aumid = taskmem_string(unsafe { item2.GetString(&PKEY_APP_USER_MODEL_ID).ok()? })?;
+    if !is_catalog_shell_aumid(&aumid) {
+        return None;
+    }
+    let name = taskmem_string(unsafe { item.GetDisplayName(SIGDN_NORMALDISPLAY).ok()? })?;
+
+    Some(InstalledAppInfo {
+        name,
+        exe_path: String::new(),
+        exe_name: String::new(),
+        arguments: String::new(),
+        shortcut_path: PathBuf::new(),
+        aumid: Some(aumid),
+    })
+}
+
+fn is_catalog_shell_aumid(aumid: &str) -> bool {
+    aumid.contains('!') || aumid.eq_ignore_ascii_case("Microsoft.Windows.Explorer")
+}
+
+fn taskmem_string(value: PWSTR) -> Option<String> {
+    let text = unsafe { value.to_string().ok() };
+    unsafe {
+        CoTaskMemFree(Some(value.0 as *const std::ffi::c_void));
+    }
+    text
 }
 
 /// Maximum directory depth to descend when scanning Start Menu. Real Start
@@ -203,11 +293,12 @@ fn parse_lnk(path: &Path) -> Option<InstalledAppInfo> {
             exe_name,
             arguments,
             shortcut_path: path.to_path_buf(),
+            aumid: None,
         })
     }
 }
 
-/// Resolve a user-supplied id against installed Start Menu apps.
+/// Resolve a user-supplied id against installed Windows apps.
 pub fn resolve(id: &str, installed: &[InstalledAppInfo]) -> Option<ResolvedMatch> {
     let needle = normalize(id);
 
@@ -216,13 +307,25 @@ pub fn resolve(id: &str, installed: &[InstalledAppInfo]) -> Option<ResolvedMatch
         return Some(to_match(app, MatchType::InstalledName));
     }
 
-    // 2. Exe stem match (e.g. `brave` matches `brave.exe`).
-    let needle_exe = format!("{}.exe", needle);
+    // 2. AppUserModelID exact match.
+    if let Some(app) = installed
+        .iter()
+        .find(|a| a.aumid.as_deref().is_some_and(|v| normalize(v) == needle))
+    {
+        return Some(to_match(app, MatchType::InstalledAumid));
+    }
+
+    // 3. Exe stem/name match (e.g. `brave` or `brave.exe`).
+    let needle_exe = if needle.ends_with(".exe") {
+        needle.clone()
+    } else {
+        format!("{}.exe", needle)
+    };
     if let Some(app) = installed.iter().find(|a| a.exe_name == needle_exe) {
         return Some(to_match(app, MatchType::InstalledExeStem));
     }
 
-    // 3. Name substring (alphabetical-first wins).
+    // 4. Name substring (alphabetical-first wins).
     let mut subs: Vec<&InstalledAppInfo> = installed
         .iter()
         .filter(|a| normalize(&a.name).contains(&needle))
@@ -239,6 +342,7 @@ fn to_match(app: &InstalledAppInfo, match_type: MatchType) -> ResolvedMatch {
         exe_name: app.exe_name.clone(),
         arguments: app.arguments.clone(),
         shortcut_path: app.shortcut_path.clone(),
+        aumid: app.aumid.clone(),
         match_type,
     }
 }
@@ -287,6 +391,18 @@ mod tests {
                 "C:\\Users\\test\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\{}.lnk",
                 name
             )),
+            aumid: None,
+        }
+    }
+
+    fn appx(name: &str, aumid: &str, exe: &str) -> InstalledAppInfo {
+        InstalledAppInfo {
+            name: name.to_string(),
+            exe_path: String::new(),
+            exe_name: exe.to_lowercase(),
+            arguments: String::new(),
+            shortcut_path: PathBuf::new(),
+            aumid: Some(aumid.to_string()),
         }
     }
 
@@ -330,6 +446,33 @@ mod tests {
     }
 
     #[test]
+    fn resolve_appx_by_name_and_aumid() {
+        let installed = vec![appx(
+            "Terminal",
+            "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+            "WindowsTerminal.exe",
+        )];
+        let by_name = resolve("Terminal", &installed).unwrap();
+        assert_eq!(by_name.match_type, MatchType::InstalledName);
+        assert_eq!(
+            by_name.aumid.as_deref(),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App")
+        );
+
+        let by_aumid = resolve("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App", &installed).unwrap();
+        assert_eq!(by_aumid.match_type, MatchType::InstalledAumid);
+    }
+
+    #[test]
+    fn catalog_includes_packaged_apps_and_file_explorer_aumid() {
+        assert!(is_catalog_shell_aumid(
+            "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"
+        ));
+        assert!(is_catalog_shell_aumid("Microsoft.Windows.Explorer"));
+        assert!(!is_catalog_shell_aumid("Some.Desktop.Application"));
+    }
+
+    #[test]
     fn resolve_falls_through_to_substring_alphabetical() {
         let installed = vec![
             app("Zeta Browser", "zeta.exe"),
@@ -361,17 +504,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_exe_stem_match_does_not_add_double_exe() {
-        // Defensive: user types "brave.exe" — should still resolve, not
-        // become "brave.exe.exe" against any candidate. Currently the
-        // exe-stem branch would build "brave.exe.exe" and miss; falls
-        // through to substring of names. Document the actual behaviour.
+    fn resolve_accepts_full_exe_name() {
         let installed = vec![app("Brave", "brave.exe")];
-        // "brave.exe" doesn't equal Name "Brave" (lowercase normalize:
-        // "brave.exe" vs "brave"), so InstalledName misses; exe-stem
-        // builds "brave.exe.exe" and misses; substring "brave.exe" in
-        // "brave" misses too. So total miss is the documented behaviour.
-        assert!(resolve("brave.exe", &installed).is_none());
+        let m = resolve("brave.exe", &installed).unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledExeStem);
     }
 
     // ---------- name_substring_matches ----------

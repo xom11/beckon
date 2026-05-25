@@ -5,14 +5,22 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use windows::core::BOOL;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
+use windows::core::{BOOL, GUID, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, PROPERTYKEY};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
+use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToString};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
+use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
 use windows::Win32::UI::WindowsAndMessaging::*;
+
+const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
+    fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+    pid: 5,
+};
 
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
@@ -24,6 +32,15 @@ pub struct WindowInfo {
     pub exe_path: String,
     /// Just the filename, lowercased: `app.exe`.
     pub exe_name: String,
+    /// AppUserModelID for packaged applications, when supplied by the process.
+    pub aumid: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessInfo {
+    exe_path: String,
+    exe_name: String,
+    aumid: Option<String>,
 }
 
 /// Enumerate all visible, non-cloaked, titled top-level windows.
@@ -37,12 +54,12 @@ pub fn enum_visible_windows() -> Result<Vec<WindowInfo>> {
         );
     }
 
-    // Cache pid -> exe path to avoid opening the same process repeatedly.
-    let mut exe_cache: HashMap<u32, Option<(String, String)>> = HashMap::new();
+    // Cache pid -> process identity to avoid opening the same process repeatedly.
+    let mut process_cache: HashMap<u32, Option<ProcessInfo>> = HashMap::new();
     let mut windows = Vec::new();
 
     for hwnd in hwnds {
-        if let Some(info) = build_window_info(hwnd, &mut exe_cache) {
+        if let Some(info) = build_window_info(hwnd, &mut process_cache) {
             windows.push(info);
         }
     }
@@ -57,7 +74,7 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
 
 fn build_window_info(
     hwnd: HWND,
-    exe_cache: &mut HashMap<u32, Option<(String, String)>>,
+    process_cache: &mut HashMap<u32, Option<ProcessInfo>>,
 ) -> Option<WindowInfo> {
     unsafe {
         // Must be visible.
@@ -112,24 +129,27 @@ fn build_window_info(
         let class_len = GetClassNameW(hwnd, &mut class_buf);
         let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
 
-        // Get exe path (cached by pid).
-        let (exe_path, exe_name) = exe_cache
+        // Get executable and packaged-app identity (cached by pid).
+        let process = process_cache
             .entry(pid)
-            .or_insert_with(|| get_exe_info(pid))
+            .or_insert_with(|| get_process_info(pid))
             .clone()?;
 
         Some(WindowInfo {
             hwnd,
             pid,
             title,
+            aumid: get_window_aumid(hwnd)
+                .or(process.aumid)
+                .or_else(|| built_in_window_aumid(&class_name)),
             class_name,
-            exe_path,
-            exe_name,
+            exe_path: process.exe_path,
+            exe_name: process.exe_name,
         })
     }
 }
 
-fn get_exe_info(pid: u32) -> Option<(String, String)> {
+fn get_process_info(pid: u32) -> Option<ProcessInfo> {
     unsafe {
         let process: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -140,11 +160,56 @@ fn get_exe_info(pid: u32) -> Option<(String, String)> {
             windows::core::PWSTR(buf.as_mut_ptr()),
             &mut size,
         );
-        let _ = CloseHandle(process);
-        result.ok()?;
+        if result.is_err() {
+            let _ = CloseHandle(process);
+            return None;
+        }
         let path = String::from_utf16_lossy(&buf[..size as usize]);
         let name = path.rsplit('\\').next().unwrap_or(&path).to_lowercase();
-        Some((path, name))
+        let aumid = get_aumid(process);
+        let _ = CloseHandle(process);
+        Some(ProcessInfo {
+            exe_path: path,
+            exe_name: name,
+            aumid,
+        })
+    }
+}
+
+fn get_aumid(process: HANDLE) -> Option<String> {
+    let mut buf = [0u16; 512];
+    let mut size = buf.len() as u32;
+    let result =
+        unsafe { GetApplicationUserModelId(process, &mut size, Some(PWSTR(buf.as_mut_ptr()))) };
+    if result.0 != 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&ch| ch == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+fn get_window_aumid(hwnd: HWND) -> Option<String> {
+    unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
+        let mut value = store.GetValue(&PKEY_APP_USER_MODEL_ID).ok()?;
+        let mut buf = [0u16; 512];
+        let result = PropVariantToString(&value, &mut buf);
+        let _ = PropVariantClear(&mut value);
+        result.ok()?;
+        let len = buf.iter().position(|&ch| ch == 0).unwrap_or(buf.len());
+        if len == 0 {
+            None
+        } else {
+            Some(String::from_utf16_lossy(&buf[..len]))
+        }
+    }
+}
+
+fn built_in_window_aumid(class_name: &str) -> Option<String> {
+    if class_name.eq_ignore_ascii_case("CabinetWClass") {
+        Some("Microsoft.Windows.Explorer".to_string())
+    } else {
+        None
     }
 }
 

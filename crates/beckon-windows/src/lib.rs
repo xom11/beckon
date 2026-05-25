@@ -1,5 +1,6 @@
-//! Windows backend for beckon. Uses Win32 API for window management and
-//! COM IShellLinkW for Start Menu shortcut (.lnk) parsing.
+//! Windows backend for beckon. Uses Win32 API for window management,
+//! COM IShellLinkW for Start Menu shortcuts, and AppX registration data
+//! for MSIX/Store apps.
 //!
 //! Algorithm mirrors `beckon-macos` / `beckon-linux::i3ipc`:
 //!   3. not running                 -> launch via ShellExecuteW

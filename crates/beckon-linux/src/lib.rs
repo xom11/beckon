@@ -46,12 +46,14 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
         // with a hint pointing the user at the install instructions.
         return gnome::GnomeBackend::new()
             .map(|b| Box::new(b) as Box<dyn Backend>)
-            .map_err(|e| BackendError::UnsupportedEnvironment(format!(
-                "Wayland compositor without sway/Hyprland. \
+            .map_err(|e| {
+                BackendError::UnsupportedEnvironment(format!(
+                    "Wayland compositor without sway/Hyprland. \
                  Tried the GNOME Shell extension fallback and it was unreachable: {e} \
                  (KDE Wayland is unsupported; on GNOME Wayland, install the \
                  `beckon@xom11.github.io` extension shipped in the beckon repo)."
-            )));
+                ))
+            });
     }
     if std::env::var_os("DISPLAY").is_some() {
         return Ok(Box::new(x11::X11Backend::new()?));

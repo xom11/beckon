@@ -5,17 +5,23 @@ use crate::window_ops::{self, WindowInfo};
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use std::collections::{HashMap, HashSet};
 use windows::core::PCWSTR;
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::{
+    ApplicationActivationManager, IApplicationActivationManager, ShellExecuteW, AO_NONE,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 pub struct WindowsBackend;
 
+const FILE_EXPLORER_AUMID: &str = "Microsoft.Windows.Explorer";
+
 impl Backend for WindowsBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        // scan_start_menu walks .lnk files via COM (~50–100ms on busy
-        // installs); enum_visible_windows just iterates HWNDs. Run them
-        // in parallel — they're independent and the hot path hits both.
-        let scan_handle = std::thread::spawn(apps::scan_start_menu);
+        // Installed-app discovery and window enumeration are independent;
+        // run them in parallel because the hot path requires both.
+        let scan_handle = std::thread::spawn(apps::scan_installed_apps);
         let all_windows = window_ops::enum_visible_windows()
             .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
@@ -35,7 +41,7 @@ impl Backend for WindowsBackend {
             let m = resolved.ok_or_else(|| BackendError::LaunchFailed {
                 id: id.to_string(),
                 reason: format!(
-                    "no running window and no Start Menu shortcut matches `{}`. \
+                    "no running window and no installed Windows app matches `{}`. \
                      Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
                     id, id
                 ),
@@ -90,19 +96,22 @@ impl Backend for WindowsBackend {
         let windows = window_ops::enum_visible_windows()
             .map_err(|e| BackendError::Other(format!("EnumWindows: {}", e)))?;
 
-        // Group by exe name. When multiple windows share the same exe
-        // (e.g. PWAs via chrome_proxy.exe), list each title separately.
+        // Group packaged apps by AUMID and classic apps by exe name.
+        // When multiple classic windows share one exe (e.g. browser PWAs),
+        // list each title separately.
         let mut groups: HashMap<String, (String, usize)> = HashMap::new();
-        let mut exe_count: HashMap<String, usize> = HashMap::new();
+        let mut id_count: HashMap<String, usize> = HashMap::new();
         for w in &windows {
-            *exe_count.entry(w.exe_name.clone()).or_default() += 1;
+            let id = w.aumid.as_ref().unwrap_or(&w.exe_name);
+            *id_count.entry(id.clone()).or_default() += 1;
         }
         for w in &windows {
-            let key = if exe_count.get(&w.exe_name).copied().unwrap_or(0) > 1 {
+            let id = w.aumid.as_ref().unwrap_or(&w.exe_name);
+            let key = if w.aumid.is_none() && id_count.get(id).copied().unwrap_or(0) > 1 {
                 // Shared exe — use title as the identity so each PWA shows up.
-                format!("{}|{}", w.exe_name, w.title)
+                format!("{}|{}", id, w.title)
             } else {
-                w.exe_name.clone()
+                id.clone()
             };
             let entry = groups.entry(key).or_insert_with(|| (w.title.clone(), 0));
             entry.1 += 1;
@@ -124,36 +133,58 @@ impl Backend for WindowsBackend {
     }
 
     fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        let apps = apps::scan_start_menu();
+        let apps = apps::scan_installed_apps();
         Ok(apps
             .into_iter()
             .map(|a| InstalledApp {
-                id: a.exe_name.clone(),
+                id: a.aumid.clone().unwrap_or_else(|| a.exe_name.clone()),
                 name: a.name,
-                exec: Some(a.exe_path),
+                exec: Some(
+                    a.aumid
+                        .map_or(a.exe_path, |id| format!("AppUserModelID:{}", id)),
+                ),
             })
             .collect())
     }
 }
 
-/// Find running windows matching a resolved Start Menu app.
+/// Find running windows matching a resolved installed app.
 ///
-/// Three-tier matching:
-///   1. Exe-only  — works for regular apps with unique exe names.
-///   2. Exe+title — when multiple windows share the same exe (PWAs via
+/// Four-tier matching:
+///   1. AUMID     — reliable packaged-app identity.
+///   2. Exe-only  — works for regular apps with unique exe names.
+///   3. Exe+title — when multiple windows share the same exe (PWAs via
 ///      `chrome_proxy.exe` or `brave.exe`), narrows by title containing
 ///      the app name.
-///   3. Title-only — when the .lnk target is a launcher stub that doesn't
+///   4. Title-only — when the .lnk target is a launcher stub that doesn't
 ///      stay running (e.g. `chrome_proxy.exe` launches `brave.exe`), falls
 ///      back to title match against all windows.
 fn windows_for_resolved<'a>(
     resolved: &ResolvedMatch,
     windows: &'a [WindowInfo],
 ) -> Vec<&'a WindowInfo> {
-    let by_exe: Vec<&WindowInfo> = windows
-        .iter()
-        .filter(|w| w.exe_name == resolved.exe_name)
-        .collect();
+    if let Some(aumid) = &resolved.aumid {
+        let by_aumid: Vec<&WindowInfo> = windows
+            .iter()
+            .filter(|w| {
+                w.aumid
+                    .as_deref()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(aumid))
+            })
+            .collect();
+        if !by_aumid.is_empty() {
+            return by_aumid;
+        }
+    }
+
+    let by_exe: Vec<&WindowInfo> = if resolved.exe_name.is_empty() {
+        Vec::new()
+    } else {
+        windows
+            .iter()
+            .filter(|w| w.exe_name == resolved.exe_name)
+            .collect()
+    };
 
     // Tier 2: narrow by title when multiple windows share this exe.
     if by_exe.len() > 1 {
@@ -191,6 +222,18 @@ fn windows_by_literal_id<'a>(id: &str, windows: &'a [WindowInfo]) -> Vec<&'a Win
         format!("{}.exe", lower)
     };
 
+    let by_aumid: Vec<&WindowInfo> = windows
+        .iter()
+        .filter(|w| {
+            w.aumid
+                .as_deref()
+                .is_some_and(|v| v.eq_ignore_ascii_case(id))
+        })
+        .collect();
+    if !by_aumid.is_empty() {
+        return by_aumid;
+    }
+
     // Prefer exe name match over title match.
     let by_exe: Vec<&WindowInfo> = windows.iter().filter(|w| w.exe_name == with_exe).collect();
     if !by_exe.is_empty() {
@@ -204,10 +247,21 @@ fn windows_by_literal_id<'a>(id: &str, windows: &'a [WindowInfo]) -> Vec<&'a Win
         .collect()
 }
 
-/// Launch an app via `ShellExecuteW` using the shortcut's target.
+/// Launch a classic app via `ShellExecuteW` or a packaged app via AUMID.
 fn launch(m: &ResolvedMatch) -> std::result::Result<(), String> {
-    let wide_exe = to_wide(&m.exe_path);
-    let wide_args = to_wide(&m.arguments);
+    if let Some(aumid) = &m.aumid {
+        if aumid.eq_ignore_ascii_case(FILE_EXPLORER_AUMID) {
+            return shell_execute("explorer.exe", "");
+        }
+        return launch_appx(aumid);
+    }
+
+    shell_execute(&m.exe_path, &m.arguments)
+}
+
+fn shell_execute(exe: &str, arguments: &str) -> std::result::Result<(), String> {
+    let wide_exe = to_wide(exe);
+    let wide_args = to_wide(arguments);
     let wide_verb = to_wide("open");
 
     unsafe {
@@ -223,9 +277,23 @@ fn launch(m: &ResolvedMatch) -> std::result::Result<(), String> {
         if ret.0 as usize <= 32 {
             return Err(format!(
                 "ShellExecuteW returned {} for `{}`",
-                ret.0 as usize, m.exe_path
+                ret.0 as usize, exe
             ));
         }
+    }
+    Ok(())
+}
+
+fn launch_appx(aumid: &str) -> std::result::Result<(), String> {
+    let wide_aumid = to_wide(aumid);
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let activator: IApplicationActivationManager =
+            CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_INPROC_SERVER)
+                .map_err(|e| format!("create AppX activation manager: {}", e))?;
+        activator
+            .ActivateApplication(PCWSTR(wide_aumid.as_ptr()), PCWSTR::null(), AO_NONE)
+            .map_err(|e| format!("activate AppX `{}`: {}", aumid, e))?;
     }
     Ok(())
 }
@@ -236,7 +304,7 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 /// `beckon -r <id>` report on Windows.
 pub fn print_resolve_report(id: &str) -> Result<()> {
-    let installed = apps::scan_start_menu();
+    let installed = apps::scan_installed_apps();
     let resolved = apps::resolve(id, &installed);
     let subs = apps::name_substring_matches(id, &installed);
     let all_windows = window_ops::enum_visible_windows()
@@ -249,7 +317,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         let running = windows_by_literal_id(id, &all_windows);
         if !running.is_empty() {
             println!(
-                "Note: {} running window(s) match by exe/title but no Start Menu shortcut found.",
+                "Note: {} running window(s) match by exe/title but no installed app found.",
                 running.len()
             );
             println!("      Focus will work; launch will not.");
@@ -267,21 +335,28 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         return Ok(());
     };
 
-    // Count windows matching this exe.
-    let win_count = all_windows
-        .iter()
-        .filter(|w| w.exe_name == m.exe_name)
-        .count();
+    let win_count = windows_for_resolved(&m, &all_windows).len();
 
     println!("  resolved");
     println!("   Input:        {}", id);
     println!("   Match type:   {}", m.match_type.describe());
     println!("   Name:         {}", m.name);
-    println!("   Exe:          {}", m.exe_path);
+    if let Some(aumid) = &m.aumid {
+        println!("   AUMID:        {}", aumid);
+        if aumid.eq_ignore_ascii_case(FILE_EXPLORER_AUMID) {
+            println!("   Launch:       explorer.exe");
+        } else {
+            println!("   Launch:       IApplicationActivationManager");
+        }
+    } else {
+        println!("   Exe:          {}", m.exe_path);
+    }
     if !m.arguments.is_empty() {
         println!("   Arguments:    {}", m.arguments);
     }
-    println!("   Shortcut:     {}", m.shortcut_path.display());
+    if !m.shortcut_path.as_os_str().is_empty() {
+        println!("   Shortcut:     {}", m.shortcut_path.display());
+    }
     if win_count > 0 {
         println!(
             "   Status:       running ({} window{})",
@@ -310,4 +385,70 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         println!("   Hint: use the exact Name from `beckon -L` to disambiguate.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use windows::Win32::Foundation::HWND;
+
+    #[test]
+    fn packaged_window_matches_aumid_without_exe_or_title_match() {
+        let resolved = ResolvedMatch {
+            name: "Terminal".to_string(),
+            exe_path: String::new(),
+            exe_name: String::new(),
+            arguments: String::new(),
+            shortcut_path: PathBuf::new(),
+            aumid: Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".to_string()),
+            match_type: MatchType::InstalledName,
+        };
+        let windows = vec![WindowInfo {
+            hwnd: HWND::default(),
+            pid: 1,
+            title: "shell prompt".to_string(),
+            class_name: "CASCADIA_HOSTING_WINDOW_CLASS".to_string(),
+            exe_path: String::new(),
+            exe_name: "applicationframehost.exe".to_string(),
+            aumid: Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".to_string()),
+        }];
+
+        assert_eq!(windows_for_resolved(&resolved, &windows).len(), 1);
+    }
+
+    #[test]
+    fn file_explorer_matches_only_its_aumid_window() {
+        let resolved = ResolvedMatch {
+            name: "File Explorer".to_string(),
+            exe_path: String::new(),
+            exe_name: String::new(),
+            arguments: String::new(),
+            shortcut_path: PathBuf::new(),
+            aumid: Some("Microsoft.Windows.Explorer".to_string()),
+            match_type: MatchType::InstalledName,
+        };
+        let windows = vec![
+            WindowInfo {
+                hwnd: HWND::default(),
+                pid: 1,
+                title: "Documents".to_string(),
+                class_name: "CabinetWClass".to_string(),
+                exe_path: String::new(),
+                exe_name: "explorer.exe".to_string(),
+                aumid: Some("Microsoft.Windows.Explorer".to_string()),
+            },
+            WindowInfo {
+                hwnd: HWND::default(),
+                pid: 1,
+                title: "Desktop".to_string(),
+                class_name: "Progman".to_string(),
+                exe_path: String::new(),
+                exe_name: "explorer.exe".to_string(),
+                aumid: None,
+            },
+        ];
+
+        assert_eq!(windows_for_resolved(&resolved, &windows).len(), 1);
+    }
 }

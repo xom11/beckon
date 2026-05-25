@@ -28,24 +28,27 @@ To make it run on login, drop a shortcut in the Startup folder:
 
 ## App Names on Windows
 
-beckon resolves Names against Start Menu `.lnk` shortcuts in
-`%APPDATA%\...\Start Menu\Programs\` and
-`%ProgramData%\...\Start Menu\Programs\`. The shortcut's display
-name (the text under the icon, not the filename) is the canonical
-Name.
+beckon resolves Names against Start Menu `.lnk` shortcuts and registered
+shell/MSIX/AppX apps. It uses friendly Start Menu names and AppUserModelIDs
+(AUMIDs) for identity; packaged apps activate through AUMID, while File
+Explorer launches through `explorer.exe`.
 
 ```cmd
-beckon -L            list installed shortcuts
+beckon -L            list installed desktop and MSIX/AppX apps
 beckon -l            list currently running apps
 beckon -r Claude     validate an id
 ```
 
-> **Microsoft Store apps**: apps installed via the Microsoft Store
-> (Windows Terminal, Calculator, …) sometimes have no file-system
-> `.lnk`. They show up in `beckon -l` once running and can be
-> focused/cycled, but launching by Name from cold may not work.
-> The example uses `Windows Terminal` because it ships with a Start
-> Menu shortcut on most installs.
+For example, Windows Terminal is commonly exposed as `Terminal`; verify the
+local friendly name with `beckon -L | findstr /i terminal` before binding it.
+`Settings` and `File Explorer` are also supported. Use the exact name
+`File Explorer`, because `Explorer` can match another shortcut whose target is
+`explorer.exe` (for example a cloud-storage promotion shortcut).
+
+```ahk
+^#!,:: Beckon("Settings")
+^#!f:: Beckon("File Explorer")
+```
 
 ## Anti-focus-stealing
 

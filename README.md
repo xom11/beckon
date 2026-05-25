@@ -132,18 +132,21 @@ Apps.localized/*.app`):
 4. Installed app — `CFBundleIdentifier`
 5. Installed app — name substring (alphabetical first wins)
 
-**Windows** (Start Menu `.lnk` shortcuts in `%APPDATA%\...\Start Menu\Programs\`
-and `%ProgramData%\...\Start Menu\Programs\`, parsed via COM `IShellLinkW`):
+**Windows** (Start Menu `.lnk` shortcuts plus registered shell/MSIX/AppX apps):
 
-1. Shortcut display name exact (case-insensitive, normalized)
-2. Exe filename stem (e.g. `brave` matches `brave.exe`)
-3. Shortcut display name substring (alphabetical first wins)
+1. Display name exact (case-insensitive, normalized)
+2. AppUserModelID exact for shell/MSIX/AppX apps
+3. Exe filename stem or filename (e.g. `brave` / `brave.exe`)
+4. Display name substring (alphabetical first wins)
 
 When the resolved exe is a launcher stub (e.g. Brave PWA `chrome_proxy.exe` →
 `brave.exe`), beckon falls back to title matching against running windows.
 
 Names are stable across machines. Brave PWA hashes are not — bind to `Claude`,
 not `brave-fmpnliohj...-Default` or `com.vivaldi.Vivaldi.app.<hash>`.
+On Windows, prefer exact friendly names such as `Terminal`, `Settings`, and
+`File Explorer`; shortened `Explorer` can collide with shortcuts that launch
+through `explorer.exe`.
 
 ### Discovery
 
@@ -201,7 +204,7 @@ crates/
 ├── beckon-core/      # Backend trait, shared types
 ├── beckon-linux/     # algorithm.rs (shared) + i3-IPC + Hyprland + EWMH
 ├── beckon-macos/     # NSWorkspace + AX (cycle) + CGWindowList (z-order)
-├── beckon-windows/   # Win32 EnumWindows + COM IShellLinkW (.lnk parsing)
+├── beckon-windows/   # Win32 EnumWindows + .lnk and MSIX/AppX catalog
 └── beckon-cli/       # binary, clap CLI, doctor / search / resolve
 examples/             # ready-to-use configs for every supported OS / WM
 ```
