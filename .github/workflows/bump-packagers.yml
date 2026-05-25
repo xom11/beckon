@@ -2,6 +2,15 @@ name: Bump packagers
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag whose assets should update package catalogs'
+        required: true
+        type: string
+    secrets:
+      PACKAGER_TOKEN:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
-      GH_TOKEN: ${{ secrets.PACKAGER_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PACKAGER_TOKEN: ${{ secrets.PACKAGER_TOKEN }}
     steps:
       - uses: actions/checkout@v6
 
@@ -72,7 +82,7 @@ jobs:
           set -euo pipefail
           v='${{ steps.hashes.outputs.version }}'
           tmp="$(mktemp -d)"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/xom11/homebrew-tap.git" "$tmp"
+          git clone "https://x-access-token:${PACKAGER_TOKEN}@github.com/xom11/homebrew-tap.git" "$tmp"
           mkdir -p "$tmp/Formula"
           mv beckon.rb "$tmp/Formula/beckon.rb"
           cd "$tmp"
@@ -91,7 +101,7 @@ jobs:
           set -euo pipefail
           v='${{ steps.hashes.outputs.version }}'
           tmp="$(mktemp -d)"
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/xom11/scoop-bucket.git" "$tmp"
+          git clone "https://x-access-token:${PACKAGER_TOKEN}@github.com/xom11/scoop-bucket.git" "$tmp"
           mkdir -p "$tmp/bucket"
           mv beckon.json "$tmp/bucket/beckon.json"
           cd "$tmp"

@@ -133,3 +133,11 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: false
           fail_on_unmatched_files: true
+
+  packagers:
+    name: Homebrew and Scoop
+    needs: release
+    uses: ./.github/workflows/bump-packagers.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+    secrets: inherit
