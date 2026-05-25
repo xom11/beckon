@@ -6,11 +6,13 @@
   "architecture": {
     "64bit": {
       "url": "https://github.com/xom11/beckon/releases/download/v{{VERSION}}/beckon-{{VERSION}}-x86_64-pc-windows-msvc.zip",
-      "hash": "{{SHA256_WIN_X86}}"
+      "hash": "{{SHA256_WIN_X86}}",
+      "extract_dir": "beckon-{{VERSION}}-x86_64-pc-windows-msvc"
     },
     "arm64": {
       "url": "https://github.com/xom11/beckon/releases/download/v{{VERSION}}/beckon-{{VERSION}}-aarch64-pc-windows-msvc.zip",
-      "hash": "{{SHA256_WIN_ARM}}"
+      "hash": "{{SHA256_WIN_ARM}}",
+      "extract_dir": "beckon-{{VERSION}}-aarch64-pc-windows-msvc"
     }
   },
   "bin": "beckon.exe",
