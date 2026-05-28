@@ -159,6 +159,10 @@ impl Backend for WindowsBackend {
 ///   4. Title-only — when the .lnk target is a launcher stub that doesn't
 ///      stay running (e.g. `chrome_proxy.exe` launches `brave.exe`), falls
 ///      back to title match against all windows.
+///
+/// Chromium PWAs expose AUMIDs like `Vivaldi._crx_<id>`. A plain browser
+/// shortcut such as `Vivaldi.lnk` must not match those PWA windows just
+/// because they share the same browser executable.
 fn windows_for_resolved<'a>(
     resolved: &ResolvedMatch,
     windows: &'a [WindowInfo],
@@ -180,9 +184,13 @@ fn windows_for_resolved<'a>(
     let by_exe: Vec<&WindowInfo> = if resolved.exe_name.is_empty() {
         Vec::new()
     } else {
+        let exclude_chromium_pwas = should_exclude_chromium_pwa_windows(resolved);
         windows
             .iter()
-            .filter(|w| w.exe_name == resolved.exe_name)
+            .filter(|w| {
+                w.exe_name == resolved.exe_name
+                    && !(exclude_chromium_pwas && is_chromium_pwa_window(w))
+            })
             .collect()
     };
 
@@ -206,10 +214,30 @@ fn windows_for_resolved<'a>(
     // Tier 3: exe matched nothing — the .lnk target is likely a launcher
     // stub (e.g. chrome_proxy.exe → brave.exe). Fall back to title match.
     let name_lower = apps::normalize(&resolved.name);
+    let exclude_chromium_pwas = should_exclude_chromium_pwa_windows(resolved);
     windows
         .iter()
-        .filter(|w| apps::normalize(&w.title).contains(&name_lower))
+        .filter(|w| {
+            apps::normalize(&w.title).contains(&name_lower)
+                && !(exclude_chromium_pwas && is_chromium_pwa_window(w))
+        })
         .collect()
+}
+
+fn should_exclude_chromium_pwa_windows(resolved: &ResolvedMatch) -> bool {
+    resolved.aumid.is_none() && !is_chromium_pwa_shortcut(&resolved.arguments)
+}
+
+fn is_chromium_pwa_shortcut(arguments: &str) -> bool {
+    let args = arguments.to_ascii_lowercase();
+    args.contains("--app=") || args.contains("--app-id=")
+}
+
+fn is_chromium_pwa_window(window: &WindowInfo) -> bool {
+    window
+        .aumid
+        .as_deref()
+        .is_some_and(|aumid| aumid.to_ascii_lowercase().contains("._crx_"))
 }
 
 /// Fallback: match by literal id against exe name or window title.
@@ -450,5 +478,33 @@ mod tests {
         ];
 
         assert_eq!(windows_for_resolved(&resolved, &windows).len(), 1);
+    }
+
+    #[test]
+    fn classic_browser_shortcut_does_not_match_chromium_pwa_window_by_exe() {
+        let resolved = ResolvedMatch {
+            name: "Vivaldi".to_string(),
+            exe_path: "C:\\Users\\test\\AppData\\Local\\Vivaldi\\Application\\vivaldi.exe"
+                .to_string(),
+            exe_name: "vivaldi.exe".to_string(),
+            arguments: String::new(),
+            shortcut_path: PathBuf::from(
+                "C:\\Users\\test\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Vivaldi.lnk",
+            ),
+            aumid: None,
+            match_type: MatchType::InstalledName,
+        };
+        let windows = vec![WindowInfo {
+            hwnd: HWND::default(),
+            pid: 1,
+            title: "Google Gemini - Google Gemini".to_string(),
+            class_name: "Chrome_WidgetWin_1".to_string(),
+            exe_path: "C:\\Users\\test\\AppData\\Local\\Vivaldi\\Application\\vivaldi.exe"
+                .to_string(),
+            exe_name: "vivaldi.exe".to_string(),
+            aumid: Some("Vivaldi._crx_caidcmannjpmidmiecjcoiiigg".to_string()),
+        }];
+
+        assert!(windows_for_resolved(&resolved, &windows).is_empty());
     }
 }
