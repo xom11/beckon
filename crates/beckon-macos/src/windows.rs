@@ -14,7 +14,15 @@ use crate::ffi::{self, AxElement};
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
+use core_foundation::string::CFString;
 use objc2_app_kit::NSApplicationActivationOptions;
+
+/// The only window subrole users cycle through. Apps in native fullscreen —
+/// and Chromium PWAs in particular — also expose helper windows (subrole
+/// `AXUnknown`, e.g. a 1px-tall toolbar overlay) that must NOT count as
+/// "another window", or step 5a cycles onto an invisible window and the user
+/// appears stuck on the same app instead of toggling back (step 5b).
+const AX_STANDARD_WINDOW: &str = "AXStandardWindow";
 
 /// AX handles for one window of an app. `main_index` flags which entry in
 /// the `AXWindows` array is currently the focused (main) window.
@@ -39,30 +47,40 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
     for i in 0..array.len() {
         let Some(item) = array.get(i) else { continue };
         let raw = item.as_concrete_TypeRef();
-        // Wrap the AXUIElement so its lifetime extends past the temporary
-        // `windows_value`. Each AXUIElement we read here is retained by the
-        // outer CFArray; we increment the ref count so the per-window CFType
-        // owns its own reference and survives independently.
-        let cf = unsafe { CFType::wrap_under_get_rule(raw) };
 
-        // Probe AXMain on this window element (don't have a generic AxElement
-        // wrapper for the window — just call the FFI directly).
-        let win_elem = unsafe { AxElement::from_borrowed(raw as _) };
-        if let Some(win) = win_elem {
-            // from_owned takes ownership without retaining; since we already
-            // bumped the ref count above for `cf`, we don't want a double
-            // release. Forget the AxElement after using it.
-            let is_main = win
-                .copy_attribute("AXMain")
-                .map(|v| {
-                    let b = unsafe { CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _) };
-                    b.into()
-                })
-                .unwrap_or(false);
+        // Probe AXSubrole / AXMain on this window element (don't have a generic
+        // AxElement wrapper for the window — just call the FFI directly).
+        // from_borrowed takes ownership without retaining; we `forget` it after
+        // reading so the outer CFArray's reference is the only owner.
+        let Some(win) = (unsafe { AxElement::from_borrowed(raw as _) }) else {
+            continue;
+        };
+
+        // Skip non-standard windows (fullscreen / PWA helper windows). They are
+        // not user-cyclable and would otherwise inflate the window count.
+        let subrole = win.copy_attribute("AXSubrole").map(|v| {
+            let s = unsafe { CFString::wrap_under_get_rule(v.as_concrete_TypeRef() as _) };
+            s.to_string()
+        });
+        if subrole.as_deref() != Some(AX_STANDARD_WINDOW) {
             std::mem::forget(win);
-            if is_main && main_index.is_none() {
-                main_index = Some(i as usize);
-            }
+            continue;
+        }
+
+        let is_main = win
+            .copy_attribute("AXMain")
+            .map(|v| {
+                let b = unsafe { CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _) };
+                b.into()
+            })
+            .unwrap_or(false);
+        std::mem::forget(win);
+
+        // Keep this standard window. Bump the ref count so the per-window CFType
+        // owns its own reference and survives past the temporary `windows_value`.
+        let cf = unsafe { CFType::wrap_under_get_rule(raw) };
+        if is_main && main_index.is_none() {
+            main_index = Some(elements.len());
         }
         elements.push(cf);
     }
@@ -71,6 +89,13 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
         elements,
         main_index,
     })
+}
+
+/// Count of user-cyclable (standard) windows for `pid`. Mirrors what step 5a
+/// cycles, so `-l` / `-r` report a count that matches actual behaviour (a
+/// fullscreen app shows 1, not 2). `None` when AX is unavailable.
+pub fn standard_window_count(pid: i32) -> Option<usize> {
+    collect_app_windows(pid).map(|w| w.elements.len())
 }
 
 /// Try to raise the next window of the same app (step 5a). Returns `true`

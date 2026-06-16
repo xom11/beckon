@@ -228,14 +228,9 @@ fn running_app_for_pid(pid: i32) -> Option<RunningAppInfo> {
 }
 
 fn ax_window_count(pid: i32) -> Option<usize> {
-    use core_foundation::array::CFArray;
-    use core_foundation::base::TCFType;
-    let app = crate::ffi::AxElement::for_pid(pid)?;
-    let value = app.copy_attribute("AXWindows")?;
-    let array_ref = value.as_concrete_TypeRef();
-    let array: CFArray<core_foundation::base::CFType> =
-        unsafe { CFArray::wrap_under_get_rule(array_ref as _) };
-    Some(array.len() as usize)
+    // Count only standard windows — the same set step 5a cycles — so the
+    // reported count never includes fullscreen/PWA helper windows.
+    windows::standard_window_count(pid)
 }
 
 /// Launch the resolved app. Shells out to `/usr/bin/open` rather than going
