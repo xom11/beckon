@@ -6,7 +6,9 @@
 //!   3. not running                 → launch
 //!   4. running, not focused        → activate
 //!   5a. focused, app has more wins → AX-raise the next window of same app
-//!   5b. focused, only one window   → activate the most-recent OTHER app via z-order
+//!   5b. focused, only one window   → activate the most-recent OTHER app:
+//!                                     MRU "previous" first (handles fullscreen
+//!                                     apps on another Space), else z-order
 //!   5c. nothing else exists        → hide current app (NSRunningApplication.hide)
 //!
 //! Accessibility permission: required for window-level operations (5a). Without
@@ -21,6 +23,8 @@ use beckon_core::{Backend, Result};
 mod apps;
 #[cfg(target_os = "macos")]
 mod ffi;
+#[cfg(target_os = "macos")]
+mod state;
 #[cfg(target_os = "macos")]
 mod windows;
 

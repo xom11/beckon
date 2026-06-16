@@ -2,6 +2,7 @@
 
 use crate::apps::{self, MatchType, ResolvedMatch, RunningAppInfo};
 use crate::ffi;
+use crate::state;
 use crate::windows;
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use objc2_app_kit::NSWorkspace;
@@ -14,16 +15,92 @@ impl MacBackend {
     }
 }
 
+/// Step 5b MRU pick: should we toggle back to the recorded `previous` app?
+/// Returns its bundle id when `previous` names a currently-running app that
+/// isn't the target; `None` to fall through to the z-order stack.
+///
+/// Pure (the running check is injected) so it can be unit-tested without
+/// NSWorkspace. The guard against `previous == target` mirrors the Linux
+/// algorithm: after a toggle-back we persist the target as "previous", and we
+/// must never toggle an app onto itself.
+fn pick_mru_toggle_back(
+    previous: Option<&str>,
+    target_bundle: &str,
+    is_running: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let prev = previous?;
+    if prev == target_bundle || !is_running(prev) {
+        return None;
+    }
+    Some(prev.to_string())
+}
+
 impl Backend for MacBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        // Snapshot running apps once and reuse it for both resolve and the
-        // "running entries for the target bundle" filter — saves one
-        // NSWorkspace.runningApplications round-trip on the hot path.
+        // Snapshot running apps once and reuse it for resolve, the target
+        // filter, and the MRU lookup — saves repeated
+        // NSWorkspace.runningApplications round-trips on the hot path.
         let running = apps::running_apps();
 
+        // Bundle id of whatever is frontmost right now, before we touch focus.
+        // This becomes "previous" for the next invocation's toggle-back. We
+        // read it from `frontmostApplication` (Space-independent) so a
+        // fullscreen app on another Space is still captured correctly.
+        let pre_frontmost = frontmost_pid()
+            .and_then(|p| running.iter().find(|a| a.pid == p))
+            .map(|a| a.bundle_id.clone());
+
+        let action = self.beckon_inner(id, &running);
+
+        // Persist the app we came from on every successful action. Best-effort:
+        // a missing MRU only degrades toggle-back, never fails the hot path.
+        if action.is_ok() {
+            if let Some(prev) = pre_frontmost {
+                state::write_previous(&prev);
+            }
+        }
+        action
+    }
+
+    fn list_running(&self) -> Result<Vec<RunningApp>> {
+        let mut apps = apps::running_apps();
+        apps.sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
+
+        // Group windows by bundle id via AX (best-effort — needs permission).
+        Ok(apps
+            .into_iter()
+            .map(|a| {
+                let window_count = ax_window_count(a.pid).unwrap_or(0);
+                RunningApp {
+                    id: a.bundle_id,
+                    name: a.name,
+                    window_count,
+                }
+            })
+            .collect())
+    }
+
+    fn list_installed(&self) -> Result<Vec<InstalledApp>> {
+        let mut apps = apps::installed_apps();
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(apps
+            .into_iter()
+            .map(|a| InstalledApp {
+                id: a.bundle_id,
+                name: a.name,
+                exec: Some(a.bundle_path.display().to_string()),
+            })
+            .collect())
+    }
+}
+
+impl MacBackend {
+    /// Core algorithm. Takes the pre-snapshotted `running` list so the outer
+    /// `beckon` can also use it for MRU bookkeeping without re-querying.
+    fn beckon_inner(&self, id: &str, running: &[RunningAppInfo]) -> Result<BeckonAction> {
         // Resolve to bundle id. Match by Name first (cross-OS portable),
         // bundle id second, installed-name fallback last (see apps::resolve).
-        let resolved = apps::resolve_with_running(id, &running);
+        let resolved = apps::resolve_with_running(id, running);
 
         // Step 3: not running → launch
         let running_for_target: Vec<RunningAppInfo> = match &resolved {
@@ -96,6 +173,23 @@ impl Backend for MacBackend {
         }
 
         // Step 5b: only one window of this app → toggle to most-recent other app.
+        //
+        // Prefer the MRU "previous" app recorded by the last invocation. This
+        // is the only path that can land on a natively-fullscreen app: such an
+        // app lives on its own Space and so is *absent* from the on-screen
+        // z-order stack below, but `frontmostApplication` saw it when we
+        // recorded it, and `running` (NSWorkspace) lists it regardless of
+        // Space. Without this, toggle-back skips the fullscreen app and lands
+        // on whatever else is visible.
+        if let Some(prev_bundle) = pick_mru_toggle_back(state::read_previous().as_deref(), &target.bundle_id, |b| running.iter().any(|a| a.bundle_id == b)) {
+            if let Some(other) = running.iter().find(|a| a.bundle_id == prev_bundle) {
+                if windows::activate_app(other) {
+                    return Ok(BeckonAction::ToggledBack);
+                }
+            }
+        }
+
+        // Fallback: no usable MRU (first run, or the previous app quit).
         // CGWindowListCopyWindowInfo gives us the front-to-back stack; the
         // first PID that isn't us (or one of our siblings sharing the bundle)
         // is the app the user came from.
@@ -118,37 +212,6 @@ impl Backend for MacBackend {
             "could not cycle, toggle, or hide pid {}",
             target_pid
         )))
-    }
-
-    fn list_running(&self) -> Result<Vec<RunningApp>> {
-        let mut apps = apps::running_apps();
-        apps.sort_by(|a, b| a.bundle_id.cmp(&b.bundle_id));
-
-        // Group windows by bundle id via AX (best-effort — needs permission).
-        Ok(apps
-            .into_iter()
-            .map(|a| {
-                let window_count = ax_window_count(a.pid).unwrap_or(0);
-                RunningApp {
-                    id: a.bundle_id,
-                    name: a.name,
-                    window_count,
-                }
-            })
-            .collect())
-    }
-
-    fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        let mut apps = apps::installed_apps();
-        apps.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(apps
-            .into_iter()
-            .map(|a| InstalledApp {
-                id: a.bundle_id,
-                name: a.name,
-                exec: Some(a.bundle_path.display().to_string()),
-            })
-            .collect())
     }
 }
 
@@ -271,4 +334,52 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         println!("    or run `beckon -d` for the full check.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_mru_toggle_back;
+
+    #[test]
+    fn returns_previous_when_running_and_not_target() {
+        let running = ["com.apple.Safari", "com.x.kitty"];
+        let pick = pick_mru_toggle_back(Some("com.apple.Safari"), "com.x.kitty", |b| {
+            running.contains(&b)
+        });
+        assert_eq!(pick.as_deref(), Some("com.apple.Safari"));
+    }
+
+    #[test]
+    fn none_when_previous_is_target() {
+        // After a toggle-back we persist the target as "previous"; never
+        // toggle an app onto itself — fall through to the z-order stack.
+        let pick = pick_mru_toggle_back(Some("com.x.kitty"), "com.x.kitty", |_| true);
+        assert!(pick.is_none());
+    }
+
+    #[test]
+    fn none_when_previous_not_running() {
+        // The previously-recorded app has since quit.
+        let pick = pick_mru_toggle_back(Some("com.gone.app"), "com.x.kitty", |_| false);
+        assert!(pick.is_none());
+    }
+
+    #[test]
+    fn none_when_no_previous_recorded() {
+        let pick = pick_mru_toggle_back(None, "com.x.kitty", |_| true);
+        assert!(pick.is_none());
+    }
+
+    #[test]
+    fn fullscreen_app_on_another_space_is_still_a_valid_previous() {
+        // The regression this fixes: a fullscreen app is absent from the
+        // on-screen z-order stack, but it is still in `running` (NSWorkspace
+        // is Space-independent) and was recorded as frontmost, so the MRU
+        // pick must surface it.
+        let running = ["com.google.Chrome", "com.youtube.pwa"];
+        let pick = pick_mru_toggle_back(Some("com.youtube.pwa"), "com.google.Chrome", |b| {
+            running.contains(&b)
+        });
+        assert_eq!(pick.as_deref(), Some("com.youtube.pwa"));
+    }
 }
