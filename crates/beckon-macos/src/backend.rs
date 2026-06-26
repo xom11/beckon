@@ -141,39 +141,45 @@ impl MacBackend {
                 .iter()
                 .any(|a| Some(a.pid) == frontmost_pid);
 
-        // Step 4 (pre-check): the target may be running yet have no window we
-        // can bring forward — every window minimized, or running windowless
-        // (Chromium-family browsers keep running after their last window is
-        // closed). `activateWithOptions` neither un-minimizes nor spawns a
-        // window, so it silently no-ops and the user perceives "can't focus
-        // <app>" until they quit and relaunch. The reopen path (`open -b`,
-        // identical to clicking the Dock icon) un-minimizes an existing window
-        // or spawns a fresh one and activates — exactly what's wanted.
+        // Step 4: running but not focused → bring it forward.
         //
-        // Guarded on AX trust + a zero visible-window count so the normal
-        // focus path is untouched: when AX isn't trusted we can't tell an
-        // empty window list from a permission error, so we keep the legacy
-        // activate behaviour rather than risk an unwanted reopen. Placed
-        // before the focused/cycle/hide branches because all of those assume
-        // there is a visible window to act on.
+        // Use the reopen path (`open -b`, the Dock-icon Apple Event) rather
+        // than NSRunningApplication.activateWithOptions. The window server
+        // silently drops activateWithOptions when the requesting process is not
+        // itself frontmost — which is exactly beckon's situation when it is
+        // spawned from a hotkey daemon (Hammerspoon `hs.task`) — so it focuses
+        // only intermittently. `open -b` is honoured unconditionally and, as a
+        // bonus, un-minimizes an existing window or spawns a fresh one when the
+        // app has none to show (Chromium-family browsers keep running after
+        // their last window is closed). Fall back to activate for apps
+        // LaunchServices can't resolve by bundle id (ad-hoc CLI binaries with
+        // no registered bundle).
+        if !target_is_focused {
+            if open_bundle_id(&target.bundle_id).is_ok() {
+                return Ok(BeckonAction::Focused);
+            }
+            if !windows::activate_app(target) {
+                return Err(BackendError::Other(format!(
+                    "open -b and NSRunningApplication.activate both failed for pid {}",
+                    target_pid
+                )));
+            }
+            return Ok(BeckonAction::Focused);
+        }
+
+        // The target IS frontmost, but it may have no window on screen — every
+        // window minimized, or running windowless. The cycle / toggle / hide
+        // steps below all assume there is a visible window to act on, so reopen
+        // first to surface one (un-minimize or spawn). Guarded on AX trust + a
+        // zero visible-window count; without AX we can't tell an empty window
+        // list from a permission error, so we leave the focused-but-blank case
+        // alone rather than risk a spurious reopen.
         if ffi::ax_is_process_trusted()
             && windows::visible_standard_window_count(target_pid).unwrap_or(0) == 0
         {
             if open_bundle_id(&target.bundle_id).is_ok() {
                 return Ok(BeckonAction::Focused);
             }
-            // reopen failed (rare) — fall through to the legacy activate path.
-        }
-
-        // Step 4: running but not focused → activate
-        if !target_is_focused {
-            if !windows::activate_app(target) {
-                return Err(BackendError::Other(format!(
-                    "NSRunningApplication.activate returned false for pid {}",
-                    target_pid
-                )));
-            }
-            return Ok(BeckonAction::Focused);
         }
 
         // Step 5a: same app, more than one window → AX-cycle to the next.
