@@ -25,10 +25,13 @@ use objc2_app_kit::NSApplicationActivationOptions;
 const AX_STANDARD_WINDOW: &str = "AXStandardWindow";
 
 /// AX handles for one window of an app. `main_index` flags which entry in
-/// the `AXWindows` array is currently the focused (main) window.
+/// the `AXWindows` array is currently the focused (main) window. `visible`
+/// counts how many of those standard windows are NOT minimized — i.e. how
+/// many the user could actually be shown right now.
 struct AppWindows {
     elements: Vec<CFType>,
     main_index: Option<usize>,
+    visible: usize,
 }
 
 fn collect_app_windows(pid: i32) -> Option<AppWindows> {
@@ -44,6 +47,7 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
 
     let mut elements = Vec::with_capacity(array.len() as usize);
     let mut main_index: Option<usize> = None;
+    let mut visible: usize = 0;
     for i in 0..array.len() {
         let Some(item) = array.get(i) else { continue };
         let raw = item.as_concrete_TypeRef();
@@ -74,6 +78,15 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
                 b.into()
             })
             .unwrap_or(false);
+        // A minimized window can't be brought forward by `activateWithOptions`
+        // — track it so step 4 can choose the reopen path instead.
+        let is_minimized = win
+            .copy_attribute("AXMinimized")
+            .map(|v| {
+                let b = unsafe { CFBoolean::wrap_under_get_rule(v.as_concrete_TypeRef() as _) };
+                b.into()
+            })
+            .unwrap_or(false);
         std::mem::forget(win);
 
         // Keep this standard window. Bump the ref count so the per-window CFType
@@ -83,11 +96,15 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
             main_index = Some(elements.len());
         }
         elements.push(cf);
+        if !is_minimized {
+            visible += 1;
+        }
     }
 
     Some(AppWindows {
         elements,
         main_index,
+        visible,
     })
 }
 
@@ -96,6 +113,17 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
 /// fullscreen app shows 1, not 2). `None` when AX is unavailable.
 pub fn standard_window_count(pid: i32) -> Option<usize> {
     collect_app_windows(pid).map(|w| w.elements.len())
+}
+
+/// Count of *visible* (non-minimized) standard windows for `pid`. `Some(0)`
+/// means the app is running but has nothing to bring forward — every window
+/// minimized, or running windowless (Chromium-family browsers keep running
+/// after their last window closes). `None` when AX can't read the window list
+/// (no permission, or app not responding). Step 4 uses this to decide between
+/// a plain activate and a reopen (`open -b`) that can un-minimize / spawn a
+/// window.
+pub fn visible_standard_window_count(pid: i32) -> Option<usize> {
+    collect_app_windows(pid).map(|w| w.visible)
 }
 
 /// Try to raise the next window of the same app (step 5a). Returns `true`

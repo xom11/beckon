@@ -141,6 +141,30 @@ impl MacBackend {
                 .iter()
                 .any(|a| Some(a.pid) == frontmost_pid);
 
+        // Step 4 (pre-check): the target may be running yet have no window we
+        // can bring forward — every window minimized, or running windowless
+        // (Chromium-family browsers keep running after their last window is
+        // closed). `activateWithOptions` neither un-minimizes nor spawns a
+        // window, so it silently no-ops and the user perceives "can't focus
+        // <app>" until they quit and relaunch. The reopen path (`open -b`,
+        // identical to clicking the Dock icon) un-minimizes an existing window
+        // or spawns a fresh one and activates — exactly what's wanted.
+        //
+        // Guarded on AX trust + a zero visible-window count so the normal
+        // focus path is untouched: when AX isn't trusted we can't tell an
+        // empty window list from a permission error, so we keep the legacy
+        // activate behaviour rather than risk an unwanted reopen. Placed
+        // before the focused/cycle/hide branches because all of those assume
+        // there is a visible window to act on.
+        if ffi::ax_is_process_trusted()
+            && windows::visible_standard_window_count(target_pid).unwrap_or(0) == 0
+        {
+            if open_bundle_id(&target.bundle_id).is_ok() {
+                return Ok(BeckonAction::Focused);
+            }
+            // reopen failed (rare) — fall through to the legacy activate path.
+        }
+
         // Step 4: running but not focused → activate
         if !target_is_focused {
             if !windows::activate_app(target) {
@@ -244,13 +268,22 @@ fn ax_window_count(pid: i32) -> Option<usize> {
 /// the user's typed Name when we have no bundle id (rare — resolution
 /// usually gives us one).
 fn launch_bundle(m: &ResolvedMatch) -> std::result::Result<(), String> {
-    let mut cmd = std::process::Command::new("/usr/bin/open");
-    cmd.arg("-b").arg(&m.bundle_id);
-    let status = cmd
+    open_bundle_id(&m.bundle_id)
+}
+
+/// Run `open -b <bundle_id>`. For a not-running app this launches it; for an
+/// already-running one it sends the reopen Apple Event (identical to clicking
+/// the Dock icon), which un-minimizes an existing window or spawns a fresh one
+/// and activates the app — neither of which `activateWithOptions` does. Step 4
+/// falls back to this when the target is running but has no visible window.
+fn open_bundle_id(bundle_id: &str) -> std::result::Result<(), String> {
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg("-b")
+        .arg(bundle_id)
         .status()
         .map_err(|e| format!("failed to spawn `open`: {}", e))?;
     if !status.success() {
-        return Err(format!("`open -b {}` exited with {}", m.bundle_id, status));
+        return Err(format!("`open -b {}` exited with {}", bundle_id, status));
     }
     Ok(())
 }
