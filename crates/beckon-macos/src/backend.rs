@@ -155,10 +155,7 @@ impl MacBackend {
         // LaunchServices can't resolve by bundle id (ad-hoc CLI binaries with
         // no registered bundle).
         if !target_is_focused {
-            if open_bundle_id(&target.bundle_id).is_ok() {
-                return Ok(BeckonAction::Focused);
-            }
-            if !windows::activate_app(target) {
+            if !focus_running(target) {
                 return Err(BackendError::Other(format!(
                     "open -b and NSRunningApplication.activate both failed for pid {}",
                     target_pid
@@ -213,7 +210,7 @@ impl MacBackend {
         // on whatever else is visible.
         if let Some(prev_bundle) = pick_mru_toggle_back(state::read_previous().as_deref(), &target.bundle_id, |b| running.iter().any(|a| a.bundle_id == b)) {
             if let Some(other) = running.iter().find(|a| a.bundle_id == prev_bundle) {
-                if windows::activate_app(other) {
+                if focus_running(other) {
                     return Ok(BeckonAction::ToggledBack);
                 }
             }
@@ -228,7 +225,7 @@ impl MacBackend {
         let stack = windows::pid_stack_front_to_back();
         if let Some(other_pid) = stack.into_iter().find(|p| !target_pids.contains(p)) {
             if let Some(other) = running_app_for_pid(other_pid) {
-                if windows::activate_app(&other) {
+                if focus_running(&other) {
                     return Ok(BeckonAction::ToggledBack);
                 }
             }
@@ -292,6 +289,21 @@ fn open_bundle_id(bundle_id: &str) -> std::result::Result<(), String> {
         return Err(format!("`open -b {}` exited with {}", bundle_id, status));
     }
     Ok(())
+}
+
+/// Bring an already-running app to the front — the single activation primitive
+/// for both step 4 (focus the target) and step 5b (toggle back to another
+/// app). Prefers the reopen path (`open -b`): the window server honours it
+/// regardless of beckon's own foreground state, and crucially it raises
+/// Chromium-family windows (Vivaldi/Chrome/Brave) that
+/// `NSRunningApplication.activateWithOptions` activates-but-never-raises when
+/// called externally. Falls back to activate for apps LaunchServices can't
+/// resolve by bundle id (ad-hoc CLI binaries with no registered bundle).
+fn focus_running(app: &RunningAppInfo) -> bool {
+    if open_bundle_id(&app.bundle_id).is_ok() {
+        return true;
+    }
+    windows::activate_app(app)
 }
 
 /// `beckon -r <id>` report on macOS.
