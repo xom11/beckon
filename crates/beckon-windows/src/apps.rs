@@ -143,15 +143,14 @@ pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
 /// Scan classic Start Menu shortcuts together with registered shell apps.
 pub fn scan_installed_apps() -> Vec<InstalledAppInfo> {
     let mut out = scan_start_menu();
-    out.extend(scan_shell_apps());
-    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.aumid.cmp(&b.aumid)));
+    merge_shell_apps(&mut out, scan_shell_apps());
     out
 }
 
 /// Enumerate launchable shell apps through the native AppsFolder namespace.
 /// Packaged app AUMIDs contain `!`; Explorer is a built-in registered shell
 /// application with the stable AUMID `Microsoft.Windows.Explorer`.
-fn scan_shell_apps() -> Vec<InstalledAppInfo> {
+pub fn scan_shell_apps() -> Vec<InstalledAppInfo> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
     }
@@ -335,6 +334,47 @@ pub fn resolve(id: &str, installed: &[InstalledAppInfo]) -> Option<ResolvedMatch
         .map(|app| to_match(app, MatchType::InstalledNameSubstring))
 }
 
+/// Resolve `id` against the Start Menu, consulting the packaged-app
+/// (AppsFolder) catalog only when the Start Menu alone cannot settle it.
+///
+/// `shell_loader` is `FnOnce` and is **not** called when a Start Menu shortcut
+/// matches `id` by exact display name. That is the top tier of `resolve`, and
+/// a shortcut (`aumid: None`) sorts ahead of a packaged app of the same name,
+/// so enumerating AppsFolder could not change the answer — see
+/// `resolve_lazy_agrees_with_one_shot_resolve`. Every weaker tier (AUMID, exe
+/// stem, name substring) can be beaten by a packaged app's exact name, so
+/// those fall through to the full scan.
+///
+/// This matters because the two scans are not remotely equal in cost: parsing
+/// the Start Menu `.lnk` tree takes tens of milliseconds, while enumerating
+/// `FOLDERID_AppsFolder` costs several hundred. Deferring it keeps the common
+/// hot-path case — a hotkey aimed at an app that has a Start Menu entry — off
+/// the slow path. Mirrors `beckon_macos::apps::resolve_inner`, which defers
+/// `installed_apps()` the same way.
+pub fn resolve_lazy(
+    id: &str,
+    start_menu: &[InstalledAppInfo],
+    shell_loader: impl FnOnce() -> Vec<InstalledAppInfo>,
+) -> Option<ResolvedMatch> {
+    if let Some(m) = resolve(id, start_menu) {
+        if m.match_type == MatchType::InstalledName {
+            return Some(m);
+        }
+    }
+
+    let mut all = start_menu.to_vec();
+    merge_shell_apps(&mut all, shell_loader());
+    resolve(id, &all)
+}
+
+/// Append packaged apps to `out` and restore the canonical catalog order:
+/// by display name, then AUMID — so a Start Menu shortcut (`aumid: None`)
+/// precedes a packaged app sharing its name.
+fn merge_shell_apps(out: &mut Vec<InstalledAppInfo>, shell_apps: Vec<InstalledAppInfo>) {
+    out.extend(shell_apps);
+    out.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.aumid.cmp(&b.aumid)));
+}
+
 fn to_match(app: &InstalledAppInfo, match_type: MatchType) -> ResolvedMatch {
     ResolvedMatch {
         name: app.name.clone(),
@@ -380,6 +420,7 @@ fn wstr_to_string(buf: &[u16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     fn app(name: &str, exe: &str) -> InstalledAppInfo {
         InstalledAppInfo {
@@ -530,6 +571,145 @@ mod tests {
     fn name_substring_matches_empty_needle_returns_empty() {
         let installed = vec![app("Brave", "brave.exe")];
         assert!(name_substring_matches("", &installed).is_empty());
+    }
+
+    // ---------- resolve_lazy (deferred AppsFolder scan) ----------
+
+    #[test]
+    fn resolve_lazy_skips_shell_scan_on_start_menu_name_hit() {
+        let start_menu = vec![app("Claude", "brave.exe")];
+        let called = Cell::new(false);
+        let m = resolve_lazy("Claude", &start_menu, || {
+            called.set(true);
+            Vec::new()
+        })
+        .unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledName);
+        assert!(
+            !called.get(),
+            "AppsFolder scan must not run on an exact Start Menu hit"
+        );
+    }
+
+    #[test]
+    fn resolve_lazy_start_menu_shortcut_wins_exact_name_tie() {
+        // Documented tie-break: a Start Menu shortcut beats a packaged app of
+        // the same display name, so the scan can be skipped entirely.
+        let start_menu = vec![app("Terminal", "wt.exe")];
+        let called = Cell::new(false);
+        let m = resolve_lazy("Terminal", &start_menu, || {
+            called.set(true);
+            vec![appx(
+                "Terminal",
+                "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+                "WindowsTerminal.exe",
+            )]
+        })
+        .unwrap();
+        assert!(!called.get());
+        assert_eq!(m.aumid, None);
+        assert_eq!(m.exe_name, "wt.exe");
+    }
+
+    #[test]
+    fn resolve_lazy_defers_when_start_menu_only_matches_substring() {
+        // Substring is the weakest tier — a packaged app matching by exact
+        // name outranks it, so the scan must still run.
+        let start_menu = vec![app("Brave Browser", "bravebrowser.exe")];
+        let called = Cell::new(false);
+        let m = resolve_lazy("Brave", &start_menu, || {
+            called.set(true);
+            vec![appx("Brave", "Brave_8wekyb3d8bbwe!App", "brave.exe")]
+        })
+        .unwrap();
+        assert!(called.get());
+        assert_eq!(m.match_type, MatchType::InstalledName);
+        assert_eq!(m.name, "Brave");
+    }
+
+    #[test]
+    fn resolve_lazy_defers_when_start_menu_only_matches_exe_stem() {
+        // Same reasoning one tier up: exe-stem loses to a packaged app's
+        // exact name, so exe-stem must not short-circuit either.
+        let start_menu = vec![app("Brave Browser", "brave.exe")];
+        let called = Cell::new(false);
+        let m = resolve_lazy("brave", &start_menu, || {
+            called.set(true);
+            vec![appx("Brave", "Brave_8wekyb3d8bbwe!App", "brave.exe")]
+        })
+        .unwrap();
+        assert!(called.get());
+        assert_eq!(m.match_type, MatchType::InstalledName);
+        assert_eq!(m.name, "Brave");
+    }
+
+    #[test]
+    fn resolve_lazy_finds_packaged_app_on_start_menu_miss() {
+        let start_menu = vec![app("Brave", "brave.exe")];
+        let called = Cell::new(false);
+        let m = resolve_lazy("Terminal", &start_menu, || {
+            called.set(true);
+            vec![appx(
+                "Terminal",
+                "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+                "WindowsTerminal.exe",
+            )]
+        })
+        .unwrap();
+        assert!(called.get());
+        assert_eq!(
+            m.aumid.as_deref(),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App")
+        );
+    }
+
+    #[test]
+    fn resolve_lazy_returns_none_when_nothing_matches() {
+        let called = Cell::new(false);
+        let m = resolve_lazy("thunderbird", &[app("Brave", "brave.exe")], || {
+            called.set(true);
+            Vec::new()
+        });
+        assert!(called.get());
+        assert!(m.is_none());
+    }
+
+    #[test]
+    fn resolve_lazy_agrees_with_one_shot_resolve() {
+        // The whole point of deferring is that it changes cost, not answers.
+        let start_menu = vec![app("Brave", "brave.exe"), app("Claude", "brave.exe")];
+        let shell = vec![
+            appx(
+                "Terminal",
+                "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+                "WindowsTerminal.exe",
+            ),
+            appx("File Explorer", "Microsoft.Windows.Explorer", "explorer.exe"),
+        ];
+        let mut combined = start_menu.clone();
+        combined.extend(shell.clone());
+        combined.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.aumid.cmp(&b.aumid)));
+
+        for id in [
+            "Brave",
+            "Claude",
+            "Terminal",
+            "File Explorer",
+            "brave",
+            "brave.exe",
+            "Microsoft.Windows.Explorer",
+            "Term",
+            "thunderbird",
+        ] {
+            let lazy = resolve_lazy(id, &start_menu, || shell.clone());
+            let one_shot = resolve(id, &combined);
+            assert_eq!(
+                lazy.as_ref().map(|m| (m.name.clone(), m.match_type)),
+                one_shot.as_ref().map(|m| (m.name.clone(), m.match_type)),
+                "resolve_lazy diverged from resolve for id `{}`",
+                id
+            );
+        }
     }
 
     // ---------- collect_lnk_files depth limit ----------

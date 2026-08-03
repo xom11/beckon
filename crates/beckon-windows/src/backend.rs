@@ -19,16 +19,22 @@ const FILE_EXPLORER_AUMID: &str = "Microsoft.Windows.Explorer";
 
 impl Backend for WindowsBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        // Installed-app discovery and window enumeration are independent;
-        // run them in parallel because the hot path requires both.
-        let scan_handle = std::thread::spawn(apps::scan_installed_apps);
+        // Start Menu scanning and window enumeration are independent; run
+        // them in parallel because the hot path requires both.
+        //
+        // The AppsFolder (packaged-app) enumeration is deliberately *not*
+        // started here. It costs several hundred milliseconds against tens
+        // for the Start Menu, and `resolve_lazy` only reaches for it when no
+        // Start Menu shortcut matches `id` by name — which keeps the common
+        // hotkey case off the slow path.
+        let scan_handle = std::thread::spawn(apps::scan_start_menu);
         let all_windows = window_ops::enum_visible_windows()
             .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
-        let installed = scan_handle.join().unwrap_or_default();
+        let start_menu = scan_handle.join().unwrap_or_default();
 
         // Resolve id against installed apps.
-        let resolved = apps::resolve(id, &installed);
+        let resolved = apps::resolve_lazy(id, &start_menu, apps::scan_shell_apps);
 
         // Find running windows that match the target.
         let matching: Vec<&WindowInfo> = match &resolved {
