@@ -19,22 +19,24 @@ const FILE_EXPLORER_AUMID: &str = "Microsoft.Windows.Explorer";
 
 impl Backend for WindowsBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        // Start Menu scanning and window enumeration are independent; run
-        // them in parallel because the hot path requires both.
-        //
-        // The AppsFolder (packaged-app) enumeration is deliberately *not*
-        // started here. It costs several hundred milliseconds against tens
-        // for the Start Menu, and `resolve_lazy` only reaches for it when no
-        // Start Menu shortcut matches `id` by name — which keeps the common
-        // hotkey case off the slow path.
-        let scan_handle = std::thread::spawn(apps::scan_start_menu);
+        // A Start Menu shortcut's display name is its filename, so the common
+        // case — a hotkey aimed at an app that has a Start Menu entry — is
+        // settled by one directory walk plus a single `.lnk` parse, instead of
+        // COM-parsing every shortcut on the machine. Run it alongside window
+        // enumeration; the hot path needs both and neither depends on the other.
+        let fast_id = id.to_string();
+        let scan_handle = std::thread::spawn(move || apps::resolve_start_menu_by_name(&fast_id));
         let all_windows = window_ops::enum_visible_windows()
             .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
-        let start_menu = scan_handle.join().unwrap_or_default();
 
-        // Resolve id against installed apps.
-        let resolved = apps::resolve_lazy(id, &start_menu, apps::scan_shell_apps);
+        // Miss: fall back to the full catalog — parse every shortcut, and reach
+        // for the AppsFolder (packaged-app) enumeration only if that still
+        // doesn't settle it. See `apps::resolve_lazy` for why that stays lazy.
+        let resolved = scan_handle
+            .join()
+            .unwrap_or(None)
+            .or_else(|| apps::resolve_lazy(id, &apps::scan_start_menu(), apps::scan_shell_apps));
 
         // Find running windows that match the target.
         let matching: Vec<&WindowInfo> = match &resolved {

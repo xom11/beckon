@@ -98,13 +98,8 @@ fn is_format_mark(c: char) -> bool {
     )
 }
 
-/// Scan Start Menu directories for `.lnk` files and parse each.
-pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
-    // Initialise COM for this thread (best-effort; may already be initialised).
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-    }
-
+/// Start Menu roots, per-user first so its shortcuts win the name dedupe.
+fn start_menu_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
 
     // Per-user shortcuts.
@@ -129,15 +124,83 @@ pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
         );
     }
 
+    roots
+}
+
+/// Every `.lnk` path under the Start Menu roots, in traversal order. Pure
+/// filesystem walk — no COM, so this is orders of magnitude cheaper than
+/// parsing the shortcuts it finds.
+fn collect_lnk_paths() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in start_menu_roots() {
+        walk_lnk_paths(&root, &mut out, 0);
+    }
+    out
+}
+
+/// Scan Start Menu directories for `.lnk` files and parse each.
+pub fn scan_start_menu() -> Vec<InstalledAppInfo> {
+    // Initialise COM for this thread (best-effort; may already be initialised).
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+
     let mut out: Vec<InstalledAppInfo> = Vec::new();
     let mut seen_names = std::collections::HashSet::<String>::new();
 
-    for root in &roots {
-        collect_lnk_files(root, &mut out, &mut seen_names, 0);
+    for path in collect_lnk_paths() {
+        let Some(info) = parse_lnk(&path) else {
+            continue;
+        };
+        // Deduplicate by normalised name — keep per-user over system.
+        if seen_names.insert(normalize(&info.name)) {
+            out.push(info);
+        }
     }
 
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Resolve `id` against Start Menu shortcut *filenames*, parsing at most the
+/// handful of shortcuts whose stem matches.
+///
+/// A shortcut's display name **is** its filename stem — `parse_lnk` never reads
+/// a name out of the `.lnk` body — so `resolve`'s top tier can be decided from
+/// the directory listing alone. That turns the common hotkey case from "COM-parse
+/// every shortcut on the machine" into one filesystem walk plus a single parse.
+///
+/// Equivalent to `resolve(id, &scan_start_menu())` returning
+/// `MatchType::InstalledName`: `scan_start_menu` walks the same order and keeps
+/// the first shortcut per normalised name that parses, so the first parsable
+/// stem match here is exactly the entry that would have survived its dedupe.
+/// Returns `None` when nothing matches by name, or when every stem match is a
+/// shortcut `parse_lnk` rejects (URL/folder targets) — the caller must fall back
+/// to the full catalog in both cases.
+pub fn resolve_start_menu_by_name(id: &str) -> Option<ResolvedMatch> {
+    let needle = normalize(id);
+    if needle.is_empty() {
+        return None;
+    }
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+    }
+    stem_matches(collect_lnk_paths(), &needle)
+        .into_iter()
+        .find_map(|p| parse_lnk(&p))
+        .map(|app| to_match(&app, MatchType::InstalledName))
+}
+
+/// Paths whose filename stem normalises to `needle`, in the order given.
+fn stem_matches(paths: Vec<PathBuf>, needle: &str) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|stem| normalize(stem) == needle)
+        })
+        .collect()
 }
 
 /// Scan classic Start Menu shortcuts together with registered shell apps.
@@ -219,13 +282,8 @@ fn taskmem_string(value: PWSTR) -> Option<String> {
 /// loops or pathological structures that would otherwise hang the scan.
 const MAX_LNK_DEPTH: u8 = 8;
 
-/// Recursively collect `.lnk` files from `dir`, bounded by `MAX_LNK_DEPTH`.
-fn collect_lnk_files(
-    dir: &Path,
-    out: &mut Vec<InstalledAppInfo>,
-    seen: &mut std::collections::HashSet<String>,
-    depth: u8,
-) {
+/// Recursively collect `.lnk` paths from `dir`, bounded by `MAX_LNK_DEPTH`.
+fn walk_lnk_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: u8) {
     if depth > MAX_LNK_DEPTH {
         return;
     }
@@ -235,19 +293,11 @@ fn collect_lnk_files(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_lnk_files(&path, out, seen, depth + 1);
+            walk_lnk_paths(&path, out, depth + 1);
             continue;
         }
-        let ext = path.extension().and_then(|e| e.to_str());
-        if ext != Some("lnk") {
-            continue;
-        }
-        if let Some(info) = parse_lnk(&path) {
-            // Deduplicate by normalised name — keep per-user over system.
-            let key = normalize(&info.name);
-            if seen.insert(key) {
-                out.push(info);
-            }
+        if path.extension().and_then(|e| e.to_str()) == Some("lnk") {
+            out.push(path);
         }
     }
 }
@@ -716,38 +766,75 @@ mod tests {
         }
     }
 
-    // ---------- collect_lnk_files depth limit ----------
+    // ---------- stem_matches (filename-only name tier) ----------
+
+    fn paths(list: &[&str]) -> Vec<PathBuf> {
+        list.iter().map(PathBuf::from).collect()
+    }
 
     #[test]
-    fn collect_lnk_files_respects_max_depth() {
-        // Build a deeply nested temp tree and verify the recursion bails.
+    fn stem_matches_is_case_insensitive_and_keeps_order() {
+        let found = stem_matches(
+            paths(&[
+                r"C:\sys\Claude.lnk",
+                r"C:\user\CLAUDE.lnk",
+                r"C:\user\Brave.lnk",
+            ]),
+            "claude",
+        );
+        // Traversal order is the dedupe rule, so it must survive filtering.
+        assert_eq!(found, paths(&[r"C:\sys\Claude.lnk", r"C:\user\CLAUDE.lnk"]));
+    }
+
+    #[test]
+    fn stem_matches_ignores_bidi_marks_in_filename() {
+        // PWA shortcuts really do ship names with a leading U+200E.
+        let found = stem_matches(paths(&["\u{200E}Claude.lnk"]), "claude");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn stem_matches_requires_whole_stem_not_substring() {
+        // The name tier is exact — substring is a strictly lower tier that
+        // only the full catalog scan can settle.
+        assert!(stem_matches(paths(&["Brave Browser.lnk"]), "brave").is_empty());
+    }
+
+    #[test]
+    fn stem_matches_returns_empty_on_miss() {
+        assert!(stem_matches(paths(&["Brave.lnk"]), "thunderbird").is_empty());
+    }
+
+    // ---------- walk_lnk_paths depth limit ----------
+
+    #[test]
+    fn walk_lnk_paths_respects_max_depth() {
         let dir =
             std::env::temp_dir().join(format!("beckon-lnk-depth-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        // Build dir/0/1/.../9/marker.lnk (depth 10, exceeds MAX_LNK_DEPTH=8).
+        // Shallow shortcut: must be collected.
+        std::fs::write(dir.join("shallow.lnk"), b"").unwrap();
+
+        // Build dir/0/1/.../9/deep.lnk (depth 10, exceeds MAX_LNK_DEPTH=8).
         let mut deep = dir.clone();
         for i in 0..10 {
             deep = deep.join(i.to_string());
             std::fs::create_dir_all(&deep).unwrap();
         }
-        // Note: parse_lnk would fail without COM init + valid .lnk content,
-        // but we're only verifying the recursion guard. To do that without
-        // touching COM, drop a non-.lnk marker file and prove the walk
-        // doesn't hang (i.e. completes in < a second). The stronger test
-        // (parsing real .lnks) lives behind real Start Menu fixtures.
-        std::fs::write(deep.join("marker.txt"), b"").unwrap();
+        std::fs::write(deep.join("deep.lnk"), b"").unwrap();
 
+        // The walk only lists paths — no COM, no parsing — so empty file
+        // bodies are fine and the depth guard is directly observable now.
         let mut out = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        // Should return promptly even without a depth bug, but the test
-        // is named for the property we want preserved.
-        collect_lnk_files(&dir, &mut out, &mut seen, 0);
+        walk_lnk_paths(&dir, &mut out, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
-        // No .lnk files exist, so nothing to collect; success = no hang
-        // and no panic.
-        assert!(out.is_empty());
+        let names: Vec<&str> = out
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert_eq!(names, vec!["shallow.lnk"]);
     }
 }
