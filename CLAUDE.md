@@ -582,6 +582,18 @@ Reasonable next-session order:
 - **Window enumeration**: `EnumWindows` returns windows in z-order (front-to-back), which gives us MRU order for free — no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`). We filter out invisible, cloaked (via `DwmGetWindowAttribute(DWMWA_CLOAKED)`), tool windows (`WS_EX_TOOLWINDOW`), and owner windows.
 - **Anti-focus-stealing**: Win10+ blocks `SetForegroundWindow` from background processes. We use the `AttachThreadInput` trick: attach our thread input to the foreground thread, call `SetForegroundWindow` + `BringWindowToTop`, then detach. This works because beckon is invoked from AHK which holds the foreground.
 - **Name resolution**: Start Menu `.lnk` files are parsed via COM `IShellLinkW` + `IPersistFile::Load`; MSIX/AppX entries and the built-in `File Explorer` shell app are enumerated natively from shell `AppsFolder` with friendly name and AUMID. Priority: display name (exact) > AUMID > exe stem/name > display name (substring). Use the exact name `File Explorer`, since `Explorer` may collide with a shortcut targeting `explorer.exe`.
+- **Deferred AppsFolder scan (hot-path cost)**: the two halves of the catalog
+  are wildly asymmetric — parsing ~120 Start Menu `.lnk` files costs tens of ms,
+  enumerating `FOLDERID_AppsFolder` (~145 packaged apps) costs several hundred.
+  `beckon <id>` therefore scans only the Start Menu up front and calls
+  `apps::resolve_lazy`, which reaches for `scan_shell_apps()` **only** when no
+  shortcut matches by exact display name. That top tier can't be beaten by a
+  packaged app (a shortcut sorts ahead of an AppX entry of the same name), so
+  skipping the scan cannot change the answer — `resolve_lazy_agrees_with_one_shot_resolve`
+  pins that equivalence. Weaker tiers (AUMID, exe stem, name substring) all lose
+  to a packaged app's exact name, so those still pay for the full scan. Measured
+  on ARM64 Windows 11: 443 ms → 179 ms for a Start Menu name. Discovery commands
+  (`-l`, `-L`, `-r`, `-s`) deliberately keep using the full `scan_installed_apps`.
 - **Matching running windows**: Packaged apps match by HWND `PKEY_AppUserModel_ID`, falling back to process AUMID from `GetApplicationUserModelId`; `CabinetWClass` windows map to the built-in `Microsoft.Windows.Explorer` AUMID; classic applications retain exe filename and title fallback matching. Browser PWAs sharing an exe still require browser-specific validation.
 - **UWP/Store apps**: Apps installed via Microsoft Store (e.g. Windows Terminal) are cataloged by friendly name and AUMID; launch uses `IApplicationActivationManager::ActivateApplication`.
 - **Launch path**: Classic shortcut entries use `ShellExecuteW` with the exe path and arguments extracted from the `.lnk`; MSIX/AppX entries use `IApplicationActivationManager::ActivateApplication` with the AUMID. `Microsoft.Windows.Explorer` is identified by AUMID/class but launches through `explorer.exe`, since activation manager rejects that built-in shell AppID.
