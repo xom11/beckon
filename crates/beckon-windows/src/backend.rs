@@ -30,13 +30,18 @@ impl Backend for WindowsBackend {
             .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
         let fg_hwnd = window_ops::get_foreground_hwnd();
 
-        // Miss: fall back to the full catalog — parse every shortcut, and reach
-        // for the AppsFolder (packaged-app) enumeration only if that still
-        // doesn't settle it. See `apps::resolve_lazy` for why that stays lazy.
-        let resolved = scan_handle
-            .join()
-            .unwrap_or(None)
-            .or_else(|| apps::resolve_lazy(id, &apps::scan_start_menu(), apps::scan_shell_apps));
+        // Miss: fall back to the full catalog. The name tier has already been
+        // ruled out above, so `resolve_lazy` is guaranteed to call its loader
+        // here — which means the AppsFolder enumeration can be started eagerly
+        // and overlapped with the Start Menu parse instead of running after it.
+        // The closure just joins the thread that is already doing the work.
+        let resolved = scan_handle.join().unwrap_or(None).or_else(|| {
+            let shell_handle = std::thread::spawn(apps::scan_shell_apps);
+            let start_menu = apps::scan_start_menu();
+            apps::resolve_lazy(id, &start_menu, move || {
+                shell_handle.join().unwrap_or_default()
+            })
+        });
 
         // Find running windows that match the target.
         let matching: Vec<&WindowInfo> = match &resolved {
