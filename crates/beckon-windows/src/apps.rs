@@ -684,7 +684,11 @@ mod tests {
                 "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
                 "WindowsTerminal.exe",
             ),
-            appx("File Explorer", "Microsoft.Windows.Explorer", "explorer.exe"),
+            appx(
+                "File Explorer",
+                "Microsoft.Windows.Explorer",
+                "explorer.exe",
+            ),
         ];
         let mut combined = start_menu.clone();
         combined.extend(shell.clone());

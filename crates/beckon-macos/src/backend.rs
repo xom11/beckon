@@ -173,10 +173,9 @@ impl MacBackend {
         // alone rather than risk a spurious reopen.
         if ffi::ax_is_process_trusted()
             && windows::visible_standard_window_count(target_pid).unwrap_or(0) == 0
+            && open_bundle_id(&target.bundle_id).is_ok()
         {
-            if open_bundle_id(&target.bundle_id).is_ok() {
-                return Ok(BeckonAction::Focused);
-            }
+            return Ok(BeckonAction::Focused);
         }
 
         // Step 5a: same app, more than one window → AX-cycle to the next.
@@ -208,7 +207,11 @@ impl MacBackend {
         // recorded it, and `running` (NSWorkspace) lists it regardless of
         // Space. Without this, toggle-back skips the fullscreen app and lands
         // on whatever else is visible.
-        if let Some(prev_bundle) = pick_mru_toggle_back(state::read_previous().as_deref(), &target.bundle_id, |b| running.iter().any(|a| a.bundle_id == b)) {
+        if let Some(prev_bundle) =
+            pick_mru_toggle_back(state::read_previous().as_deref(), &target.bundle_id, |b| {
+                running.iter().any(|a| a.bundle_id == b)
+            })
+        {
             if let Some(other) = running.iter().find(|a| a.bundle_id == prev_bundle) {
                 if focus_running(other) {
                     return Ok(BeckonAction::ToggledBack);
