@@ -620,6 +620,25 @@ Reasonable next-session order:
 
 ### Phase 2 macOS notes (for future maintenance)
 
+- **Hot-path cost (measured on airm3, ~95-105 ms total)**. Unlike Windows there
+  is no structural win left here — most of the time is Apple's, not ours:
+    - `open -b <bundle>` is **55-75 ms** and is 92% of the focus path. Of that,
+      only ~13 ms is spawning `/usr/bin/open` (bare spawn floor is 2.8 ms; `open`
+      with no args, i.e. spawn + dyld of Cocoa/AppKit/CoreServices, is 12.9 ms).
+      The rest is the LaunchServices + reopen-Apple-Event round-trip, which no
+      API avoids: a native `NSWorkspace.openApplication(at:configuration:)` probe
+      measured 50-60 ms to its completion handler. Swapping to it would buy ~13 ms
+      in exchange for block/runloop plumbing in the one area that has already
+      produced two focus bugs (`82c210a`, `61bf656`) — not currently worth it.
+    - `AXIsProcessTrusted()` is **~20 ms**, which is why the step-4.5 guard tests
+      the window count first (see the comment there — the order is load-bearing).
+      A/B on the cycle/toggle path: 53.8 ms → 44.7 ms median.
+    - AX cost is **per-process setup, not per-call**: the first
+      `collect_app_windows` for a pid is ~38 ms, the second ~0.25 ms. So
+      de-duplicating the `visible_standard_window_count` /
+      `cycle_to_next_window` pair buys nothing — measured, don't bother.
+    - Everything else is noise: `running_apps()` 8-9 ms, process start ~5 ms,
+      MRU write ~0.4 ms.
 - **Accessibility permission**: bound to the binary's code signature. Each fresh `cargo build` produces a new unsigned binary with a different identity → permission resets. For development, sign the binary or use a stable wrapper. Production users via Nix get a stable `/etc/profiles/per-user/<user>/bin/beckon` path that survives rebuilds (the Nix-store hash changes but the wrapper symlink does not, and macOS appears to accept that).
 - **`activate()` vs `activateWithOptions:`**: objc2-app-kit 0.3 only exposes `activateWithOptions:`. We pass empty options (no `ActivateAllWindows`) so step 5a's window-cycle decision survives the activation.
 - **Launch path**: We shell out to `/usr/bin/open -b <bundle_id>` instead of `NSWorkspace.openApplicationAtURL:configuration:completionHandler:` because the latter is async-only on modern macOS and would force us to spin a runloop. `open` returns in ~10–20 ms.
