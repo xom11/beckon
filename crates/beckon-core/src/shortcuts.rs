@@ -198,9 +198,54 @@ impl Combo {
     }
 }
 
+/// One line of a shortcuts file: a combo bound to exactly one app name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shortcut {
+    pub combo: Combo,
+    pub app: String,
+}
+
+/// Parse a flat shortcuts TOML file: every top-level key is a combo, every
+/// value is one app-name string. First error wins. Iteration order follows
+/// `toml::Table` (BTreeMap, sorted by key) — registration order is
+/// irrelevant to hotkey behavior.
+pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
+    let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(table.len());
+    for (raw_key, value) in &table {
+        let combo = Combo::parse(raw_key)?;
+        let canon = combo.canonical();
+        if let Some(prev) = seen.get(&canon) {
+            return Err(format!(
+                "`{raw_key}` duplicates `{prev}` (both normalize to `{canon}`)"
+            ));
+        }
+        seen.insert(canon, raw_key.clone());
+        let app = match value {
+            toml::Value::String(s) if !s.trim().is_empty() => s.clone(),
+            toml::Value::String(_) => return Err(format!("empty app name for `{raw_key}`")),
+            toml::Value::Array(_) => {
+                return Err(format!(
+                    "value for `{raw_key}` is an array — candidate lists are not supported, \
+                     write exactly one app name"
+                ))
+            }
+            other => {
+                return Err(format!(
+                    "value for `{raw_key}` must be a string (one app name), got {}",
+                    other.type_str()
+                ))
+            }
+        };
+        out.push(Shortcut { combo, app });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{all_keys, lookup_key, Combo};
+    use super::{all_keys, lookup_key, parse_shortcuts, Combo};
 
     #[test]
     fn key_table_covers_spec_names() {
@@ -331,5 +376,69 @@ mod tests {
         assert!(Combo::parse("ctrl++a").is_err());
         assert!(Combo::parse("").is_err());
         assert!(Combo::parse("ctrl+a+").is_err());
+    }
+
+    #[test]
+    fn parse_shortcuts_happy_path_real_toml() {
+        let text = r##"
+# comments are fine — this is real TOML now
+"ctrl+super+alt+t" = "kitty"
+"ctrl+super+alt+shift+t" = 'Telegram Web'   # single quotes too
+"##;
+        let s = parse_shortcuts(text).unwrap();
+        assert_eq!(s.len(), 2);
+        let t = s
+            .iter()
+            .find(|x| x.combo.canonical() == "ctrl+super+alt+t")
+            .unwrap();
+        assert_eq!(t.app, "kitty");
+        let tg = s
+            .iter()
+            .find(|x| x.combo.canonical() == "ctrl+super+alt+shift+t")
+            .unwrap();
+        assert_eq!(tg.app, "Telegram Web");
+    }
+
+    #[test]
+    fn parse_shortcuts_rejects_duplicate_after_normalization() {
+        let text = "\"ctrl+alt+a\" = \"X\"\n\"alt+ctrl+a\" = \"Y\"\n";
+        let e = parse_shortcuts(text).unwrap_err();
+        assert!(
+            e.contains("`ctrl+alt+a`") && e.contains("`alt+ctrl+a`"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn parse_shortcuts_rejects_array_value() {
+        let e = parse_shortcuts("\"ctrl+alt+a\" = [\"A\", \"B\"]\n").unwrap_err();
+        assert!(e.contains("candidate lists are not supported"), "{e}");
+    }
+
+    #[test]
+    fn parse_shortcuts_rejects_empty_app() {
+        let e = parse_shortcuts("\"ctrl+alt+a\" = \"  \"\n").unwrap_err();
+        assert!(e.contains("empty app name"), "{e}");
+    }
+
+    #[test]
+    fn parse_shortcuts_rejects_non_string_value() {
+        let e = parse_shortcuts("\"ctrl+alt+a\" = 7\n").unwrap_err();
+        assert!(e.contains("must be a string"), "{e}");
+    }
+
+    #[test]
+    fn parse_shortcuts_toml_syntax_error_carries_position() {
+        let e = parse_shortcuts("\"ctrl+alt+a\" = \n").unwrap_err();
+        assert!(
+            e.contains("line 1"),
+            "toml error should carry position: {e}"
+        );
+    }
+
+    #[test]
+    fn parse_shortcuts_propagates_combo_errors() {
+        let e = parse_shortcuts("\"ctrl+banana\" = \"X\"\n").unwrap_err();
+        assert!(e.contains("unknown key `banana`"), "{e}");
     }
 }
