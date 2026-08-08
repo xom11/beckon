@@ -69,7 +69,7 @@ beckon -s, --search <name>   # fuzzy search across running + installed
 beckon -r, --resolve <id>    # validate id, print metadata + suggestions
 beckon -d, --doctor          # check environment (permissions, IPC, etc.)
 beckon --check <config>      # validate a shortcuts TOML file (CI-friendly)
-beckon --serve <config>      # resident hotkey service (macOS; Windows planned)
+beckon --serve <config>      # resident hotkey service (macOS, Windows)
 beckon -v, --verbose         # debug logging (combine with any command)
 beckon -h, --help
 beckon -V, --version
