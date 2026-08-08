@@ -34,12 +34,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW, PeekMessageW,
     RegisterClassW, RegisterWindowMessageW, SetTimer, TranslateMessage, CW_USEDEFAULT,
-    IDI_APPLICATION, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_APP, WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    IDI_APPLICATION, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_HOTKEY, WM_TIMER, WNDCLASSW,
     WS_OVERLAPPED,
 };
 
@@ -57,6 +57,11 @@ thread_local! {
     // RegisterWindowMessageW("TaskbarCreated") result, or 0 if that call
     // failed. wndproc re-adds the tray icon whenever Explorer sends it.
     static TASKBAR_CREATED_MSG: Cell<u32> = const { Cell::new(0) };
+    // Mirrors HotkeyManager::ids outside the instance: run_forever's WM_QUIT
+    // branch has no `self` (it's an associated fn with no receiver) but
+    // still needs the live id list to unregister everything for an orderly
+    // exit, since std::process::exit skips Drop entirely.
+    static REGISTERED_IDS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
 }
 
 fn dispatch_hotkey(id: u32) {
@@ -78,6 +83,10 @@ fn dispatch_tick(id: usize) {
     // callback that triggers a nested pump (unlikely for a 1s reload poll,
     // but not ruled out) must not re-enter this RefCell while it's borrowed.
     let mut cbs = TICK_CBS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+    // Limitation (currently unreachable — only one tick is ever registered,
+    // the reload poll): a reentrant dispatch_tick for a *different* id,
+    // triggered by a nested pump inside one of these callbacks, would find
+    // TICK_CBS empty right now and silently skip that other tick.
     for (tick_id, cb) in cbs.iter_mut() {
         if *tick_id == id {
             cb();
@@ -115,13 +124,22 @@ fn tray_add(hwnd: HWND) {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: 1,
-        uFlags: NIF_ICON | NIF_TIP | NIF_MESSAGE,
-        uCallbackMessage: WM_APP,
+        // No NIF_MESSAGE/uCallbackMessage: the tray icon is a liveness
+        // indicator only (no menu, no click handling in scope), and wndproc
+        // has nothing to do with a callback message — requesting one would
+        // just be a dead channel that reads as noise, not a feature.
+        uFlags: NIF_ICON | NIF_TIP,
         ..Default::default()
     };
     nid.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
-    let tip: Vec<u16> = "beckon serve\0".encode_utf16().collect();
-    nid.szTip[..tip.len()].copy_from_slice(&tip);
+    // szTip is a fixed-size buffer; bound the copy instead of trusting the
+    // source string to always fit, and NUL-terminate explicitly so
+    // truncation (if the string ever changes) can't cut off the only NUL.
+    let tip: Vec<u16> = "beckon serve".encode_utf16().collect();
+    let max = nid.szTip.len() - 1; // leave room for the NUL terminator
+    let n = tip.len().min(max);
+    nid.szTip[..n].copy_from_slice(&tip[..n]);
+    nid.szTip[n] = 0;
     // Best effort: a missing tray icon must not take the hotkeys down — but
     // it must not go silent either, or "no icon" reads as "daemon is dead"
     // and the user starts a second instance. Two known-benign causes: no
@@ -232,13 +250,17 @@ impl HotkeyManager {
         unsafe { RegisterHotKey(Some(self.tray_hwnd), id as i32, mods, key.win) }
             .map_err(|e| format!("RegisterHotKey failed: {e}"))?;
         self.ids.push(id);
+        REGISTERED_IDS.with(|c| c.borrow_mut().push(id));
         Ok(())
     }
 
     pub fn unregister_all(&mut self) {
         for id in self.ids.drain(..) {
-            let _ = unsafe { UnregisterHotKey(Some(self.tray_hwnd), id as i32) };
+            if let Err(e) = unsafe { UnregisterHotKey(Some(self.tray_hwnd), id as i32) } {
+                eprintln!("hotkey: UnregisterHotKey({id}) failed: {e}");
+            }
         }
+        REGISTERED_IDS.with(|c| c.borrow_mut().clear());
         // UnregisterHotKey stops FUTURE WM_HOTKEY generation; it does not
         // touch one already sitting in the queue. Without this, a press
         // queued right before a config reload gets delivered after
@@ -284,22 +306,65 @@ impl HotkeyManager {
 
     pub fn run_forever() -> ! {
         let mut msg = MSG::default();
-        unsafe {
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-                match msg.message {
-                    // Fast path: handle here before DispatchMessageW. The
-                    // wndproc branches exist for exactly the case this loop
-                    // ISN'T the one pumping — see the module doc.
-                    WM_HOTKEY => dispatch_hotkey(msg.wParam.0 as u32),
-                    WM_TIMER => dispatch_tick(msg.wParam.0),
-                    _ => {
-                        let _ = TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
+        loop {
+            // GetMessageW's BOOL return is really three states, not two:
+            // -1 means the call itself failed (a broken queue — e.g. an
+            // invalid hwnd got in somehow — is unrecoverable), 0 is
+            // WM_QUIT, anything else is a real message with `msg` filled
+            // in. `.as_bool()` treats -1 the same as "got a message" (it's
+            // nonzero), which would have looped forever re-processing
+            // stale `msg` contents instead of surfacing the failure — match
+            // the raw i32 instead.
+            let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
+            match ret {
+                -1 => {
+                    eprintln!("hotkey: GetMessageW failed — message queue is broken, exiting");
+                    std::process::exit(1);
+                }
+                0 => {
+                    // WM_QUIT. An orderly exit, not an `unreachable!()`
+                    // panic: this is the only exit path a Task
+                    // Scheduler-run daemon has, and std::process::exit
+                    // skips Drop entirely, so the cleanup Drop would have
+                    // done has to happen here explicitly.
+                    let tray_hwnd = TRAY_HWND.with(|c| c.get());
+                    for id in REGISTERED_IDS.with(|c| std::mem::take(&mut *c.borrow_mut())) {
+                        let _ = unsafe { UnregisterHotKey(Some(tray_hwnd), id as i32) };
+                    }
+                    let nid = NOTIFYICONDATAW {
+                        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                        hWnd: tray_hwnd,
+                        uID: 1,
+                        ..Default::default()
+                    };
+                    let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+                    std::process::exit(0);
+                }
+                _ => {
+                    // Fast path: handle WM_HOTKEY/WM_TIMER here before
+                    // DispatchMessageW — but only when the message is
+                    // addressed to OUR window. This thread becomes an STA
+                    // once the backend calls CoInitializeEx, and COM/shell
+                    // machinery (ShellExecuteW, an out-of-process
+                    // IApplicationActivationManager call) can create hidden
+                    // windows on this same thread whose own WM_TIMERs must
+                    // still reach their wndprocs via DispatchMessageW —
+                    // matching on msg.message alone would silently steal
+                    // those instead of routing them. The wndproc branches
+                    // (module doc) exist for exactly the case this loop
+                    // ISN'T the one pumping.
+                    let ours = msg.hwnd == TRAY_HWND.with(|c| c.get());
+                    match msg.message {
+                        WM_HOTKEY if ours => dispatch_hotkey(msg.wParam.0 as u32),
+                        WM_TIMER if ours => dispatch_tick(msg.wParam.0),
+                        _ => {
+                            let _ = unsafe { TranslateMessage(&msg) };
+                            unsafe { DispatchMessageW(&msg) };
+                        }
                     }
                 }
             }
         }
-        unreachable!("GetMessageW returned FALSE without WM_QUIT being expected");
     }
 }
 
