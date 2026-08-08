@@ -73,6 +73,20 @@ extern "C" {
     fn RunApplicationEventLoop();
 }
 
+#[repr(C)]
+struct ProcessSerialNumber {
+    high: u32,
+    low: u32,
+}
+
+const CURRENT_PROCESS: u32 = 2; // kCurrentProcess
+const TRANSFORM_TO_UIELEMENT: u32 = 4; // kProcessTransformToUIElementApplication
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn TransformProcessType(psn: *const ProcessSerialNumber, transform_state: u32) -> i32;
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFAbsoluteTimeGetCurrent() -> f64;
@@ -129,6 +143,24 @@ pub struct HotkeyManager {
 
 impl HotkeyManager {
     pub fn install(cb: Box<dyn FnMut(u32)>) -> Result<Self, String> {
+        // A launchd-spawned process has no window-server "application"
+        // identity: RegisterEventHotKey returns noErr but hotkey events are
+        // never delivered (measured 2026-08-08: terminal-launched receives
+        // presses, the identical binary under `launchctl bootstrap gui/` is
+        // silent, with Hammerspoon as a positive control on the same chord).
+        // Becoming a UIElement app creates that identity — no Dock icon, no
+        // menu bar — and is a no-op harmless when already terminal-launched.
+        // Failure is non-fatal on purpose: in contexts that reject the
+        // transform we are no worse off than before, so warn and continue.
+        let psn = ProcessSerialNumber {
+            high: 0,
+            low: CURRENT_PROCESS,
+        };
+        let err = unsafe { TransformProcessType(&psn, TRANSFORM_TO_UIELEMENT) };
+        if err != 0 {
+            eprintln!("hotkey: TransformProcessType failed: OSStatus {err} (hotkeys may not fire under launchd)");
+        }
+
         let user = Box::into_raw(Box::new(cb));
         let spec = EventTypeSpec {
             event_class: CLASS_KEYBOARD,
