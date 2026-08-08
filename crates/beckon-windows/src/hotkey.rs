@@ -83,10 +83,23 @@ fn dispatch_tick(id: usize) {
     // callback that triggers a nested pump (unlikely for a 1s reload poll,
     // but not ruled out) must not re-enter this RefCell while it's borrowed.
     let mut cbs = TICK_CBS.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    // Limitation (currently unreachable — only one tick is ever registered,
-    // the reload poll): a reentrant dispatch_tick for a *different* id,
-    // triggered by a nested pump inside one of these callbacks, would find
-    // TICK_CBS empty right now and silently skip that other tick.
+    // Load-bearing, not a defect to fix: beckon-cli's serve.rs relies on
+    // this take-then-run order to make tick delivery non-reentrant.
+    // reload() (serve.rs) holds RefCell borrows live across register_all()
+    // on the strength of exactly this guarantee — a reentrant tick, should
+    // one ever land here mid-callback, must see an empty TICK_CBS and be a
+    // no-op rather than re-enter reload() and hit an already-held borrow
+    // (BorrowMutError -> panic -> abort across the extern "system"
+    // boundary, the same class of bug serve.rs's module doc describes for
+    // on_hotkey/backend.beckon()). Currently unreachable in practice —
+    // only one tick is ever registered, the reload poll — but if that ever
+    // changes (a second tick, or a callback here triggering a nested
+    // pump), restructure serve.rs's reload() first, the same way on_hotkey
+    // was restructured, before changing this ordering. Until then, a
+    // reentrant dispatch_tick for a *different* id, triggered by a nested
+    // pump inside one of these callbacks, finds TICK_CBS empty and
+    // silently skips that other tick — a known, accepted side effect of
+    // the same take-then-run that keeps serve.rs safe.
     for (tick_id, cb) in cbs.iter_mut() {
         if *tick_id == id {
             cb();

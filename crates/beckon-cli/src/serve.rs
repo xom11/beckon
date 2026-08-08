@@ -25,6 +25,22 @@
 //! an `extern "system"` boundary — which aborts the whole process, not just
 //! the callback. Harmless-but-cheap to apply on macOS too, since nothing
 //! there ever re-enters.
+//!
+//! `reload()` itself is *not* restructured the same way: it holds
+//! `mgr.borrow_mut()` and `state.borrow()`/`borrow_mut()` live across
+//! `register_all()`. That is sound only because of a SECOND guarantee this
+//! file does not itself provide: `beckon_windows::hotkey::dispatch_tick`
+//! takes `TICK_CBS` out (`mem::take`) before invoking any tick callback, so
+//! a nested/reentrant tick delivered while `reload()` is still running sees
+//! an *empty* callback table and is a no-op rather than a second concurrent
+//! call into `reload()`. That makes tick delivery — and therefore
+//! `reload()` — effectively non-reentrant on Windows, unlike hotkey
+//! delivery. This is a cross-crate dependency: `beckon_windows::hotkey`
+//! currently documents that take-then-run behavior as a "limitation," but
+//! for this file it is load-bearing. Changing it there (e.g. re-adding a
+//! tick to the live table before running callbacks) would reopen the same
+//! class of bug this module doc describes above, at `reload()` instead of
+//! `on_hotkey`.
 
 use anyhow::{anyhow, Context, Result};
 use beckon_core::shortcuts::{parse_shortcuts, Shortcut};

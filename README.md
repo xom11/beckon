@@ -192,9 +192,13 @@ Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift`.
 The file is watched: edits apply live; a broken edit keeps the current
 bindings and fires a notification. `beckon --check shortcuts.toml`
 validates a file (exit 0/1) without touching the OS — usable in CI. On
-Windows, run it via a Scheduled Task (foreground process, no service); the
-tray icon is the liveness signal — no icon means the daemon is not getting
-input. Linux stays compositor-bound by design.
+Windows, run it via a Scheduled Task (foreground process, no service). The
+tray icon is a liveness signal, but only in one direction: icon present
+means the daemon is alive, icon absent means either the daemon is dead OR
+the tray just isn't ready yet (a logon race, or Explorer restarting) —
+hotkeys register and fire independently of the icon, so check stderr/the
+log to tell those two apart rather than trusting the icon alone. Linux
+stays compositor-bound by design.
 
 ## What `beckon <id>` actually does
 
