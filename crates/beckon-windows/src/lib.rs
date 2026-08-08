@@ -20,6 +20,8 @@ pub mod apps;
 #[cfg(target_os = "windows")]
 mod backend;
 #[cfg(target_os = "windows")]
+pub mod hotkey;
+#[cfg(target_os = "windows")]
 pub mod window_ops;
 
 #[cfg(target_os = "windows")]
