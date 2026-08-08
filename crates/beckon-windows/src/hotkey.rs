@@ -43,13 +43,20 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WS_OVERLAPPED,
 };
 
+// Named so the thread_locals below (and install()'s identical parameter
+// type) don't repeat the full `Box<dyn FnMut(...)>`/`Vec<(usize, ...)>`
+// spelling — clippy::type_complexity flags the inline form. No behavior
+// change: these are exactly the types that were written out before.
+type HotkeyCallback = Box<dyn FnMut(u32)>;
+type TickCallbacks = Vec<(usize, Box<dyn FnMut()>)>;
+
 thread_local! {
-    static HOTKEY_CB: RefCell<Option<Box<dyn FnMut(u32)>>> = const { RefCell::new(None) };
+    static HOTKEY_CB: RefCell<Option<HotkeyCallback>> = const { RefCell::new(None) };
     // Ids that arrived at wndproc/run_forever while HOTKEY_CB was already
     // out being run (a reentrant nested-pump delivery) — drained right
     // after the in-flight callback returns, so nothing is skipped.
     static HOTKEY_PENDING: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
-    static TICK_CBS: RefCell<Vec<(usize, Box<dyn FnMut()>)>> = const { RefCell::new(Vec::new()) };
+    static TICK_CBS: RefCell<TickCallbacks> = const { RefCell::new(Vec::new()) };
     static TICK_NEXT_ID: Cell<usize> = const { Cell::new(1) }; // 0 is SetTimer's failure sentinel
     // Set once in install(); add_tick (a free fn with no `self`) needs it to
     // register window timers against the same hwnd hotkeys use.
@@ -172,7 +179,7 @@ pub struct HotkeyManager {
 }
 
 impl HotkeyManager {
-    pub fn install(cb: Box<dyn FnMut(u32)>) -> Result<Self, String> {
+    pub fn install(cb: HotkeyCallback) -> Result<Self, String> {
         HOTKEY_CB.with(|slot| *slot.borrow_mut() = Some(cb));
 
         // A Scheduled Task set to "Run whether user is logged on or not"
