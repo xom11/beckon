@@ -69,3 +69,5 @@ pub trait Backend {
     /// launch / focus / cycle-same-app / toggle-other-app / hide.
     fn beckon(&self, id: &str) -> Result<BeckonAction>;
 }
+
+pub mod shortcuts;
