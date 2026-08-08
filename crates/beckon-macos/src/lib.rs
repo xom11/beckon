@@ -24,6 +24,8 @@ mod apps;
 #[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
+pub mod hotkey;
+#[cfg(target_os = "macos")]
 mod state;
 #[cfg(target_os = "macos")]
 mod windows;

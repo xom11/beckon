@@ -1,0 +1,235 @@
+//! Global hotkeys via Carbon `RegisterEventHotKey` + a CFRunLoop timer.
+//! Hand-rolled FFI (house style — the surface is 9 functions). Everything
+//! runs on the main thread's run loop: the hotkey callback and every tick
+//! callback are never concurrent.
+
+use std::ffi::c_void;
+
+pub const MOD_CMD: u32 = 0x100; // cmdKey
+pub const MOD_SHIFT: u32 = 0x200; // shiftKey
+pub const MOD_OPT: u32 = 0x800; // optionKey
+pub const MOD_CTRL: u32 = 0x1000; // controlKey
+
+const CLASS_KEYBOARD: u32 = u32::from_be_bytes(*b"keyb"); // kEventClassKeyboard
+const HOTKEY_PRESSED: u32 = 5; // kEventHotKeyPressed
+const SIG: u32 = u32::from_be_bytes(*b"BKON");
+const PARAM_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----"); // kEventParamDirectObject
+const TYPE_EVENT_HOTKEY_ID: u32 = u32::from_be_bytes(*b"hkid"); // typeEventHotKeyID
+
+#[repr(C)]
+struct EventTypeSpec {
+    event_class: u32,
+    event_kind: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EventHotKeyID {
+    signature: u32,
+    id: u32,
+}
+
+type HandlerFn = extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+type TimerFn = extern "C" fn(*mut c_void, *mut c_void);
+
+#[repr(C)]
+struct CFRunLoopTimerContext {
+    version: isize,
+    info: *mut c_void,
+    retain: Option<extern "C" fn(*const c_void) -> *const c_void>,
+    release: Option<extern "C" fn(*const c_void)>,
+    copy_description: Option<extern "C" fn(*const c_void) -> *const c_void>,
+}
+
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    fn GetApplicationEventTarget() -> *mut c_void;
+    fn InstallEventHandler(
+        target: *mut c_void,
+        handler: HandlerFn,
+        num_types: u32,
+        types: *const EventTypeSpec,
+        user_data: *mut c_void,
+        out_ref: *mut *mut c_void,
+    ) -> i32;
+    fn RegisterEventHotKey(
+        key_code: u32,
+        modifiers: u32,
+        id: EventHotKeyID,
+        target: *mut c_void,
+        options: u32,
+        out_ref: *mut *mut c_void,
+    ) -> i32;
+    fn UnregisterEventHotKey(hotkey: *mut c_void) -> i32;
+    fn GetEventParameter(
+        event: *mut c_void,
+        name: u32,
+        ty: u32,
+        actual_type: *mut u32,
+        size: usize,
+        actual_size: *mut usize,
+        out: *mut c_void,
+    ) -> i32;
+    fn RunApplicationEventLoop();
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFAbsoluteTimeGetCurrent() -> f64;
+    fn CFRunLoopTimerCreate(
+        allocator: *const c_void,
+        fire_date: f64,
+        interval: f64,
+        flags: u64,
+        order: i64,
+        callout: TimerFn,
+        context: *mut CFRunLoopTimerContext,
+    ) -> *mut c_void;
+    fn CFRunLoopGetCurrent() -> *mut c_void;
+    fn CFRunLoopAddTimer(rl: *mut c_void, timer: *mut c_void, mode: *const c_void);
+    static kCFRunLoopCommonModes: *const c_void;
+}
+
+extern "C" fn hotkey_trampoline(
+    _handler: *mut c_void,
+    event: *mut c_void,
+    user: *mut c_void,
+) -> i32 {
+    let mut hk = EventHotKeyID {
+        signature: 0,
+        id: 0,
+    };
+    let err = unsafe {
+        GetEventParameter(
+            event,
+            PARAM_DIRECT_OBJECT,
+            TYPE_EVENT_HOTKEY_ID,
+            std::ptr::null_mut(),
+            std::mem::size_of::<EventHotKeyID>(),
+            std::ptr::null_mut(),
+            &mut hk as *mut _ as *mut c_void,
+        )
+    };
+    if err == 0 && hk.signature == SIG {
+        let cb = unsafe { &mut *(user as *mut Box<dyn FnMut(u32)>) };
+        cb(hk.id);
+    }
+    0 // noErr
+}
+
+extern "C" fn timer_trampoline(_timer: *mut c_void, info: *mut c_void) {
+    let cb = unsafe { &mut *(info as *mut Box<dyn FnMut()>) };
+    cb();
+}
+
+pub struct HotkeyManager {
+    hotkeys: Vec<*mut c_void>,
+    _callback: *mut Box<dyn FnMut(u32)>, // leaked for daemon lifetime
+}
+
+impl HotkeyManager {
+    pub fn install(cb: Box<dyn FnMut(u32)>) -> Result<Self, String> {
+        let user = Box::into_raw(Box::new(cb));
+        let spec = EventTypeSpec {
+            event_class: CLASS_KEYBOARD,
+            event_kind: HOTKEY_PRESSED,
+        };
+        let mut handler = std::ptr::null_mut();
+        let err = unsafe {
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                hotkey_trampoline,
+                1,
+                &spec,
+                user as *mut c_void,
+                &mut handler,
+            )
+        };
+        if err != 0 {
+            return Err(format!("InstallEventHandler failed: OSStatus {err}"));
+        }
+        Ok(Self {
+            hotkeys: Vec::new(),
+            _callback: user,
+        })
+    }
+
+    pub fn register(
+        &mut self,
+        id: u32,
+        ctrl: bool,
+        super_: bool,
+        alt: bool,
+        shift: bool,
+        mac_keycode: u16,
+    ) -> Result<(), String> {
+        let mut mods = 0u32;
+        if ctrl {
+            mods |= MOD_CTRL;
+        }
+        if super_ {
+            mods |= MOD_CMD;
+        }
+        if alt {
+            mods |= MOD_OPT;
+        }
+        if shift {
+            mods |= MOD_SHIFT;
+        }
+        let mut out = std::ptr::null_mut();
+        let err = unsafe {
+            RegisterEventHotKey(
+                mac_keycode as u32,
+                mods,
+                EventHotKeyID { signature: SIG, id },
+                GetApplicationEventTarget(),
+                0,
+                &mut out,
+            )
+        };
+        if err != 0 {
+            return Err(format!("RegisterEventHotKey failed: OSStatus {err}"));
+        }
+        self.hotkeys.push(out);
+        Ok(())
+    }
+
+    pub fn unregister_all(&mut self) {
+        for h in self.hotkeys.drain(..) {
+            unsafe {
+                UnregisterEventHotKey(h);
+            }
+        }
+    }
+
+    pub fn run_forever() -> ! {
+        unsafe { RunApplicationEventLoop() };
+        unreachable!("RunApplicationEventLoop returned");
+    }
+}
+
+/// Schedule a repeating callback on the CURRENT thread's run loop. Call
+/// before `run_forever` on the same thread. The timer and callback leak —
+/// they live as long as the daemon.
+pub fn add_tick(seconds: f64, cb: Box<dyn FnMut()>) {
+    let info = Box::into_raw(Box::new(cb)) as *mut c_void;
+    let mut ctx = CFRunLoopTimerContext {
+        version: 0,
+        info,
+        retain: None,
+        release: None,
+        copy_description: None,
+    };
+    unsafe {
+        let timer = CFRunLoopTimerCreate(
+            std::ptr::null(),
+            CFAbsoluteTimeGetCurrent() + seconds,
+            seconds,
+            0,
+            0,
+            timer_trampoline,
+            &mut ctx,
+        );
+        CFRunLoopAddTimer(CFRunLoopGetCurrent(), timer, kCFRunLoopCommonModes);
+    }
+}
