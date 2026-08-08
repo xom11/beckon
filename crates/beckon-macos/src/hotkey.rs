@@ -193,7 +193,7 @@ impl HotkeyManager {
         super_: bool,
         alt: bool,
         shift: bool,
-        mac_keycode: u16,
+        key: &beckon_core::shortcuts::KeyDef,
     ) -> Result<(), String> {
         let mut mods = 0u32;
         if ctrl {
@@ -211,7 +211,7 @@ impl HotkeyManager {
         let mut out = std::ptr::null_mut();
         let err = unsafe {
             RegisterEventHotKey(
-                mac_keycode as u32,
+                u32::from(key.mac),
                 mods,
                 EventHotKeyID { signature: SIG, id },
                 GetApplicationEventTarget(),

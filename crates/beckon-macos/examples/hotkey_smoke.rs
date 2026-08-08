@@ -8,9 +8,10 @@ fn main() {
         println!("hotkey pressed: id={id}");
     }))
     .expect("install handler");
-    // f = kVK_ANSI_F = 0x03. ctrl+alt+shift, NO cmd — deliberately outside
-    // the hyper layer Hammerspoon/kanata currently own.
-    mgr.register(0, true, false, true, true, 0x03)
+    // ctrl+alt+shift, NO cmd — deliberately outside the hyper layer
+    // Hammerspoon/kanata currently own.
+    let f = beckon_core::shortcuts::lookup_key("f").expect("key table has f");
+    mgr.register(0, true, false, true, true, f)
         .expect("register");
     println!("press ctrl+alt+shift+f — exiting in 15 s");
     beckon_macos::hotkey::add_tick(15.0, Box::new(|| std::process::exit(0)));

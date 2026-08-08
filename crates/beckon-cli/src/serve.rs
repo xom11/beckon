@@ -83,7 +83,7 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, id: u32) {
 fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) {
     for (i, sc) in shortcuts.iter().enumerate() {
         let c = &sc.combo;
-        if let Err(e) = mgr.register(i as u32, c.ctrl, c.super_, c.alt, c.shift, c.key.mac) {
+        if let Err(e) = mgr.register(i as u32, c.ctrl, c.super_, c.alt, c.shift, c.key) {
             // One broken key loses one key, never the whole table.
             let msg = format!("cannot register `{}`: {e}", c.canonical());
             eprintln!("beckon serve: {msg}");
