@@ -56,12 +56,12 @@ fn main() {
     beckon_core::set_verbose(args.verbose);
     if let Err(e) = run(&args) {
         // Always to stderr.
-        eprintln!("beckon: {:#}", e);
+        eprintln!("beckon: {e:#}");
         // If invoked from a hotkey binding (no controlling terminal),
         // stderr goes to /dev/null and the user sees nothing. Fire a
         // desktop notification so the failure is visible.
         if !std::io::stderr().is_terminal() {
-            notify_error(&format!("{:#}", e));
+            notify_error(&format!("{e:#}"));
         }
         std::process::exit(1);
     }
@@ -156,9 +156,9 @@ fn cmd_beckon(id: &str, verbose: bool) -> Result<()> {
     let backend = pick_backend()?;
     let action = backend
         .beckon(id)
-        .with_context(|| format!("beckon failed for id `{}`", id))?;
+        .with_context(|| format!("beckon failed for id `{id}`"))?;
     if verbose {
-        eprintln!("action: {:?}", action);
+        eprintln!("action: {action:?}");
     }
     Ok(())
 }
@@ -196,11 +196,11 @@ fn cmd_search(name: &str) -> Result<()> {
     let needle = name.to_lowercase();
 
     let running = backend.list_running().unwrap_or_else(|e| {
-        eprintln!("warning: list_running failed: {}", e);
+        eprintln!("warning: list_running failed: {e}");
         Vec::new()
     });
     let installed = backend.list_installed().unwrap_or_else(|e| {
-        eprintln!("warning: list_installed failed: {}", e);
+        eprintln!("warning: list_installed failed: {e}");
         Vec::new()
     });
 
@@ -217,13 +217,13 @@ fn cmd_search(name: &str) -> Result<()> {
     }
 
     if hits.is_empty() {
-        println!("no matches for `{}`", name);
+        println!("no matches for `{name}`");
         return Ok(());
     }
 
     println!("{:<10} {:<40} NAME", "WHERE", "ID");
     for (where_, id, name) in hits {
-        println!("{:<10} {:<40} {}", where_, id, name);
+        println!("{where_:<10} {id:<40} {name}");
     }
     Ok(())
 }
@@ -236,13 +236,13 @@ fn cmd_resolve(id: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         beckon_macos::print_resolve_report(id)
-            .map_err(|e| anyhow!("{}", e))
+            .map_err(|e| anyhow!("{e}"))
             .context("resolve failed")
     }
     #[cfg(target_os = "windows")]
     {
         beckon_windows::print_resolve_report(id)
-            .map_err(|e| anyhow!("{}", e))
+            .map_err(|e| anyhow!("{e}"))
             .context("resolve failed")
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -386,7 +386,7 @@ fn cmd_doctor() -> Result<()> {
                 "✅ NSWorkspace working — {} regular running app(s).",
                 apps.len()
             ),
-            Err(e) => println!("⚠️  list_running failed: {}", e),
+            Err(e) => println!("⚠️  list_running failed: {e}"),
         }
     }
     #[cfg(target_os = "windows")]

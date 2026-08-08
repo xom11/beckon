@@ -171,7 +171,7 @@ mod tests {
                     .unwrap_or(false)
             })
             .collect();
-        assert!(leftovers.is_empty(), "tmp files leaked: {:?}", leftovers);
+        assert!(leftovers.is_empty(), "tmp files leaked: {leftovers:?}");
     }
 
     #[test]

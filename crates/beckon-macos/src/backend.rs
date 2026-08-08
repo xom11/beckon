@@ -116,9 +116,8 @@ impl MacBackend {
             let m = resolved.ok_or_else(|| BackendError::LaunchFailed {
                 id: id.to_string(),
                 reason: format!(
-                    "no running app and no installed bundle matches `{}`. \
-                     Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
-                    id, id
+                    "no running app and no installed bundle matches `{id}`. \
+                     Run `beckon -L` to list installed apps, or `beckon -s {id}` to search."
                 ),
             })?;
             launch_bundle(&m).map_err(|e| BackendError::LaunchFailed {
@@ -157,8 +156,7 @@ impl MacBackend {
         if !target_is_focused {
             if !focus_running(target) {
                 return Err(BackendError::Other(format!(
-                    "open -b and NSRunningApplication.activate both failed for pid {}",
-                    target_pid
+                    "open -b and NSRunningApplication.activate both failed for pid {target_pid}"
                 )));
             }
             return Ok(BeckonAction::Focused);
@@ -200,10 +198,9 @@ impl MacBackend {
         }
         if beckon_core::verbose() {
             eprintln!(
-                "verbose: cycle_to_next_window returned false for pid {} \
+                "verbose: cycle_to_next_window returned false for pid {target_pid} \
                  (single-window app, OR Accessibility permission missing — \
-                 run `beckon -d` to check)",
-                target_pid
+                 run `beckon -d` to check)"
             );
         }
 
@@ -248,8 +245,7 @@ impl MacBackend {
             return Ok(BeckonAction::Hidden);
         }
         Err(BackendError::Other(format!(
-            "could not cycle, toggle, or hide pid {}",
-            target_pid
+            "could not cycle, toggle, or hide pid {target_pid}"
         )))
     }
 }
@@ -296,9 +292,9 @@ fn open_bundle_id(bundle_id: &str) -> std::result::Result<(), String> {
         .arg("-b")
         .arg(bundle_id)
         .status()
-        .map_err(|e| format!("failed to spawn `open`: {}", e))?;
+        .map_err(|e| format!("failed to spawn `open`: {e}"))?;
     if !status.success() {
-        return Err(format!("`open -b {}` exited with {}", bundle_id, status));
+        return Err(format!("`open -b {bundle_id}` exited with {status}"));
     }
     Ok(())
 }
@@ -325,7 +321,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
     let subs = apps::name_substring_matches(id);
 
     let Some(m) = resolved else {
-        println!("❌ no match for `{}`\n", id);
+        println!("❌ no match for `{id}`\n");
         if !subs.is_empty() {
             println!("Closest by name (substring):");
             for e in subs.iter().take(5) {
@@ -335,10 +331,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         }
         let direct: Vec<&_> = running.iter().filter(|a| a.bundle_id == id).collect();
         if !direct.is_empty() {
-            println!(
-                "Note: a running app has bundle id `{}` but no installed bundle matches.",
-                id
-            );
+            println!("Note: a running app has bundle id `{id}` but no installed bundle matches.");
             println!("      Focus may work; launch will not.");
         }
         println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
@@ -348,7 +341,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
     let running_match: Option<&_> = running.iter().find(|a| a.bundle_id == m.bundle_id);
 
     println!("✅ resolved");
-    println!("   Input:        {}", id);
+    println!("   Input:        {id}");
     println!("   Match type:   {}", m.match_type.describe());
     println!("   Name:         {}", m.display_name);
     println!("   Bundle id:    {}", m.bundle_id);

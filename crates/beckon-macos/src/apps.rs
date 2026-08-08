@@ -346,7 +346,7 @@ mod tests {
         InstalledAppInfo {
             bundle_id: bundle_id.to_string(),
             name: name.to_string(),
-            bundle_path: PathBuf::from(format!("/Applications/{}.app", name)),
+            bundle_path: PathBuf::from(format!("/Applications/{name}.app")),
         }
     }
 
