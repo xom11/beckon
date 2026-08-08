@@ -96,6 +96,12 @@ fn run(args: &Args) -> Result<()> {
     Err(anyhow!("no command given (use -h for help)"))
 }
 
+/// Escape a string for embedding inside a double-quoted AppleScript literal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Fire a desktop notification. Best-effort: silent if `notify-send` is
 /// not installed or the notification daemon is unreachable. Used when
 /// stderr is not a terminal (i.e. invoked from a hotkey).
@@ -134,7 +140,19 @@ fn notify_error(message: &str) {
             .stderr(std::process::Stdio::null())
             .spawn();
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"display notification "{}" with title "beckon""#,
+            applescript_escape(message)
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = message;
     }
@@ -439,4 +457,17 @@ fn cmd_doctor() -> Result<()> {
         println!("This OS is not supported by beckon.");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applescript_escape_quotes_and_backslashes() {
+        assert_eq!(
+            applescript_escape(r#"say "hi" \ bye"#),
+            r#"say \"hi\" \\ bye"#
+        );
+    }
 }
