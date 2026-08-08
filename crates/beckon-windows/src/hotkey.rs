@@ -256,7 +256,30 @@ impl HotkeyManager {
         }
         .as_bool()
         {}
-        HOTKEY_PENDING.with(|p| p.borrow_mut().clear());
+        // A press that already reached dispatch_hotkey but is waiting on
+        // HOTKEY_PENDING (a nested-pump reentrant delivery queued while an
+        // in-flight callback — e.g. launch_appx()'s blocking
+        // ActivateApplication call — is still running) is dropped for the
+        // same reason as the PeekMessageW drain above: on_hotkey resolves
+        // the id against whatever shortcuts table is live when it finally
+        // runs, which will be the table this reload is about to install,
+        // not the one live when the key was actually pressed — so
+        // delivering it could silently focus the wrong app. Unlike the
+        // OS-queue drain, though, this discards a keypress that has
+        // unambiguously already happened rather than a duplicate still
+        // sitting unprocessed, so — matching every other best-effort path
+        // in this file (tray-add failure, session-0, SetTimer failure) —
+        // say so instead of dropping it in silence.
+        HOTKEY_PENDING.with(|p| {
+            let dropped: Vec<u32> = p.borrow_mut().drain(..).collect();
+            if !dropped.is_empty() {
+                eprintln!(
+                    "hotkey: dropping {} in-flight hotkey press(es) ({dropped:?}) that raced \
+                     this config reload — press again if still needed",
+                    dropped.len()
+                );
+            }
+        });
     }
 
     pub fn run_forever() -> ! {
