@@ -13,6 +13,7 @@ path = "src/main.rs"
 beckon-core = { path = "../beckon-core" }
 anyhow      = { workspace = true }
 clap        = { workspace = true }
+fs4         = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 beckon-linux = { path = "../beckon-linux" }

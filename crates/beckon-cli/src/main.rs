@@ -3,6 +3,8 @@ use beckon_core::Backend;
 use clap::Parser;
 use std::io::IsTerminal;
 
+mod lockfile;
+
 /// Cross-platform focus-or-launch app switcher.
 ///
 /// Hot path: `beckon <id>` — focus an app if running, launch it if not, cycle
