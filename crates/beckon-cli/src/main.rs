@@ -4,6 +4,8 @@ use clap::Parser;
 use std::io::IsTerminal;
 
 mod lockfile;
+#[cfg(target_os = "macos")]
+mod serve;
 
 /// Cross-platform focus-or-launch app switcher.
 ///
@@ -52,6 +54,11 @@ struct Args {
     #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor"])]
     check: Option<std::path::PathBuf>,
 
+    /// Run as a resident hotkey service reading a shortcuts TOML file
+    /// (macOS only for now). Foreground; use launchd to daemonize.
+    #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor", "check"])]
+    serve: Option<std::path::PathBuf>,
+
     /// Verbose logging to stderr.
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -74,6 +81,17 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<()> {
+    if let Some(path) = args.serve.as_deref() {
+        #[cfg(target_os = "macos")]
+        {
+            return serve::cmd_serve(path);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = path;
+            return Err(anyhow!("--serve is only implemented on macOS so far"));
+        }
+    }
     if let Some(path) = args.check.as_deref() {
         return cmd_check(path);
     }
