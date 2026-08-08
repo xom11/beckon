@@ -46,6 +46,10 @@ struct Args {
     #[arg(short = 'd', long, conflicts_with_all = ["list", "list_installed", "search", "resolve"])]
     doctor: bool,
 
+    /// Validate a shortcuts TOML file (see --serve) and exit; 0 = valid.
+    #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor"])]
+    check: Option<std::path::PathBuf>,
+
     /// Verbose logging to stderr.
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -68,6 +72,9 @@ fn main() {
 }
 
 fn run(args: &Args) -> Result<()> {
+    if let Some(path) = args.check.as_deref() {
+        return cmd_check(path);
+    }
     if args.doctor {
         return cmd_doctor();
     }
@@ -174,6 +181,15 @@ fn cmd_list() -> Result<()> {
     for a in apps {
         println!("{:<40} {:>5}  {}", a.id, a.window_count, a.name);
     }
+    Ok(())
+}
+
+fn cmd_check(path: &std::path::Path) -> Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read `{}`", path.display()))?;
+    let shortcuts = beckon_core::shortcuts::parse_shortcuts(&text)
+        .map_err(|e| anyhow!("{}: {}", path.display(), e))?;
+    println!("ok: {} shortcuts", shortcuts.len());
     Ok(())
 }
 
