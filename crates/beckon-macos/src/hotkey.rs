@@ -47,7 +47,7 @@ extern "C" {
     fn InstallEventHandler(
         target: *mut c_void,
         handler: HandlerFn,
-        num_types: u32,
+        num_types: usize, // ItemCount = unsigned long (64-bit)
         types: *const EventTypeSpec,
         user_data: *mut c_void,
         out_ref: *mut *mut c_void,
