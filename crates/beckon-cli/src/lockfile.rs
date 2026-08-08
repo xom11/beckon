@@ -1,7 +1,10 @@
 //! Single-instance lock per config path. flock-based: the lock dies with
 //! the process, so a crashed serve never wedges its successor.
-// Used by --serve (macOS only so far); tests exercise it on every OS.
-#![cfg_attr(all(not(test), not(target_os = "macos")), allow(dead_code))]
+// Used by --serve (macOS, Windows); tests exercise it on every OS.
+#![cfg_attr(
+    all(not(test), not(any(target_os = "macos", target_os = "windows"))),
+    allow(dead_code)
+)]
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};

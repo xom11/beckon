@@ -1,18 +1,45 @@
-//! `--serve`: resident hotkey service (macOS). Single-threaded by design:
-//! hotkey dispatch and reload ticks all run on the main run loop, so plain
-//! Rc<RefCell<…>> state needs no locking.
+//! `--serve`: resident hotkey service (macOS, Windows). Single-threaded by
+//! design: hotkey dispatch and reload ticks all run on the main event loop,
+//! so plain `Rc<RefCell<…>>` state needs no locking — with one exception,
+//! enforced below.
+//!
+//! Reentrancy differs by platform:
+//!   - macOS (Carbon): the hotkey callback runs on the main CFRunLoop and
+//!     never re-enters — it must not pump the run loop itself, and nothing
+//!     else does either, so a callback in flight is never interrupted by
+//!     another tick or another hotkey.
+//!   - Windows: `backend.beckon()` can pump this thread's message queue by
+//!     design (CoInitializeEx puts it in an STA, and an out-of-process COM
+//!     activation call pumps internally to avoid an RPC deadlock — see
+//!     `beckon_windows::hotkey`'s module doc). That means the 1 Hz reload
+//!     tick — and therefore `reload()` — can run RE-ENTRANTLY while
+//!     `on_hotkey` is still on the stack.
+//!
+//! The invariant this file enforces because of the Windows case: **no
+//! `RefCell` borrow may be held across a call to `backend.beckon()`.** The
+//! backend therefore lives OUTSIDE the `RefCell` (a separate `Rc`, cloned
+//! into the hotkey closure), and `on_hotkey` takes only a short borrow to
+//! clone what it needs, releasing it before calling the backend. Holding
+//! `state.borrow()` across that call would let a reentrant `reload()` call
+//! `state.borrow_mut()` and panic (`BorrowMutError`) while unwinding across
+//! an `extern "system"` boundary — which aborts the whole process, not just
+//! the callback. Harmless-but-cheap to apply on macOS too, since nothing
+//! there ever re-enters.
 
 use anyhow::{anyhow, Context, Result};
 use beckon_core::shortcuts::{parse_shortcuts, Shortcut};
 use beckon_core::Backend;
-use beckon_macos::hotkey::HotkeyManager;
+#[cfg(target_os = "macos")]
+use beckon_macos::hotkey;
+#[cfg(target_os = "windows")]
+use beckon_windows::hotkey;
+use hotkey::HotkeyManager;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 struct ServeState {
     shortcuts: Vec<Shortcut>,
-    backend: Box<dyn Backend>,
     config: PathBuf,
 }
 
@@ -24,21 +51,19 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
     let text = std::fs::read_to_string(&config)
         .with_context(|| format!("cannot read `{}`", config.display()))?;
     let shortcuts = parse_shortcuts(&text).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
-    let backend = crate::pick_backend()?;
+    // Outside the RefCell on purpose — see module doc.
+    let backend: Rc<Box<dyn Backend>> = Rc::new(crate::pick_backend()?);
 
     let state = Rc::new(RefCell::new(ServeState {
         shortcuts,
-        backend,
         config: config.clone(),
     }));
 
     let mgr = {
         let st = Rc::clone(&state);
-        // The hotkey callback runs on the main CFRunLoop that also delivers
-        // this event, so it must never pump the run loop itself (e.g. no
-        // nested RunApplicationEventLoop / modal calls). `backend.beckon()`
-        // is a synchronous, non-run-loop-pumping call, so it is safe here.
-        HotkeyManager::install(Box::new(move |id| on_hotkey(&st, id))).map_err(|e| anyhow!(e))?
+        let be = Rc::clone(&backend);
+        HotkeyManager::install(Box::new(move |id| on_hotkey(&st, &be, id)))
+            .map_err(|e| anyhow!(e))?
     };
     let mgr = Rc::new(RefCell::new(mgr));
     register_all(&mut mgr.borrow_mut(), &state.borrow().shortcuts);
@@ -48,7 +73,10 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
     {
         let st = Rc::clone(&state);
         let mg = Rc::clone(&mgr);
-        beckon_macos::hotkey::add_tick(
+        // Must run after `install` above: on Windows, add_tick registers a
+        // window timer (SetTimer) against the hwnd install() creates (the
+        // tray window), which does not exist yet before that call.
+        hotkey::add_tick(
             1.0,
             Box::new(move || {
                 if rx.try_recv().is_err() {
@@ -68,13 +96,20 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
     HotkeyManager::run_forever();
 }
 
-fn on_hotkey(state: &Rc<RefCell<ServeState>>, id: u32) {
-    let st = state.borrow();
-    let Some(sc) = st.shortcuts.get(id as usize) else {
-        return;
+fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id: u32) {
+    // Short borrow only: cloned out and dropped BEFORE calling the backend
+    // below. See the module doc — on Windows, backend.beckon() can pump
+    // this thread's message queue, letting reload() run reentrantly while
+    // this function is still on the stack.
+    let (app, canonical) = {
+        let st = state.borrow();
+        match st.shortcuts.get(id as usize) {
+            Some(sc) => (sc.app.clone(), sc.combo.canonical()),
+            None => return,
+        }
     };
-    if let Err(e) = st.backend.beckon(&sc.app) {
-        let msg = format!("{} ({}): {}", sc.app, sc.combo.canonical(), e);
+    if let Err(e) = backend.beckon(&app) {
+        let msg = format!("{app} ({canonical}): {e}");
         eprintln!("beckon serve: {msg}");
         crate::notify_error(&msg);
     }
