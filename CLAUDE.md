@@ -68,6 +68,8 @@ beckon -L, --list-installed  # list installed apps with launch ids
 beckon -s, --search <name>   # fuzzy search across running + installed
 beckon -r, --resolve <id>    # validate id, print metadata + suggestions
 beckon -d, --doctor          # check environment (permissions, IPC, etc.)
+beckon --check <config>      # validate a shortcuts TOML file (CI-friendly)
+beckon --serve <config>      # resident hotkey service (macOS; Windows planned)
 beckon -v, --verbose         # debug logging (combine with any command)
 beckon -h, --help
 beckon -V, --version
@@ -448,7 +450,14 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
 ## Open questions (decide in implementation session)
 
 1. **Daemon vs one-shot CLI**
-   Decided: **one-shot**. Rust cold start is ~10ms, sway/AHK invoke per keypress anyway, and a daemon adds IPC complexity without clear benefit.
+   Decided: **one-shot for the hot path, plus an opt-in resident mode.**
+   `beckon <id>` stays a one-shot CLI (~10ms cold start) for compositor-bound
+   hotkeys (sway/GNOME). `--serve <config>` (2026-08) additionally hosts the
+   hotkeys itself on macOS/Windows — where no compositor binds keys for us —
+   reading a flat TOML (`"ctrl+super+alt+t" = "kitty"`), watching it for
+   reloads. Hotkey registration uses RegisterEventHotKey / RegisterHotKey:
+   no event tap, no LLHOOK, so no new TCC prompt for the hotkey half and no
+   interference with kanata's hook ordering.
 
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at

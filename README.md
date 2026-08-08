@@ -180,6 +180,20 @@ Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
 `Ctrl+Win+Alt` on Windows. Replace the Names with whatever
 `beckon -L` reports on your machine.
 
+## Resident mode (macOS)
+
+`beckon --serve shortcuts.toml` turns beckon into the hotkey host itself —
+no Hammerspoon/AHK layer needed. The file is flat TOML, one combo per line:
+
+    "ctrl+super+alt+t" = "kitty"
+    "ctrl+super+alt+shift+t" = "Telegram Web"
+
+Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift`.
+The file is watched: edits apply live; a broken edit keeps the current
+bindings and fires a notification. `beckon --check shortcuts.toml`
+validates a file (exit 0/1) without touching the OS — usable in CI.
+Windows support is planned; Linux stays compositor-bound by design.
+
 ## What `beckon <id>` actually does
 
 Single algorithm, not configurable:
