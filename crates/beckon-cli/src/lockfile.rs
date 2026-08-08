@@ -15,7 +15,14 @@ fn lock_path(config: &Path) -> PathBuf {
 
 pub fn acquire(config: &Path) -> Result<File, String> {
     use fs4::FileExt;
-    let path = lock_path(config);
+    // Two spellings of the same file must contend for the same lock, so
+    // hash the canonical path. A config that does not exist (yet) cannot
+    // be canonicalized — fall back to the raw path; serve fails on the
+    // read that follows anyway.
+    let canonical = config
+        .canonicalize()
+        .unwrap_or_else(|_| config.to_path_buf());
+    let path = lock_path(&canonical);
     let file = OpenOptions::new()
         .create(true)
         .write(true)
@@ -63,5 +70,15 @@ mod tests {
         std::fs::write(&b, "").unwrap();
         let _la = acquire(&a).expect("lock a");
         acquire(&b).expect("lock b must not contend with a");
+    }
+
+    #[test]
+    fn different_spellings_of_same_config_contend() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "").unwrap();
+        let dotted = dir.path().join(".").join("apps.toml");
+        let _first = acquire(&config).expect("first lock");
+        assert!(acquire(&dotted).is_err(), "dotted spelling must contend");
     }
 }
