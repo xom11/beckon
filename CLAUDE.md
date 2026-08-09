@@ -112,10 +112,15 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     if env::var("I3SOCK").is_ok()                         { return I3Backend::new(); }
     if env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()    { return HyprlandBackend::new(); }
     if env::var("WAYLAND_DISPLAY").is_ok() {
-        // GNOME Wayland: Mutter blocks external focus, but the bundled
-        // shell extension exposes the surface beckon needs over D-Bus.
-        // KDE Wayland: still unsupported (no equivalent bridge).
-        return GnomeBackend::new();   // probes extension; bails with hint if absent
+        // Both Mutter (GNOME) and KWin (KDE) refuse external focus, so each
+        // needs a collaborator running *inside* the compositor. Which one to
+        // try is decided by XDG_CURRENT_DESKTOP; guessing wrong produces an
+        // error message about the wrong desktop entirely.
+        return match wayland_desktop() {
+            Kde     => KdeBackend::new(),      // probes org.kde.kwin.Scripting
+            Gnome   => GnomeBackend::new(),    // probes the shell extension
+            Unknown => GnomeBackend::new().or_else(|_| KdeBackend::new()),
+        };
     }
     if env::var("DISPLAY").is_ok()                        { return X11Backend::new(); }
     bail!("No supported display server detected.");
@@ -128,8 +133,8 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 | `I3SOCK` | i3 (X11) — same `I3IpcBackend` (shared protocol) | ✅ Done |
 | `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland | ✅ Done |
 | `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ✅ Done (covers GNOME-X11, KDE-X11, openbox, awesome, XFCE, ...) |
-| `WAYLAND_DISPLAY` + GNOME extension on bus | GNOME Wayland — `gnome::GnomeBackend` via zbus → bundled shell extension | ✅ Done |
-| `WAYLAND_DISPLAY` w/o supported bridge | KDE Wayland (KWin blocks external focus, no extension bridge) | ❌ Out of scope |
+| `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=GNOME` | GNOME Wayland — `gnome::GnomeBackend` via zbus → bundled shell extension | ✅ Done |
+| `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=KDE` | KDE Wayland — `kde::KdeBackend` via zbus → `org.kde.kwin.Scripting` | ✅ Done |
 
 ### Focus algorithm
 
@@ -224,7 +229,7 @@ The dotfiles are inherently per-OS already (sway runs only on Linux, AHK only on
 | 1c | Linux / Hyprland | ✅ Done — `hyprland::HyprlandBackend` via Unix-socket IPC |
 | 2 | macOS | ✅ Done — `beckon-macos` via `objc2-app-kit` + AX + CGWindowList |
 | 3 | Windows | ✅ Done — `beckon-windows` via Win32 EnumWindows + COM IShellLinkW |
-| — | KDE Wayland | ❌ Out of scope — KWin blocks external focus and there's no equivalent bridge |
+| 1e | Linux / KDE Wayland via KWin scripting + zbus | ✅ Done — `kde::KdeBackend` |
 
 ### Phase 1b.i3 implementation note
 
@@ -413,6 +418,63 @@ gnome-extensions enable beckon@xom11.github.io
 declarative path, remove that directory first — home-manager's symlink
 activation refuses to clobber an unmanaged file.
 
+### Phase 1e KDE Wayland implementation note
+
+`crates/beckon-linux/src/kde.rs` is the KDE counterpart of `gnome.rs`, with
+one big difference: **there is nothing for the user to install.** KWin ships
+its own scripting engine and exposes it on the session bus, so beckon loads
+a generated script, gets the answer back, and unloads it.
+
+- **Bus surface** (`org.kde.KWin` / `/Scripting` /
+  `org.kde.kwin.Scripting`): `loadScript(path, pluginName) → i`, `start()`,
+  `unloadScript(pluginName) → b`, `isScriptLoaded(pluginName) → b`.
+  `isScriptLoaded` is the startup probe — read-only, and it proves both that
+  KWin owns the name and that the scripting object is at the expected path.
+- **Why not a Wayland protocol.** KWin advertises neither
+  `zwlr_foreign_toplevel_management_v1` (wlroots-only) nor its own
+  `org_kde_plasma_window_management`. Confirmed with `wayland-info` against
+  `kwin_wayland 6.6.6`: the latter is simply not in the registry, so a
+  protocol client cannot enumerate windows at all. Scripting is the only
+  surface that exists in practice.
+- **Getting data back out.** KWin scripts have no file I/O; `callDBus` is
+  the only escape hatch. beckon therefore serves a one-method interface
+  (`com.github.xom11.beckon.KWin.Windows`) on its own connection, bakes its
+  unique bus name (`:1.42`) into the generated script, and blocks on an
+  `mpsc` channel until the script calls back. Baking in the *unique* name
+  rather than a well-known one is what keeps two concurrent beckon
+  invocations from reading each other's replies.
+- **Two script round trips per invocation**: one to read the window list,
+  one to act. The read cannot be merged with the act because the decision
+  needs the list first, and a script is fire-and-forget — it cannot wait for
+  a reply from us.
+- **Window identity**: `Window.internalId`, a QUuid rendered `{xxxxxxxx-…}`.
+  Stable for the window's lifetime, which is all the algorithm needs — but
+  unlike every other backend's address it is **not numeric**, so
+  `algorithm::cmp_address` falls back to byte ordering. The step-5a cycle
+  ring is therefore stable but not in window-creation order on KDE.
+- **Recency**: `workspace.stackingOrder` reversed (topmost first), falling
+  back to `workspace.windowList()` on builds without the property. Same
+  stacking-as-MRU proxy the X11 backend uses.
+- **Window filter**: `normalWindow && !skipTaskbar && resourceClass != ""`.
+  Plasma's panels and desktop are windows KWin refuses to activate, so
+  letting one through would make step 5b toggle to something that never
+  takes focus — the same class of bug the X11 backend's
+  `_NET_WM_WINDOW_TYPE` filter prevents.
+- **Restore before focus**: the act script sets `w.minimized = false` before
+  assigning `workspace.activeWindow`. Assigning active on a minimized window
+  is not documented to restore it, and the X11 backend already taught us not
+  to assume a focus request de-iconifies.
+- **Script source is generated, so values are escaped** (`js_quote`). Window
+  ids are KWin-minted UUIDs and the bus name is a unique name, so neither can
+  realistically contain a quote today — but building source by concatenation
+  without escaping is how that stops being true.
+- **Hot-path cost, measured on the headless VM**: `beckon <id>` 7–41 ms
+  (median ~15), `beckon -l` 5–6 ms. Comfortably inside the 50 ms budget, and
+  cheaper than both macOS (~95–105 ms) and Windows (~57 ms).
+
+Testing: `kwin_wayland --virtual` runs headless with no GPU at all — see
+`testing/README.md`. All 19 live tests pass there.
+
 ### Phase 1c Hyprland implementation note
 
 `crates/beckon-linux/src/hyprland.rs` talks to the compositor via the request
@@ -519,10 +581,23 @@ Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary w
   internal. The Rust client talks to it over the session bus. Install once
   with `gnome-extensions install --force` + `enable`, then log out / log
   back in (Wayland can't reload shell live).
-- **KDE Wayland**: still unsupported. KWin doesn't have an equivalent
-  extension API surface that we can ride on, and no third-party project
-  has filled that gap. `beckon -d` reports this and points users at a
-  supported compositor or session.
+- **KDE Wayland**: supported via KWin's own scripting engine — see the
+  Phase 1e note. Nothing to install: `org.kde.kwin.Scripting` is part of
+  KWin, so beckon loads a generated script, gets the answer back through
+  `callDBus`, and unloads it.
+
+  This entry used to read *"KWin doesn't have an equivalent extension API
+  surface that we can ride on"*. That was wrong, and was falsified by
+  running the thing: on `kwin_wayland 6.6.6` a loaded script enumerated
+  every window with `resourceClass` / `caption` / `minimized` and moved
+  focus by assigning `workspace.activeWindow`. Do not re-add the claim
+  without re-testing it.
+
+  Note what is *not* available and why the script route is the only one:
+  KWin advertises neither `zwlr_foreign_toplevel_management_v1` (wlroots
+  only) nor its own `org_kde_plasma_window_management` — the latter is
+  absent from the registry on a plain `kwin_wayland`, so a Wayland-protocol
+  client cannot enumerate windows even though the protocol exists on paper.
 
 ### macOS Accessibility permission
 Required to focus arbitrary apps. Permission is bound to the codesigned binary identity — rebuilding the binary may invalidate it and require re-granting in System Settings.

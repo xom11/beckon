@@ -19,6 +19,7 @@ backend, so run it inside the session you want to test:
 |---|---|---|
 | `SWAYSOCK` / `I3SOCK` | `swaymsg` / `i3-msg` tree | covers sway *and* i3 |
 | `WAYLAND_DISPLAY` (GNOME) | the beckon shell extension over `busctl` | extension must be installed and enabled |
+| `WAYLAND_DISPLAY` (KDE) | KWin scripting over `busctl` | nothing to install; KWin ships the engine |
 | `DISPLAY` | `xprop` / `xdotool` (EWMH) | any EWMH window manager |
 
 **It is destructive.** To build its preconditions it kills every GUI app it
@@ -83,7 +84,25 @@ gsettings set org.gnome.shell enabled-extensions "['beckon@xom11.github.io']"
 
 Then point the suite at that bus with `WAYLAND_DISPLAY=wayland-gnome`.
 
-Two things to know about this session:
+**Restart it with a script, not an inline command.** Repeated restarts leave
+stale `dbus-daemon`s and a stale `at-spi2-registryd` behind, and once they
+accumulate the next gnome-shell comes up owning `org.gnome.Shell` but with
+its JS side wedged: Mutter's D-Bus interfaces answer, `org.gnome.Shell.Extensions`
+and the beckon object time out, and the process sits in `poll` at 0% CPU.
+Killing the leftovers first fixes it:
+
+```sh
+pkill -9 -x gnome-shell
+pkill -9 -f 'dbus-daemon --config-file=/tmp/beckon-gnome'
+pkill -9 -f at-spi2-registryd
+pkill -9 -f at-spi-bus-launcher
+```
+
+Put that in a file and run `bash the-file.sh`. Typed inline, `pkill -f` matches
+the very shell that is running it and kills your own session before it gets to
+the restart — which looks exactly like the VM dropping the connection.
+
+Two more things to know about this session:
 
 - Nothing has focus until something is activated — a headless GNOME has no
   seat, so a freshly mapped window is listed with `focused = false`. The
@@ -92,6 +111,47 @@ Two things to know about this session:
 - **Do not kill Xwayland.** gnome-shell 50 dies with it
   (`Gjs-CRITICAL: JS callback during garbage collection`). `Env.extra_kill`
   is per-environment for exactly this reason.
+
+### KDE Wayland (KWin 6)
+
+Only `kwin-wayland` is needed — not a full Plasma session — because beckon
+talks to KWin's scripting engine, not to plasmashell.
+
+```sh
+sudo apt-get install -y --no-install-recommends kwin-wayland kwin-common
+```
+
+Same isolated-bus config as the GNOME rig (reuse `bus.conf`, pointing
+`<servicedir>` at an empty directory), then:
+
+```sh
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export XDG_SESSION_TYPE=wayland XDG_CURRENT_DESKTOP=KDE
+export KWIN_COMPOSE=Q          # QPainter compositor — see below
+unset WAYLAND_DISPLAY SWAYSOCK I3SOCK DISPLAY
+ADDR=$(dbus-daemon --config-file=/tmp/beckon-kde/bus.conf --print-address --fork)
+DBUS_SESSION_BUS_ADDRESS="$ADDR" \
+  kwin_wayland --virtual --width 1920 --height 1080 --xwayland --socket wayland-kde &
+```
+
+`KWIN_COMPOSE=Q` is load-bearing on a VM with no `/dev/dri`: it selects the
+QPainter compositor so KWin never asks for OpenGL. With it, KWin 6.6.6 comes
+up headless on software rendering in about ten seconds. The startup warnings
+about missing `org.kde.breeze` decorations and missing portals are cosmetic —
+neither is installed, and neither is needed.
+
+Then point the suite at that session with `WAYLAND_DISPLAY=wayland-kde` and
+`XDG_CURRENT_DESKTOP=KDE`.
+
+Two things worth knowing before debugging a KDE failure:
+
+- KWin advertises **neither** `zwlr_foreign_toplevel_management_v1` nor
+  `org_kde_plasma_window_management` (check with `wayland-info`). A
+  Wayland-protocol client therefore cannot enumerate windows here, which is
+  why the backend goes through `org.kde.kwin.Scripting` instead.
+- A KWin script's `print()` goes to KWin's own stderr. When KWin is started
+  as above that lands in the redirect target, which makes it the quickest way
+  to see what a script actually did.
 
 ### sway
 

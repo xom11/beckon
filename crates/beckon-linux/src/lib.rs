@@ -29,6 +29,40 @@ pub mod x11;
 pub mod gnome;
 
 #[cfg(target_os = "linux")]
+pub mod kde;
+
+/// Which in-compositor collaborator a Wayland session needs.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaylandDesktop {
+    Gnome,
+    Kde,
+    Unknown,
+}
+
+/// Read the desktop out of `XDG_CURRENT_DESKTOP`, which is a colon-separated
+/// list (`KDE`, `ubuntu:GNOME`, `GNOME-Flashback:GNOME`, …). Matching is
+/// case-insensitive and per-component, so a distro prefix doesn't hide the
+/// desktop behind it.
+#[cfg(target_os = "linux")]
+fn wayland_desktop() -> WaylandDesktop {
+    let raw = match std::env::var("XDG_CURRENT_DESKTOP") {
+        Ok(v) => v,
+        Err(_) => return WaylandDesktop::Unknown,
+    };
+    for part in raw.split(':') {
+        let part = part.trim().to_ascii_uppercase();
+        if part == "KDE" || part == "PLASMA" {
+            return WaylandDesktop::Kde;
+        }
+        if part == "GNOME" {
+            return WaylandDesktop::Gnome;
+        }
+    }
+    WaylandDesktop::Unknown
+}
+
+#[cfg(target_os = "linux")]
 pub fn pick_backend() -> Result<Box<dyn Backend>> {
     // sway sets BOTH SWAYSOCK and I3SOCK (i3-compat). i3 sets only I3SOCK.
     // Either case → same backend, since the IPC protocol is identical.
@@ -39,21 +73,35 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
         return Ok(Box::new(hyprland::HyprlandBackend::new()?));
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        // Mutter (GNOME) and KWin (KDE) block external focus by design.
-        // We work around that by talking to a small GNOME Shell extension
-        // we ship — try it before giving up. If the extension isn't loaded
-        // (KDE, or GNOME without our extension installed), the probe fails
-        // with a hint pointing the user at the install instructions.
-        return gnome::GnomeBackend::new()
-            .map(|b| Box::new(b) as Box<dyn Backend>)
-            .map_err(|e| {
-                BackendError::UnsupportedEnvironment(format!(
-                    "Wayland compositor without sway/Hyprland. \
-                 Tried the GNOME Shell extension fallback and it was unreachable: {e} \
-                 (KDE Wayland is unsupported; on GNOME Wayland, install the \
-                 `beckon@xom11.github.io` extension shipped in the beckon repo)."
-                ))
-            });
+        // Mutter (GNOME) and KWin (KDE) both refuse to let an outside
+        // process focus a window, so each needs a collaborator running
+        // *inside* the compositor. Which one to try is decided by
+        // XDG_CURRENT_DESKTOP — guessing wrong produces a confusing error
+        // that talks about the wrong desktop entirely.
+        return match wayland_desktop() {
+            WaylandDesktop::Kde => kde::KdeBackend::new().map(|b| Box::new(b) as Box<dyn Backend>),
+            WaylandDesktop::Gnome => {
+                gnome::GnomeBackend::new().map(|b| Box::new(b) as Box<dyn Backend>)
+            }
+            WaylandDesktop::Unknown => {
+                // No desktop hint. Probe both before giving up: the user may
+                // simply have an unset XDG_CURRENT_DESKTOP.
+                gnome::GnomeBackend::new()
+                    .map(|b| Box::new(b) as Box<dyn Backend>)
+                    .or_else(|gnome_err| {
+                        kde::KdeBackend::new()
+                            .map(|b| Box::new(b) as Box<dyn Backend>)
+                            .map_err(|kde_err| {
+                                BackendError::UnsupportedEnvironment(format!(
+                                    "unrecognised Wayland compositor (XDG_CURRENT_DESKTOP is \
+                                     unset or unknown, and it is not sway or Hyprland). \
+                                     GNOME probe: {gnome_err} \
+                                     KWin probe: {kde_err}"
+                                ))
+                            })
+                    })
+            }
+        };
     }
     if std::env::var_os("DISPLAY").is_some() {
         return Ok(Box::new(x11::X11Backend::new()?));
@@ -74,20 +122,45 @@ pub fn detect_compositor() -> Option<&'static str> {
     } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         Some("Hyprland")
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-        // We can't tell GNOME from KDE without probing — leave that to the
-        // backend selector. This label is for `-d` only.
-        if std::env::var("XDG_CURRENT_DESKTOP")
-            .map(|v| v.to_uppercase().contains("GNOME"))
-            .unwrap_or(false)
-        {
-            Some("GNOME Wayland (via shell extension)")
-        } else {
-            Some("Wayland (unsupported compositor)")
+        match wayland_desktop() {
+            WaylandDesktop::Gnome => Some("GNOME Wayland (via shell extension)"),
+            WaylandDesktop::Kde => Some("KDE Wayland (via KWin script)"),
+            WaylandDesktop::Unknown => Some("Wayland (desktop not identified)"),
         }
     } else if std::env::var_os("DISPLAY").is_some() {
         Some("X11")
     } else {
         None
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// `wayland_desktop` reads a process-wide env var, so these cases have to
+    /// run one at a time — hence one test, not five.
+    #[test]
+    fn wayland_desktop_matches_per_component() {
+        let cases = [
+            ("KDE", WaylandDesktop::Kde),
+            ("plasma", WaylandDesktop::Kde),
+            ("GNOME", WaylandDesktop::Gnome),
+            // Distro prefixes must not hide the desktop behind them.
+            ("ubuntu:GNOME", WaylandDesktop::Gnome),
+            ("GNOME-Flashback:GNOME", WaylandDesktop::Gnome),
+            ("KDE:plasma", WaylandDesktop::Kde),
+            // Not a substring match: "GNOME" must not fall out of "GNOMEISH".
+            ("GNOMEISH", WaylandDesktop::Unknown),
+            ("sway", WaylandDesktop::Unknown),
+            ("", WaylandDesktop::Unknown),
+        ];
+        for (value, want) in cases {
+            std::env::set_var("XDG_CURRENT_DESKTOP", value);
+            assert_eq!(wayland_desktop(), want, "XDG_CURRENT_DESKTOP={value:?}");
+        }
+        std::env::remove_var("XDG_CURRENT_DESKTOP");
+        assert_eq!(wayland_desktop(), WaylandDesktop::Unknown, "unset");
     }
 }
 

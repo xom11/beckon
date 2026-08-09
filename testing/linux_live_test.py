@@ -277,6 +277,139 @@ class GnomeEnv(Env):
         return f is None or f.wid != wid
 
 
+class KdeEnv(Env):
+    """KWin, probed through its scripting engine.
+
+    Deliberately a different transport from the backend under test: beckon
+    gets its answer back via `callDBus` into its own Rust service, this reads
+    what a script `print()`ed onto KWin's stderr. Same engine, independent
+    path — so a bug in beckon's reply plumbing cannot make the oracle agree
+    with it.
+    """
+
+    name = "KDE Wayland (KWin scripting)"
+    default_multi = "foot"
+    default_other = "org.gnome.Calculator"
+
+    DEST, OBJ, IFACE = "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting"
+    MARKER = "BECKON-TEST "
+    PLUGIN = "beckon-live-test"
+
+    QUERY_JS = r"""(function () {
+    var wins = (typeof workspace.stackingOrder !== "undefined" && workspace.stackingOrder)
+        ? workspace.stackingOrder.slice().reverse()
+        : workspace.windowList();
+    var active = workspace.activeWindow;
+    var out = [];
+    for (var i = 0; i < wins.length; i++) {
+        var w = wins[i];
+        if (!w.normalWindow) continue;
+        if (w.skipTaskbar) continue;
+        var c = w.resourceClass || w.resourceName || "";
+        if (!c) continue;
+        out.push({
+            id: String(w.internalId),
+            cls: String(c),
+            title: String(w.caption || ""),
+            active: (active !== null && active !== undefined && w === active),
+            minimized: !!w.minimized
+        });
+    }
+    print("BECKON-TEST " + JSON.stringify(out));
+})();"""
+
+    def __init__(self) -> None:
+        if not shutil.which("busctl"):
+            raise RuntimeError("busctl not on PATH")
+        self.log = os.environ.get("BECKON_TEST_KWIN_LOG", "/tmp/beckon-kde-shell.log")
+        if not os.path.exists(self.log):
+            raise RuntimeError(
+                f"KWin's stderr log not found at {self.log} — start kwin_wayland with its "
+                "output redirected to a file, or set BECKON_TEST_KWIN_LOG"
+            )
+        if self._rows() is None:
+            raise RuntimeError("KWin scripting did not answer; is this a KWin session?")
+
+    def _busctl(self, method: str, *args: str) -> bool:
+        res = run(["busctl", "--user", "call", self.DEST, self.OBJ, self.IFACE, method, *args],
+                  timeout=15)
+        return res.returncode == 0
+
+    def _run_js(self, js: str, expect_output: bool) -> str | None:
+        path = f"/tmp/{self.PLUGIN}.js"
+        with open(path, "w") as fh:
+            fh.write(js)
+        try:
+            offset = os.path.getsize(self.log)
+        except OSError:
+            offset = 0
+        self._busctl("unloadScript", "s", self.PLUGIN)
+        if not self._busctl("loadScript", "ss", path, self.PLUGIN):
+            return None
+        self._busctl("start")
+        if not expect_output:
+            time.sleep(0.4)
+            self._busctl("unloadScript", "s", self.PLUGIN)
+            return ""
+
+        deadline = time.monotonic() + 5.0
+        payload = None
+        while time.monotonic() < deadline and payload is None:
+            time.sleep(0.1)
+            try:
+                with open(self.log, errors="replace") as fh:
+                    fh.seek(offset)
+                    for line in fh:
+                        idx = line.find(self.MARKER)
+                        if idx != -1:
+                            payload = line[idx + len(self.MARKER):].strip()
+            except OSError:
+                pass
+        self._busctl("unloadScript", "s", self.PLUGIN)
+        return payload
+
+    def _rows(self) -> list[dict] | None:
+        payload = self._run_js(self.QUERY_JS, expect_output=True)
+        if payload is None:
+            return None
+        try:
+            return json.loads(payload)
+        except ValueError:
+            return None
+
+    def windows(self) -> list[Win]:
+        rows = self._rows() or []
+        return [Win(r["id"], r["cls"], r.get("title", "")) for r in rows]
+
+    def focused(self) -> Win | None:
+        for r in self._rows() or []:
+            if r.get("active"):
+                return Win(r["id"], r["cls"], r.get("title", ""))
+        return None
+
+    def activate(self, wid: str) -> None:
+        js = (
+            "(function () {\n"
+            f"    var target = {json.dumps(wid)};\n"
+            "    var wins = workspace.windowList();\n"
+            "    for (var i = 0; i < wins.length; i++) {\n"
+            "        if (String(wins[i].internalId) === target) {\n"
+            "            wins[i].minimized = false;\n"
+            "            workspace.activeWindow = wins[i];\n"
+            "            return;\n"
+            "        }\n"
+            "    }\n"
+            "})();"
+        )
+        self._run_js(js, expect_output=False)
+
+    def is_hidden(self, wid: str) -> bool:
+        for r in self._rows() or []:
+            if r["id"] == wid:
+                return bool(r.get("minimized"))
+        return True  # gone from the list entirely
+
+
 class X11Env(Env):
     name = "X11 (EWMH)"
     default_multi = "xterm"
@@ -341,6 +474,11 @@ def detect_env() -> Env:
     if os.environ.get("SWAYSOCK") or os.environ.get("I3SOCK"):
         return SwayEnv()
     if os.environ.get("WAYLAND_DISPLAY"):
+        # Same rule beckon's own pick_backend uses: XDG_CURRENT_DESKTOP is a
+        # colon-separated list, matched per component.
+        parts = [p.strip().upper() for p in os.environ.get("XDG_CURRENT_DESKTOP", "").split(":")]
+        if "KDE" in parts or "PLASMA" in parts:
+            return KdeEnv()
         return GnomeEnv()
     if os.environ.get("DISPLAY"):
         return X11Env()
