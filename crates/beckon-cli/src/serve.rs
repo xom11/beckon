@@ -60,7 +60,11 @@ struct ServeState {
 }
 
 pub fn cmd_serve(config: &Path) -> Result<()> {
-    let _lock = crate::lockfile::acquire(config).map_err(|e| anyhow!(e))?;
+    // Plain `?`, not `anyhow!(e)`: this must reach `main` as a typed
+    // `AcquireError` so `is_expected` can spot the healthy "already running"
+    // refusal and skip the notification. Flattening it to a message would put
+    // every watchdog tick back in the notification centre.
+    let _lock = crate::lockfile::acquire(config)?;
     let config = config
         .canonicalize()
         .with_context(|| format!("cannot resolve `{}`", config.display()))?;

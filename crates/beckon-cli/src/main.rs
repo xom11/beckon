@@ -74,11 +74,28 @@ fn main() {
         // If invoked from a hotkey binding (no controlling terminal),
         // stderr goes to /dev/null and the user sees nothing. Fire a
         // desktop notification so the failure is visible.
-        if !std::io::stderr().is_terminal() {
+        if !std::io::stderr().is_terminal() && !is_expected(&e) {
             notify_error(&format!("{e:#}"));
         }
         std::process::exit(1);
     }
+}
+
+/// Is this a designed outcome wearing an error's clothes?
+///
+/// Such an error still prints to stderr and still exits non-zero — callers
+/// and logs keep every bit of evidence — but it must not raise a desktop
+/// notification, which is for things the owner has to act on.
+///
+/// Only one case so far: a watchdog tick finding the serve it guards already
+/// alive (`AcquireError::AlreadyRunning`). Left as a function rather than
+/// inlined so the policy is testable without a terminal, a held lock, or a
+/// notification daemon.
+fn is_expected(e: &anyhow::Error) -> bool {
+    matches!(
+        e.downcast_ref::<lockfile::AcquireError>(),
+        Some(lockfile::AcquireError::AlreadyRunning(_))
+    )
 }
 
 fn run(args: &Args) -> Result<()> {
@@ -503,5 +520,33 @@ mod tests {
             applescript_escape(r#"say "hi" \ bye"#),
             r#"say \"hi\" \\ bye"#
         );
+    }
+
+    #[test]
+    fn already_running_is_expected() {
+        let e = anyhow::Error::new(lockfile::AcquireError::AlreadyRunning(
+            std::path::PathBuf::from("/tmp/beckon-serve-0.lock"),
+        ));
+        assert!(
+            is_expected(&e),
+            "a live serve refusing a probe is not a fault"
+        );
+    }
+
+    #[test]
+    fn lock_open_failure_is_not_expected() {
+        let e = anyhow::Error::new(lockfile::AcquireError::Open {
+            path: std::path::PathBuf::from("/tmp/beckon-serve-0.lock"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        assert!(
+            !is_expected(&e),
+            "an unopenable lock file is a real fault and must still notify"
+        );
+    }
+
+    #[test]
+    fn ordinary_errors_are_not_expected() {
+        assert!(!is_expected(&anyhow!("no command given (use -h for help)")));
     }
 }
