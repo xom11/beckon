@@ -119,13 +119,40 @@ redirect, then a `wscript.exe` VBScript shim to hide the window `cmd.exe`
 left behind. VBScript is a deprecated feature-on-demand, so that install
 was on a clock. Both are gone.
 
-What may remain is a **brief flash** at logon: Task Scheduler has no way
-to start a console-subsystem process without allocating a console first,
-and `<Hidden>` in the task XML hides the task from the Task Scheduler UI,
-not the window. If that ever becomes intolerable the next step is a
-separate GUI-subsystem `beckon-serve.exe`; a whole-binary
-`windows_subsystem = "windows"` is **not** an option, because it would
-silently swallow the output of `beckon -l`, `-L`, `-s`, `-r` and `-d`.
+What remains is a **brief flash**: Task Scheduler has no way to start a
+console-subsystem process without allocating a console first, and
+`<Hidden>` in the task XML hides the task from the Task Scheduler UI, not
+the window. `FreeConsole()` can only close the console *after* `main`
+starts, never prevent it.
+
+Measured on Windows 11 ARM64 (build 26200), from inside session 1, 25 ms
+sampling, with a control:
+
+| action | windows |
+|---|---|
+| `beckon.exe --serve <cfg>` (no `--log`) | console + `PseudoConsoleWindow`, **both persist for the life of the daemon** |
+| `beckon.exe --serve <cfg> --log <log>` | one window at ~150 ms, **gone by ~210 ms** — a ~60 ms flash, nothing lingers |
+| `conhost.exe --headless beckon.exe --serve <cfg> --log <log>` | **none at all** |
+
+So `--log` is enough to stop anything *staying* on screen, and that is what
+the shipped XML does. If even the flash is unacceptable, put
+`conhost.exe --headless` in front of the same command — `--log` still
+works, and nothing appears at any point. `--headless` is undocumented, so
+treat it as a local preference rather than the default.
+
+**The flash is worse than it sounds if Windows Terminal is your default
+terminal.** The console then arrives as a *new tab in your existing WT
+window* rather than a standalone window, so a long-lived one looks exactly
+like a tab you opened yourself — and closing it sends `CTRL_CLOSE_EVENT`
+and kills the daemon.
+
+**Two caveats about what you point the action at.** The command must be
+the real `beckon.exe`, not a wrapper that stays alive: a launcher which
+remains as a live parent (a Scoop shim, `cmd /c`) holds the console open,
+so beckon detaching does not close it. And a whole-binary
+`windows_subsystem = "windows"` is **not** an option — it would silently
+swallow the output of `beckon -l`, `-L`, `-s`, `-r` and `-d`. A separate
+GUI-subsystem `beckon-serve.exe` is the escalation if one is ever needed.
 
 ## The tray icon
 

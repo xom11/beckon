@@ -852,11 +852,25 @@ Reasonable next-session order:
       `Cause::HumanAction`, which is never throttled), undoing the entire
       point of `--log`. The flag is invisible from the call site; do not
       "clean it up".
-    - A **console-window flash** at logon may remain: Task Scheduler cannot
-      start a console-subsystem process without allocating a console first.
-      The escalation is a separate GUI-subsystem `beckon-serve.exe` — never
-      a whole-binary `windows_subsystem = "windows"`, which would swallow
-      the output of `-l`, `-L`, `-s`, `-r`, `-d`.
+    - **A ~60 ms flash remains, measured.** Task Scheduler cannot start a
+      console-subsystem process without allocating a console first;
+      `FreeConsole` only closes it afterwards. On Windows 11 ARM64 (build
+      26200), inside session 1, 25 ms sampling, with a control: bare
+      `--serve` leaves a console **and** a `PseudoConsoleWindow` up for the
+      life of the daemon; `--serve --log` shows one window at ~150 ms that
+      is gone by ~210 ms and leaves nothing; `conhost.exe --headless` in
+      front of the same command shows nothing at any point. Worse than it
+      sounds where Windows Terminal is the default terminal: the console
+      arrives as a new WT *tab*, and closing that tab sends
+      `CTRL_CLOSE_EVENT` and kills the daemon.
+    - **Point the task at the real exe.** A launcher that stays alive as a
+      parent — a Scoop shim, `cmd /c` — holds the console, so beckon's
+      `FreeConsole` does not close it. Verified: the shim's pid is the
+      `ParentProcessId` of the real beckon process.
+    - The escalation, if the flash ever matters, is a separate
+      GUI-subsystem `beckon-serve.exe` — never a whole-binary
+      `windows_subsystem = "windows"`, which would swallow the output of
+      `-l`, `-L`, `-s`, `-r`, `-d`.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
