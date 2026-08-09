@@ -623,6 +623,19 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
    no event tap, no LLHOOK, so no new TCC prompt for the hotkey half and no
    interference with kanata's hook ordering.
 
+   beckon itself never daemonizes, and that is a decision, not an omission.
+   Surveyed skhd, yabai, espanso, kanata, AutoHotkey and caddy: effectively
+   no hotkey daemon forks. On macOS a detached process loses the login
+   session's bootstrap namespace — beckon already needs
+   `TransformProcessType(→ UIElement)` because a launchd-spawned process has
+   no window-server identity, and without one `RegisterEventHotKey` returns
+   success while never delivering a press. On Windows there is no `fork` at
+   all. Above all it solves the wrong problem: forking buys "survives
+   closing the terminal", while what users need is "starts at login" and
+   "restarts if it dies" — both of which still require launchd / Task
+   Scheduler afterwards. The ergonomic step that *is* open is a `--service
+   install/start/stop` subcommand (the skhd / espanso pattern); not built.
+
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at
    `$XDG_RUNTIME_DIR/beckon-mru` containing the `app_id` focused before
@@ -702,6 +715,14 @@ OS metadata on every call.
 
 - **GitHub**: https://github.com/xom11/beckon (source + tagged release artifacts; 6 prebuilt binaries per release: x86_64 + aarch64 × linux-gnu / apple-darwin / pc-windows-msvc).
 - **Homebrew tap** (macOS / Linux): `brew install xom11/tap/beckon` — tap repo `xom11/homebrew-tap`. Formula auto-bumped by `.github/workflows/bump-packagers.yml` on every release.
+  The formula ships a **macOS LaunchAgent** (`service do` in
+  `packaging/homebrew/beckon.rb.template`), so `brew services start beckon`
+  is the whole resident-mode install. Guarded by a top-level `if OS.mac?`:
+  `brew style` rejects a `service` block nested in `on_macos do`
+  (`FormulaAudit/ComponentsOrder`), and the `run macos:` form leaves
+  `service?` true on Linux — where `--serve` does not exist — so
+  `brew services start` fails there instead of the formula simply having no
+  service.
 - **Scoop bucket** (Windows, x86_64 + arm64): `scoop bucket add xom11 https://github.com/xom11/scoop-bucket && scoop install xom11/beckon` — bucket repo `xom11/scoop-bucket`. Manifest auto-bumped by the same workflow.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
@@ -796,6 +817,37 @@ Reasonable next-session order:
 - **Launch path**: Classic shortcut entries use `ShellExecuteW` with the exe path and arguments extracted from the `.lnk`; MSIX/AppX entries use `IApplicationActivationManager::ActivateApplication` with the AUMID. `Microsoft.Windows.Explorer` is identified by AUMID/class but launches through `explorer.exe`, since activation manager rejects that built-in shell AppID.
 - **COM initialization**: `CoInitializeEx(COINIT_APARTMENTTHREADED)` is called for catalog and activation threads. The call is idempotent (returns `S_FALSE` if already initialized on the thread).
 - **Toast notifications**: When stderr is not a terminal (hotkey invocation), errors are surfaced via PowerShell-spawned Windows toast notifications (best-effort, same pattern as Linux `notify-send`).
+- **`--log <PATH>` (with `--serve`) redirects stderr and detaches the
+  console** — `crates/beckon-windows/src/logfile.rs`. It exists so a
+  Scheduled Task can run `beckon.exe` directly: Task Scheduler cannot
+  redirect stderr, so the task used to go through `cmd.exe` for a `2>`,
+  which left a console window, which needed a `wscript.exe` VBScript shim
+  to hide. VBScript is a deprecated feature-on-demand; both hops are gone.
+    - **Why no call site changed.** std's Windows stdio resolves
+      `GetStdHandle` on *every* write instead of caching it, with a comment
+      naming `SetStdHandle` as the reason (rust-lang/rust#40490), and std
+      pins it with `library/std/tests/switch-stdout.rs`. One swap redirects
+      every print site. Verified identical at the 1.75 floor and at 1.97.
+    - **Redirect and detach are one flag on purpose.** Detaching without
+      redirecting leaves stderr pointing at a destroyed console, and
+      `print_to` panics rather than returning on a write error that is not
+      `ERROR_INVALID_HANDLE`. Fusing them makes that state unrepresentable.
+    - **Everything fallible runs before `FreeConsole`**, because `main`
+      reports errors with `eprintln!` — an `Err` returned from after the
+      detach turns `exit(1)` into a silent panic.
+    - **Append, not truncate.** `2>` truncated on every start, so
+      `RestartOnFailure` destroyed the log explaining the failure it was
+      restarting from.
+    - **Pre-existing hazard this does not fix**: whenever stderr is a file
+      (already true under `cmd /c … 2>`), a write failure — full disk,
+      disconnected network share — panics the printing thread rather than
+      returning an error. In `--serve` that surfaces as "hotkeys silently
+      stop", not a crash.
+    - A **console-window flash** at logon may remain: Task Scheduler cannot
+      start a console-subsystem process without allocating a console first.
+      The escalation is a separate GUI-subsystem `beckon-serve.exe` — never
+      a whole-binary `windows_subsystem = "windows"`, which would swallow
+      the output of `-l`, `-L`, `-s`, `-r`, `-d`.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
