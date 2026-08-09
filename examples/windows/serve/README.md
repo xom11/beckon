@@ -54,8 +54,6 @@ $cfg = "$env:USERPROFILE\.config\beckon\apps.toml"
 $log = "$env:USERPROFILE\AppData\Local\beckon\serve.log"
 $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 
-mkdir -Force (Split-Path $log) | Out-Null
-
 (Get-Content -Raw beckon-serve.xml).
     Replace('C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe', $exe).
     Replace('C:\Users\YOUR_USERNAME\.config\beckon\apps.toml', $cfg).
@@ -94,12 +92,17 @@ Unregister-ScheduledTask beckon-serve -Confirm:$false
 
 ## The log
 
-The task action runs beckon through `cmd.exe` for one reason: the `2>`
-redirect. Task Scheduler throws a process's stderr away, and stderr is
-the only place beckon reports **how many hotkeys actually registered**.
-Without the log you cannot tell `20 shortcuts registered` from `20
-parsed, 0 registered` — which is exactly the failure that went unnoticed
-for hours on 2026-08-09.
+The task action passes `--log`. Task Scheduler throws a process's stderr
+away, and stderr is the only place beckon reports **how many hotkeys
+actually registered**. Without the log you cannot tell `20 shortcuts
+registered` from `20 parsed, 0 registered` — which is exactly the failure
+that went unnoticed for hours on 2026-08-09.
+
+beckon creates the log's parent directory itself, and **appends** rather
+than truncating. The `cmd.exe` redirect this replaces truncated on every
+start, so `RestartOnFailure` destroyed the log explaining the failure it
+was restarting from. Nothing rotates the file; if it ever grows
+inconvenient, delete it while the daemon is stopped.
 
 ```powershell
 Get-Content "$env:USERPROFILE\AppData\Local\beckon\serve.log" -Tail 20 -Wait
@@ -107,28 +110,22 @@ Get-Content "$env:USERPROFILE\AppData\Local\beckon\serve.log" -Tail 20 -Wait
 
 ## The console window
 
-beckon is a console application, so the task above leaves an **empty
-console window** on screen for as long as the daemon runs. This is
-measured, not assumed: a process launched by Task Scheduler with
-`InteractiveToken` reports `IsWindowVisible = true` for its own
-`GetConsoleWindow()` (Windows 11 ARM64, build 26200).
+There isn't one. `--log` sends stderr to the file and calls
+`FreeConsole()` in the same step, so the task runs `beckon.exe` directly
+and the console Windows allocates for it closes immediately.
 
-Three ways out, in order of how much they depend on:
+Earlier versions needed two extra hops for this — `cmd.exe` for the `2>`
+redirect, then a `wscript.exe` VBScript shim to hide the window `cmd.exe`
+left behind. VBScript is a deprecated feature-on-demand, so that install
+was on a clock. Both are gone.
 
-1. **Live with it** — minimize it. Nothing breaks. This is the option
-   that cannot fail.
-2. **[`beckon-serve.vbs`](beckon-serve.vbs)** — a shim that starts the
-   same `cmd.exe` redirect hidden, so you keep the log and lose the
-   window, exactly like the AHK example's `Run(..., "Hide")`. Point the
-   task at `wscript.exe "...\beckon-serve.vbs"` (that `<Exec>` block is
-   already in the XML, commented out). `wscript.exe` is present on build
-   26200, but VBScript is a deprecated feature-on-demand and won't be
-   there forever.
-3. **`conhost.exe --headless beckon.exe --serve <config>`** — no
-   deprecated dependency, but an undocumented flag, and untested here.
-
-The real fix is a `FreeConsole()` on the `--serve` path in beckon
-itself, which does not exist yet.
+What may remain is a **brief flash** at logon: Task Scheduler has no way
+to start a console-subsystem process without allocating a console first,
+and `<Hidden>` in the task XML hides the task from the Task Scheduler UI,
+not the window. If that ever becomes intolerable the next step is a
+separate GUI-subsystem `beckon-serve.exe`; a whole-binary
+`windows_subsystem = "windows"` is **not** an option, because it would
+silently swallow the output of `beckon -l`, `-L`, `-s`, `-r` and `-d`.
 
 ## The tray icon
 
@@ -169,9 +166,10 @@ block with:
 </TimeTrigger>
 ```
 
-Point its `2>` at a *different* log file, otherwise the watchdog's
-"already running" line overwrites the real daemon's registration count
-every 5 minutes.
+Point its `--log` at a *different* file. The daemon and the watchdog both
+append, so a shared file still works — but it interleaves an "already
+running" line into the daemon's log every 5 minutes, burying the
+registration count you actually want to read.
 
 ## Editing shortcuts
 
@@ -207,7 +205,7 @@ Get-Process beckon -ErrorAction SilentlyContinue | Format-Table Id, Path
 ```
 
 **Nothing fires and there's no window to read.** Read the log — that is
-what the `2>` redirect in the task action is for. If the log is empty,
+what `--log` in the task action is for. If the log is empty,
 the task never started: check `Get-ScheduledTaskInfo beckon-serve`
 (`LastTaskResult` 267009 = `SCHED_S_TASK_RUNNING`, which is healthy).
 

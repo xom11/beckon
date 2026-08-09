@@ -30,15 +30,17 @@
   2. ExecutionTimeLimit is PT0S (unlimited). This is a daemon; the
      default 3-day limit would kill it.
 
-  The action below goes through cmd.exe purely to get the 2> redirect:
-  Task Scheduler discards a process's stderr, and stderr is where beckon
-  reports how many hotkeys actually registered. Without the log there is
-  no way to tell "20 registered" from "20 parsed, 0 registered".
+  beckon writes its own log. The flag spelled out in Arguments below sends
+  stderr to a file and detaches the console in one step, so this task runs
+  beckon.exe directly: no cmd.exe for a redirect, and no wscript.exe shim
+  to hide the window cmd.exe would have left behind. Task Scheduler
+  discards a process's stderr, and stderr is where beckon reports how many
+  hotkeys actually registered. Without the log there is no way to tell
+  "20 registered" from "20 parsed, 0 registered".
 
-  It leaves a visible console window (measured, not assumed: a task-
-  launched console process reports IsWindowVisible = true for its own
-  GetConsoleWindow on Windows 11 build 26200). Swap in the commented-out
-  wscript action to get the same log with no window — see the README.
+  The log is APPENDED to, not truncated. The cmd.exe redirect this
+  replaces truncated on every start, so RestartOnFailure destroyed the log
+  explaining the failure it was restarting from.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -95,14 +97,8 @@
 
   <Actions Context="Author">
     <Exec>
-      <Command>cmd.exe</Command>
-      <Arguments>/c ""C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe" --serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml" 2&gt; "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log""</Arguments>
+      <Command>C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe</Command>
+      <Arguments>--serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml" --log "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log"</Arguments>
     </Exec>
-    <!-- Same log, no console window — see beckon-serve.vbs:
-    <Exec>
-      <Command>wscript.exe</Command>
-      <Arguments>"C:\Users\YOUR_USERNAME\.config\beckon\beckon-serve.vbs"</Arguments>
-    </Exec>
-    -->
   </Actions>
 </Task>
