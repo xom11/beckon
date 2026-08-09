@@ -217,6 +217,11 @@ impl FakeServer {
         // Build a clean env so beckon can't be sidetracked into another
         // backend (sway, i3, X11, etc.) by ambient session vars.
         cmd.env_clear();
+        // Set here rather than via tests/common: `env_clear` above would drop
+        // it. Several cases below expect a failure, and a failing beckon whose
+        // stderr is captured posts a desktop notification -- which on a real
+        // Linux desktop means `cargo test` interrupting whoever ran it.
+        cmd.env("BECKON_NO_NOTIFY", "1");
         cmd.env(
             "PATH",
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),

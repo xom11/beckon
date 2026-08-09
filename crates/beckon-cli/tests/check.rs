@@ -1,10 +1,13 @@
-use std::process::{Command, Output};
+mod common;
+
+use common::beckon;
+use std::process::Output;
 
 fn run_check(content: &str) -> Output {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("apps.toml");
     std::fs::write(&path, content).expect("write config");
-    Command::new(env!("CARGO_BIN_EXE_beckon"))
+    beckon()
         .arg("--check")
         .arg(&path)
         .output()
@@ -38,7 +41,7 @@ fn check_duplicate_exits_nonzero() {
 
 #[test]
 fn check_missing_file_exits_nonzero() {
-    let out = Command::new(env!("CARGO_BIN_EXE_beckon"))
+    let out = beckon()
         .args(["--check", "/nonexistent/beckon-test-apps.toml"])
         .output()
         .expect("run beckon");

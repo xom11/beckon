@@ -40,6 +40,16 @@ beckon -d                      # diagnose your environment
 # 4. press the hotkey. failures fire a desktop notification — you'll see them.
 ```
 
+Notifications fire only when nothing else would show the error: with stderr on a
+terminal beckon just prints. Two adjustments:
+
+- `BECKON_NO_NOTIFY=1` silences them entirely — for scripts and test harnesses,
+  which capture stderr and would otherwise look like a hotkey to beckon.
+- A `--serve` that fails to start reports once an hour, not once per restart.
+  Supervisors (launchd `KeepAlive`, a Task Scheduler repetition) relaunch a
+  failing service on a timer, and one broken config should not mean one
+  notification a minute.
+
 ## Status
 
 | Platform | Status |

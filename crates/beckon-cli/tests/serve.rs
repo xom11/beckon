@@ -1,8 +1,10 @@
-use std::process::Command;
+mod common;
+
+use common::beckon;
 
 #[test]
 fn serve_missing_file_exits_nonzero_and_does_not_hang() {
-    let out = Command::new(env!("CARGO_BIN_EXE_beckon"))
+    let out = beckon()
         .args(["--serve", "/nonexistent/beckon-test-apps.toml"])
         .output()
         .expect("run beckon");
@@ -11,7 +13,7 @@ fn serve_missing_file_exits_nonzero_and_does_not_hang() {
 
 #[test]
 fn serve_conflicts_with_check() {
-    let out = Command::new(env!("CARGO_BIN_EXE_beckon"))
+    let out = beckon()
         .args(["--serve", "/tmp/a.toml", "--check", "/tmp/a.toml"])
         .output()
         .expect("run beckon");

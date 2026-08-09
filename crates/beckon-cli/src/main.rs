@@ -71,14 +71,83 @@ fn main() {
     if let Err(e) = run(&args) {
         // Always to stderr.
         eprintln!("beckon: {e:#}");
-        // If invoked from a hotkey binding (no controlling terminal),
-        // stderr goes to /dev/null and the user sees nothing. Fire a
-        // desktop notification so the failure is visible.
-        if !std::io::stderr().is_terminal() && !is_expected(&e) {
-            notify_error(&format!("{e:#}"));
+        let message = format!("{e:#}");
+        // `--serve` is the one command a supervisor restarts on a fixed
+        // interval forever (launchd KeepAlive, a Task Scheduler repetition),
+        // so it is the one command whose startup failure can repeat by
+        // itself. Everything else fails because a human just asked for it,
+        // and a human who asks twice deserves telling twice.
+        let supervised = args.serve.is_some();
+        if should_notify(std::io::stderr().is_terminal(), notifications_muted(), &e)
+            && (!supervised || claim_repeat_slot(&message))
+        {
+            notify_error(&message);
         }
         std::process::exit(1);
     }
+}
+
+/// Environment variable that silences every desktop notification.
+///
+/// The integration tests run the real binary against deliberately broken
+/// configs with stderr captured — which is exactly the shape of "nobody is
+/// watching stderr", so each run used to throw four real notifications at
+/// whoever typed `cargo test`. Measured on macOS 2026-08-09: the machine's
+/// entire retained notification history was beckon's own test fixtures.
+const MUTE_ENV: &str = "BECKON_NO_NOTIFY";
+
+fn notifications_muted() -> bool {
+    muted_by(std::env::var_os(MUTE_ENV).as_deref())
+}
+
+/// Any non-empty value mutes. Empty is treated as unset so that an exported
+/// but blank variable does not silently disable notifications.
+fn muted_by(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
+/// Does this failure deserve interrupting the user with a notification?
+///
+/// Kept free of I/O so the policy can be tested without a terminal, a lock or
+/// a notification daemon.
+fn should_notify(stderr_is_terminal: bool, muted: bool, e: &anyhow::Error) -> bool {
+    // A terminal already showed the message; a notification would duplicate it.
+    // Without one — a hotkey binding, a launchd agent, a scheduled task —
+    // stderr goes to a log or to /dev/null and the failure would be invisible.
+    !stderr_is_terminal && !muted && !is_expected(e)
+}
+
+/// How long an identical supervised failure stays "already reported".
+///
+/// Long enough that a restart loop nags rather than screams, short enough
+/// that a fault left unfixed keeps reminding. Measured on macOS 2026-08-09:
+/// launchd's `ThrottleInterval` of 60 turned one unreadable config into a
+/// notification every minute — 1440 a day; the Windows watchdog's five-minute
+/// repetition would give 288.
+const REPEAT_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Claim the right to report `message` now, or decline if an identical one
+/// was reported within `REPEAT_WINDOW`.
+///
+/// The state has to live on disk: every restart in a supervised loop is a
+/// fresh process, so an in-memory guard would reset on each one — the very
+/// thing being guarded against. Best-effort throughout; a temp directory we
+/// cannot write to costs a duplicate notification, never a missing one.
+fn claim_repeat_slot(message: &str) -> bool {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    message.hash(&mut h);
+    let stamp = std::env::temp_dir().join(format!("beckon-notify-{:016x}.stamp", h.finish()));
+
+    let recent = std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < REPEAT_WINDOW));
+    if recent {
+        return false;
+    }
+    // Rewriting refreshes mtime, which is the clock this reads back.
+    let _ = std::fs::write(&stamp, message);
+    true
 }
 
 /// Is this a designed outcome wearing an error's clothes?
@@ -156,7 +225,14 @@ fn applescript_escape(s: &str) -> String {
 /// Fire a desktop notification. Best-effort: silent if `notify-send` is
 /// not installed or the notification daemon is unreachable. Used when
 /// stderr is not a terminal (i.e. invoked from a hotkey).
+///
+/// The `MUTE_ENV` check lives here rather than only at the call site in
+/// `main`, because `serve` notifies directly from its own long-running loop.
+/// One chokepoint means a future call site cannot forget it.
 fn notify_error(message: &str) {
+    if notifications_muted() {
+        return;
+    }
     #[cfg(target_os = "linux")]
     {
         let _ = std::process::Command::new("notify-send")
@@ -548,5 +624,55 @@ mod tests {
     #[test]
     fn ordinary_errors_are_not_expected() {
         assert!(!is_expected(&anyhow!("no command given (use -h for help)")));
+    }
+
+    #[test]
+    fn mute_env_is_off_when_unset_or_empty() {
+        assert!(!muted_by(None));
+        assert!(!muted_by(Some(std::ffi::OsStr::new(""))));
+    }
+
+    #[test]
+    fn mute_env_is_on_for_any_non_empty_value() {
+        assert!(muted_by(Some(std::ffi::OsStr::new("1"))));
+        assert!(muted_by(Some(std::ffi::OsStr::new("0"))));
+        assert!(muted_by(Some(std::ffi::OsStr::new("yes"))));
+    }
+
+    #[test]
+    fn should_notify_only_when_nobody_is_watching_stderr() {
+        let real = anyhow!("boom");
+        assert!(should_notify(false, false, &real), "the intended case");
+        assert!(
+            !should_notify(true, false, &real),
+            "a terminal already showed it"
+        );
+        assert!(!should_notify(false, true, &real), "muted");
+
+        let expected = anyhow::Error::new(lockfile::AcquireError::AlreadyRunning(
+            std::path::PathBuf::from("/tmp/beckon-serve-0.lock"),
+        ));
+        assert!(!should_notify(false, false, &expected), "designed outcome");
+    }
+
+    #[test]
+    fn repeat_slot_opens_once_then_closes() {
+        let msg = format!("beckon-selftest-repeat-{}", std::process::id());
+        assert!(claim_repeat_slot(&msg), "first sighting must notify");
+        assert!(
+            !claim_repeat_slot(&msg),
+            "a supervisor restarting every minute must not notify again"
+        );
+    }
+
+    #[test]
+    fn repeat_slot_is_per_message() {
+        let a = format!("beckon-selftest-a-{}", std::process::id());
+        let b = format!("beckon-selftest-b-{}", std::process::id());
+        assert!(claim_repeat_slot(&a));
+        assert!(
+            claim_repeat_slot(&b),
+            "a different failure is news even inside the window"
+        );
     }
 }
