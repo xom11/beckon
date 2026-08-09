@@ -843,6 +843,15 @@ Reasonable next-session order:
       disconnected network share — panics the printing thread rather than
       returning an error. In `--serve` that surfaces as "hotkeys silently
       stop", not a crash.
+    - **The toast spawn needs `CREATE_NO_WINDOW` because of this.** After
+      `FreeConsole`, `CreateProcess` hands a console-subsystem child of a
+      console-less parent a brand-new console, *shown* — std passes only
+      `CREATE_UNICODE_ENVIRONMENT` and never sets `STARTF_USESHOWWINDOW`. So
+      the PowerShell toast in `notify.rs` would flash a black window on every
+      post, including once per keypress (`on_hotkey` uses
+      `Cause::HumanAction`, which is never throttled), undoing the entire
+      point of `--log`. The flag is invisible from the call site; do not
+      "clean it up".
     - A **console-window flash** at logon may remain: Task Scheduler cannot
       start a console-subsystem process without allocating a console first.
       The escalation is a separate GUI-subsystem `beckon-serve.exe` — never

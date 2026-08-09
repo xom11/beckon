@@ -192,8 +192,35 @@ fn post(message: &str) {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+
+        /// `CREATE_NO_WINDOW`. Not from the `windows` crate on purpose:
+        /// beckon-cli deliberately has no dependency on it (the Win32 surface
+        /// lives in beckon-windows), and this is one integer.
+        ///
+        /// Load-bearing, and invisible from the call site. `--serve --log`
+        /// calls `FreeConsole()`, so the daemon has no console for the rest of
+        /// its life — and `CreateProcess` gives a console-subsystem child of a
+        /// console-less parent a brand-new console, shown, because `std`
+        /// passes only `CREATE_UNICODE_ENVIRONMENT` and never sets
+        /// `STARTF_USESHOWWINDOW`. Without this flag every toast flashes a
+        /// black window on the desktop: once per failed reload, and once per
+        /// keypress on the hotkey path, where `Cause::HumanAction` is
+        /// deliberately never throttled. That would undo the entire point of
+        /// `--log`, which exists to get rid of a console window.
+        ///
+        /// Harmless on the paths that still have a console (a terminal, or
+        /// AHK's `Run(..., "Hide")`): it just means the child does not attach
+        /// to it, which is what the nulled stdio below already intended.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
         // Best-effort toast notification via PowerShell.
         let _ = std::process::Command::new("powershell")
+            .creation_flags(CREATE_NO_WINDOW)
+            // `redirect_to_log` leaves `STD_INPUT_HANDLE` NULL, and std maps a
+            // NULL std handle to a NULL `hStdInput` under `STARTF_USESTDHANDLES`.
+            // The NUL device is the well-defined equivalent.
+            .stdin(std::process::Stdio::null())
             .args([
                 "-NoProfile",
                 "-Command",
