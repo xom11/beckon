@@ -82,7 +82,7 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
             .map_err(|e| anyhow!(e))?
     };
     let mgr = Rc::new(RefCell::new(mgr));
-    register_all(&mut mgr.borrow_mut(), &state.borrow().shortcuts);
+    let outcome = register_all(&mut mgr.borrow_mut(), &state.borrow().shortcuts);
 
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let _watcher = watch_config(&config, tx)?; // lives as long as the loop below
@@ -105,10 +105,13 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
     }
 
     eprintln!(
-        "beckon serve: {} shortcuts registered from {}",
-        state.borrow().shortcuts.len(),
+        "beckon serve: {} from {}",
+        registration_phrase(outcome.ok, state.borrow().shortcuts.len()),
         config.display()
     );
+    if let Some(toast) = failure_toast(&outcome.failed) {
+        crate::notify_error(&toast);
+    }
     HotkeyManager::run_forever();
 }
 
@@ -131,16 +134,68 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id
     }
 }
 
-fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) {
+/// Outcome of a registration pass: how many keys actually registered vs.
+/// how many were attempted. Incident 2026-08-09: the startup log reported
+/// the count of PARSED entries, not successful registrations — it said
+/// "20 shortcuts registered" while 0/20 had actually registered, and the
+/// outage stayed invisible for hours. Callers must report `ok`, not the
+/// length of the input slice.
+struct RegisterOutcome {
+    ok: usize,
+    failed: Vec<String>, // canonical combos, in registration order
+}
+
+/// "20 shortcuts registered" when clean; "17 of 20 shortcuts registered
+/// (3 failed)" otherwise.
+fn registration_phrase(ok: usize, total: usize) -> String {
+    let failed = total - ok;
+    if failed == 0 {
+        format!("{total} shortcuts registered")
+    } else {
+        format!("{ok} of {total} shortcuts registered ({failed} failed)")
+    }
+}
+
+/// One toast line summarizing a failure wave; `None` when nothing failed.
+/// Incident 2026-08-09: each failed key used to fire its own toast, so a
+/// bad config reload spammed 20 separate notifications. This collapses a
+/// whole wave into a single line, listing up to 5 combos by name and
+/// folding the rest into a count.
+fn failure_toast(failed: &[String]) -> Option<String> {
+    if failed.is_empty() {
+        return None;
+    }
+    const SHOWN: usize = 5;
+    let n = failed.len();
+    let listed = failed[..n.min(SHOWN)].join(", ");
+    if n > SHOWN {
+        let more = n - SHOWN;
+        Some(format!(
+            "{n} hotkeys failed to register: {listed} and {more} more"
+        ))
+    } else {
+        Some(format!("{n} hotkeys failed to register: {listed}"))
+    }
+}
+
+fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) -> RegisterOutcome {
+    let mut ok = 0;
+    let mut failed = Vec::new();
     for (i, sc) in shortcuts.iter().enumerate() {
         let c = &sc.combo;
-        if let Err(e) = mgr.register(i as u32, c.ctrl, c.super_, c.alt, c.shift, c.key) {
-            // One broken key loses one key, never the whole table.
-            let msg = format!("cannot register `{}`: {e}", c.canonical());
-            eprintln!("beckon serve: {msg}");
-            crate::notify_error(&msg);
+        match mgr.register(i as u32, c.ctrl, c.super_, c.alt, c.shift, c.key) {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                // One broken key loses one key, never the whole table.
+                // Per-key eprintln kept for the detailed log; the toast is
+                // collapsed into a single summary by the caller instead of
+                // firing here (see `failure_toast`).
+                eprintln!("beckon serve: cannot register `{}`: {e}", c.canonical());
+                failed.push(c.canonical());
+            }
         }
     }
+    RegisterOutcome { ok, failed }
 }
 
 /// Does any changed path refer to our config file (by file name)? We watch
@@ -190,11 +245,14 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             let mut m = mgr.borrow_mut();
             m.unregister_all();
             state.borrow_mut().shortcuts = new;
-            register_all(&mut m, &state.borrow().shortcuts);
+            let outcome = register_all(&mut m, &state.borrow().shortcuts);
             eprintln!(
-                "beckon serve: reloaded {} shortcuts",
-                state.borrow().shortcuts.len()
+                "beckon serve: reloaded — {}",
+                registration_phrase(outcome.ok, state.borrow().shortcuts.len())
             );
+            if let Some(toast) = failure_toast(&outcome.failed) {
+                crate::notify_error(&toast);
+            }
         }
     }
 }
@@ -203,6 +261,52 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    // Incident 2026-08-09: the startup log said "20 shortcuts registered"
+    // while 0/20 keys had actually registered, because the count came from
+    // the parsed list, not from `HotkeyManager::register`'s outcome. These
+    // two pure helpers turn `RegisterOutcome` into the strings the log and
+    // the toast use, so the phrasing itself is unit-testable without a real
+    // `HotkeyManager`.
+
+    #[test]
+    fn registration_phrase_all_ok() {
+        assert_eq!(registration_phrase(20, 20), "20 shortcuts registered");
+    }
+
+    #[test]
+    fn registration_phrase_some_failed() {
+        assert_eq!(
+            registration_phrase(17, 20),
+            "17 of 20 shortcuts registered (3 failed)"
+        );
+    }
+
+    #[test]
+    fn failure_toast_empty_is_none() {
+        assert_eq!(failure_toast(&[]), None);
+    }
+
+    #[test]
+    fn failure_toast_lists_all_up_to_five() {
+        let failed = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(
+            failure_toast(&failed),
+            Some("3 hotkeys failed to register: a, b, c".to_string())
+        );
+    }
+
+    #[test]
+    fn failure_toast_caps_at_five_then_more() {
+        let failed: Vec<String> = ["a", "b", "c", "d", "e", "f", "g"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            failure_toast(&failed),
+            Some("7 hotkeys failed to register: a, b, c, d, e and 2 more".to_string())
+        );
+    }
 
     #[test]
     fn event_touches_matches_by_file_name_only() {
