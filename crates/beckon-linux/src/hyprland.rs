@@ -180,17 +180,17 @@ impl Backend for HyprlandBackend {
         let previous_app = crate::state::read_previous();
 
         let entry = crate::desktop::resolve(id);
-        let target = entry
-            .as_ref()
-            .map(|e| e.id.as_str())
-            .unwrap_or(id)
-            .to_string();
+        // Hyprland's `class` comes from the Wayland `app_id` for native
+        // clients and from `WM_CLASS` for XWayland ones, so the same
+        // candidate set as sway applies: filename stem first, then
+        // `StartupWMClass` for the XWayland case.
+        let target = crate::desktop::target_classes(entry.as_ref(), id);
 
         let snapshots = snapshots_from(&clients);
         let decision = decide(
             &snapshots,
             active.as_deref(),
-            &target,
+            target,
             previous_app.as_deref(),
         );
 

@@ -28,7 +28,7 @@ use x11rb::atom_manager;
 use x11rb::connection::Connection;
 use x11rb::properties::WmClass;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, Window,
+    AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState, Window,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
@@ -45,9 +45,53 @@ atom_manager! {
         WM_CLASS,
         WM_NAME,
         WM_CHANGE_STATE,
+        WM_STATE,
         UTF8_STRING,
         STRING,
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_NORMAL,
+        _NET_WM_WINDOW_TYPE_DIALOG,
+        _NET_WM_WINDOW_TYPE_UTILITY,
     }
+}
+
+/// Is this window something the user would call "an app window"?
+///
+/// `_NET_CLIENT_LIST_STACKING` contains panels, docks, desktop-icon windows
+/// and notification surfaces alongside real apps. They carry a `WM_CLASS`,
+/// so the class filter alone lets them through — and then step 5b happily
+/// "toggles back" to xfce4-panel, which the WM refuses to focus, so beckon
+/// reports success and nothing moves. EWMH says a window with no
+/// `_NET_WM_WINDOW_TYPE` is to be treated as NORMAL (legacy clients), so
+/// absence of the property is a pass, not a reject.
+fn is_app_window(conn: &RustConnection, atoms: &Atoms, win: Window) -> bool {
+    let Ok(cookie) = conn.get_property(
+        false,
+        win,
+        atoms._NET_WM_WINDOW_TYPE,
+        AtomEnum::ATOM,
+        0,
+        u32::MAX,
+    ) else {
+        return true;
+    };
+    let Ok(reply) = cookie.reply() else {
+        return true;
+    };
+    let Some(types) = reply.value32() else {
+        return true; // property absent → legacy client → treat as NORMAL
+    };
+    let types: Vec<u32> = types.collect();
+    if types.is_empty() {
+        return true;
+    }
+    // The property is an ordered list, most-preferred first. Accept the
+    // window if any listed type is one a user switches to by name.
+    types.iter().any(|t| {
+        *t == atoms._NET_WM_WINDOW_TYPE_NORMAL
+            || *t == atoms._NET_WM_WINDOW_TYPE_DIALOG
+            || *t == atoms._NET_WM_WINDOW_TYPE_UTILITY
+    })
 }
 
 pub struct X11Backend {
@@ -114,6 +158,9 @@ fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result
             // (notifications, pop-ups) we don't want to surface as apps.
             continue;
         }
+        if !is_app_window(conn, atoms, win) {
+            continue;
+        }
         let name = read_window_name(conn, atoms, win).unwrap_or_default();
         out.push(X11Window {
             id: win,
@@ -176,6 +223,63 @@ fn read_window_name(conn: &RustConnection, atoms: &Atoms, win: Window) -> Result
     Ok(String::from_utf8_lossy(&legacy).into_owned())
 }
 
+const ICONIC_STATE: u32 = 3;
+
+/// How long to give the window manager to finish de-iconifying before we
+/// send the focus request anyway. Only ever paid when restoring a hidden
+/// window; a normal focus costs one round-trip and no sleep.
+const MAP_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+const MAP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+fn is_viewable(conn: &RustConnection, win: Window) -> bool {
+    conn.get_window_attributes(win)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .is_some_and(|a| a.map_state == MapState::VIEWABLE)
+}
+
+/// Bring an iconified window back before asking for focus, and wait until
+/// the window manager has actually done it.
+///
+/// EWMH §_NET_ACTIVE_WINDOW says the WM "SHOULD" bring the window forward,
+/// which we used to read as "every WM de-iconifies on a focus request".
+/// openbox does not: measured on Ubuntu 26.04 + Xvfb + openbox, after
+/// beckon's own hide (step 5c) the window sat at `WM_STATE = Iconic` with
+/// `_NET_ACTIVE_WINDOW` stuck at `0`, so the next hotkey press could never
+/// bring it back — the window was stranded for good. ICCCM §4.1.4 gives the
+/// portable answer: to return an iconified window to `NormalState`, map it.
+/// The WM holds SubstructureRedirect on the root, so our MapRequest is
+/// redirected to it and handled as a de-iconify — exactly what
+/// `xdotool windowmap` does, which does restore the window here.
+///
+/// The wait is the other half of the fix, and it is not optional. The WM is
+/// just another client: flushing the MapRequest only guarantees the *server*
+/// saw it. Sending the activation in the same breath loses the race — the
+/// window came back Iconic every time, while the same map-then-activate pair
+/// issued by two separate `xdotool` invocations (which are naturally spaced
+/// apart) always worked. We poll `map_state`, which is server state rather
+/// than the WM-owned `WM_STATE` property, so there is nothing to race.
+fn ensure_mapped(conn: &RustConnection, target: Window) -> Result<()> {
+    if is_viewable(conn, target) {
+        return Ok(());
+    }
+    conn.map_window(target)
+        .map_err(|e| BackendError::Ipc(format!("map window: {}", e)))?;
+    conn.flush()
+        .map_err(|e| BackendError::Ipc(format!("flush map request: {}", e)))?;
+
+    let deadline = std::time::Instant::now() + MAP_WAIT;
+    while std::time::Instant::now() < deadline {
+        if is_viewable(conn, target) {
+            return Ok(());
+        }
+        std::thread::sleep(MAP_POLL);
+    }
+    // Best effort: fall through and let the focus request try anyway rather
+    // than failing a hotkey press outright.
+    Ok(())
+}
+
 /// Send the EWMH `_NET_ACTIVE_WINDOW` ClientMessage to root. Source = 2
 /// (pager/taskbar) so focus-stealing prevention treats this like a user
 /// action rather than an unsolicited app raise.
@@ -186,6 +290,8 @@ fn request_focus(
     target: Window,
     current_active: Option<Window>,
 ) -> Result<()> {
+    ensure_mapped(conn, target)?;
+
     let event = ClientMessageEvent::new(
         32,
         target,
@@ -212,15 +318,14 @@ fn request_focus(
 
 /// Send the ICCCM `WM_CHANGE_STATE` ClientMessage with `IconicState` (3) so
 /// the WM iconifies/minimizes the target. Restoration happens on the next
-/// beckon call: a focus request to the same window de-iconifies it (per
-/// EWMH §6.6 the WM SHOULD raise iconified windows on focus request).
+/// beckon call — see `request_focus`, which maps the window before asking
+/// for focus because not every WM de-iconifies on a focus request alone.
 fn request_iconify(
     conn: &RustConnection,
     root: Window,
     atoms: &Atoms,
     target: Window,
 ) -> Result<()> {
-    const ICONIC_STATE: u32 = 3;
     let event = ClientMessageEvent::new(
         32,
         target,
@@ -292,26 +397,31 @@ impl Backend for X11Backend {
         let previous_app = crate::state::read_previous();
 
         let entry = crate::desktop::resolve(id);
-        let target = entry
-            .as_ref()
-            .map(|e| e.id.as_str())
-            .unwrap_or(id)
-            .to_string();
 
-        // X11 .desktop entries store StartupWMClass — it's usually the right
-        // class to match against. Prefer it over the .desktop filename when
-        // both differ, since that's what apps actually advertise via
-        // WM_CLASS at runtime.
-        let target_class = entry
-            .as_ref()
-            .and_then(|e| e.startup_wm_class.clone())
-            .unwrap_or_else(|| target.clone());
+        // On X11 the running window advertises `WM_CLASS`, which is what
+        // `StartupWMClass=` records — so that is the strongest candidate.
+        // The `.desktop` filename stem stays in the set as a fallback for
+        // the many entries that omit `StartupWMClass` and whose stem does
+        // match (`kitty.desktop` ⇒ `kitty`). Matching is case-insensitive:
+        // `xterm.desktop` has no `StartupWMClass` and the window reports
+        // `XTerm`, which a byte-wise compare would miss.
+        let target_class = crate::algorithm::Target::new(
+            entry
+                .as_ref()
+                .map(|e| {
+                    [e.startup_wm_class.clone(), Some(e.id.clone())]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![id.to_string()]),
+        );
 
         let snapshots = snapshots_from(&windows);
         let decision = decide(
             &snapshots,
             active_addr.as_deref(),
-            &target_class,
+            target_class,
             previous_app.as_deref(),
         );
 

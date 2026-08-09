@@ -161,27 +161,23 @@ impl Backend for GnomeBackend {
         let previous_app = crate::state::read_previous();
 
         let entry = crate::desktop::resolve(id);
-        let target = entry
-            .as_ref()
-            .map(|e| e.id.as_str())
-            .unwrap_or(id)
-            .to_string();
+        let target = crate::desktop::target_classes(entry.as_ref(), id);
 
         // On GNOME Wayland, Mutter sets `WM_CLASS` (and the Wayland
         // `app_id` for native clients) to the launching `.desktop` file's
-        // basename, *regardless* of any `StartupWMClass=` hint inside the
-        // file. Brave/Chrome PWAs are the most visible case: their
-        // `.desktop` files carry `StartupWMClass=crx_<hash>` while the
-        // window itself reports `brave-<hash>-Default`. Honouring
-        // `StartupWMClass` on GNOME would always misroute the lookup, so
-        // we match the running window by `target` (the .desktop filename)
-        // directly. Same approach as `i3ipc.rs` — Wayland clients agree on
-        // the filename, not on StartupWMClass.
+        // basename for Wayland-native clients, *regardless* of any
+        // `StartupWMClass=` hint inside the file. Brave/Chrome PWAs are the
+        // most visible case: their `.desktop` files carry
+        // `StartupWMClass=crx_<hash>` while the window itself reports
+        // `brave-<hash>-Default`. That is why the filename stem is the
+        // first candidate. `StartupWMClass` is still in the set, second,
+        // because GNOME also hosts XWayland clients, and those report their
+        // real `WM_CLASS` — which is what that key records.
         let snapshots = snapshots_from(&rows);
         let decision = decide(
             &snapshots,
             active_addr.as_deref(),
-            &target,
+            target,
             previous_app.as_deref(),
         );
 

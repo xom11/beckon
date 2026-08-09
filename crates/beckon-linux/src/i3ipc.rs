@@ -46,6 +46,14 @@ struct WindowInfo {
 }
 
 fn collect_windows(node: &Node, out: &mut Vec<WindowInfo>) {
+    // i3 parents panels/trays (tint2, xfce4-panel, polybar) under a
+    // `dockarea` node. They are real cons with a WM_CLASS, but they aren't
+    // apps: i3 refuses to focus them, so letting one into the list makes
+    // step 5b "toggle back" to a dock and silently do nothing.
+    if node.node_type == NodeType::Dockarea {
+        return;
+    }
+
     let is_leaf = node.nodes.is_empty() && node.floating_nodes.is_empty();
     let is_window = matches!(node.node_type, NodeType::Con | NodeType::FloatingCon);
 
@@ -156,16 +164,12 @@ impl Backend for I3IpcBackend {
         // app_id — this still allows focusing apps that aren't in any
         // .desktop file (e.g. ad-hoc programs the user launched manually).
         let entry = crate::desktop::resolve(id);
-        let target = entry
-            .as_ref()
-            .map(|e| e.id.as_str())
-            .unwrap_or(id)
-            .to_string();
+        let target = crate::desktop::target_classes(entry.as_ref(), id);
 
         let decision = decide(
             &snapshots,
             active.as_deref(),
-            &target,
+            target,
             previous_app.as_deref(),
         );
 

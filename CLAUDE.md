@@ -38,9 +38,30 @@ beckon/
 │   └── beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
 │       ├── metadata.json
 │       └── extension.js          # exports D-Bus org.gnome.Shell.Extensions.Beckon
+├── testing/
+│   ├── linux_live_test.py    # live end-to-end suite, run inside a session
+│   └── README.md             # how to bring up each compositor headless
 ├── test-i3-env.sh            # Xephyr+i3 dev sandbox (start/stop/xterm)
 └── README.md
 ```
+
+### Live backend tests
+
+`testing/linux_live_test.py` drives the real binary against a real
+compositor and asserts on what that compositor reports afterwards. It is the
+only layer that can catch what unit tests structurally cannot: `.desktop`
+resolution against the machine's own metadata, the class a toolkit actually
+advertises at runtime, and whether a focus/minimize request is honoured at
+all. Every Linux bug fixed in the 2026-08 pass was found by it, and none of
+them were visible to the 65 unit tests that were green the whole time.
+
+It detects its environment the same way `pick_backend` does, so run it inside
+the session under test. All four backends currently pass 19/19 on Ubuntu
+26.04 arm64 (GNOME Shell 50.1 headless, sway 1.11, i3 + Xvfb, openbox + Xvfb)
+— see `testing/README.md` for the headless bring-up recipes, including the
+D-Bus service-directory trick that keeps `gnome-shell --headless` from
+deadlocking on `xdg-desktop-portal`. **The suite kills GUI apps to build its
+preconditions; run it in a VM.**
 
 ### Backend trait (core abstraction)
 
@@ -138,6 +159,34 @@ Each backend resolves its OS's installed-app metadata. Linux scans `.desktop` fi
 
 If priorities 1-4 all fail, fall back to treating `id` as a literal `app_id`. This still allows focusing apps that aren't in any `.desktop` file (ad-hoc programs); launching such an unknown id is an error with a "run `beckon -L` / `-s`" hint.
 
+An empty id is rejected at the CLI boundary. It used to reach tier 4, where
+it is a substring of every `Name`, so a dotfile doing `beckon "$APP"` with
+`$APP` unset silently launched whatever sorted first.
+
+Scanning rules that the tiers depend on:
+
+- **`scan()` returns entries sorted by id.** All four tiers take the first
+  match, so an unordered vector made the winner depend on `HashMap`'s
+  per-process random seed. With two entries sharing a `Name=` (deb + snap
+  Firefox, a user override under a new filename, two PWAs with the same
+  display name) the *same* keypress resolved differently from run to run and
+  beckon alternated between focusing the window and launching a second copy.
+  Measured before the fix: 20 runs of `beckon -r Dup` split 12/8 between two
+  entries. Sorting gives every tier the "alphabetically first `.desktop` id
+  wins" rule tier 4 already documented.
+- **Subdirectories are scanned, and the id is the relative path with `/`
+  replaced by `-`** — the XDG menu spec's *desktop file id*. Wine
+  (`applications/wine/Programs/…`) and KDE (`applications/kde4/…`) install
+  that way; a flat `read_dir` made those apps invisible to `-L` and
+  unlaunchable. Symlinked directories are not followed (`applications/foo -> /`
+  would walk the whole filesystem).
+- **`XDG_DATA_HOME` / `XDG_DATA_DIRS` set-but-empty is treated as unset, and
+  relative paths are ignored**, per the basedir spec. Taking `XDG_DATA_HOME=`
+  literally made beckon read `./applications/*.desktop` relative to the
+  working directory — so a `.desktop` file in any directory the user happened
+  to `cd` into became a launch target, while their real
+  `~/.local/share/applications` overrides were skipped.
+
 macOS / Windows backends will follow the same shape with their own priority lists (LaunchServices localized + canonical names; Start menu shortcut name + AppUserModelID).
 
 Step 5 is "smart" — cycles within the same app first, then falls back to toggling to the previous app, then hides if nothing else exists. This subsumes both "multi-window cycle" and "alt-tab toggle" behaviors without a flag.
@@ -206,6 +255,28 @@ Each backend owns:
   recency are broken by address, so the deterministic order matches what
   `i3ipc.rs` did before the refactor.
 
+**Target matching is a set, not a string.** `decide` takes an
+`algorithm::Target` — every class that counts as the requested app — and
+compares case-insensitively. One id shows up under different strings
+depending on the client, and the user has no say in which:
+`debian-xterm.desktop` is reported as `debian-xterm` by a Wayland-native
+client and as `XTerm` by the same app under X11/XWayland. Matching on the
+`.desktop` stem alone meant beckon never recognised the running app and
+launched another copy on *every* keypress — confirmed live on sway (5 presses,
+5 xterms). `desktop::target_classes` builds the set: `.desktop` filename stem
+plus `StartupWMClass=`, or the raw id when nothing resolved (which is what
+lets beckon focus ad-hoc apps that ship no `.desktop` file).
+
+**Step 5a cycles over a ring ordered by address, not by recency.** Picking
+"the least-recent other window of this app" looks right but is a 2-cycle on
+every backend whose `recency` is real focus history: focusing a window
+promotes it and demotes the one you just left, so the next press goes
+straight back and windows 3..N are unreachable. Addresses are the
+compositor's own window ids (con_id / stable_sequence / X11 id / Hyprland
+pointer) — stable for the window's lifetime and ordered by creation — so
+rotating over them visits every window exactly once per lap. Verified live
+on sway: three `foot` windows, seven presses, `35 → 36 → 37 → 35 → …`.
+
 ### Phase 1b.x11 X11 generic implementation note
 
 `crates/beckon-linux/src/x11.rs` covers every EWMH-compliant X11 desktop —
@@ -218,12 +289,18 @@ path through `i3ipc.rs`.)
 - **Window list**: `_NET_CLIENT_LIST_STACKING` on root, reversed so index 0
   is the topmost window (≈ most-recently focused). Windows without a
   `WM_CLASS` are filtered out — they're typically transient chrome
-  (notifications, menus) that beckon shouldn't surface as "apps".
+  (notifications, menus) that beckon shouldn't surface as "apps". So are
+  windows whose `_NET_WM_WINDOW_TYPE` is neither NORMAL, DIALOG nor UTILITY:
+  panels and docks (tint2, xfce4-panel) do carry a `WM_CLASS`, and letting
+  one through makes step 5b "toggle back" to a panel the WM then refuses to
+  focus — beckon reports success and nothing moves. A window with no
+  `_NET_WM_WINDOW_TYPE` at all is treated as NORMAL, per EWMH.
 - **Class matching**: `WM_CLASS[1]` (the second NUL-separated token, the
-  "class" component). When the resolved `.desktop` entry has
-  `StartupWMClass=` set, that wins over the filename — apps actually
-  advertise that string at runtime via `WM_CLASS`, so it's the correct
-  match key on X11.
+  "class" component), matched case-insensitively against the candidate set
+  (`StartupWMClass=` first, then the `.desktop` filename stem). Case matters
+  in practice: `xterm.desktop` has no `StartupWMClass` and the window
+  advertises `XTerm`, so a byte-wise compare launched a new xterm on every
+  press.
 - **Active window**: `_NET_ACTIVE_WINDOW` root property; treats `0` as None.
 - **Focus**: `_NET_ACTIVE_WINDOW` ClientMessage to root with source = 2
   (pager/taskbar). Source 2 is what `wmctrl -a` sends and what most WMs
@@ -232,10 +309,22 @@ path through `i3ipc.rs`.)
   Universal across X11 WMs. We deliberately don't toggle
   `_NET_WM_STATE_HIDDEN` — that's spec'd as a hint the WM sets, not a
   client-driven toggle.
-- **Restore from hidden**: not an explicit operation. Per EWMH §6.6 a
-  focus request via `_NET_ACTIVE_WINDOW` SHOULD raise iconified windows;
-  every WM in the wild honours this. So step 4 (focus a non-focused
-  window of `target`) just works whether the window is iconified or not.
+- **Restore from hidden**: an explicit map, then a wait, then the focus
+  request — `ensure_mapped` in `x11.rs`. The old claim here was that EWMH's
+  "the WM SHOULD bring the window forward" means every WM de-iconifies on a
+  focus request. **openbox does not.** Measured on Ubuntu 26.04 + Xvfb +
+  openbox: after beckon's own step-5c hide, `_NET_ACTIVE_WINDOW` alone left
+  the window at `WM_STATE = Iconic` indefinitely — the hotkey could never
+  bring it back and the window was stranded for good. ICCCM §4.1.4 is the
+  portable answer: map the window to return it to `NormalState`; the WM holds
+  SubstructureRedirect on the root, so the MapRequest reaches it.
+  The wait is the other half and is not optional: the WM is just another
+  client, so flushing the MapRequest only proves the *server* saw it. Sending
+  the activation in the same breath lost the race every time, while the same
+  map-then-activate pair issued as two separate `xdotool` calls always worked.
+  `ensure_mapped` polls `map_state` (server state, unlike the WM-owned
+  `WM_STATE`) for up to 400 ms. Only the restore path pays it; a normal focus
+  costs one round-trip and no sleep.
 - **Launch**: `/bin/sh -c "setsid -f <Exec> >/dev/null 2>&1"`. `setsid -f`
   detaches from beckon's process group so the launched app survives beckon
   exiting. Stdout/stderr nulled to prevent stale fds keeping the parent

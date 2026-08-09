@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct DesktopEntry {
@@ -29,24 +29,67 @@ pub fn scan() -> Vec<DesktopEntry> {
     dirs.extend(user_app_dirs());
 
     for dir in dirs {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
-                continue;
-            }
-            if let Some(d) = parse(&path) {
-                if d.no_display {
-                    continue;
-                }
-                by_id.insert(d.id.clone(), d);
-            }
-        }
+        collect_dir(&dir, &dir, &mut by_id);
     }
 
-    by_id.into_values().collect()
+    // Sorted, not HashMap order. `resolve_detailed_in`'s first three tiers
+    // take the first entry that matches, so an unordered vector makes the
+    // winner depend on HashMap's per-process random seed: with two entries
+    // sharing a `Name=` (deb + snap Firefox, a user override under a new
+    // filename, two PWAs with the same display name) the same keypress
+    // resolves differently from one run to the next, and beckon alternates
+    // between focusing the window and launching a second copy. Sorting by
+    // id gives every tier the same "alphabetically first .desktop id wins"
+    // rule the substring tier already documents.
+    let mut out: Vec<DesktopEntry> = by_id.into_values().collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
+
+/// Walk one `applications/` root. The XDG menu spec builds the *desktop
+/// file id* from the path relative to that root with `/` replaced by `-`,
+/// so `applications/kde4/konsole.desktop` is `kde4-konsole`, not `konsole`.
+/// Wine (`applications/wine/Programs/…`) and KDE install this way, and a
+/// flat `read_dir` misses them entirely.
+fn collect_dir(root: &Path, dir: &Path, by_id: &mut HashMap<String, DesktopEntry>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    // Sort so a directory that somehow yields two entries with the same id
+    // resolves the same way on every run.
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            // Don't follow symlinked directories: `applications/foo -> /`
+            // would walk the whole filesystem.
+            if path.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(true) {
+                continue;
+            }
+            collect_dir(root, &path, by_id);
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+            continue;
+        }
+        let Some(id) = desktop_file_id(root, &path) else {
+            continue;
+        };
+        if let Some(d) = parse(&path, &id) {
+            if d.no_display {
+                continue;
+            }
+            by_id.insert(d.id.clone(), d);
+        }
+    }
+}
+
+/// `<root>/kde4/konsole.desktop` → `kde4-konsole`.
+fn desktop_file_id(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let stem = rel.with_extension("");
+    let s = stem.to_str()?;
+    Some(s.replace(std::path::MAIN_SEPARATOR, "-"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +146,12 @@ pub fn resolve_detailed(id: &str) -> Option<ResolvedMatch> {
 /// the priority ladder without touching the filesystem.
 pub fn resolve_detailed_in(entries: &[DesktopEntry], id: &str) -> Option<ResolvedMatch> {
     let needle = normalize(id);
+    // An empty needle is a substring of every Name, so without this guard
+    // tier 4 would resolve `beckon ""` (an unset `$APP` in a dotfile) to
+    // the alphabetically first installed app and launch it.
+    if needle.is_empty() {
+        return None;
+    }
 
     if let Some(e) = entries.iter().find(|e| normalize(&e.name) == needle) {
         return Some(ResolvedMatch {
@@ -134,6 +183,31 @@ pub fn resolve_detailed_in(entries: &[DesktopEntry], id: &str) -> Option<Resolve
         entry: (*e).clone(),
         match_type: MatchType::NameSubstring,
     })
+}
+
+/// Every window class that should count as "the app the user asked for".
+///
+/// A resolved `.desktop` entry gives us two independent strings, and which
+/// one the running window advertises depends on the client:
+///   - Wayland-native clients report the `.desktop` filename stem as their
+///     `app_id` — that is `entry.id`;
+///   - the same app under X11 / XWayland reports its `WM_CLASS`, which is
+///     exactly what `StartupWMClass=` records. `debian-xterm.desktop` is
+///     the extreme case: stem `debian-xterm`, `WM_CLASS` `XTerm`.
+///
+/// Matching on `entry.id` alone means an X11 app is never recognised as
+/// running, so every keypress launches another copy. When nothing resolved,
+/// the raw id is the only candidate — that is what lets beckon focus ad-hoc
+/// apps that have no `.desktop` file at all.
+pub fn target_classes(entry: Option<&DesktopEntry>, raw_id: &str) -> crate::algorithm::Target {
+    match entry {
+        Some(e) => crate::algorithm::Target::new(
+            [Some(e.id.clone()), e.startup_wm_class.clone()]
+                .into_iter()
+                .flatten(),
+        ),
+        None => crate::algorithm::Target::new([raw_id]),
+    }
 }
 
 /// All entries whose Name contains `id` as a case-insensitive substring,
@@ -175,10 +249,9 @@ fn is_format_mark(c: char) -> bool {
     )
 }
 
-fn parse(path: &PathBuf) -> Option<DesktopEntry> {
+fn parse(path: &PathBuf, id: &str) -> Option<DesktopEntry> {
     let content = fs::read_to_string(path).ok()?;
-    let id = path.file_stem()?.to_str()?.to_string();
-    parse_str(&content, &id)
+    parse_str(&content, id)
 }
 
 /// Parse the textual contents of a `.desktop` file into an entry. Pure —
@@ -249,11 +322,30 @@ fn strip_field_codes(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Per the XDG basedir spec, an environment variable that is set but empty
+/// "should be considered unset" — and a relative path is invalid and must
+/// be ignored. Both matter here: with `XDG_DATA_HOME=` exported, taking the
+/// value literally makes beckon read `./applications/*.desktop` relative to
+/// whatever directory it was invoked from, so a `.desktop` file dropped in
+/// any directory the user happens to `cd` into becomes a launch target —
+/// while their real `~/.local/share/applications` overrides are ignored.
+fn absolute_or_none(value: std::ffi::OsString) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return None;
+    }
+    Some(path)
+}
+
 fn user_app_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let xdg_data_home = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+        .and_then(absolute_or_none)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .and_then(absolute_or_none)
+                .map(|h| h.join(".local/share"))
+        });
     if let Some(d) = xdg_data_home {
         dirs.push(d.join("applications"));
     }
@@ -261,11 +353,14 @@ fn user_app_dirs() -> Vec<PathBuf> {
 }
 
 fn system_app_dirs() -> Vec<PathBuf> {
-    let raw = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    const DEFAULT: &str = "/usr/local/share:/usr/share";
+    let raw = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    let raw = if raw.trim().is_empty() { DEFAULT } else { &raw };
     raw.split(':')
         .filter(|s| !s.is_empty())
-        .map(|d| PathBuf::from(d).join("applications"))
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|d| d.join("applications"))
         .collect()
 }
 
@@ -287,6 +382,74 @@ mod tests {
         let mut e = entry(id, name);
         e.startup_wm_class = Some(wm.to_string());
         e
+    }
+
+    // ---------- resolution edge cases ----------
+
+    /// An empty needle is a substring of every Name. Before the guard,
+    /// `beckon "$APP"` with `$APP` unset launched the alphabetically-first
+    /// installed app.
+    #[test]
+    fn empty_id_resolves_to_nothing() {
+        let entries = vec![entry("alacritty", "Alacritty"), entry("kitty", "Kitty")];
+        assert!(resolve_detailed_in(&entries, "").is_none());
+        assert!(resolve_detailed_in(&entries, "   ").is_none());
+    }
+
+    /// `scan()` sorts by id, so ties in the Name-exact tier resolve to the
+    /// alphabetically-first `.desktop` id — the same rule the substring
+    /// tier already documents. Without the sort this depended on HashMap's
+    /// per-process random seed and flipped between runs.
+    #[test]
+    fn name_tie_resolves_to_alphabetically_first_id() {
+        let entries = vec![
+            entry("firefox", "Firefox"),
+            entry("firefox_firefox", "Firefox"),
+        ];
+        let m = resolve_detailed_in(&entries, "Firefox").expect("resolves");
+        assert_eq!(m.entry.id, "firefox");
+        assert_eq!(m.match_type, MatchType::NameExact);
+    }
+
+    /// XDG menu spec: the desktop file id is the path relative to the
+    /// `applications/` root with `/` replaced by `-`. Wine and KDE install
+    /// into subdirectories, and a flat scan misses them entirely.
+    #[test]
+    fn desktop_file_id_joins_subdirectories_with_dashes() {
+        let root = PathBuf::from("/usr/share/applications");
+        assert_eq!(
+            desktop_file_id(&root, &root.join("kitty.desktop")).unwrap(),
+            "kitty"
+        );
+        assert_eq!(
+            desktop_file_id(&root, &root.join("kde4/konsole.desktop")).unwrap(),
+            "kde4-konsole"
+        );
+        assert_eq!(
+            desktop_file_id(&root, &root.join("wine/Programs/Acme/App.desktop")).unwrap(),
+            "wine-Programs-Acme-App"
+        );
+    }
+
+    // ---------- target candidates ----------
+
+    #[test]
+    fn target_classes_covers_stem_and_startup_wm_class() {
+        let e = entry_with_wm("debian-xterm", "XTerm", "XTerm");
+        let t = target_classes(Some(&e), "XTerm");
+        assert!(t.matches("debian-xterm"), "Wayland app_id candidate");
+        assert!(t.matches("XTerm"), "X11 WM_CLASS candidate");
+        assert!(t.matches("xterm"), "case-insensitive");
+        assert!(!t.matches("kitty"));
+    }
+
+    /// With no `.desktop` entry the raw id is the only candidate — that is
+    /// what lets beckon focus ad-hoc apps that ship no desktop file.
+    #[test]
+    fn target_classes_falls_back_to_raw_id() {
+        let t = target_classes(None, "my-adhoc-app");
+        assert!(t.matches("my-adhoc-app"));
+        assert_eq!(t.primary(), "my-adhoc-app");
     }
 
     // ---------- normalize ----------

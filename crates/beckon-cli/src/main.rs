@@ -106,15 +106,28 @@ fn run(args: &Args) -> Result<()> {
         return cmd_list_installed();
     }
     if let Some(name) = args.search.as_deref() {
-        return cmd_search(name);
+        return cmd_search(require_id(name, "--search")?);
     }
     if let Some(id) = args.resolve.as_deref() {
-        return cmd_resolve(id);
+        return cmd_resolve(require_id(id, "--resolve")?);
     }
     if let Some(id) = args.id.as_deref() {
-        return cmd_beckon(id, args.verbose);
+        return cmd_beckon(require_id(id, "id")?, args.verbose);
     }
     Err(anyhow!("no command given (use -h for help)"))
+}
+
+/// Reject an empty or whitespace-only id.
+///
+/// A dotfile doing `beckon "$APP"` with `$APP` unset used to resolve
+/// through the Name-substring tier — an empty string is a substring of
+/// every Name — and silently launch whatever app sorted first. An empty id
+/// can never be what the user meant, so fail loudly instead.
+fn require_id<'a>(value: &'a str, what: &str) -> Result<&'a str> {
+    if value.trim().is_empty() {
+        return Err(anyhow!("empty {what}: expected an app Name or id"));
+    }
+    Ok(value)
 }
 
 /// Escape a string for embedding inside a double-quoted AppleScript literal.

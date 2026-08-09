@@ -59,16 +59,98 @@ pub enum Decision {
     Hide(String),
 }
 
+/// Every runtime window class that counts as "the app the user asked for".
+///
+/// One id legitimately shows up under more than one string, and which one
+/// you get depends on the client, not on the user:
+///   - a Wayland-native client reports the `.desktop` filename stem as its
+///     `app_id` (`foot`, `org.gnome.Calculator`);
+///   - the same app under X11/XWayland reports its `WM_CLASS`, which is what
+///     `StartupWMClass=` records and is frequently capitalised differently
+///     (`debian-xterm.desktop` ⇒ `XTerm`);
+///   - an app with no `.desktop` file at all only ever has the raw string
+///     the user typed.
+///
+/// Matching against a single string therefore misses real windows and makes
+/// beckon launch a duplicate on every keypress. Comparison is
+/// case-insensitive for the same reason (`xterm` vs `XTerm`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Target {
+    /// Lowercased, de-duplicated, non-empty.
+    candidates: Vec<String>,
+    /// First candidate in original case — what error messages should show.
+    primary: String,
+}
+
+impl Target {
+    pub fn new<I, S>(candidates: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut out = Vec::new();
+        let mut primary = String::new();
+        for c in candidates {
+            let c = c.into();
+            let trimmed = c.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if primary.is_empty() {
+                primary = trimmed.to_string();
+            }
+            let lowered = trimmed.to_lowercase();
+            if !out.contains(&lowered) {
+                out.push(lowered);
+            }
+        }
+        Self {
+            candidates: out,
+            primary,
+        }
+    }
+
+    /// Does this window's class name the target app?
+    pub fn matches(&self, class: &str) -> bool {
+        let lowered = class.trim().to_lowercase();
+        !lowered.is_empty() && self.candidates.contains(&lowered)
+    }
+
+    /// The candidate to name in user-facing messages.
+    pub fn primary(&self) -> &str {
+        &self.primary
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+}
+
+impl From<&str> for Target {
+    fn from(s: &str) -> Self {
+        Target::new([s])
+    }
+}
+
+impl From<String> for Target {
+    fn from(s: String) -> Self {
+        Target::new([s])
+    }
+}
+
 /// Pure decision function. See module docs for the algorithm. `active` is
-/// the currently focused address (if any), `target` the resolved app
-/// id/class, `previous_app` the class persisted in the MRU state file.
+/// the currently focused address (if any), `target` every class that counts
+/// as the requested app, `previous_app` the class persisted in the MRU
+/// state file.
 pub fn decide(
     windows: &[WindowSnapshot],
     active: Option<&str>,
-    target: &str,
+    target: impl Into<Target>,
     previous_app: Option<&str>,
 ) -> Decision {
-    let app_windows: Vec<&WindowSnapshot> = windows.iter().filter(|w| w.class == target).collect();
+    let target = target.into();
+    let app_windows: Vec<&WindowSnapshot> =
+        windows.iter().filter(|w| target.matches(&w.class)).collect();
 
     if app_windows.is_empty() {
         return Decision::Launch;
@@ -76,7 +158,7 @@ pub fn decide(
 
     let focused_in_app = active
         .and_then(|addr| windows.iter().find(|w| w.address == addr))
-        .map(|w| w.class == target)
+        .map(|w| target.matches(&w.class))
         .unwrap_or(false);
 
     if !focused_in_app {
@@ -93,28 +175,41 @@ pub fn decide(
 
     let focused_addr = active.expect("focused_in_app implies active.is_some()");
 
-    // Step 5a: another window of the same app — cycle to it.
-    if let Some(next) = app_windows
-        .iter()
-        .filter(|w| w.address != focused_addr)
-        .min_by(|a, b| cmp_recency_then_address(a, b))
-    {
-        return Decision::Cycle(next.address.clone());
+    // Step 5a: another window of the same app — rotate to the next one.
+    //
+    // The ring is ordered by *address*, deliberately not by `recency`.
+    // On GNOME / Hyprland / X11 `recency` is real focus history, so it
+    // reshuffles the moment we focus something: the window we just left
+    // becomes the least-recent again and the next keypress goes straight
+    // back to it. That is a 2-cycle — with three or more windows open,
+    // windows 3..N are unreachable no matter how often the user presses
+    // the key. Addresses are minted from the compositor's own window id
+    // (con_id / stable_sequence / X11 id / Hyprland pointer), which is
+    // stable for the window's lifetime and ordered by creation, so
+    // rotating over it visits every window exactly once per lap.
+    if app_windows.len() > 1 {
+        let mut ring = app_windows.clone();
+        ring.sort_by(|a, b| cmp_address(&a.address, &b.address));
+        if let Some(pos) = ring.iter().position(|w| w.address == focused_addr) {
+            return Decision::Cycle(ring[(pos + 1) % ring.len()].address.clone());
+        }
     }
 
     // Step 5b: only one window of target. Honour the MRU "previous" first
     // (and only when it isn't `target`), otherwise pick the most-recent
     // window of any other app.
-    let mru_choice = previous_app.filter(|app| *app != target).and_then(|app| {
-        windows
-            .iter()
-            .filter(|w| w.class == app)
-            .min_by(cmp_recency_then_address)
-    });
+    let mru_choice = previous_app
+        .filter(|app| !target.matches(app))
+        .and_then(|app| {
+            windows
+                .iter()
+                .filter(|w| w.class.eq_ignore_ascii_case(app))
+                .min_by(cmp_recency_then_address)
+        });
     let other = mru_choice.or_else(|| {
         windows
             .iter()
-            .filter(|w| w.class != target)
+            .filter(|w| !target.matches(&w.class))
             .min_by(cmp_recency_then_address)
     });
     if let Some(win) = other {
@@ -128,7 +223,26 @@ pub fn decide(
 fn cmp_recency_then_address(a: &&WindowSnapshot, b: &&WindowSnapshot) -> Ordering {
     a.recency
         .cmp(&b.recency)
-        .then_with(|| a.address.cmp(&b.address))
+        .then_with(|| cmp_address(&a.address, &b.address))
+}
+
+/// Order two window addresses. Addresses are numeric ids rendered as
+/// strings — decimal for sway/i3/X11/GNOME, `0x`-hex for Hyprland — so
+/// compare them as numbers when both parse, otherwise byte-wise. Without
+/// this, `"10"` would sort before `"9"` and the cycle ring would jump
+/// around instead of following creation order.
+fn cmp_address(a: &str, b: &str) -> Ordering {
+    match (parse_address(a), parse_address(b)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        _ => a.cmp(b),
+    }
+}
+
+fn parse_address(s: &str) -> Option<u128> {
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => u128::from_str_radix(hex, 16).ok(),
+        None => s.parse::<u128>().ok(),
+    }
 }
 
 #[cfg(test)]
@@ -188,6 +302,130 @@ mod tests {
         assert_eq!(
             decide(&ws, Some("0xA"), "claude", None),
             Decision::Cycle("0xB".to_string())
+        );
+    }
+
+    /// The bug this guards: cycling used to pick the *globally* least-recent
+    /// other window of the app. On every backend whose `recency` is real
+    /// focus history (GNOME, Hyprland, X11), focusing a window promotes it
+    /// to 0 and demotes the one we just left — so the next press went
+    /// straight back and windows 3..N were unreachable forever. Reproduced
+    /// live on sway with three `foot` windows before the fix.
+    #[test]
+    fn cycle_reaches_every_window_under_true_mru_recency() {
+        let addrs = ["101", "102", "103"];
+        // Model a real MRU backend: the focused window is recency 0 and the
+        // rest keep their relative order behind it.
+        let snapshot = |focused: &str| -> Vec<WindowSnapshot> {
+            let mut rest: Vec<&str> = addrs.iter().copied().filter(|a| *a != focused).collect();
+            rest.sort();
+            let mut out = vec![w(focused, "claude", 0)];
+            for (i, a) in rest.iter().enumerate() {
+                out.push(w(a, "claude", i as i32 + 1));
+            }
+            out
+        };
+
+        let mut focused = "101".to_string();
+        let mut visited = vec![focused.clone()];
+        for _ in 0..5 {
+            let ws = snapshot(&focused);
+            match decide(&ws, Some(&focused), "claude", None) {
+                Decision::Cycle(next) => {
+                    focused = next;
+                    visited.push(focused.clone());
+                }
+                other => panic!("expected Cycle, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            visited,
+            vec!["101", "102", "103", "101", "102", "103"],
+            "cycling must round-robin every window, not ping-pong between two"
+        );
+    }
+
+    #[test]
+    fn cycle_wraps_from_last_window_to_first() {
+        let ws = vec![
+            w("103", "claude", 0),
+            w("101", "claude", 1),
+            w("102", "claude", 2),
+        ];
+        assert_eq!(
+            decide(&ws, Some("103"), "claude", None),
+            Decision::Cycle("101".to_string())
+        );
+    }
+
+    /// Addresses are numeric ids rendered as strings, so `"10"` must sort
+    /// after `"9"` — a byte-wise ring would jump around instead of
+    /// following window creation order.
+    #[test]
+    fn cycle_ring_orders_addresses_numerically() {
+        let ws = vec![
+            w("9", "claude", 0),
+            w("10", "claude", 1),
+            w("11", "claude", 2),
+        ];
+        assert_eq!(
+            decide(&ws, Some("9"), "claude", None),
+            Decision::Cycle("10".to_string())
+        );
+    }
+
+    // ---- target matching ----
+
+    /// `xterm.desktop` has no `StartupWMClass` and the running window
+    /// advertises `WM_CLASS` = `XTerm`. A byte-wise compare made beckon
+    /// launch a new xterm on every keypress — reproduced live on sway.
+    #[test]
+    fn target_matches_class_case_insensitively() {
+        let ws = vec![w("1", "XTerm", 0), w("2", "kitty", 1)];
+        assert_eq!(
+            decide(&ws, Some("2"), "xterm", None),
+            Decision::Focus("1".to_string())
+        );
+    }
+
+    /// The `.desktop` stem and `StartupWMClass` are both legitimate runtime
+    /// classes — Wayland clients report the former, X11/XWayland the latter.
+    #[test]
+    fn target_matches_any_candidate() {
+        let target = Target::new(["debian-xterm", "XTerm"]);
+        let ws = vec![w("1", "kitty", 0), w("2", "XTerm", 1)];
+        assert_eq!(
+            decide(&ws, Some("1"), target.clone(), None),
+            Decision::Focus("2".to_string())
+        );
+
+        // ...and the Wayland-side candidate still works on its own.
+        let ws = vec![w("1", "kitty", 0), w("2", "debian-xterm", 1)];
+        assert_eq!(
+            decide(&ws, Some("1"), target, None),
+            Decision::Focus("2".to_string())
+        );
+    }
+
+    #[test]
+    fn target_drops_empty_and_duplicate_candidates() {
+        let t = Target::new(["Foo", "", "  ", "foo", "FOO"]);
+        assert_eq!(t.primary(), "Foo");
+        assert!(t.matches("fOo"));
+        assert!(!t.matches(""));
+        assert!(!t.matches("bar"));
+        assert!(Target::new(Vec::<String>::new()).is_empty());
+    }
+
+    /// Step 5b must not toggle "back" to the target itself just because the
+    /// MRU file recorded it under a different case.
+    #[test]
+    fn toggle_back_compares_previous_app_case_insensitively() {
+        let ws = vec![w("1", "XTerm", 0), w("2", "kitty", 1)];
+        assert_eq!(
+            decide(&ws, Some("1"), "xterm", Some("xterm")),
+            Decision::ToggleBack("2".to_string()),
+            "previous == target (modulo case) must fall through to the other app"
         );
     }
 
