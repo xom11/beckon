@@ -8,7 +8,7 @@ Cross-platform focus-or-launch app switcher for macOS, Windows, and Linux. A thi
 
 **Behavior**: press hotkey → if app not running, launch it. If running but not focused, focus it. If already focused, cycle to next window of the same app, or hide.
 
-**No config file.** beckon resolves a user-supplied id at runtime against the OS's own metadata (Linux `.desktop` files, macOS LaunchServices, Windows Start menu). The dotfile per OS holds the id. beckon ships discovery commands (`-l`, `-s`, `-r`) so users don't have to dig the id out of the OS by hand.
+**No config file on the hot path.** `beckon <id>` resolves a user-supplied id at runtime against the OS's own metadata (Linux `.desktop` files, macOS LaunchServices, Windows Start menu). The dotfile per OS holds the id. beckon ships discovery commands (`-l`, `-s`, `-r`) so users don't have to dig the id out of the OS by hand. The one file beckon does read is the resident-mode shortcuts TOML (`--serve` / `--check`, macOS + Windows) — a hotkey→Name table, not an id-alias layer.
 
 **Name-first identifiers.** The id can be a human-readable Name (e.g. `Claude`, `Brave`) or a canonical OS-level id (e.g. sway `app_id`, macOS `bundle_id`). beckon resolves Names against installed-app metadata (`.desktop` `Name=` on Linux). Names are stable across machines; OS-level ids often are not (Brave PWA hashes vary per install). Bindings should prefer Names; canonical ids are a fallback for ambiguity.
 
@@ -514,14 +514,21 @@ x11rb      = "0.13"   # any EWMH-compliant X11 DE (GNOME-X11, KDE-X11, XFCE, ...
 zbus       = "4"      # session bus client for the GNOME Shell extension bridge
 # Future:
 # freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
+
+# resident mode (--check / --serve, since 2026-08)
+toml   = "0.8"    # beckon-core: parse the shortcuts file
+notify = "6"      # beckon-cli:  watch it for live reload
+fs4    = "0.8"    # beckon-cli:  flock, one --serve per config path
 ```
 
-No `serde` / `toml` — beckon does not read or write any config or cache file.
+The **only** file beckon reads is the `--serve` shortcuts TOML. There is still
+no config for `beckon <id>` itself and no resolve cache — ids resolve against
+OS metadata on every call.
 
 ## Out of scope (explicitly)
 
-- **Config file / app aliases** — beckon resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No TOML, no `[apps.claude]` mapping, no resolve cache.
-- **Global hotkey registration** — handled by OS-native dotfiles (sway config / AHK / Hammerspoon).
+- **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `--serve` TOML is a *hotkey table*, not a place to alias ids.
+- **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME Settings). Wayland has no app-level hotkey API, so there is nothing to implement. On macOS / Windows this is *in* scope and shipped: `--serve` registers via RegisterEventHotKey / RegisterHotKey.
 - **GUI / TUI** — CLI only.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `-s` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.

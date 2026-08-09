@@ -1,12 +1,15 @@
 # beckon examples
 
-beckon doesn't register hotkeys itself — your existing OS / window
-manager dotfile does. These examples show you how to wire that dotfile
-on every supported platform, with a consistent set of bindings so you
-only need to learn one mental model.
+On Linux, beckon doesn't register hotkeys itself — your compositor or
+window manager dotfile does. On macOS and Windows you get a choice:
+the same dotfile approach (Hammerspoon / AutoHotkey), or beckon's own
+resident mode, which hosts the hotkeys from a TOML file. These examples
+cover both, with a consistent set of bindings so you only need to learn
+one mental model.
 
 ```
-press hotkey         (registered by your OS/WM dotfile)
+press hotkey         (registered by your OS/WM dotfile,
+   │                  or by `beckon --serve` on macOS / Windows)
    │
    └── invokes:  beckon <Name>
                    │
@@ -30,21 +33,31 @@ press hotkey         (registered by your OS/WM dotfile)
 | KDE Plasma on X11 | EWMH (`x11rb`) | [`linux/kde-x11/`](linux/kde-x11/) |
 | XFCE | EWMH (`x11rb`) | [`linux/xfce/`](linux/xfce/) |
 | openbox / awesome / fluxbox | EWMH (`x11rb`) | [`linux/openbox/`](linux/openbox/) |
+| GNOME on Wayland | bundled shell extension over D-Bus | [`../extensions/`](../extensions/) — install it, then bind keys in GNOME Settings |
 
-> GNOME and KDE on **Wayland** block external focus by design — beckon
-> doesn't work there. Switch to the X11 session, or use sway / Hyprland.
+> KDE on **Wayland** blocks external focus by design and offers no
+> extension API to ride on — beckon doesn't work there. Switch to the
+> X11 session, or use sway / Hyprland. GNOME on Wayland *is* supported,
+> but only once the bundled `beckon@xom11.github.io` extension is
+> installed and you've logged back in.
 
 ### macOS
 
-| Hotkey daemon | Config |
+| Hotkey source | Config |
 |---|---|
 | Hammerspoon | [`macos/hammerspoon/`](macos/hammerspoon/) |
+| beckon itself (`--serve` + launchd) | [`macos/serve/`](macos/serve/) |
 
 ### Windows
 
-| Hotkey daemon | Config |
+| Hotkey source | Config |
 |---|---|
 | AutoHotkey v2 | [`windows/ahk/`](windows/ahk/) |
+| beckon itself (`--serve` + Scheduled Task) | [`windows/serve/`](windows/serve/) |
+
+Pick one per machine, not both — a hotkey chord goes to whichever
+daemon registers it first, so running two just makes the second one
+lose keys.
 
 ## Common app set used in every example
 
@@ -87,11 +100,19 @@ If `beckon -r Claude` reports `❌ no match`, copy the actual Name from
 
 ## Why one tool, many configs?
 
-beckon is intentionally a thin CLI. It doesn't know how to grab a
-global hotkey on each platform, so it leaves that to the tools that
-already do it well — the compositor on Linux, Hammerspoon on macOS,
-AutoHotkey on Windows. The examples here just plug `beckon <Name>`
-into the right place in each tool's config language.
+beckon is intentionally a thin CLI. On Linux there is no app-level way
+to grab a global hotkey — Wayland has no such API and the compositor
+already owns keybinds — so beckon leaves that job to the config that
+does it well. The examples here just plug `beckon <Name>` into the
+right place in each tool's config language.
 
-This means: same Names everywhere, three different hotkey daemons,
-zero alias mapping or config file inside beckon itself.
+macOS and Windows do expose a hotkey API that doesn't need a
+permission prompt (`RegisterEventHotKey` / `RegisterHotKey`), so
+there `--serve` can skip the middleman entirely. The Hammerspoon and
+AutoHotkey examples remain first-class — keep them if you already run
+those tools for other automation.
+
+Either way: same Names everywhere, and zero alias mapping. The only
+config file beckon ever reads is the `--serve` shortcuts TOML, which
+maps keys to Names — `beckon <Name>` itself stays config-free and
+resolves against your OS's own app metadata.

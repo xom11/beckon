@@ -1,7 +1,8 @@
 # beckon
 
 Cross-platform focus-or-launch app switcher. A thin CLI invoked by your existing
-hotkey dotfile (sway, i3, Hammerspoon, AHK).
+hotkey dotfile (sway, i3, Hammerspoon, AHK) — or, on macOS and Windows,
+hosting the hotkeys itself via [resident mode](#resident-mode-macos--windows).
 
 ```
 press hotkey
@@ -28,6 +29,10 @@ beckon -d                      # diagnose your environment
 #       examples/linux/kde-x11/      examples/linux/xfce/
 #       examples/linux/openbox/      examples/macos/hammerspoon/
 #       examples/windows/ahk/
+#
+#    macOS / Windows alternative — let beckon host the hotkeys itself,
+#    no Hammerspoon or AHK needed:
+#       examples/macos/serve/        examples/windows/serve/
 
 # 4. press the hotkey. failures fire a desktop notification — you'll see them.
 ```
@@ -40,9 +45,13 @@ beckon -d                      # diagnose your environment
 | Linux / i3 (X11) | ✅ Phase 1b — same backend (shared protocol) |
 | Linux / X11 generic (GNOME-X11, KDE-X11, XFCE, openbox, awesome) | ✅ Phase 1b.x11 — `x11rb` + EWMH |
 | Linux / Hyprland (Wayland) | ✅ Phase 1c — native Unix-socket IPC |
+| Linux / GNOME Wayland | ✅ Phase 1d — bundled GNOME Shell extension over D-Bus |
 | macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
 | Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
-| GNOME / KDE Wayland | ❌ Out of scope (compositor blocks external focus) |
+| KDE Wayland | ❌ Out of scope (KWin blocks external focus, no bridge to ride on) |
+
+Resident hotkey mode (`--serve`) is available on macOS and Windows. Linux
+stays compositor-bound by design — the compositor already owns the keybind.
 
 ## Install
 
@@ -66,9 +75,12 @@ cargo build --release
 # binary: ./target/release/beckon
 ```
 
-Requirements: Rust 1.75+. Linux supports sway, i3, Hyprland and any
-EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome).
-GNOME and KDE on Wayland are unsupported — `beckon -d` reports it.
+Requirements: Rust 1.75+. Linux supports sway, i3, Hyprland, any
+EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome),
+and GNOME Wayland via the bundled shell extension in
+[`extensions/`](./extensions/) — install it with `gnome-extensions install`
+and log back in. KDE Wayland is unsupported; `beckon -d` reports which
+backend it picked.
 On Windows: VS Build Tools 2022 with the C++ ARM64/x64 component and
 Windows SDK.
 
@@ -188,11 +200,30 @@ no Hammerspoon/AHK layer needed. The file is flat TOML, one combo per line:
     "ctrl+super+alt+t" = "kitty"
     "ctrl+super+alt+shift+t" = "Telegram Web"
 
-Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift`.
-The file is watched: edits apply live; a broken edit keeps the current
-bindings and fires a notification. `beckon --check shortcuts.toml`
-validates a file (exit 0/1) without touching the OS — usable in CI. On
-Windows, run it via a Scheduled Task (foreground process, no service). The
+Ready-to-use setups, including the launchd agent and the Scheduled Task
+definition: [`examples/macos/serve/`](examples/macos/serve/) and
+[`examples/windows/serve/`](examples/windows/serve/).
+
+Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
+is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named
+specials like `space` / `comma` / `pageup`); a shifted binding is written as
+the base key plus an explicit `shift`. `f20` is the ceiling because macOS
+has no keycode above it, and every key must exist on both OSes so a config
+validates anywhere.
+
+`beckon --check shortcuts.toml` validates a file (exit 0/1) without touching
+the OS — it runs on Linux too, so it works in CI. The file is watched: edits
+apply live, and a broken edit keeps the current bindings and fires a
+notification instead of dropping your keys. One `--serve` per config path is
+enforced with a lock file.
+
+**Trust the registration count, not the shortcut count.** Startup and reload
+report `5 shortcuts registered` when clean and `3 of 5 shortcuts registered
+(2 failed)` when another app already owns a chord — a config can parse
+perfectly and still register nothing.
+
+On Windows, run it via a Scheduled Task (foreground process in your
+interactive session, not a service — `RegisterHotKey` needs a desktop). The
 tray icon is a liveness signal, but only in one direction: icon present
 means the daemon is alive, icon absent means either the daemon is dead OR
 the tray just isn't ready yet (a logon race, or Explorer restarting) —
@@ -249,8 +280,14 @@ env -u SWAYSOCK -u WAYLAND_DISPLAY \
 
 ## Out of scope
 
-No config file. No alias mapping. No global hotkey registration — that lives
-in your existing dotfile. No interactive launcher (use rofi for that).
+No alias mapping and no resolve cache — ids resolve against OS metadata
+(`.desktop` / LaunchServices / Start Menu) on every call. No interactive
+launcher (use rofi for that). No window tiling or layout management.
+
+The one config file beckon reads is the `--serve` shortcuts TOML, and it maps
+hotkeys to Names — it is not a place to alias or configure `beckon <id>`
+itself, which stays config-free. Hotkey registration is still the dotfile's
+job everywhere except macOS/Windows resident mode.
 
 ## License
 
