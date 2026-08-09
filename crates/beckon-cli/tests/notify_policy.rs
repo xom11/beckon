@@ -116,6 +116,12 @@ fn repeated_human_invocations_notify_every_time() {
 }
 
 /// Two different faults are two pieces of news, even inside the window.
+///
+/// macOS and Windows only: elsewhere `--serve` is unimplemented and both runs
+/// fail with the same sentence regardless of which config was asked for, so
+/// the throttle collapses them — correctly, and this test would be asserting
+/// that two identical messages are distinct.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 #[test]
 fn distinct_serve_failures_are_not_collapsed() {
     let dir = tempfile::tempdir().unwrap();
@@ -124,5 +130,9 @@ fn distinct_serve_failures_are_not_collapsed() {
     run(dir.path(), &log, &["--serve", "/nonexistent/one.toml"]);
     run(dir.path(), &log, &["--serve", "/nonexistent/two.toml"]);
 
-    assert_eq!(notifications(&log).len(), 2);
+    assert_eq!(
+        notifications(&log).len(),
+        2,
+        "the stamp is keyed by message, and these two messages differ"
+    );
 }

@@ -322,8 +322,13 @@ mod tests {
             "the refusal must still be recognisable as a designed outcome, \
              got `{err:#}`"
         );
+        // Against the *canonical* spelling: that is what `acquire` hashes and
+        // what it reports, and on Windows canonicalizing turns `C:\...` into
+        // the extended-length `\\?\C:\...` form, so comparing with the path as
+        // written passes on Unix and fails there.
+        let canonical = config.canonicalize().unwrap();
         assert!(
-            format!("{err:#}").contains(&config.display().to_string()),
+            format!("{err:#}").contains(&canonical.display().to_string()),
             "the message must name the config, not just the lock hash: {err:#}"
         );
     }

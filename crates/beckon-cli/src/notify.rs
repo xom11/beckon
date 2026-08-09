@@ -101,6 +101,11 @@ pub fn decide(
 ///
 /// This is the entry point for everything except `main`'s top-level error
 /// handler, which needs to pass its own `expected` flag.
+///
+/// Its only callers live in `serve`, which is compiled on macOS and Windows
+/// alone — so everywhere else this is genuinely unused rather than
+/// accidentally so.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn report(message: &str, cause: Cause) {
     report_expected(message, cause, false);
 }
