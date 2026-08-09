@@ -121,7 +121,7 @@ gives a hotkey to the first registrant. Check System Settings →
 Keyboard → Keyboard Shortcuts, and any other hotkey daemon you have
 running (including a stale `beckon --serve`).
 
-**"another `beckon --serve` is already running for this config"** — one
+**"another `beckon --serve` is already running for `...`"** — one
 instance per config path is enforced with a lock file. Find the other
 one with `pgrep -fl "beckon --serve"`.
 

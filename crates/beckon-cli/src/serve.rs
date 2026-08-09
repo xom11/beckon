@@ -59,12 +59,24 @@ struct ServeState {
     config: PathBuf,
 }
 
+/// Take the single-instance lock, preserving the error's type.
+///
+/// Plain `?`, never `anyhow!(e)`: the error must reach `main` as a typed
+/// `AcquireError` so `is_expected` can recognise the healthy "already
+/// running" refusal and stay quiet. Flattening it to a message would put
+/// every watchdog tick back in the notification centre — silently, since
+/// nothing else in the program would change. `lock_error_keeps_its_type`
+/// below is what stops that. (Wrapping with `.context()` is fine; anyhow
+/// downcasts through context layers. Only stringifying breaks it.)
+///
+/// Extracted from `cmd_serve` purely so a test can reach it: `cmd_serve`
+/// itself goes on to install a hotkey manager and never returns.
+fn acquire_lock(config: &Path) -> Result<std::fs::File> {
+    Ok(crate::lockfile::acquire(config)?)
+}
+
 pub fn cmd_serve(config: &Path) -> Result<()> {
-    // Plain `?`, not `anyhow!(e)`: this must reach `main` as a typed
-    // `AcquireError` so `is_expected` can spot the healthy "already running"
-    // refusal and skip the notification. Flattening it to a message would put
-    // every watchdog tick back in the notification centre.
-    let _lock = crate::lockfile::acquire(config)?;
+    let _lock = acquire_lock(config)?;
     let config = config
         .canonicalize()
         .with_context(|| format!("cannot resolve `{}`", config.display()))?;
@@ -114,7 +126,7 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
         config.display()
     );
     if let Some(toast) = failure_toast(&outcome.failed) {
-        crate::notify_error(&toast);
+        crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
     }
     HotkeyManager::run_forever();
 }
@@ -134,7 +146,9 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id
     if let Err(e) = backend.beckon(&app) {
         let msg = format!("{app} ({canonical}): {e}");
         eprintln!("beckon serve: {msg}");
-        crate::notify_error(&msg);
+        // A key the owner just pressed. Told every time, including the fifth,
+        // because they pressed it a fifth time.
+        crate::notify::report(&msg, crate::notify::Cause::HumanAction);
     }
 }
 
@@ -243,7 +257,10 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             // Bad edit must not cost the user their working keys.
             let msg = format!("reload failed, keeping current shortcuts: {e}");
             eprintln!("beckon serve: {msg}");
-            crate::notify_error(&msg);
+            // The watcher drives this, not a person: anything that keeps
+            // rewriting the config (an editor sync, a `home-manager switch`
+            // loop) would otherwise post once per tick, forever.
+            crate::notify::report(&msg, crate::notify::Cause::MachineRepeat);
         }
         Ok(new) => {
             let mut m = mgr.borrow_mut();
@@ -255,7 +272,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
                 registration_phrase(outcome.ok, state.borrow().shortcuts.len())
             );
             if let Some(toast) = failure_toast(&outcome.failed) {
-                crate::notify_error(&toast);
+                crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
         }
     }
@@ -283,6 +300,31 @@ mod tests {
         assert_eq!(
             registration_phrase(17, 20),
             "17 of 20 shortcuts registered (3 failed)"
+        );
+    }
+
+    /// The load-bearing `?` in `acquire_lock`.
+    ///
+    /// Swap it for `map_err(|e| anyhow!("{e}"))` and everything still
+    /// compiles, every other test still passes, and the watchdog storm comes
+    /// straight back — the type is the only thing carrying "this is expected".
+    #[test]
+    fn lock_error_keeps_its_type_through_anyhow() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "").unwrap();
+
+        let _held = acquire_lock(&config).expect("first lock");
+        let err = acquire_lock(&config).expect_err("second lock must be refused");
+
+        assert!(
+            crate::is_expected(&err),
+            "the refusal must still be recognisable as a designed outcome, \
+             got `{err:#}`"
+        );
+        assert!(
+            format!("{err:#}").contains(&config.display().to_string()),
+            "the message must name the config, not just the lock hash: {err:#}"
         );
     }
 

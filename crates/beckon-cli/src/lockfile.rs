@@ -27,7 +27,10 @@ use std::path::{Path, PathBuf};
 /// raised one notification per tick, forever. See `is_expected` in `main.rs`.
 #[derive(Debug)]
 pub enum AcquireError {
-    AlreadyRunning(PathBuf),
+    AlreadyRunning {
+        config: PathBuf,
+        lock: PathBuf,
+    },
     Open {
         path: PathBuf,
         source: std::io::Error,
@@ -37,12 +40,15 @@ pub enum AcquireError {
 impl std::fmt::Display for AcquireError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // Wording is load-bearing: this is what lands in
-            // serve-watchdog.log, the only evidence a watchdog tick leaves.
-            Self::AlreadyRunning(path) => write!(
+            // Wording is load-bearing: with the notification suppressed, this
+            // line is the entire diagnostic surface a watchdog tick leaves.
+            // It names the *config* first — the lock file is a hash and says
+            // nothing to a reader trying to work out which daemon is up.
+            Self::AlreadyRunning { config, lock } => write!(
                 f,
-                "another `beckon --serve` is already running for this config (lock `{}`)",
-                path.display()
+                "another `beckon --serve` is already running for `{}` (lock `{}`)",
+                config.display(),
+                lock.display()
             ),
             Self::Open { path, source } => {
                 write!(f, "cannot open lock file `{}`: {source}", path.display())
@@ -54,17 +60,22 @@ impl std::fmt::Display for AcquireError {
 impl std::error::Error for AcquireError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::AlreadyRunning(_) => None,
+            Self::AlreadyRunning { .. } => None,
             Self::Open { source, .. } => Some(source),
         }
     }
 }
 
+/// Where the lock for `config` lives.
+///
+/// `stable_id`, not `DefaultHasher`: this filename is how two independent
+/// beckon processes agree they are talking about the same config, so it must
+/// not depend on which Rust release built them. See `stable_id`.
 fn lock_path(config: &Path) -> PathBuf {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    config.hash(&mut h);
-    std::env::temp_dir().join(format!("beckon-serve-{:016x}.lock", h.finish()))
+    std::env::temp_dir().join(format!(
+        "beckon-serve-{}.lock",
+        crate::stable_id::for_path(config)
+    ))
 }
 
 pub fn acquire(config: &Path) -> Result<File, AcquireError> {
@@ -87,7 +98,10 @@ pub fn acquire(config: &Path) -> Result<File, AcquireError> {
             source,
         })?;
     file.try_lock_exclusive()
-        .map_err(|_| AcquireError::AlreadyRunning(path))?;
+        .map_err(|_| AcquireError::AlreadyRunning {
+            config: canonical,
+            lock: path,
+        })?;
     Ok(file)
 }
 
@@ -114,13 +128,18 @@ mod tests {
         std::fs::write(&config, "").unwrap();
         let _first = acquire(&config).expect("first lock");
         match acquire(&config) {
-            Err(AcquireError::AlreadyRunning(path)) => {
+            Err(AcquireError::AlreadyRunning { config: c, lock }) => {
                 assert!(
-                    path.file_name()
+                    lock.file_name()
                         .and_then(|n| n.to_str())
                         .is_some_and(|n| n.starts_with("beckon-serve-")),
                     "variant must carry the lock path, got `{}`",
-                    path.display()
+                    lock.display()
+                );
+                assert_eq!(
+                    c,
+                    config.canonicalize().unwrap(),
+                    "variant must carry the config path so the message can name it"
                 );
             }
             other => panic!("expected AlreadyRunning, got {other:?}"),

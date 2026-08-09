@@ -154,7 +154,7 @@ this with no extra tooling, because `--serve` already takes a per-config
 lock: when one is healthy the redundant instance exits immediately with
 
 ```
-beckon: another `beckon --serve` is already running for this config (lock `...`)
+beckon: another `beckon --serve` is already running for `...apps.windows.toml` (lock `...`)
 ```
 
 Register the same XML under a second name, replacing the `<LogonTrigger>`
@@ -198,7 +198,7 @@ failure wave is collapsed into a single toast listing up to 5 combos
 rather than one toast per key, so check stderr for the full per-key
 detail.
 
-**"another `beckon --serve` is already running for this config"** — one
+**"another `beckon --serve` is already running for `...`"** — one
 instance per config path, enforced with a lock file. Look for a leftover
 process:
 
