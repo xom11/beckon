@@ -220,6 +220,12 @@ Ready-to-use setups, including the launchd agent and the Scheduled Task
 definition: [`examples/macos/serve/`](examples/macos/serve/) and
 [`examples/windows/serve/`](examples/windows/serve/).
 
+On macOS installed via Homebrew, `brew services start beckon` is the whole
+install — the formula ships the LaunchAgent. Create and `beckon --check`
+`~/.config/beckon/apps.toml` first. On Windows the Scheduled Task runs
+`beckon.exe` directly and passes `--log`, which sends stderr to a file and
+detaches the console in one step.
+
 Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
 is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named
 specials like `space` / `comma` / `pageup`); a shifted binding is written as

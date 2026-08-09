@@ -40,7 +40,40 @@ beckon --serve ~/.config/beckon/apps.toml
 
 Press a hotkey. If it works, `Ctrl+C` and move on to launchd.
 
-## Load at login via launchd
+## Load at login via `brew services` (Homebrew installs)
+
+If you installed with `brew install xom11/tap/beckon`, the formula ships
+the LaunchAgent already:
+
+```sh
+brew services start beckon
+brew services list                       # beckon should be `started`
+tail -f "$(brew --prefix)/var/log/beckon.log"
+```
+
+It reads `~/.config/beckon/apps.toml`. Create and `beckon --check` it
+first — `keep_alive` restarts a serve that cannot read its config every
+~10 seconds, forever.
+
+Two ways this ships broken, both silent:
+
+- **`sudo brew services start`** installs a LaunchDaemon instead of a
+  per-user LaunchAgent. A daemon has no window-server session, so
+  `RegisterEventHotKey` returns success and no key ever fires.
+- **Starting it over SSH** can drop the agent out of the `gui/<uid>`
+  domain for the same reason. Start it from a terminal in the desktop
+  session.
+
+Confirm you got the right domain:
+
+```sh
+launchctl print gui/$(id -u)/homebrew.mxcl.beckon | head -20
+```
+
+The hand-written plist below is the fallback for non-Homebrew installs,
+and still the reference for what the agent actually does.
+
+## Load at login via launchd (manual install)
 
 ```sh
 mkdir -p ~/Library/LaunchAgents
