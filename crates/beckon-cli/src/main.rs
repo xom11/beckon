@@ -61,6 +61,17 @@ struct Args {
     #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor", "check"])]
     serve: Option<std::path::PathBuf>,
 
+    /// Send stderr to PATH and detach the console (Windows, with --serve).
+    ///
+    /// For supervisor-hosted runs: a Scheduled Task cannot redirect stderr,
+    /// and stderr is the only place beckon reports how many hotkeys actually
+    /// registered. Detaching the console is part of the same flag on purpose
+    /// — detaching without redirecting would leave stderr pointing at a
+    /// destroyed console, where a failed write panics instead of returning.
+    #[cfg(target_os = "windows")]
+    #[arg(long, value_name = "PATH", requires = "serve")]
+    log: Option<std::path::PathBuf>,
+
     /// Verbose logging to stderr.
     #[arg(short = 'v', long)]
     verbose: bool,
@@ -106,7 +117,17 @@ fn is_expected(e: &anyhow::Error) -> bool {
 
 fn run(args: &Args) -> Result<()> {
     if let Some(path) = args.serve.as_deref() {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(target_os = "windows")]
+        {
+            // Before the lock, so the "already running" refusal is logged
+            // too, and before anything else can fail — see the module doc on
+            // `beckon_windows::logfile`.
+            if let Some(log) = args.log.as_deref() {
+                beckon_windows::logfile::redirect_to_log(log)?;
+            }
+            return serve::cmd_serve(path);
+        }
+        #[cfg(target_os = "macos")]
         {
             return serve::cmd_serve(path);
         }
