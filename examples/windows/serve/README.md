@@ -49,15 +49,35 @@ desktop to bind to, so a task configured to "run whether user is logged
 on or not" registers nothing and silently never fires.
 
 ```powershell
-$exe = "$env:USERPROFILE\.cargo\bin\beckon.exe"   # or (Get-Command beckon).Source
+$exe = (Get-Command beckon).Source
 $cfg = "$env:USERPROFILE\.config\beckon\apps.toml"
+$log = "$env:USERPROFILE\AppData\Local\beckon\serve.log"
+$sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+
+mkdir -Force (Split-Path $log) | Out-Null
 
 (Get-Content -Raw beckon-serve.xml).
     Replace('C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe', $exe).
     Replace('C:\Users\YOUR_USERNAME\.config\beckon\apps.toml', $cfg).
-    Replace('YOUR_USERNAME', "$env:USERDOMAIN\$env:USERNAME") |
+    Replace('C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log', $log).
+    Replace('YOUR_USER_SID', $sid) |
   ForEach-Object { Register-ScheduledTask -TaskName "beckon-serve" -Xml $_ -Force }
 ```
+
+Two things in there look like overkill and are not:
+
+- **The principal is a SID, not `DOMAIN\user`.** On a machine that isn't
+  domain-joined `$env:USERDOMAIN` is `WORKGROUP`, and registering
+  `WORKGROUP\you` fails with *"No mapping between account names and
+  security IDs was done."*
+- **`beckon-serve.xml` declares `encoding="UTF-16"` even though the file
+  is UTF-8.** Change it to UTF-8 and Task Scheduler rejects the import
+  with *"The task XML is malformed. (1,40)::ERROR: unable to switch the
+  encoding."* Every task Windows exports declares UTF-16 for the same
+  reason.
+
+Both were hit and fixed against a real machine (Windows 11 ARM64, build
+26200); the file as shipped registers cleanly.
 
 Verify, and start it without logging out:
 
@@ -72,25 +92,43 @@ Remove it again:
 Unregister-ScheduledTask beckon-serve -Confirm:$false
 ```
 
+## The log
+
+The task action runs beckon through `cmd.exe` for one reason: the `2>`
+redirect. Task Scheduler throws a process's stderr away, and stderr is
+the only place beckon reports **how many hotkeys actually registered**.
+Without the log you cannot tell `20 shortcuts registered` from `20
+parsed, 0 registered` — which is exactly the failure that went unnoticed
+for hours on 2026-08-09.
+
+```powershell
+Get-Content "$env:USERPROFILE\AppData\Local\beckon\serve.log" -Tail 20 -Wait
+```
+
 ## The console window
 
 beckon is a console application, so the task above leaves an **empty
-console window** on screen for as long as the daemon runs. Three ways
-out, in order of how much they depend on:
+console window** on screen for as long as the daemon runs. This is
+measured, not assumed: a process launched by Task Scheduler with
+`InteractiveToken` reports `IsWindowVisible = true` for its own
+`GetConsoleWindow()` (Windows 11 ARM64, build 26200).
 
-1. **Live with it** — minimize it. Nothing breaks.
-2. **[`beckon-serve.vbs`](beckon-serve.vbs)** — a three-line shim that
-   starts the exe hidden, exactly like the AHK example's
-   `Run(..., "Hide")`. Point the task at
-   `wscript.exe "...\beckon-serve.vbs"` (the alternative `<Exec>` block
-   is already in the XML, commented out). Caveat: VBScript is a
-   deprecated Windows feature-on-demand — present by default today, not
-   forever.
+Three ways out, in order of how much they depend on:
+
+1. **Live with it** — minimize it. Nothing breaks. This is the option
+   that cannot fail.
+2. **[`beckon-serve.vbs`](beckon-serve.vbs)** — a shim that starts the
+   same `cmd.exe` redirect hidden, so you keep the log and lose the
+   window, exactly like the AHK example's `Run(..., "Hide")`. Point the
+   task at `wscript.exe "...\beckon-serve.vbs"` (that `<Exec>` block is
+   already in the XML, commented out). `wscript.exe` is present on build
+   26200, but VBScript is a deprecated feature-on-demand and won't be
+   there forever.
 3. **`conhost.exe --headless beckon.exe --serve <config>`** — no
-   deprecated dependency, but an undocumented flag.
+   deprecated dependency, but an undocumented flag, and untested here.
 
-None of these are verified on Windows by the maintainer of this file;
-option 1 is the one that cannot fail.
+The real fix is a `FreeConsole()` on the `--serve` path in beckon
+itself, which does not exist yet.
 
 ## The tray icon
 
@@ -103,6 +141,37 @@ liveness signal:
 
 Hotkeys register and fire independently of the icon, so don't diagnose
 from the icon alone — read the log.
+
+## Optional: a watchdog that costs nothing
+
+A logon trigger fires once. If the daemon dies mid-session — crash,
+`taskkill`, a botched upgrade — nothing brings it back until you log out
+and in again. `<RestartOnFailure>` only covers what the task engine
+itself considers a failure, which is not the same thing.
+
+A second task that simply *tries* to start beckon every 5 minutes fixes
+this with no extra tooling, because `--serve` already takes a per-config
+lock: when one is healthy the redundant instance exits immediately with
+
+```
+beckon: another `beckon --serve` is already running for this config (lock `...`)
+```
+
+Register the same XML under a second name, replacing the `<LogonTrigger>`
+block with:
+
+```xml
+<TimeTrigger>
+  <StartBoundary>2020-01-01T00:00:00</StartBoundary>
+  <Repetition>
+    <Interval>PT5M</Interval>
+  </Repetition>
+</TimeTrigger>
+```
+
+Point its `2>` at a *different* log file, otherwise the watchdog's
+"already running" line overwrites the real daemon's registration count
+every 5 minutes.
 
 ## Editing shortcuts
 
@@ -137,9 +206,10 @@ process:
 Get-Process beckon -ErrorAction SilentlyContinue | Format-Table Id, Path
 ```
 
-**Nothing fires and there's no window to read.** Under a Scheduled Task
-stderr goes nowhere. Redirect it by pointing the task at a shim that
-appends to a file, or just run `--serve` from a terminal to reproduce.
+**Nothing fires and there's no window to read.** Read the log — that is
+what the `2>` redirect in the task action is for. If the log is empty,
+the task never started: check `Get-ScheduledTaskInfo beckon-serve`
+(`LastTaskResult` 267009 = `SCHED_S_TASK_RUNNING`, which is healthy).
 
 **A Name doesn't resolve.** `beckon -r "Windows Terminal"` shows the
 match type. Prefer the exact friendly name from `beckon -L`; `Explorer`

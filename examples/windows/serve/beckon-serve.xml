@@ -1,14 +1,20 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-16"?>
 <!--
   Scheduled Task definition for the beckon resident hotkey service.
   (XML comments cannot contain a double hyphen, so the flag itself is
   spelled out only in the Arguments element below.)
 
-  Import with PowerShell (see the README — it substitutes the paths for
-  you). Task Scheduler's own exports declare UTF-16; this file is UTF-8
-  and declares UTF-8, which is what `Register-ScheduledTask -Xml` wants
-  when you hand it a string. `schtasks /Create /XML` is pickier about
-  encoding — prefer the PowerShell path.
+  The UTF-16 declaration above is REQUIRED and is not a typo: Task
+  Scheduler rejects anything else with
+      The task XML is malformed. (1,40)::ERROR: unable to switch the encoding
+  even when the file itself is UTF-8, which this one is. Verified on
+  Windows 11 ARM64 build 26200. Every task Windows exports declares
+  UTF-16 for the same reason; Register-ScheduledTask reads the file into
+  a .NET string (already UTF-16 in memory) before the service parses it,
+  so the declaration matches by the time it matters.
+
+  Import with PowerShell — see the README, which substitutes the paths
+  for you.
 
   Replace every YOUR_USERNAME below with your Windows account name
   (echo %USERNAME%).
@@ -24,9 +30,15 @@
   2. ExecutionTimeLimit is PT0S (unlimited). This is a daemon; the
      default 3-day limit would kill it.
 
-  The <Command> below runs the exe directly, which is guaranteed to work
-  but leaves a visible console window. Swap in the commented-out
-  wscript action to hide it — see the README.
+  The action below goes through cmd.exe purely to get the 2> redirect:
+  Task Scheduler discards a process's stderr, and stderr is where beckon
+  reports how many hotkeys actually registered. Without the log there is
+  no way to tell "20 registered" from "20 parsed, 0 registered".
+
+  It leaves a visible console window (measured, not assumed: a task-
+  launched console process reports IsWindowVisible = true for its own
+  GetConsoleWindow on Windows 11 build 26200). Swap in the commented-out
+  wscript action to get the same log with no window — see the README.
 -->
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -35,9 +47,11 @@
   </RegistrationInfo>
 
   <Triggers>
+    <!-- No UserId here on purpose: the trigger already fires for whoever
+         the Principal below names, and a UserId that Windows cannot map
+         to an account fails registration outright. -->
     <LogonTrigger>
       <Enabled>true</Enabled>
-      <UserId>YOUR_USERNAME</UserId>
       <!-- Give the shell a moment to finish starting before grabbing keys. -->
       <Delay>PT15S</Delay>
     </LogonTrigger>
@@ -45,7 +59,11 @@
 
   <Principals>
     <Principal id="Author">
-      <UserId>YOUR_USERNAME</UserId>
+      <!-- A SID, not DOMAIN\user. On a machine that is not domain-joined
+           USERDOMAIN is WORKGROUP, and "WORKGROUP\you" registers with
+           "No mapping between account names and security IDs was done."
+           The README's one-liner substitutes the current user's SID. -->
+      <UserId>YOUR_USER_SID</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -77,10 +95,10 @@
 
   <Actions Context="Author">
     <Exec>
-      <Command>C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe</Command>
-      <Arguments>--serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml"</Arguments>
+      <Command>cmd.exe</Command>
+      <Arguments>/c ""C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe" --serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml" 2&gt; "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log""</Arguments>
     </Exec>
-    <!-- Hidden alternative — see beckon-serve.vbs:
+    <!-- Same log, no console window — see beckon-serve.vbs:
     <Exec>
       <Command>wscript.exe</Command>
       <Arguments>"C:\Users\YOUR_USERNAME\.config\beckon\beckon-serve.vbs"</Arguments>

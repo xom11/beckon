@@ -1,20 +1,27 @@
-' Launch `beckon --serve` with no console window.
+' Launch `beckon --serve` with no console window, still logging stderr.
 '
 ' beckon.exe is a console application, so a Scheduled Task that runs it
-' directly leaves an empty console window on screen for as long as the
-' daemon lives. This three-line shim starts it hidden (0) without
-' waiting (False) — the same thing the AutoHotkey example does with
-' Run(..., "Hide").
+' — directly or through cmd.exe — leaves a visible console window on the
+' desktop for as long as the daemon lives. (Measured on Windows 11 build
+' 26200: a task-launched console process reports IsWindowVisible = true
+' for its own GetConsoleWindow.)
 '
-' Edit both paths below to match your machine, then point the Scheduled
-' Task at:  wscript.exe "C:\path\to\beckon-serve.vbs"
+' This shim starts the same cmd.exe redirect hidden (0) and without
+' waiting (False), so you keep the log and lose the window. It is the
+' same thing the AutoHotkey example does with Run(..., "Hide").
+'
+' Edit the three paths below, then point the Scheduled Task at:
+'     wscript.exe "C:\path\to\beckon-serve.vbs"
 '
 ' Note: VBScript is a deprecated Windows feature-on-demand. It is still
-' present by default today, but if it is removed from your install, use
-' the direct-exec action in beckon-serve.xml instead and accept the
-' visible console window. See the README for the trade-off.
+' present by default today (verified on build 26200), but if it is ever
+' removed from your install, fall back to the plain cmd.exe action in
+' beckon-serve.xml and accept the window.
 
 beckonExe = "C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe"
 config    = "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml"
+logFile   = "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log"
 
-CreateObject("WScript.Shell").Run """" & beckonExe & """ --serve """ & config & """", 0, False
+cmd = "cmd /c """"" & beckonExe & """ --serve """ & config & """ 2> """ & logFile & """"""
+
+CreateObject("WScript.Shell").Run cmd, 0, False
