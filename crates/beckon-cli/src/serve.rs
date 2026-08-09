@@ -268,7 +268,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             state.borrow_mut().shortcuts = new;
             let outcome = register_all(&mut m, &state.borrow().shortcuts);
             eprintln!(
-                "beckon serve: reloaded — {}",
+                "beckon serve: reloaded - {}",
                 registration_phrase(outcome.ok, state.borrow().shortcuts.len())
             );
             if let Some(toast) = failure_toast(&outcome.failed) {

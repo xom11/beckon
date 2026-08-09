@@ -838,6 +838,22 @@ Reasonable next-session order:
     - **Append, not truncate.** `2>` truncated on every start, so
       `RestartOnFailure` destroyed the log explaining the failure it was
       restarting from.
+    - **Bounded at 5 MiB, one generation** (`roll_if_oversized`): past the
+      limit the file becomes `<name>.1` and a fresh one starts, so the pair
+      caps at 10 MiB. The check runs *when the log is opened*, which is why
+      there is no timer and no background thread — and the frequency lands
+      where the growth is on its own: the daemon opens its log once per
+      logon and writes a couple of lines per boot, while a 5-minute watchdog
+      opens its log 288 times a day and is the only writer producing a line
+      on a schedule (~55 KB/day, measured on a14). `beckon <id>` never
+      reaches this code.
+      Owning the file is *why* this is beckon's job: on macOS launchd owns
+      it via `StandardErrorPath` and on Linux journald owns it, but Task
+      Scheduler discards stderr entirely, so on Windows nobody else can.
+    - **`--serve` log messages stay ASCII.** Windows PowerShell 5.1's
+      `Get-Content` defaults to ANSI, so a UTF-8 em-dash came back as
+      `�?"` in the log. The doctor/resolve output keeps its emoji — those
+      go to a terminal, never to `--log`.
     - **Pre-existing hazard this does not fix**: whenever stderr is a file
       (already true under `cmd /c … 2>`), a write failure — full disk,
       disconnected network share — panics the printing thread rather than

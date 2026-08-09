@@ -168,7 +168,7 @@ fn tray_add(hwnd: HWND) {
     // in `install`).
     if !unsafe { Shell_NotifyIconW(NIM_ADD, &nid) }.as_bool() {
         eprintln!(
-            "hotkey: Shell_NotifyIconW(NIM_ADD) failed — no tray icon; hotkeys are unaffected"
+            "hotkey: Shell_NotifyIconW(NIM_ADD) failed - no tray icon; hotkeys are unaffected"
         );
     }
 }
@@ -338,7 +338,7 @@ impl HotkeyManager {
             let ret = unsafe { GetMessageW(&mut msg, None, 0, 0) }.0;
             match ret {
                 -1 => {
-                    eprintln!("hotkey: GetMessageW failed — message queue is broken, exiting");
+                    eprintln!("hotkey: GetMessageW failed - message queue is broken, exiting");
                     std::process::exit(1);
                 }
                 0 => {
@@ -421,7 +421,7 @@ pub fn add_tick(seconds: f64, cb: Box<dyn FnMut()>) {
     let id = unsafe { SetTimer(Some(hwnd), requested_id, elapse_ms, None) };
     if id == 0 {
         eprintln!(
-            "hotkey: SetTimer failed (requested id {requested_id}) — this tick will never fire"
+            "hotkey: SetTimer failed (requested id {requested_id}) - this tick will never fire"
         );
         return;
     }

@@ -26,7 +26,7 @@
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
 use std::os::windows::io::AsRawHandle;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use windows::Win32::Foundation::HANDLE;
@@ -43,7 +43,14 @@ use windows::Win32::System::Console::{
 /// handle slots need.
 static LOG_FILE: OnceLock<File> = OnceLock::new();
 
-/// Open `path` for appending, creating its parent directory if needed.
+/// Roll the log aside once it passes this. Bounds the pair at twice this.
+///
+/// 5 MiB is roughly three months of a 5-minute watchdog, which is the only
+/// writer that produces a line on a schedule rather than on an event.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Open `path` for appending, creating its parent directory if needed and
+/// rolling the previous log aside once it gets too big.
 ///
 /// Append, not truncate, and that is a deliberate change from the `cmd /c …
 /// 2> log` this replaces: `2>` truncates on every start, so under the task's
@@ -61,7 +68,39 @@ fn open_log(path: &Path) -> std::io::Result<File> {
             std::fs::create_dir_all(parent)?;
         }
     }
+    roll_if_oversized(path, MAX_LOG_BYTES);
     OpenOptions::new().create(true).append(true).open(path)
+}
+
+/// Rename `path` to `path` + `.1` once it exceeds `max`, discarding whatever
+/// `.1` held before. One generation, no timestamps, no index shuffling.
+///
+/// **Checked when the file is opened, which is why no timer is needed.** The
+/// check runs once per process start, and that frequency lands where the
+/// growth is by itself: the daemon opens its log once per logon and writes a
+/// couple of lines per boot, while the watchdog opens *its* log every five
+/// minutes and is the only writer that produces a line on a schedule. So the
+/// log that grows is also the one checked often, with no background thread,
+/// and `beckon <id>` never reaches this code at all.
+///
+/// Best-effort throughout: a log that cannot be rolled is not a reason to
+/// refuse to serve. On the rename losing a race with a live writer — std opens
+/// files with `FILE_SHARE_DELETE`, so a rename succeeds even while another
+/// process holds the file, and that process keeps writing to the renamed
+/// inode until it reopens. Harmless here because each task owns its own log
+/// and the watchdog is short-lived; point two long-lived writers at one path
+/// and that stops being true.
+fn roll_if_oversized(path: &Path, max: u64) {
+    // A missing file is not oversized, and a stat that fails is not a reason
+    // to refuse to log.
+    if !std::fs::metadata(path).is_ok_and(|meta| meta.len() > max) {
+        return;
+    }
+    // Append to the whole file name rather than `with_extension`, which would
+    // turn `serve.log` into `serve.1` and lose which file it came from.
+    let mut rolled = path.as_os_str().to_os_string();
+    rolled.push(".1");
+    let _ = std::fs::rename(path, PathBuf::from(rolled));
 }
 
 /// Point stderr and stdout at `path`, then detach the console.
@@ -128,5 +167,84 @@ mod tests {
             body.contains("previous run") && body.contains("this run"),
             "append mode must keep the previous run's evidence: {body:?}"
         );
+    }
+
+    #[test]
+    fn roll_leaves_a_file_under_the_limit_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.log");
+        std::fs::write(&path, "small\n").unwrap();
+
+        roll_if_oversized(&path, 1024);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "small\n");
+        assert!(
+            !dir.path().join("serve.log.1").exists(),
+            "rolling a small log would throw away history for nothing"
+        );
+    }
+
+    #[test]
+    fn roll_moves_an_oversized_file_aside_and_starts_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.log");
+        std::fs::write(&path, "x".repeat(200)).unwrap();
+
+        roll_if_oversized(&path, 100);
+
+        assert!(
+            !path.exists(),
+            "the oversized log must be moved out of the way"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("serve.log.1"))
+                .unwrap()
+                .len(),
+            200,
+            "the previous generation keeps its contents, under `.log.1`"
+        );
+    }
+
+    #[test]
+    fn roll_keeps_exactly_one_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.log");
+        let rolled = dir.path().join("serve.log.1");
+
+        std::fs::write(&path, "first".repeat(50)).unwrap();
+        roll_if_oversized(&path, 100);
+        std::fs::write(&path, "second".repeat(50)).unwrap();
+        roll_if_oversized(&path, 100);
+
+        assert!(
+            std::fs::read_to_string(&rolled).unwrap().contains("second"),
+            "the second roll must replace the first: bounded at two files, not N"
+        );
+        assert!(
+            !dir.path().join("serve.log.1.1").exists() && !dir.path().join("serve.log.2").exists(),
+            "no index shuffling, no third file"
+        );
+    }
+
+    #[test]
+    fn open_log_rolls_before_it_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.log");
+        // Bigger than the real limit, so this exercises `open_log`'s own
+        // constant rather than a test-only one.
+        std::fs::write(&path, vec![b'x'; (MAX_LOG_BYTES + 1) as usize]).unwrap();
+
+        {
+            use std::io::Write;
+            let mut file = open_log(&path).expect("open_log");
+            writeln!(file, "after the roll").unwrap();
+        }
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            body, "after the roll\n",
+            "the live log restarts empty; the old bytes live in .log.1"
+        );
+        assert!(dir.path().join("serve.log.1").exists());
     }
 }

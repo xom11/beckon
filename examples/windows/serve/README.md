@@ -101,8 +101,19 @@ that went unnoticed for hours on 2026-08-09.
 beckon creates the log's parent directory itself, and **appends** rather
 than truncating. The `cmd.exe` redirect this replaces truncated on every
 start, so `RestartOnFailure` destroyed the log explaining the failure it
-was restarting from. Nothing rotates the file; if it ever grows
-inconvenient, delete it while the daemon is stopped.
+was restarting from.
+
+It is bounded: past **5 MiB** the file is renamed to `serve.log.1` and a
+fresh one starts, so the pair never exceeds 10 MiB. Exactly one generation
+is kept — the next roll overwrites `.1`. The check runs when the log is
+opened, which needs no timer and lands where the growth is by itself: the
+daemon opens its log once per logon and writes a couple of lines per boot,
+while a 5-minute watchdog opens *its* log 288 times a day and is the only
+writer producing a line on a schedule (~55 KB/day, measured).
+
+Read it with `Get-Content -Tail`. beckon keeps its `--serve` messages
+ASCII, so the default `Get-Content` encoding of Windows PowerShell 5.1
+renders them correctly without `-Encoding utf8`.
 
 ```powershell
 Get-Content "$env:USERPROFILE\AppData\Local\beckon\serve.log" -Tail 20 -Wait
