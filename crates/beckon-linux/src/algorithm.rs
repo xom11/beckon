@@ -149,8 +149,10 @@ pub fn decide(
     previous_app: Option<&str>,
 ) -> Decision {
     let target = target.into();
-    let app_windows: Vec<&WindowSnapshot> =
-        windows.iter().filter(|w| target.matches(&w.class)).collect();
+    let app_windows: Vec<&WindowSnapshot> = windows
+        .iter()
+        .filter(|w| target.matches(&w.class))
+        .collect();
 
     if app_windows.is_empty() {
         return Decision::Launch;

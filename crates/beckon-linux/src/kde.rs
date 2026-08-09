@@ -155,9 +155,8 @@ impl KdeBackend {
     /// `$XDG_RUNTIME_DIR` keeps it off any shared or persistent path.
     fn run_script(&self, plugin: &str, source: &str) -> Result<()> {
         let path = script_path(plugin);
-        std::fs::write(&path, source).map_err(|e| {
-            BackendError::Ipc(format!("write KWin script {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, source)
+            .map_err(|e| BackendError::Ipc(format!("write KWin script {}: {e}", path.display())))?;
 
         let proxy = Self::proxy(&self.conn)?;
 
@@ -419,7 +418,9 @@ impl Backend for KdeBackend {
         let rows = self.list_windows()?;
         let mut by_class: std::collections::BTreeMap<String, (String, usize)> = Default::default();
         for r in rows {
-            let entry = by_class.entry(r.cls).or_insert_with(|| (r.title.clone(), 0));
+            let entry = by_class
+                .entry(r.cls)
+                .or_insert_with(|| (r.title.clone(), 0));
             entry.1 += 1;
         }
         Ok(by_class

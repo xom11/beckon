@@ -63,7 +63,11 @@ fn collect_dir(root: &Path, dir: &Path, by_id: &mut HashMap<String, DesktopEntry
         if path.is_dir() {
             // Don't follow symlinked directories: `applications/foo -> /`
             // would walk the whole filesystem.
-            if path.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(true) {
+            if path
+                .symlink_metadata()
+                .map(|m| m.is_symlink())
+                .unwrap_or(true)
+            {
                 continue;
             }
             collect_dir(root, &path, by_id);
