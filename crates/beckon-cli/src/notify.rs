@@ -102,10 +102,16 @@ pub fn decide(
 /// This is the entry point for everything except `main`'s top-level error
 /// handler, which needs to pass its own `expected` flag.
 pub fn report(message: &str, cause: Cause) {
+    report_expected(message, cause, false);
+}
+
+/// As `report`, for the one caller that can recognise a designed outcome:
+/// `main`, which owns `is_expected`.
+pub fn report_expected(message: &str, cause: Cause, expected: bool) {
     let verdict = decide(
         std::io::IsTerminal::is_terminal(&std::io::stderr()),
         muted(),
-        false,
+        expected,
         cause,
         || claim_repeat_slot(message),
     );
@@ -151,16 +157,77 @@ pub fn claim_repeat_slot(message: &str) -> bool {
     true
 }
 
-/// Post to the desktop. Best-effort: silent if the platform helper is missing
-/// or its daemon is unreachable.
+/// Escape a string for embedding inside a double-quoted AppleScript literal.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Hand a message to the platform's notification daemon. Best-effort: silent
+/// if the helper is missing or the daemon is unreachable.
 ///
-/// Only reached after `decide` said `Show`. Call it directly only where the
-/// verdict was computed by hand — `main`, which supplies its own `expected`.
-pub fn show(message: &str) {
+/// Private on purpose. `report` and `report_expected` are the only ways out
+/// of this module, so posting without a verdict is not expressible. A
+/// mutation test found that `serve` calling the poster directly was the one
+/// regression no test could catch; the compiler catches it instead.
+fn post(message: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args([
+                "--app-name=beckon",
+                "--urgency=critical",
+                "--icon=dialog-error",
+                "beckon error",
+                message,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Best-effort toast notification via PowerShell.
+        let _ = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+                     $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0); \
+                     $text = $xml.GetElementsByTagName('text'); \
+                     $text.Item(0).AppendChild($xml.CreateTextNode('beckon: {}')) > $null; \
+                     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('beckon').Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
+                    message.replace('\'', "''")
+                ),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            r#"display notification "{}" with title "beckon""#,
+            applescript_escape(message)
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        let _ = message;
+    }
+}
+
+fn show(message: &str) {
     if log_instead(message) {
         return;
     }
-    crate::post_notification(message);
+    post(message);
 }
 
 /// Returns true when `LOG_ENV` diverted the message.
@@ -187,6 +254,14 @@ mod tests {
     use super::*;
 
     const NEVER: fn() -> bool = || panic!("claim_slot must not be consulted here");
+
+    #[test]
+    fn applescript_escape_quotes_and_backslashes() {
+        assert_eq!(
+            applescript_escape(r#"say "hi" \ bye"#),
+            r#"say \"hi\" \\ bye"#
+        );
+    }
 
     #[test]
     fn mute_env_off_when_unset_or_empty() {

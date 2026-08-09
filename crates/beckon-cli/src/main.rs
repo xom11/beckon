@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use beckon_core::Backend;
 use clap::Parser;
-use std::io::IsTerminal;
 
 mod lockfile;
 mod notify;
@@ -83,16 +82,7 @@ fn main() {
         } else {
             notify::Cause::HumanAction
         };
-        let verdict = notify::decide(
-            std::io::stderr().is_terminal(),
-            notify::muted(),
-            is_expected(&e),
-            cause,
-            || notify::claim_repeat_slot(&message),
-        );
-        if verdict == notify::Verdict::Show {
-            notify::show(&message);
-        }
+        notify::report_expected(&message, cause, is_expected(&e));
         std::process::exit(1);
     }
 }
@@ -161,71 +151,6 @@ fn require_id<'a>(value: &'a str, what: &str) -> Result<&'a str> {
         return Err(anyhow!("empty {what}: expected an app Name or id"));
     }
     Ok(value)
-}
-
-/// Escape a string for embedding inside a double-quoted AppleScript literal.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn applescript_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-/// Hand a message to the platform's notification daemon. Best-effort: silent
-/// if the helper is missing or the daemon is unreachable.
-///
-/// Deliberately dumb — it asks no questions and applies no policy. Whether a
-/// message reaches here at all is decided in `notify`, which every call site
-/// goes through. Do not call this directly; call `notify::report`.
-pub(crate) fn post_notification(message: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("notify-send")
-            .args([
-                "--app-name=beckon",
-                "--urgency=critical",
-                "--icon=dialog-error",
-                "beckon error",
-                message,
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        // Best-effort toast notification via PowerShell.
-        let _ = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-                     $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0); \
-                     $text = $xml.GetElementsByTagName('text'); \
-                     $text.Item(0).AppendChild($xml.CreateTextNode('beckon: {}')) > $null; \
-                     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('beckon').Show([Windows.UI.Notifications.ToastNotification]::new($xml))",
-                    message.replace('\'', "''")
-                ),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let script = format!(
-            r#"display notification "{}" with title "beckon""#,
-            applescript_escape(message)
-        );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        let _ = message;
-    }
 }
 
 fn pick_backend() -> Result<Box<dyn Backend>> {
@@ -532,14 +457,6 @@ fn cmd_doctor() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn applescript_escape_quotes_and_backslashes() {
-        assert_eq!(
-            applescript_escape(r#"say "hi" \ bye"#),
-            r#"say \"hi\" \\ bye"#
-        );
-    }
 
     #[test]
     fn already_running_is_expected() {
