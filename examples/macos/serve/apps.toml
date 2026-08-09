@@ -1,0 +1,24 @@
+# beckon resident-mode shortcuts for macOS.
+#
+# Validate before loading:   beckon --check apps.toml
+# Run in the foreground:     beckon --serve apps.toml
+#
+# Format: flat TOML. Every key is a hotkey combo, every value is exactly
+# one app Name. Edits apply live — beckon watches this file.
+#
+# Modifiers: ctrl, super (= Cmd), alt (= Option), shift. Order is free.
+# Keys must be lowercase: a-z, 0-9, f1-f20, and the named specials
+# (space, comma, period, slash, minus, equal, semicolon, quote,
+#  bracketleft, bracketright, backslash, grave, tab, return, escape,
+#  backspace, delete, home, end, pageup, pagedown, up, down, left, right).
+# For a shifted binding write the base key plus `shift` explicitly:
+#   "ctrl+super+alt+shift+t"   — not "ctrl+super+alt+T".
+#
+# Hyper = ctrl+super+alt, matching the Hammerspoon example. Swap the
+# Names for whatever `beckon -L` reports on your machine.
+
+"ctrl+super+alt+space" = "kitty"
+"ctrl+super+alt+c"     = "Claude"
+"ctrl+super+alt+b"     = "Brave Browser"
+"ctrl+super+alt+e"     = "Cursor"
+"ctrl+super+alt+d"     = "Discord"
