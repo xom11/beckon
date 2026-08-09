@@ -41,14 +41,17 @@ beckon -d                      # diagnose your environment
 ```
 
 Notifications fire only when nothing else would show the error: with stderr on a
-terminal beckon just prints. Two adjustments:
+terminal, beckon just prints. Beyond that the rule is about who caused the
+message, not which command ran — anything you triggered yourself is reported
+every time, and anything a timer can repeat on its own is reported at most once
+an hour per distinct message. A supervisor relaunching a service with a broken
+config (launchd `KeepAlive`, a Task Scheduler repetition) should not mean one
+notification a minute; a hotkey you press five times should tell you five times.
 
 - `BECKON_NO_NOTIFY=1` silences them entirely — for scripts and test harnesses,
   which capture stderr and would otherwise look like a hotkey to beckon.
-- A `--serve` that fails to start reports once an hour, not once per restart.
-  Supervisors (launchd `KeepAlive`, a Task Scheduler repetition) relaunch a
-  failing service on a timer, and one broken config should not mean one
-  notification a minute.
+- `BECKON_NOTIFY_LOG=<file>` appends them to a file instead of posting them,
+  which is how beckon's own tests assert on this without a notification daemon.
 
 ## Status
 
