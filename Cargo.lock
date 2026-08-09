@@ -273,6 +273,7 @@ version = "0.5.2"
 dependencies = [
  "anyhow",
  "beckon-core",
+ "tempfile",
  "windows",
 ]
 
