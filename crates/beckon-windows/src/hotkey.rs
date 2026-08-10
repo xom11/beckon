@@ -307,7 +307,15 @@ fn tray_add(hwnd: HWND) {
         uCallbackMessage: WM_TRAY,
         ..Default::default()
     };
-    nid.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
+    // Resource id 1 from beckon.rc; fall back to the stock icon if the
+    // resource is missing, so an icon-less build still shows *something*
+    // rather than no tray icon at all.
+    nid.hIcon = unsafe {
+        let hinst = GetModuleHandleW(None).unwrap_or_default();
+        LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
+            .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+    }
+    .unwrap_or_default();
     TRAY_TIP.with(|t| fill_tip(&mut nid.szTip, &t.borrow()));
     // Best effort: a missing tray icon must not take the hotkeys down — but
     // it must not go silent either, or "no icon" reads as "daemon is dead"

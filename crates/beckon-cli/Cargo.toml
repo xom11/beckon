@@ -35,3 +35,6 @@ beckon-windows = { path = "../beckon-windows" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[build-dependencies]
+embed-resource = "2"
