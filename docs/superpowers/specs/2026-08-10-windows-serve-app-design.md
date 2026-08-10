@@ -373,8 +373,15 @@ beckon-serve.exe (no args)
 
 ## Testing
 
-**Unit, on every platform including CI Linux — this is most of the new
-logic:**
+`.github/workflows/ci.yml` passes `--exclude beckon-windows` on the Linux
+and macOS jobs, so anything placed inside `beckon-windows` is only ever
+tested on `windows-latest`. That is why the pure logic below lives in
+`beckon-cli` (`serve_app.rs`) instead of next to the registry code in
+`beckon-windows`: it is what makes "every platform" true rather than
+aspirational.
+
+**Unit, on every platform including CI Linux — because it lives in
+`beckon-cli`, which every job builds and tests:**
 
 - `run_key_command_line()` — quoting; the Scoop `current` substitution,
   including the no-op case and paths that merely contain the word `scoop`;
@@ -383,6 +390,11 @@ logic:**
 - `default_config_path()` and `default_log_path()`.
 - `starter_template()` round-trips through `parse_shortcuts` with the
   expected number of bindings.
+
+**Unit, on `windows-latest` only — `#[cfg(target_os = "windows")]`-gated,
+so the Linux and macOS jobs skip it even though the code lives in
+`beckon-cli`:**
+
 - Menu construction: given a `ServeState`, `build()` returns the right
   labels, check states and enabled flags (paused vs not, autostart on vs
   off, zero shortcuts vs many).
