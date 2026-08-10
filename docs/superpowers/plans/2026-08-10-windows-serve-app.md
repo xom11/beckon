@@ -53,7 +53,34 @@
 
 ---
 
-## Task 0: Establish a Windows compile-check loop
+## Task 0: Establish a Windows compile-check loop — **DONE 2026-08-10**
+
+**Result: the GNU route works.** `WINCHECK` is:
+
+```bash
+cargo check --target x86_64-pc-windows-gnu -p beckon-windows -p beckon-cli --all-targets
+```
+
+Verified against unmodified `main`: `beckon-core`, `beckon-windows` and
+`beckon-cli` all check clean in 7.35 s. `cargo check` does not link, so no
+MSVC toolchain is involved.
+
+**It is a fast gate, not the authority.** The shipped target is `-msvc`, and
+CI is what proves it. Two things `WINCHECK` structurally cannot do:
+
+- **Run any test.** `cargo test` needs a linker and a Windows host. Tests
+  written into `beckon-windows` (Tasks 2 and 3) execute only on the
+  `windows-latest` CI runner.
+- **Catch `-msvc`-only breakage.** Rare for this API surface, but real.
+
+`ci.yml` triggers on `pull_request` and on pushes to `main` only, so a
+**draft PR is open for this branch** — that is what makes every push run the
+three-OS matrix and actually execute the Windows tests. Each task's final
+step is: push, then read the `windows-latest` job.
+
+The steps below are kept for the record.
+
+### Original steps
 
 The development machine is macOS. Tasks 2–7 write Windows-only code that `cargo build` on macOS never compiles, because `.github/workflows/ci.yml` and local builds both exclude `beckon-windows` off-Windows. Without a check loop, every one of those tasks is written blind.
 
