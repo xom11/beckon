@@ -104,22 +104,18 @@ pub fn scoop_current_path(exe: &Path) -> PathBuf {
 /// tells Windows users to create, and it is the path macOS uses. The
 /// shortcuts file is designed to validate on every platform, so one
 /// location across all three beats one platform's idiom.
-///
-/// Called only from the Windows-only first-run path wired up in Task 7, so
-/// non-Windows builds see it as unused outside its own tests -- same
-/// reasoning as `run_key_command_line` above.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// No caller on any platform until Task 7 wires these into serve_app_main.
+// Remove this attribute there -- it is scaffolding, not a permanent waiver.
+#[allow(dead_code)]
 pub fn default_config_path(home: &Path) -> PathBuf {
     home.join(".config").join("beckon").join("apps.toml")
 }
 
 /// `%LOCALAPPDATA%\beckon\serve.log` — the path the Scheduled Task example
 /// already uses, so an existing install's log does not move.
-///
-/// Called only from the Windows-only first-run path wired up in Task 7, so
-/// non-Windows builds see it as unused outside its own tests -- same
-/// reasoning as `run_key_command_line` above.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// No caller on any platform until Task 7 wires these into serve_app_main.
+// Remove this attribute there -- it is scaffolding, not a permanent waiver.
+#[allow(dead_code)]
 pub fn default_log_path(local_appdata: &Path) -> PathBuf {
     local_appdata.join("beckon").join("serve.log")
 }
@@ -129,11 +125,9 @@ pub fn default_log_path(local_appdata: &Path) -> PathBuf {
 ///
 /// ASCII only: this text can be echoed into the log, and Windows
 /// PowerShell 5.1's Get-Content defaults to ANSI.
-///
-/// Called only from the Windows-only first-run path wired up in Task 7, so
-/// non-Windows builds see it as unused outside its own tests -- same
-/// reasoning as `run_key_command_line` above.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// No caller on any platform until Task 7 wires these into serve_app_main.
+// Remove this attribute there -- it is scaffolding, not a permanent waiver.
+#[allow(dead_code)]
 pub fn starter_template() -> &'static str {
     r#"# beckon shortcuts. Edit and save -- beckon reloads automatically.
 #
@@ -158,11 +152,9 @@ pub fn starter_template() -> &'static str {
 ///
 /// Returns `true` when it created the file. Never overwrites: a user whose
 /// config exists must keep it, whatever else goes wrong.
-///
-/// Called only from the Windows-only first-run path wired up in Task 7, so
-/// non-Windows builds see it as unused outside its own tests -- same
-/// reasoning as `run_key_command_line` above.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// No caller on any platform until Task 7 wires these into serve_app_main.
+// Remove this attribute there -- it is scaffolding, not a permanent waiver.
+#[allow(dead_code)]
 pub fn ensure_config(path: &Path) -> std::io::Result<bool> {
     if path.exists() {
         return Ok(false);
