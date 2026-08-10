@@ -203,7 +203,32 @@ mod app {
     }
 
     pub fn main() {
-        let args = ServeAppArgs::parse();
+        // clap's own `Parser::parse()` prints to stderr and exits internally
+        // on `--help`, `--version`, or a usage error -- fine for `beckon.exe`,
+        // which is console-subsystem and has a terminal to print to. This
+        // process has no console at any point, so that write would reach
+        // nobody and the app would vanish with zero visible feedback -- the
+        // exact failure mode this binary exists to eliminate. `try_parse`
+        // lets us route both outcomes through a dialog instead.
+        let args = match ServeAppArgs::try_parse() {
+            Ok(a) => a,
+            Err(e) => {
+                let body = e.to_string();
+                let informational = matches!(
+                    e.kind(),
+                    clap::error::ErrorKind::DisplayHelp
+                        | clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                        | clap::error::ErrorKind::DisplayVersion
+                );
+                if informational {
+                    beckon_windows::shell::info_dialog("beckon serve", &body);
+                    std::process::exit(0);
+                } else {
+                    beckon_windows::shell::error_dialog("beckon serve", &body);
+                    std::process::exit(2);
+                }
+            }
+        };
 
         // 1. The log, before anything can print. Every eprintln! in this
         //    process lands in the file after this returns; before it, there
@@ -226,10 +251,13 @@ mod app {
             .unwrap_or_else(|| PathBuf::from("apps.toml"));
         let config = args.config.clone().unwrap_or(cfg_default.clone());
         match ensure_config(&config) {
-            Err(e) => die(&format!(
-                "Cannot create the config file:\n{}\n\n{e}",
-                config.display()
-            )),
+            Err(e) => {
+                eprintln!("beckon serve: cannot create {}: {e}", config.display());
+                die(&format!(
+                    "Cannot create the config file:\n{}\n\n{e}",
+                    config.display()
+                ))
+            }
             Ok(true) => {
                 eprintln!("beckon serve: created {}", config.display());
                 if let Err(e) = beckon_windows::shell::open_path(&config) {

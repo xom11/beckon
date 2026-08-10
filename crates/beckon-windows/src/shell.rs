@@ -5,7 +5,9 @@
 use std::path::Path;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK, SW_SHOWNORMAL};
+use windows::Win32::UI::WindowsAndMessaging::{
+    MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, SW_SHOWNORMAL,
+};
 
 /// Open `path` with whatever the user has registered for it — the editor for
 /// a `.toml`, the log viewer for a `.log`.
@@ -47,6 +49,24 @@ pub fn error_dialog(title: &str, body: &str) {
             PCWSTR(body.as_ptr()),
             PCWSTR(title.as_ptr()),
             MB_OK | MB_ICONERROR,
+        )
+    };
+}
+
+/// A modal informational box: same shape as `error_dialog`, without the red
+/// error icon. For clap's own `--help` / `--version` output, which is not a
+/// failure -- the GUI-subsystem binary has no console for that text to
+/// print to, so it needs a dialog too, but not one that looks like a bug
+/// report for someone who just typed `--version`.
+pub fn info_dialog(title: &str, body: &str) {
+    let title = HSTRING::from(title);
+    let body = HSTRING::from(body);
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
         )
     };
 }
