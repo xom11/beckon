@@ -98,6 +98,82 @@ pub fn scoop_current_path(exe: &Path) -> PathBuf {
     exe.to_path_buf()
 }
 
+/// `%USERPROFILE%\.config\beckon\apps.toml`.
+///
+/// `.config` rather than `%APPDATA%`: it is the path the README already
+/// tells Windows users to create, and it is the path macOS uses. The
+/// shortcuts file is designed to validate on every platform, so one
+/// location across all three beats one platform's idiom.
+///
+/// Called only from the Windows-only first-run path wired up in Task 7, so
+/// non-Windows builds see it as unused outside its own tests -- same
+/// reasoning as `run_key_command_line` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn default_config_path(home: &Path) -> PathBuf {
+    home.join(".config").join("beckon").join("apps.toml")
+}
+
+/// `%LOCALAPPDATA%\beckon\serve.log` — the path the Scheduled Task example
+/// already uses, so an existing install's log does not move.
+///
+/// Called only from the Windows-only first-run path wired up in Task 7, so
+/// non-Windows builds see it as unused outside its own tests -- same
+/// reasoning as `run_key_command_line` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn default_log_path(local_appdata: &Path) -> PathBuf {
+    local_appdata.join("beckon").join("serve.log")
+}
+
+/// The file a brand-new user gets. Every binding here must parse, because
+/// this is the first thing beckon ever shows them.
+///
+/// ASCII only: this text can be echoed into the log, and Windows
+/// PowerShell 5.1's Get-Content defaults to ANSI.
+///
+/// Called only from the Windows-only first-run path wired up in Task 7, so
+/// non-Windows builds see it as unused outside its own tests -- same
+/// reasoning as `run_key_command_line` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn starter_template() -> &'static str {
+    r#"# beckon shortcuts. Edit and save -- beckon reloads automatically.
+#
+#   "<modifiers>+<key>" = "<app Name>"
+#
+# Modifiers: ctrl, super (the Windows key), alt, shift -- any order.
+# Keys are lowercase: a-z, 0-9, f1-f20, and names like space, comma, pageup.
+#
+# Find the Name to use on the right-hand side with:
+#   beckon installed
+#   beckon search <part of the name>
+#
+# Check a file without starting anything:
+#   beckon check "%USERPROFILE%\.config\beckon\apps.toml"
+
+"ctrl+super+alt+t" = "Terminal"
+"ctrl+super+alt+e" = "File Explorer"
+"#
+}
+
+/// Create `path` with the starter template if it is not there.
+///
+/// Returns `true` when it created the file. Never overwrites: a user whose
+/// config exists must keep it, whatever else goes wrong.
+///
+/// Called only from the Windows-only first-run path wired up in Task 7, so
+/// non-Windows builds see it as unused outside its own tests -- same
+/// reasoning as `run_key_command_line` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn ensure_config(path: &Path) -> std::io::Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, starter_template())?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +224,49 @@ mod tests {
     fn non_scoop_paths_are_untouched() {
         let p = PathBuf::from(r"C:\Program Files\beckon\beckon-serve.exe");
         assert_eq!(scoop_current_path(&p), p);
+    }
+
+    #[test]
+    fn default_paths_sit_where_the_readme_says() {
+        assert_eq!(
+            default_config_path(Path::new(r"C:\Users\me")),
+            PathBuf::from(r"C:\Users\me")
+                .join(".config")
+                .join("beckon")
+                .join("apps.toml")
+        );
+        assert_eq!(
+            default_log_path(Path::new(r"C:\Users\me\AppData\Local")),
+            PathBuf::from(r"C:\Users\me\AppData\Local")
+                .join("beckon")
+                .join("serve.log")
+        );
+    }
+
+    #[test]
+    fn the_starter_template_is_a_valid_shortcuts_file() {
+        let parsed = beckon_core::shortcuts::parse_shortcuts(starter_template())
+            .expect("the very first file a new user sees must not fail validation");
+        assert!(
+            !parsed.is_empty(),
+            "an empty template teaches nothing and registers nothing"
+        );
+    }
+
+    #[test]
+    fn ensure_config_creates_once_then_leaves_it_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("nested").join("apps.toml");
+
+        assert!(ensure_config(&cfg).unwrap(), "first call must create it");
+        assert!(cfg.exists());
+        std::fs::write(&cfg, "\"ctrl+alt+z\" = \"Zed\"\n").unwrap();
+
+        assert!(!ensure_config(&cfg).unwrap(), "second call must not create");
+        assert_eq!(
+            std::fs::read_to_string(&cfg).unwrap(),
+            "\"ctrl+alt+z\" = \"Zed\"\n",
+            "an existing config must never be overwritten"
+        );
     }
 }
