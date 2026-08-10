@@ -1879,13 +1879,31 @@ Create `crates/beckon-cli/build.rs`:
 
 ```rust
 fn main() {
-    // Windows only, and a no-op elsewhere: embed-resource shells out to the
-    // SDK's rc.exe, which exists on the machines that build Windows targets.
-    // Applies to every binary in this package, so `beckon.exe` gets the icon
+    // MSVC only, deliberately. embed-resource shells out to a resource
+    // compiler: rc.exe for -msvc, windres for -gnu. The dev host has
+    // neither, and WINCHECK cross-checks against x86_64-pc-windows-gnu --
+    // so compiling the resource unconditionally would break the project's
+    // own local Windows gate on a machine that never ships a binary anyway.
+    // The icon only has to exist in what we release, and every released
+    // Windows artifact is -msvc.
+    //
+    // Applies to every binary in the package, so `beckon.exe` gets the icon
     // in Explorer too.
-    embed_resource::compile("beckon.rc", embed_resource::NONE);
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        embed_resource::compile("beckon.rc", embed_resource::NONE);
+    }
 }
 ```
+
+**Measured, not assumed:** `command -v windres x86_64-w64-mingw32-windres
+llvm-rc rc` finds nothing on the macOS dev host, so the guard is load-bearing
+rather than defensive. CI's `windows-latest` runner is `-msvc` and does have
+`rc.exe`, so the resource genuinely gets compiled and verified there.
+
+> Check `embed-resource`'s major version before writing this. In 2.x
+> `compile` returns `()` and panics on failure; in 3.x it returns a
+> `CompilationResult` that should be inspected. Match whichever the
+> lockfile resolves.
 
 - [ ] **Step 4: Use it for the tray icon**
 
