@@ -1010,10 +1010,10 @@ Reasonable next-session order:
       (`crates/beckon-cli/src/bin/beckon-serve.rs`), GUI-subsystem on just
       that `[[bin]]` target — never the whole crate, which would swallow the
       output of `list`, `installed`, `search`, `resolve`, `doctor`. It has
-      no console at any point, so it has none of the flash measured above,
-      by construction rather than by measurement: there is no PE console
-      subsystem for `CreateProcess` to allocate one against in the first
-      place. It calls `redirect_to_log` before anything else in `main` tries
+      no console at any point, so it has none of the flash measured above:
+      there is no PE console subsystem for `CreateProcess` to allocate one
+      against in the first place. **Confirmed on hardware** — see the
+      verification bullet below. It calls `redirect_to_log` before anything else in `main` tries
       to print — the only step ahead of it is argument parsing, which
       already reports its own errors through a dialog, not `eprintln!` — and
       reports its own startup failures the same way, with `MessageBoxW`
@@ -1027,6 +1027,42 @@ Reasonable next-session order:
       `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md` for
       the tray menu, autostart Run-key and first-run design this binary
       adds on top of `logfile.rs`.
+    - **Verified on a14, 2026-08-11** (Windows 11 Home build 26200, ARM64),
+      built natively and driven from **session 1** — an SSH shell is session
+      0 and cannot see the desktop at all, so every observation went through
+      a one-shot scheduled task. Registering that task hit the
+      SID-not-`DOMAIN\user` failure `examples/windows/serve/README.md`
+      documents, which is a live confirmation that note is still accurate.
+        - PE subsystem read from the header: `beckon.exe` = 3 (console),
+          `beckon-serve.exe` = 2 (GUI).
+        - **No window of any kind** from `beckon-serve.exe`, `EnumWindows`
+          sampled at 25 ms for 4 s. The control fired as expected in the
+          same run: `beckon.exe serve --log` produced
+          `CASCADIA_HOSTING_WINDOW_CLASS` (a Windows Terminal tab) at 243 ms,
+          gone by 245 ms. Always run that control — a broken probe and a
+          clean result look identical without one.
+        - Tray icon is real: `Shell_NotifyIconGetRect` returns `hr=0` with a
+          screen rect while running, and `0x80004005` after Quit, which is
+          how you prove `NIM_DELETE` actually ran.
+        - Menu contents read out of the live process with `MN_GETHMENU` on
+          the `#32768` popup, then `GetMenuStringW`. That is the only way to
+          see another process's menu text, and it is what proved
+          **"Start with Windows" is present for `beckon-serve.exe` and absent
+          for `beckon.exe serve`** — the row is omitted where a Run value
+          could never work.
+        - Quit from the menu exits in under 500 ms with code 0. This was the
+          risk `TPM_RETURNCMD` was adopted to remove: without it `WM_COMMAND`
+          arrives inside the menu's own modal loop, where a `PostQuitMessage`
+          that failed to break out would look exactly like a freeze.
+        - `--version` / `--help` show a dialog and exit 0; an unknown flag
+          shows a dialog and exits 2, matching `beckon.exe`'s usage-error code.
+        - First run wrote the starter config and `beckon check` accepted it.
+        - **Still unverified, because it needs a human at the keyboard**:
+          the hover tooltip's text, the menu dismissing on click-away (the
+          `SetForegroundWindow` half of KB135788), menu placement on a
+          high-DPI display, Pause actually swallowing a real keypress, a
+          hotkey pressed while the menu is open, config-edit-to-tooltip
+          latency, and Run-key survival across a reboot.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
