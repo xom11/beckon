@@ -1,5 +1,17 @@
 # Windows resident mode (`serve` + Scheduled Task)
 
+**Most people don't need this file.** `scoop install xom11/beckon` ships
+`beckon-serve.exe`, a tray app with no console window at any point — install
+it, launch **beckon serve** from the Start Menu, and tick **Start with
+Windows** in its tray menu. See the top-level README's *Resident mode*
+section.
+
+What's below is the **supervised path**: running `beckon.exe serve` under a
+Scheduled Task instead, for anyone who specifically wants
+`<RestartOnFailure>` — a task engine that relaunches the process if it
+crashes mid-session, which the tray app does not offer. Everything here is
+unchanged and still works.
+
 `beckon serve <config>` makes beckon host the hotkeys itself — no
 AutoHotkey layer. Pick this **or** [`../ahk/`](../ahk/), not both:
 `RegisterHotKey` gives a chord to the first registrant, so a second
@@ -163,20 +175,35 @@ remains as a live parent (a Scoop shim, `cmd /c`) holds the console open,
 so beckon detaching does not close it. And a whole-binary
 `windows_subsystem = "windows"` is **not** an option — it would silently
 swallow the output of `beckon list`, `installed`, `search`, `resolve`
-and `doctor`. A separate GUI-subsystem `beckon-serve.exe` is the
-escalation if one is ever needed.
+and `doctor`. `beckon-serve.exe` is that escalation, already built: a
+second, GUI-subsystem binary with no console at any point, so it has none
+of the flash above by construction rather than by measurement. It's the
+tray app this directory's lead paragraph points at — this Scheduled Task
+path exists for the cases where it isn't a fit.
 
 ## The tray icon
 
-`serve` puts an icon in the notification area. It is a **one-way**
-liveness signal:
+`serve` puts an icon in the notification area — the same tray menu
+`beckon-serve.exe` has, since both run through `install_tray_menu` in
+`crates/beckon-cli/src/serve.rs`. Right-click it for a disabled status row
+(`beckon - 5 shortcuts registered`, `beckon - 3 of 5 shortcuts registered
+(2 failed)`, or `beckon - paused (...)`), plus Edit shortcuts, Reload now,
+Open log, Pause hotkeys, Start with Windows and Quit. Hovering the icon
+shows the same registration count in the tooltip.
 
-- icon present → the daemon is alive
-- icon absent → the daemon is dead **or** the tray just isn't ready
-  (logon race, or Explorer restarting)
+One difference from `beckon-serve.exe`: this Scheduled Task path calls
+`beckon.exe serve <config>` directly, and that entry point doesn't thread
+its own `--log` path into the tray menu's notion of "where's the log" — so
+**Open log** stays greyed out here even though `--log` in the task action
+is correctly redirecting stderr to the file above. Read it with
+`Get-Content` instead.
 
-Hotkeys register and fire independently of the icon, so don't diagnose
-from the icon alone — read the log.
+So the icon is no longer a bare one-way liveness light — hovering or
+opening the menu answers "is it alive and how many keys does it hold" the
+same way the log does, just faster. An absent icon still leaves one
+ambiguity the tray can't resolve on its own: the daemon is dead, or the
+tray just isn't ready (logon race, Explorer restarting) — that's what the
+log is for.
 
 ## Optional: a watchdog that costs nothing
 

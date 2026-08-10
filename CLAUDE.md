@@ -716,6 +716,14 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
    inherits the `(Some, Some)` problem documented above, one level down).
    Pick one when it is actually built.
 
+   **Windows answer, 2026-08 (`beckon-serve.exe`):** neither. A checkable
+   "Start with Windows" row in the tray menu writes the
+   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value directly —
+   no new verb, no new flag — so the growth rule in *CLI surface* never had
+   to be spent. `beckon.exe serve <CONFIG>` is unchanged; the lifecycle
+   lives entirely inside the GUI-subsystem binary. See
+   `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md` §6.
+
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at
    `$XDG_RUNTIME_DIR/beckon-mru` containing the `app_id` focused before
@@ -786,7 +794,17 @@ OS metadata on every call.
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
 - **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `serve` registers via RegisterEventHotKey / RegisterHotKey.
-- **GUI / TUI** — CLI only.
+- **GUI / TUI** — CLI only, with one exception: `beckon-serve.exe`'s tray
+  context menu (Windows). That menu is `serve`'s control surface — reload,
+  pause, open the config, open the log, toggle autostart, quit — not a
+  launcher UI; it never lists or picks an app. A settings window that lets
+  you *assign* a shortcut by pressing it is deliberately still deferred: the
+  stock `msctls_hotkey32` control cannot capture the Windows key, and
+  `Win+T` and its siblings are shell hotkeys that Explorer consumes before a
+  normal window ever sees them — so whether a chord like `ctrl+win+alt+t`
+  can be captured in a plain window at all has to be measured on real
+  hardware before any toolkit gets chosen. See *Deferred: the settings
+  window* in `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md`.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `search` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.
 - **PWA install helper** — user installs PWAs manually via Brave/Chrome's "Install this site as an app". beckon does not wrap this.
@@ -964,10 +982,27 @@ Reasonable next-session order:
       parent — a Scoop shim, `cmd /c` — holds the console, so beckon's
       `FreeConsole` does not close it. Verified: the shim's pid is the
       `ParentProcessId` of the real beckon process.
-    - The escalation, if the flash ever matters, is a separate
-      GUI-subsystem `beckon-serve.exe` — never a whole-binary
-      `windows_subsystem = "windows"`, which would swallow the output of
-      `list`, `installed`, `search`, `resolve`, `doctor`.
+    - **That escalation was taken: `beckon-serve.exe`.** A second binary
+      (`crates/beckon-cli/src/bin/beckon-serve.rs`), GUI-subsystem on just
+      that `[[bin]]` target — never the whole crate, which would swallow the
+      output of `list`, `installed`, `search`, `resolve`, `doctor`. It has
+      no console at any point, so it has none of the flash measured above,
+      by construction rather than by measurement: there is no PE console
+      subsystem for `CreateProcess` to allocate one against in the first
+      place. It calls `redirect_to_log` before anything else in `main` tries
+      to print — the only step ahead of it is argument parsing, which
+      already reports its own errors through a dialog, not `eprintln!` — and
+      reports its own startup failures the same way, with `MessageBoxW`
+      rather than stderr, since there is no console to fall back to even
+      before the redirect runs.
+      **`CREATE_NO_WINDOW` on the toast spawn stays load-bearing here for
+      the same reason it matters after `FreeConsole`**: `CreateProcess`
+      gives a console-subsystem child (PowerShell) of a console-less parent
+      a brand-new *visible* console, and a GUI-subsystem parent is
+      console-less from the start, not just after detaching. See
+      `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md` for
+      the tray menu, autostart Run-key and first-run design this binary
+      adds on top of `logfile.rs`.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)

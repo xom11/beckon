@@ -231,9 +231,16 @@ definition: [`examples/macos/serve/`](examples/macos/serve/) and
 
 On macOS installed via Homebrew, `brew services start beckon` is the whole
 install — the formula ships the LaunchAgent. Create and `beckon check`
-`~/.config/beckon/apps.toml` first. On Windows the Scheduled Task runs
-`beckon.exe` directly and passes `--log`, which sends stderr to a file and
-detaches the console in one step.
+`~/.config/beckon/apps.toml` first.
+
+On Windows, `scoop install xom11/beckon` puts **beckon serve** in your Start
+Menu — that launches `beckon-serve.exe`, a tray app with no console window at
+any point (it's a separate GUI-subsystem binary, not `beckon.exe serve`
+wearing a different hat). First launch with no config writes a starter
+`apps.toml` and opens it in your editor. Right-click the tray icon to reload,
+pause, open the log, or open the config; tick **Start with Windows** to add
+it to `HKCU\...\Run`. `beckon.exe serve <CONFIG>` is unchanged and still
+works for scripting or the advanced path below.
 
 Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
 is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named
@@ -251,16 +258,16 @@ enforced with a lock file.
 **Trust the registration count, not the shortcut count.** Startup and reload
 report `5 shortcuts registered` when clean and `3 of 5 shortcuts registered
 (2 failed)` when another app already owns a chord — a config can parse
-perfectly and still register nothing.
+perfectly and still register nothing. On Windows the tray tooltip carries the
+same phrase (plus `paused (...)` while hotkeys are paused), so hovering the
+icon answers it without opening the log.
 
-On Windows, run it via a Scheduled Task (foreground process in your
-interactive session, not a service — `RegisterHotKey` needs a desktop). The
-tray icon is a liveness signal, but only in one direction: icon present
-means the daemon is alive, icon absent means either the daemon is dead OR
-the tray just isn't ready yet (a logon race, or Explorer restarting) —
-hotkeys register and fire independently of the icon, so check stderr/the
-log to tell those two apart rather than trusting the icon alone. Linux
-stays compositor-bound by design.
+`serve` is a foreground process, not a service — `RegisterHotKey` needs an
+interactive desktop, which is why there's a tray icon at all. For a
+supervised setup that restarts on crash, see
+[`examples/windows/serve/`](examples/windows/serve/), which runs
+`beckon.exe serve` under a Scheduled Task with `RestartOnFailure` instead of
+the tray app. Linux stays compositor-bound by design.
 
 ## What `beckon <id>` actually does
 

@@ -15,7 +15,16 @@
       "extract_dir": "beckon-{{VERSION}}-aarch64-pc-windows-msvc"
     }
   },
-  "bin": "beckon.exe",
+  "bin": [
+    "beckon.exe",
+    "beckon-serve.exe"
+  ],
+  "shortcuts": [
+    [
+      "beckon-serve.exe",
+      "beckon serve"
+    ]
+  ],
   "checkver": "github",
   "autoupdate": {
     "architecture": {

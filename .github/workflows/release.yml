@@ -94,6 +94,7 @@ jobs:
           $stage = Join-Path $env:RUNNER_TEMP $name
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item 'target/${{ matrix.target }}/release/beckon.exe' -Destination $stage
+          Copy-Item 'target/${{ matrix.target }}/release/beckon-serve.exe' -Destination $stage
           if (Test-Path 'README.md') { Copy-Item 'README.md' -Destination $stage }
           foreach ($f in @('LICENSE','LICENSE-MIT','LICENSE-APACHE')) {
             if (Test-Path $f) { Copy-Item $f -Destination $stage }
