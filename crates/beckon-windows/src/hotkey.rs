@@ -26,7 +26,8 @@ use beckon_core::shortcuts::KeyDef;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -34,12 +35,16 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
+    NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW, PeekMessageW,
-    RegisterClassW, RegisterWindowMessageW, SetTimer, TranslateMessage, CW_USEDEFAULT,
-    IDI_APPLICATION, MSG, PM_REMOVE, WINDOW_EX_STYLE, WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
+    GetCursorPos, GetMessageW, LoadIconW, PeekMessageW, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu,
+    TranslateMessage, CW_USEDEFAULT, IDI_APPLICATION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, MSG, PM_REMOVE, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_COMMAND,
+    WM_CONTEXTMENU, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
     WS_OVERLAPPED,
 };
 
@@ -50,6 +55,42 @@ use windows::Win32::UI::WindowsAndMessaging::{
 type HotkeyCallback = Box<dyn FnMut(u32)>;
 type TickCallbacks = Vec<(usize, Box<dyn FnMut()>)>;
 
+/// One row of the tray context menu. `hotkey.rs` draws it and reports the
+/// click; what any row *means* is entirely the caller's business, which is
+/// why there is no enum of actions here.
+pub struct MenuEntry {
+    pub id: u32,
+    pub label: String,
+    /// `None` for a plain item, `Some(bool)` for a check box.
+    pub checked: Option<bool>,
+    pub enabled: bool,
+}
+
+impl MenuEntry {
+    /// A horizontal rule. Recognised by its empty label.
+    pub fn separator() -> Self {
+        Self {
+            id: 0,
+            label: String::new(),
+            checked: None,
+            enabled: false,
+        }
+    }
+}
+
+/// Delivered to `on_click` when the tray icon is double-clicked. Callers
+/// must number their real entries below this.
+pub const MENU_ID_DOUBLE_CLICK: u32 = u32::MAX;
+
+/// Our tray icon's callback message. WM_APP+1 rather than WM_USER+n: WM_USER
+/// is only private to a window *class*, and this window's class is shared
+/// with nothing, but WM_APP is private to the application, which is the
+/// guarantee actually wanted here.
+const WM_TRAY: u32 = WM_APP + 1;
+
+type MenuBuilder = Box<dyn Fn() -> Vec<MenuEntry>>;
+type MenuHandler = Box<dyn FnMut(u32)>;
+
 thread_local! {
     static HOTKEY_CB: RefCell<Option<HotkeyCallback>> = const { RefCell::new(None) };
     // Ids that arrived at wndproc/run_forever while HOTKEY_CB was already
@@ -57,6 +98,12 @@ thread_local! {
     // after the in-flight callback returns, so nothing is skipped.
     static HOTKEY_PENDING: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     static TICK_CBS: RefCell<TickCallbacks> = const { RefCell::new(Vec::new()) };
+    static MENU_BUILD: RefCell<Option<MenuBuilder>> = const { RefCell::new(None) };
+    static MENU_CB: RefCell<Option<MenuHandler>> = const { RefCell::new(None) };
+    // Same role as HOTKEY_PENDING: TrackPopupMenu runs its own modal message
+    // pump, so a second click can reach dispatch_menu while the first
+    // callback is still on the stack. Queue rather than drop.
+    static MENU_PENDING: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     static TICK_NEXT_ID: Cell<usize> = const { Cell::new(1) }; // 0 is SetTimer's failure sentinel
     // Set once in install(); add_tick (a free fn with no `self`) needs it to
     // register window timers against the same hwnd hotkeys use.
@@ -124,6 +171,79 @@ fn dispatch_tick(id: usize) {
     });
 }
 
+fn dispatch_menu(id: u32) {
+    // Take-then-run, exactly as dispatch_hotkey and dispatch_tick do: a
+    // menu action may itself pump (ShellExecuteW does), and re-entering a
+    // live RefCell borrow would panic across the extern "system" boundary,
+    // which aborts the process rather than the callback.
+    let Some(mut cb) = MENU_CB.with(|slot| slot.borrow_mut().take()) else {
+        MENU_PENDING.with(|p| p.borrow_mut().push_back(id));
+        return;
+    };
+    cb(id);
+    MENU_CB.with(|slot| *slot.borrow_mut() = Some(cb));
+    while let Some(next) = MENU_PENDING.with(|p| p.borrow_mut().pop_front()) {
+        dispatch_menu(next);
+    }
+}
+
+fn show_menu(hwnd: HWND) {
+    let Some(entries) = MENU_BUILD.with(|b| b.borrow().as_ref().map(|f| f())) else {
+        return;
+    };
+    unsafe {
+        let Ok(menu) = CreatePopupMenu() else {
+            eprintln!("hotkey: CreatePopupMenu failed - no tray menu this time");
+            return;
+        };
+        for e in &entries {
+            if e.label.is_empty() {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+                continue;
+            }
+            let mut flags = MF_STRING;
+            if !e.enabled {
+                flags |= MF_GRAYED;
+            }
+            if e.checked == Some(true) {
+                flags |= MF_CHECKED;
+            }
+            let label: Vec<u16> = e.label.encode_utf16().chain(std::iter::once(0)).collect();
+            let _ = AppendMenuW(menu, flags, e.id as usize, PCWSTR(label.as_ptr()));
+        }
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        // Both of these are required, and neither is folklore: without the
+        // SetForegroundWindow the menu never dismisses when the user clicks
+        // away, and without the trailing PostMessage the *next* menu fails
+        // to appear. Documented in Microsoft KB135788.
+        let _ = SetForegroundWindow(hwnd);
+        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), hwnd, None);
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+    }
+}
+
+/// Install the tray context menu.
+///
+/// `build` runs every time the menu opens rather than once at install, so
+/// check marks reflect state at the moment of the click instead of at
+/// startup. `on_click` receives the `MenuEntry::id` that was chosen, or
+/// `MENU_ID_DOUBLE_CLICK` for a double-click on the icon itself.
+///
+/// Call after `HotkeyManager::install`, which creates the window this needs.
+pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) {
+    MENU_BUILD.with(|b| *b.borrow_mut() = Some(build));
+    MENU_CB.with(|c| *c.borrow_mut() = Some(on_click));
+}
+
+/// Ask the message loop to exit. `run_forever`'s WM_QUIT arm already
+/// unregisters every hotkey and removes the tray icon, so this is the whole
+/// of an orderly shutdown.
+pub fn request_quit() {
+    unsafe { PostQuitMessage(0) };
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     if msg == WM_HOTKEY {
         dispatch_hotkey(w.0 as u32);
@@ -131,6 +251,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESUL
     }
     if msg == WM_TIMER {
         dispatch_tick(w.0);
+        return LRESULT(0);
+    }
+    if msg == WM_TRAY {
+        // lParam carries the mouse event; wParam is the icon's uID.
+        match l.0 as u32 {
+            WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(hwnd),
+            WM_LBUTTONDBLCLK => dispatch_menu(MENU_ID_DOUBLE_CLICK),
+            _ => {}
+        }
+        return LRESULT(0);
+    }
+    if msg == WM_COMMAND {
+        // TrackPopupMenu without TPM_RETURNCMD posts the chosen id here.
+        // The high word is the notification code and is 0 for a menu.
+        dispatch_menu((w.0 & 0xFFFF) as u32);
         return LRESULT(0);
     }
     let taskbar_created = TASKBAR_CREATED_MSG.with(|c| c.get());
@@ -165,11 +300,11 @@ fn tray_add(hwnd: HWND) {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
         hWnd: hwnd,
         uID: 1,
-        // No NIF_MESSAGE/uCallbackMessage: the tray icon is a liveness
-        // indicator only (no menu, no click handling in scope), and wndproc
-        // has nothing to do with a callback message — requesting one would
-        // just be a dead channel that reads as noise, not a feature.
-        uFlags: NIF_ICON | NIF_TIP,
+        // NIF_MESSAGE is what turns the icon from a lamp into a control:
+        // Shell_NotifyIcon posts WM_TRAY to this hwnd for every mouse event
+        // on the icon, and wndproc turns the right-click into the menu.
+        uFlags: NIF_ICON | NIF_TIP | NIF_MESSAGE,
+        uCallbackMessage: WM_TRAY,
         ..Default::default()
     };
     nid.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
@@ -497,5 +632,25 @@ mod tests {
             buf[2..].iter().all(|&c| c == 0),
             "stale text from the previous call must not survive"
         );
+    }
+
+    #[test]
+    fn separator_is_recognisable_by_its_empty_label() {
+        let sep = MenuEntry::separator();
+        assert!(sep.label.is_empty());
+        assert_eq!(sep.checked, None);
+    }
+
+    #[test]
+    // MENU_ID_DOUBLE_CLICK and 1000 are both compile-time constants, so
+    // clippy folds the comparison and flags it; the assertion still earns
+    // its place as a readable, enforced doc of the "far outside any
+    // plausible menu" invariant.
+    #[allow(clippy::assertions_on_constants)]
+    fn double_click_id_cannot_collide_with_a_real_entry() {
+        // serve.rs numbers its entries from 1 upward; the reserved id must
+        // sit far outside any plausible menu.
+        assert_eq!(MENU_ID_DOUBLE_CLICK, u32::MAX);
+        assert!(MENU_ID_DOUBLE_CLICK > 1000);
     }
 }
