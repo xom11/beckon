@@ -236,14 +236,33 @@ struct RegisterOutcome {
     failed: Vec<String>, // canonical combos, in registration order
 }
 
+/// "shortcut" for 1, "shortcuts" otherwise. The only pluralization this
+/// file needs, so a lookup, not a framework.
+fn shortcut_noun(n: usize) -> &'static str {
+    if n == 1 {
+        "shortcut"
+    } else {
+        "shortcuts"
+    }
+}
+
+/// "N shortcuts" / "1 shortcut" -- the count phrase `reload`'s paused
+/// branch and `set_paused` both build around "paused (...)".
+fn shortcuts_count_phrase(n: usize) -> String {
+    format!("{n} {}", shortcut_noun(n))
+}
+
 /// "20 shortcuts registered" when clean; "17 of 20 shortcuts registered
-/// (3 failed)" otherwise.
+/// (3 failed)" otherwise. Singular at total == 1: "1 shortcut registered",
+/// "0 of 1 shortcut registered (1 failed)" -- the noun agrees with the
+/// total, not the leading number, so it stays singular even when `ok` is 0.
 fn registration_phrase(ok: usize, total: usize) -> String {
     let failed = total - ok;
+    let noun = shortcut_noun(total);
     if failed == 0 {
-        format!("{total} shortcuts registered")
+        format!("{total} {noun} registered")
     } else {
-        format!("{ok} of {total} shortcuts registered ({failed} failed)")
+        format!("{ok} of {total} {noun} registered ({failed} failed)")
     }
 }
 
@@ -358,7 +377,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             if paused {
                 // A file save is not a request to un-pause. The table is
                 // updated so resuming picks up the edit; nothing registers.
-                let phrase = format!("{} shortcuts", state.borrow().shortcuts.len());
+                let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
                 state.borrow_mut().last_phrase = phrase.clone();
                 eprintln!("beckon serve: reloaded while paused - {phrase}");
                 set_tray_status(&format!("beckon - paused ({phrase})"));
@@ -576,7 +595,7 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         // while nothing is registered. Match reload()'s honest "N
         // shortcuts" spelling for the paused case instead, and update
         // `last_phrase` to it so the menu head (`build_entries`) agrees.
-        let phrase = format!("{} shortcuts", state.borrow().shortcuts.len());
+        let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
         eprintln!("beckon serve: paused - {phrase}");
         hotkey::set_status(&format!("beckon - paused ({phrase})"));
@@ -613,6 +632,27 @@ mod tests {
             registration_phrase(17, 20),
             "17 of 20 shortcuts registered (3 failed)"
         );
+    }
+
+    #[test]
+    fn registration_phrase_singular_all_ok() {
+        assert_eq!(registration_phrase(1, 1), "1 shortcut registered");
+    }
+
+    #[test]
+    fn registration_phrase_singular_total_failed() {
+        // The noun agrees with the total (1), not the leading number (0):
+        // this must read as real English, not "0 of 1 shortcuts".
+        assert_eq!(
+            registration_phrase(0, 1),
+            "0 of 1 shortcut registered (1 failed)"
+        );
+    }
+
+    #[test]
+    fn shortcuts_count_phrase_agrees_with_count() {
+        assert_eq!(shortcuts_count_phrase(1), "1 shortcut");
+        assert_eq!(shortcuts_count_phrase(5), "5 shortcuts");
     }
 
     /// The load-bearing `?` in `acquire_lock`.
