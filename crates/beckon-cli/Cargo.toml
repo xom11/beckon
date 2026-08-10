@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "beckon"
 path = "src/main.rs"
 
+[[bin]]
+name = "beckon-serve"
+path = "src/bin/beckon-serve.rs"
+
 [dependencies]
 beckon-core = { path = "../beckon-core" }
 anyhow      = { workspace = true }

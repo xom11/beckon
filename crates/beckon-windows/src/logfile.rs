@@ -22,6 +22,13 @@
 //! and `std::io::stdio::print_to` panics rather than returning on a write
 //! error. An `Err` from after the detach would turn a clean `exit(1)` into a
 //! silent panic in a process nobody is watching.
+//!
+//! **That promise is void in a GUI-subsystem process** (`beckon-serve.exe`):
+//! there is no console at any point, not even before the detach, so an
+//! `Err` from here reaches nobody through stderr. `serve_app_main` owns its
+//! own failure path — a MessageBox — and calls this before anything else
+//! can print. `FreeConsole` itself simply fails there, which is why it is
+//! already `let _ =`.
 
 use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};

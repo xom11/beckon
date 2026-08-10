@@ -73,7 +73,7 @@ struct ServeState {
     paused: bool,
     /// Where stderr went, when it went to a file. `None` on the CLI path,
     /// which leaves the menu's "Open log" greyed out rather than lying.
-    /// Set on every platform (`cmd_serve_with_log` takes it unconditionally)
+    /// Set on every platform (`cmd_serve_app` takes it unconditionally)
     /// but only read by the Windows-only tray menu below, so non-Windows
     /// builds see it as write-only.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
@@ -108,13 +108,18 @@ fn acquire_lock(config: &Path) -> Result<std::fs::File> {
 }
 
 pub fn cmd_serve(config: &Path) -> Result<()> {
-    cmd_serve_with_log(config, None)
+    cmd_serve_app(config, None, None, None)
 }
 
-/// `log` is only ever `Some` on the Windows app path, where stderr was
-/// redirected to a file this process chose. It exists so the tray menu's
-/// "Open log" can point at the right file instead of guessing.
-pub fn cmd_serve_with_log(config: &Path, log: Option<PathBuf>) -> Result<()> {
+/// The Windows app entry: `log` tells the tray menu's "Open log" where to
+/// point, and the two `autostart_*` paths are baked into the Run value only
+/// when they differ from the defaults.
+pub fn cmd_serve_app(
+    config: &Path,
+    log: Option<PathBuf>,
+    autostart_config: Option<PathBuf>,
+    autostart_log: Option<PathBuf>,
+) -> Result<()> {
     let _lock = acquire_lock(config)?;
     let config = config
         .canonicalize()
@@ -131,8 +136,8 @@ pub fn cmd_serve_with_log(config: &Path, log: Option<PathBuf>) -> Result<()> {
         paused: false,
         log,
         last_phrase: String::new(),
-        autostart_config: None,
-        autostart_log: None,
+        autostart_config,
+        autostart_log,
     }));
 
     let mgr = {

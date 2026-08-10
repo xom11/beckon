@@ -14,6 +14,9 @@ mod serve;
 mod serve_app;
 mod stable_id;
 
+#[cfg(target_os = "windows")]
+pub use serve_app::serve_app_main;
+
 /// Every subcommand name, and therefore every app Name that the bare
 /// positional cannot reach. A closed list on purpose: each entry costs an app
 /// name permanently, so new capabilities are flags on an existing verb, never

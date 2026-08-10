@@ -104,18 +104,22 @@ pub fn scoop_current_path(exe: &Path) -> PathBuf {
 /// tells Windows users to create, and it is the path macOS uses. The
 /// shortcuts file is designed to validate on every platform, so one
 /// location across all three beats one platform's idiom.
-// No caller on any platform until Task 7 wires these into serve_app_main.
-// Remove this attribute there -- it is scaffolding, not a permanent waiver.
-#[allow(dead_code)]
+///
+/// Called only from the Windows-only `mod app` below, so non-Windows builds
+/// see it as unused outside its own tests -- same reasoning as
+/// `run_key_command_line` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn default_config_path(home: &Path) -> PathBuf {
     home.join(".config").join("beckon").join("apps.toml")
 }
 
 /// `%LOCALAPPDATA%\beckon\serve.log` — the path the Scheduled Task example
 /// already uses, so an existing install's log does not move.
-// No caller on any platform until Task 7 wires these into serve_app_main.
-// Remove this attribute there -- it is scaffolding, not a permanent waiver.
-#[allow(dead_code)]
+///
+/// Called only from the Windows-only `mod app` below, so non-Windows builds
+/// see it as unused outside its own tests -- same reasoning as
+/// `default_config_path` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn default_log_path(local_appdata: &Path) -> PathBuf {
     local_appdata.join("beckon").join("serve.log")
 }
@@ -125,9 +129,11 @@ pub fn default_log_path(local_appdata: &Path) -> PathBuf {
 ///
 /// ASCII only: this text can be echoed into the log, and Windows
 /// PowerShell 5.1's Get-Content defaults to ANSI.
-// No caller on any platform until Task 7 wires these into serve_app_main.
-// Remove this attribute there -- it is scaffolding, not a permanent waiver.
-#[allow(dead_code)]
+///
+/// Called only from the Windows-only `mod app` below, so non-Windows builds
+/// see it as unused outside its own tests -- same reasoning as
+/// `default_config_path` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn starter_template() -> &'static str {
     r#"# beckon shortcuts. Edit and save -- beckon reloads automatically.
 #
@@ -152,9 +158,11 @@ pub fn starter_template() -> &'static str {
 ///
 /// Returns `true` when it created the file. Never overwrites: a user whose
 /// config exists must keep it, whatever else goes wrong.
-// No caller on any platform until Task 7 wires these into serve_app_main.
-// Remove this attribute there -- it is scaffolding, not a permanent waiver.
-#[allow(dead_code)]
+///
+/// Called only from the Windows-only `mod app` below, so non-Windows builds
+/// see it as unused outside its own tests -- same reasoning as
+/// `default_config_path` above.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn ensure_config(path: &Path) -> std::io::Result<bool> {
     if path.exists() {
         return Ok(false);
@@ -164,6 +172,94 @@ pub fn ensure_config(path: &Path) -> std::io::Result<bool> {
     }
     std::fs::write(path, starter_template())?;
     Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+mod app {
+    use super::*;
+    use clap::Parser;
+
+    /// `beckon-serve.exe [CONFIG] [--log PATH]` — the same two operands
+    /// `beckon serve` takes, both optional so that a double-click and a bare
+    /// Run-key value are the normal invocation.
+    #[derive(Parser, Debug)]
+    #[command(
+        name = "beckon-serve",
+        version,
+        about = "beckon resident hotkey service (tray app)"
+    )]
+    struct ServeAppArgs {
+        #[arg(value_name = "CONFIG")]
+        config: Option<PathBuf>,
+
+        /// Send stderr to PATH instead of the default log.
+        #[arg(long, value_name = "PATH")]
+        log: Option<PathBuf>,
+    }
+
+    fn die(body: &str) -> ! {
+        beckon_windows::shell::error_dialog("beckon serve", body);
+        std::process::exit(1);
+    }
+
+    pub fn main() {
+        let args = ServeAppArgs::parse();
+
+        // 1. The log, before anything can print. Every eprintln! in this
+        //    process lands in the file after this returns; before it, there
+        //    is nowhere for one to go.
+        let log_default = std::env::var_os("LOCALAPPDATA")
+            .map(|p| default_log_path(Path::new(&p)))
+            .unwrap_or_else(|| PathBuf::from("beckon-serve.log"));
+        let log = args.log.clone().unwrap_or(log_default.clone());
+        if let Err(e) = beckon_windows::logfile::redirect_to_log(&log) {
+            die(&format!(
+                "Cannot open the log file:\n{}\n\n{e:#}",
+                log.display()
+            ));
+        }
+
+        // 2. The config, created on first run so a double-click works with
+        //    nothing read beforehand.
+        let cfg_default = std::env::var_os("USERPROFILE")
+            .map(|p| default_config_path(Path::new(&p)))
+            .unwrap_or_else(|| PathBuf::from("apps.toml"));
+        let config = args.config.clone().unwrap_or(cfg_default.clone());
+        match ensure_config(&config) {
+            Err(e) => die(&format!(
+                "Cannot create the config file:\n{}\n\n{e}",
+                config.display()
+            )),
+            Ok(true) => {
+                eprintln!("beckon serve: created {}", config.display());
+                if let Err(e) = beckon_windows::shell::open_path(&config) {
+                    eprintln!("beckon serve: {e}");
+                }
+            }
+            Ok(false) => {}
+        }
+
+        // 3. Only non-default values go into the autostart command line.
+        let autostart_config = (config != cfg_default).then(|| config.clone());
+        let autostart_log = (log != log_default).then(|| log.clone());
+
+        if let Err(e) =
+            crate::serve::cmd_serve_app(&config, Some(log), autostart_config, autostart_log)
+        {
+            eprintln!("beckon serve: {e:#}");
+            // The lock refusal is a designed outcome, not a fault -- but with
+            // no console the user needs telling, or a double-click looks like
+            // it did nothing at all.
+            die(&format!("{e:#}"));
+        }
+        // cmd_serve_app only returns on error; run_forever exits the process.
+    }
+}
+
+/// Entry point for `beckon-serve.exe`. Never returns normally.
+#[cfg(target_os = "windows")]
+pub fn serve_app_main() {
+    app::main()
 }
 
 #[cfg(test)]
