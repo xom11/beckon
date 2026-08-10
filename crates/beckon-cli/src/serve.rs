@@ -64,6 +64,30 @@ fn set_tray_status(text: &str) {
 #[cfg(not(target_os = "windows"))]
 fn set_tray_status(_text: &str) {}
 
+/// Capability + values needed to offer "Start with Windows", present only
+/// when this process is one whose own path is safe to bake into the Run
+/// key.
+///
+/// `ServeState::autostart` is `None` on the CLI path (`beckon.exe serve`):
+/// `std::env::current_exe()` there resolves to `beckon.exe`, which has no
+/// bare `serve`-with-no-argument form, so a Run value pointing at it would
+/// exit via `arg_required_else_help` at next logon and never start
+/// anything. It is `Some` only from `serve_app_main` (`beckon-serve.exe`),
+/// which knows its own exe is a valid target. The tray menu reads
+/// `Option::is_some()` to decide whether to show the row at all — see
+/// `build_entries` — never to decide whether it's *ticked*, which comes
+/// from `autostart::is_enabled()` regardless.
+///
+/// `config`/`log` are `Some` only when they differ from the defaults —
+/// see `run_key_command_line`. Set on every platform (`cmd_serve_app`
+/// takes it unconditionally) but only read by the Windows-only tray menu
+/// below, so non-Windows builds see the whole type as write-only.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub struct AutostartCapability {
+    pub config: Option<PathBuf>,
+    pub log: Option<PathBuf>,
+}
+
 struct ServeState {
     shortcuts: Vec<Shortcut>,
     config: PathBuf,
@@ -71,24 +95,19 @@ struct ServeState {
     /// paused updates the table but must not re-register — a file save is
     /// not a request to un-pause.
     paused: bool,
-    /// Where stderr went, when it went to a file. `None` on the CLI path,
-    /// which leaves the menu's "Open log" greyed out rather than lying.
-    /// Set on every platform (`cmd_serve_app` takes it unconditionally)
-    /// but only read by the Windows-only tray menu below, so non-Windows
-    /// builds see it as write-only.
+    /// Where stderr went, when it went to a file. `None` leaves the menu's
+    /// "Open log" greyed out rather than lying. Set on every platform
+    /// (`cmd_serve_app` takes it unconditionally) but only read by the
+    /// Windows-only tray menu below, so non-Windows builds see it as
+    /// write-only.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     log: Option<PathBuf>,
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
     last_phrase: String,
-    /// Config path to bake into the autostart value, or `None` when the
-    /// running config is already the default. See
-    /// `serve_app::run_key_command_line`.
+    /// See `AutostartCapability`.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    autostart_config: Option<PathBuf>,
-    /// Log path to bake into the autostart value, or `None` when default.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    autostart_log: Option<PathBuf>,
+    autostart: Option<AutostartCapability>,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -107,18 +126,22 @@ fn acquire_lock(config: &Path) -> Result<std::fs::File> {
     Ok(crate::lockfile::acquire(config)?)
 }
 
-pub fn cmd_serve(config: &Path) -> Result<()> {
-    cmd_serve_app(config, None, None, None)
+pub fn cmd_serve(config: &Path, log: Option<PathBuf>) -> Result<()> {
+    cmd_serve_app(config, log, None)
 }
 
-/// The Windows app entry: `log` tells the tray menu's "Open log" where to
-/// point, and the two `autostart_*` paths are baked into the Run value only
-/// when they differ from the defaults.
+/// Shared implementation for both Windows front doors (`cmd_serve`, the CLI
+/// path, and `serve_app_main`, the tray app) and for macOS `serve`.
+///
+/// `log` tells the tray menu's "Open log" where to point. `autostart` is
+/// `None` when this process cannot meaningfully offer "Start with
+/// Windows" — always true on macOS, and true for the CLI path on Windows
+/// too — or `Some` with the Run-value overrides otherwise. See
+/// `AutostartCapability`.
 pub fn cmd_serve_app(
     config: &Path,
     log: Option<PathBuf>,
-    autostart_config: Option<PathBuf>,
-    autostart_log: Option<PathBuf>,
+    autostart: Option<AutostartCapability>,
 ) -> Result<()> {
     let _lock = acquire_lock(config)?;
     let config = config
@@ -136,8 +159,7 @@ pub fn cmd_serve_app(
         paused: false,
         log,
         last_phrase: String::new(),
-        autostart_config,
-        autostart_log,
+        autostart,
     }));
 
     let mgr = {
@@ -175,7 +197,7 @@ pub fn cmd_serve_app(
     let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
     state.borrow_mut().last_phrase = phrase.clone();
     eprintln!("beckon serve: {} from {}", phrase, config.display());
-    set_tray_status(&phrase);
+    set_tray_status(&format!("beckon - {phrase}"));
     if let Some(toast) = failure_toast(&outcome.failed) {
         crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
     }
@@ -346,7 +368,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
             state.borrow_mut().last_phrase = phrase.clone();
             eprintln!("beckon serve: reloaded - {phrase}");
-            set_tray_status(&phrase);
+            set_tray_status(&format!("beckon - {phrase}"));
             if let Some(toast) = failure_toast(&outcome.failed) {
                 crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
@@ -381,7 +403,12 @@ const MENU_QUIT: u32 = 7;
 struct MenuModel {
     phrase: String,
     paused: bool,
-    autostart: bool,
+    /// `None`: omit the "Start with Windows" row entirely -- this process
+    /// cannot offer it (see `AutostartCapability`). `Some(checked)`: show
+    /// it, ticked per `checked`. Omitted rather than shown disabled: a
+    /// permanently greyed row invites "why is this greyed?" with no answer
+    /// available in the menu itself.
+    autostart: Option<bool>,
     has_log: bool,
 }
 
@@ -393,7 +420,7 @@ fn build_entries(m: &MenuModel) -> Vec<hotkey::MenuEntry> {
     } else {
         format!("beckon - {}", m.phrase)
     };
-    vec![
+    let mut entries = vec![
         MenuEntry {
             id: MENU_STATUS,
             label: head,
@@ -426,20 +453,23 @@ fn build_entries(m: &MenuModel) -> Vec<hotkey::MenuEntry> {
             checked: Some(m.paused),
             enabled: true,
         },
-        MenuEntry {
+    ];
+    if let Some(checked) = m.autostart {
+        entries.push(MenuEntry {
             id: MENU_AUTOSTART,
             label: "Start with Windows".into(),
-            checked: Some(m.autostart),
+            checked: Some(checked),
             enabled: true,
-        },
-        MenuEntry::separator(),
-        MenuEntry {
-            id: MENU_QUIT,
-            label: "Quit".into(),
-            checked: None,
-            enabled: true,
-        },
-    ]
+        });
+    }
+    entries.push(MenuEntry::separator());
+    entries.push(MenuEntry {
+        id: MENU_QUIT,
+        label: "Quit".into(),
+        checked: None,
+        enabled: true,
+    });
+    entries
 }
 
 #[cfg(target_os = "windows")]
@@ -450,7 +480,13 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
         build_entries(&MenuModel {
             phrase: s.last_phrase.clone(),
             paused: s.paused,
-            autostart: beckon_windows::autostart::is_enabled(),
+            // `is_enabled()` is the ticked state; whether the row shows AT
+            // ALL is a different question, answered by `autostart.is_some()`
+            // (see `AutostartCapability`) -- capability, not registry state.
+            autostart: s
+                .autostart
+                .as_ref()
+                .map(|_| beckon_windows::autostart::is_enabled()),
             has_log: s.log.is_some(),
         })
     });
@@ -489,11 +525,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                         Ok(exe) => {
                             let exe = crate::serve_app::scoop_current_path(&exe);
                             let s = st.borrow();
-                            let cmd = crate::serve_app::run_key_command_line(
-                                &exe,
-                                s.autostart_config.as_deref(),
-                                s.autostart_log.as_deref(),
-                            );
+                            let (cfg, log) = s
+                                .autostart
+                                .as_ref()
+                                .map(|a| (a.config.as_deref(), a.log.as_deref()))
+                                .unwrap_or((None, None));
+                            let cmd = crate::serve_app::run_key_command_line(&exe, cfg, log);
                             drop(s);
                             beckon_windows::autostart::enable(&cmd)
                         }
@@ -533,7 +570,14 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
     if paused {
         m.unregister_all();
         state.borrow_mut().paused = true;
-        let phrase = state.borrow().last_phrase.clone();
+        // Not `last_phrase` verbatim: that string is a *registration*
+        // phrase ("N shortcuts registered") left over from before this
+        // unregister_all, and reusing it here would claim registration
+        // while nothing is registered. Match reload()'s honest "N
+        // shortcuts" spelling for the paused case instead, and update
+        // `last_phrase` to it so the menu head (`build_entries`) agrees.
+        let phrase = format!("{} shortcuts", state.borrow().shortcuts.len());
+        state.borrow_mut().last_phrase = phrase.clone();
         eprintln!("beckon serve: paused - {phrase}");
         hotkey::set_status(&format!("beckon - paused ({phrase})"));
     } else {
@@ -542,7 +586,7 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
         eprintln!("beckon serve: resumed - {phrase}");
-        hotkey::set_status(&phrase);
+        hotkey::set_status(&format!("beckon - {phrase}"));
     }
 }
 
@@ -653,7 +697,7 @@ mod tests {
         let m = MenuModel {
             phrase: "5 shortcuts registered".into(),
             paused: false,
-            autostart: false,
+            autostart: Some(false),
             has_log: true,
         };
         let rows = build_entries(&m);
@@ -669,13 +713,19 @@ mod tests {
             ..m.clone()
         };
         let rows = build_entries(&paused);
+        // Previously unverified despite the test's name: only the un-paused
+        // head format was asserted above, so a regression in the paused
+        // spelling (e.g. losing the "beckon - " prefix, or reusing a
+        // registration phrase here -- see `set_paused`) would not have
+        // been caught.
+        assert_eq!(rows[0].label, "beckon - paused (5 shortcuts registered)");
         assert_eq!(
             rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
             Some(true)
         );
 
         let on = MenuModel {
-            autostart: true,
+            autostart: Some(true),
             ..m.clone()
         };
         assert_eq!(
@@ -686,6 +736,36 @@ mod tests {
                 .checked,
             Some(true)
         );
+    }
+
+    /// Fix for the CRITICAL bug: the CLI path (`beckon.exe serve`) used to
+    /// show "Start with Windows" unconditionally, and ticking it there
+    /// wrote a Run value that could never start anything (see
+    /// `AutostartCapability`). The row must not exist at all when the
+    /// capability is absent -- disabled-and-unexplained is not an
+    /// acceptable substitute for omitted.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn autostart_row_exists_only_when_the_capability_does() {
+        let base = MenuModel {
+            phrase: "5 shortcuts registered".into(),
+            paused: false,
+            autostart: None,
+            has_log: true,
+        };
+        assert!(
+            build_entries(&base).iter().all(|r| r.id != MENU_AUTOSTART),
+            "no row may exist when this process cannot offer autostart"
+        );
+
+        let with_capability = MenuModel {
+            autostart: Some(true),
+            ..base
+        };
+        let rows = build_entries(&with_capability);
+        let hits: Vec<_> = rows.iter().filter(|r| r.id == MENU_AUTOSTART).collect();
+        assert_eq!(hits.len(), 1, "exactly one Start with Windows row");
+        assert_eq!(hits[0].checked, Some(true));
     }
 
     /// Moved here from Task 3, where the same intent could only be written
@@ -699,7 +779,7 @@ mod tests {
         let m = MenuModel {
             phrase: "5 shortcuts registered".into(),
             paused: false,
-            autostart: false,
+            autostart: Some(false),
             has_log: true,
         };
         for row in build_entries(&m) {
@@ -718,7 +798,7 @@ mod tests {
         let m = MenuModel {
             phrase: "0 shortcuts registered".into(),
             paused: false,
-            autostart: false,
+            autostart: Some(false),
             has_log: false,
         };
         let rows = build_entries(&m);

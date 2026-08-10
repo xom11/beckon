@@ -265,11 +265,15 @@ fn run(args: &Args) -> Result<()> {
                 if let Some(log) = log.as_deref() {
                     beckon_windows::logfile::redirect_to_log(log)?;
                 }
-                serve::cmd_serve(config)
+                // Threaded through so the tray menu's "Open log" (also
+                // shown on this CLI path -- see `serve::install_tray_menu`)
+                // knows where the file is instead of greying the row out
+                // over a log that does, in fact, exist.
+                serve::cmd_serve(config, log.clone())
             }
             #[cfg(target_os = "macos")]
             {
-                serve::cmd_serve(config)
+                serve::cmd_serve(config, None)
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {

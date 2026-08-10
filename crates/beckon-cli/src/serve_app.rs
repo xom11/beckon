@@ -268,12 +268,15 @@ mod app {
         }
 
         // 3. Only non-default values go into the autostart command line.
-        let autostart_config = (config != cfg_default).then(|| config.clone());
-        let autostart_log = (log != log_default).then(|| log.clone());
+        // `Some` here (as opposed to `cmd_serve`'s `None`) is what tells
+        // the tray menu this process's own exe is a valid autostart
+        // target -- see `AutostartCapability`.
+        let autostart = Some(crate::serve::AutostartCapability {
+            config: (config != cfg_default).then(|| config.clone()),
+            log: (log != log_default).then(|| log.clone()),
+        });
 
-        if let Err(e) =
-            crate::serve::cmd_serve_app(&config, Some(log), autostart_config, autostart_log)
-        {
+        if let Err(e) = crate::serve::cmd_serve_app(&config, Some(log), autostart) {
             eprintln!("beckon serve: {e:#}");
             // The lock refusal is a designed outcome, not a fault -- but with
             // no console the user needs telling, or a double-click looks like
