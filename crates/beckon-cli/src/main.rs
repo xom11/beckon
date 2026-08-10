@@ -1,12 +1,27 @@
 use anyhow::{anyhow, Context, Result};
 use beckon_core::Backend;
-use clap::Parser;
+use clap::{CommandFactory, Parser, Subcommand};
 
 mod lockfile;
 mod notify;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod serve;
 mod stable_id;
+
+/// Every subcommand name, and therefore every app Name that the bare
+/// positional cannot reach. A closed list on purpose: each entry costs an app
+/// name permanently, so new capabilities are flags on an existing verb, never
+/// a new top-level verb. `help` is in here because clap injects it.
+const RESERVED: &[&str] = &[
+    "list",
+    "installed",
+    "search",
+    "resolve",
+    "doctor",
+    "check",
+    "serve",
+    "help",
+];
 
 /// Cross-platform focus-or-launch app switcher.
 ///
@@ -18,77 +33,182 @@ mod stable_id;
 ///   - macOS:          `bundle_id` (e.g. `com.anthropic.claudefordesktop`)
 ///   - Windows:        display name / exe / AUMID (e.g. `Terminal`)
 ///
-/// Use `beckon -l` to discover ids on the current machine.
+/// Use `beckon list` to discover ids on the current machine.
 #[derive(Parser, Debug)]
 #[command(
     name = "beckon",
     version,
     about = "Cross-platform focus-or-launch app switcher",
-    arg_required_else_help = true
+    // Fires only on a genuinely empty argv. `beckon -v` parses clean to
+    // (None, None) and is caught in `parse_checked` instead.
+    arg_required_else_help = true,
+    // Without this the usage line reads `[OPTIONS] [ID] [COMMAND]`, which
+    // advertises a combination `parse_checked` goes on to reject.
+    override_usage = "beckon [OPTIONS] <ID>\n       beckon [OPTIONS] <COMMAND>"
 )]
+// Deliberately NOT `args_conflicts_with_subcommands`. Measured on clap 4.6.1:
+// that flag makes clap stop looking for a subcommand once any argument has
+// been parsed (clap_builder/src/parser/parser.rs:592), so `beckon -v list`
+// silently binds "list" to the ID positional and exits 0 — the very defect
+// this surface exists to remove, and it would break the `-v` helper at
+// testing/linux_live_test.py:509 that eight live focus tests run through.
+// The id/subcommand conflict is enforced in `parse_checked`. See
+// docs/superpowers/specs/2026-08-10-cli-subcommands-design.md.
 struct Args {
     /// App identifier (sway app_id / macOS bundle_id / Windows name or AUMID).
+    ///
+    /// If the app is named after a subcommand (list, installed, search,
+    /// resolve, doctor, check, serve, help) or the id starts with '-', pass it
+    /// after a double dash:  beckon -- list
     #[arg(value_name = "ID")]
     id: Option<String>,
 
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Verbose logging to stderr.
+    #[arg(short = 'v', long, global = true)]
+    verbose: bool,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
     /// List currently running apps with their ids.
-    #[arg(short = 'l', long, conflicts_with_all = ["list_installed", "search", "resolve", "doctor"])]
-    list: bool,
+    List,
 
     /// List installed apps with launch ids.
-    #[arg(short = 'L', long = "list-installed", conflicts_with_all = ["list", "search", "resolve", "doctor"])]
-    list_installed: bool,
+    Installed,
 
     /// Fuzzy-search ids matching NAME across running and installed apps.
-    #[arg(short = 's', long, value_name = "NAME", conflicts_with_all = ["list", "list_installed", "resolve", "doctor"])]
-    search: Option<String>,
+    Search {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
 
     /// Validate an id and print metadata.
-    #[arg(short = 'r', long, value_name = "ID", conflicts_with_all = ["list", "list_installed", "search", "doctor"])]
-    resolve: Option<String>,
+    Resolve {
+        #[arg(value_name = "ID")]
+        id: String,
+    },
 
     /// Check the environment (compositor / IPC / permissions).
-    #[arg(short = 'd', long, conflicts_with_all = ["list", "list_installed", "search", "resolve"])]
-    doctor: bool,
+    Doctor,
 
-    /// Validate a shortcuts TOML file (see --serve) and exit; 0 = valid.
-    #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor"])]
-    check: Option<std::path::PathBuf>,
+    /// Validate a shortcuts TOML file (see `beckon serve`) and exit; 0 = valid.
+    Check {
+        #[arg(value_name = "CONFIG")]
+        config: std::path::PathBuf,
+    },
 
     /// Run as a resident hotkey service reading a shortcuts TOML file
     /// (macOS, Windows). Foreground; use launchd / Task Scheduler to
     /// daemonize.
-    #[arg(long, value_name = "CONFIG", conflicts_with_all = ["id", "list", "list_installed", "search", "resolve", "doctor", "check"])]
-    serve: Option<std::path::PathBuf>,
+    Serve {
+        #[arg(value_name = "CONFIG")]
+        config: std::path::PathBuf,
 
-    /// Send stderr to PATH and detach the console (Windows, with --serve).
+        /// Send stderr to PATH and detach the console (Windows).
+        ///
+        /// For supervisor-hosted runs: a Scheduled Task cannot redirect
+        /// stderr, and stderr is the only place beckon reports how many
+        /// hotkeys actually registered. Detaching the console is part of the
+        /// same flag on purpose — detaching without redirecting would leave
+        /// stderr pointing at a destroyed console, where a failed write panics
+        /// instead of returning.
+        ///
+        /// Scoped to this subcommand, so it is rejected everywhere else
+        /// structurally; it used to need `requires = "serve"`.
+        #[cfg(target_os = "windows")]
+        #[arg(long, value_name = "PATH")]
+        log: Option<std::path::PathBuf>,
+    },
+}
+
+impl Args {
+    /// `Args::parse()` plus the two invariants clap cannot express here.
     ///
-    /// For supervisor-hosted runs: a Scheduled Task cannot redirect stderr,
-    /// and stderr is the only place beckon reports how many hotkeys actually
-    /// registered. Detaching the console is part of the same flag on purpose
-    /// — detaching without redirecting would leave stderr pointing at a
-    /// destroyed console, where a failed write panics instead of returning.
-    #[cfg(target_os = "windows")]
-    #[arg(long, value_name = "PATH", requires = "serve")]
-    log: Option<std::path::PathBuf>,
+    /// Both refusals exit 2, matching clap's own usage-error code.
+    ///
+    /// - `(Some, Some)` — measured on clap 4.6.1, a bare positional and a
+    ///   subcommand can both be supplied and clap reports success. Without
+    ///   this arm, `beckon Claude list` exits 0 and discards the id, which is
+    ///   the 0.5.4 defect respelled.
+    /// - `(None, None)` — `arg_required_else_help` covers only an empty argv,
+    ///   so `beckon -v` alone would be a silent exit-0 no-op.
+    fn parse_checked() -> Self {
+        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        let args = match Self::try_parse_from(&argv) {
+            Ok(a) => a,
+            Err(e) => {
+                explain_shadowed_verb(&e, &argv);
+                e.exit()
+            }
+        };
+        match (&args.id, &args.command) {
+            (None, None) => Self::command()
+                .error(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "an app id or a subcommand is required",
+                )
+                .exit(),
+            (Some(_), Some(_)) => Self::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "an app id cannot be combined with a subcommand; \
+                     use `beckon -- <ID>` if the app is literally named like one",
+                )
+                .exit(),
+            _ => args,
+        }
+    }
+}
 
-    /// Verbose logging to stderr.
-    #[arg(short = 'v', long)]
-    verbose: bool,
+/// Say so when a lone reserved word was probably meant as an app.
+///
+/// `beckon resolve` is ambiguous: a subcommand missing its operand, or an app
+/// called Resolve. clap only ever reports the first, and "the following
+/// required arguments were not provided: <ID>" sends the reader hunting for a
+/// forgotten argument rather than telling them their app name is shadowed.
+/// Subcommand matching is byte-exact while every beckon resolver is
+/// case-insensitive, so capitalisation alone decides which reading applies —
+/// `beckon Resolve` reaches the id, `beckon resolve` does not.
+///
+/// Only fires for `beckon <word>` with nothing else on the line; anything
+/// longer is a real missing operand.
+fn explain_shadowed_verb(e: &clap::Error, argv: &[std::ffi::OsString]) {
+    if e.kind() != clap::error::ErrorKind::MissingRequiredArgument {
+        return;
+    }
+    let [_, word] = argv else { return };
+    let Some(word) = word.to_str() else { return };
+    if !RESERVED.contains(&word) {
+        return;
+    }
+    let _ = e.print();
+    eprintln!(
+        "\nbeckon: `{word}` is a subcommand name, not an app id.\n\
+         \x20       If you meant the app, run:  beckon -- {word}"
+    );
+    std::process::exit(2);
 }
 
 fn main() {
-    let args = Args::parse();
+    let args = Args::parse_checked();
     beckon_core::set_verbose(args.verbose);
     if let Err(e) = run(&args) {
         // Always to stderr.
         eprintln!("beckon: {e:#}");
         let message = format!("{e:#}");
-        // `--serve` is the one command a supervisor restarts on a fixed
+        // `serve` is the one command a supervisor restarts on a fixed
         // interval forever (launchd KeepAlive, a Task Scheduler repetition),
         // so it is the one command whose failure here can repeat with nobody
         // asking. Every other command failed because a human just ran it.
-        let cause = if args.serve.is_some() {
+        //
+        // Widen this and the 5-minute Windows watchdog posts a desktop
+        // notification every five minutes forever;
+        // `notify_policy::repeated_serve_startup_failures_notify_once` is what
+        // notices.
+        let cause = if matches!(args.command, Some(Command::Serve { .. })) {
             notify::Cause::MachineRepeat
         } else {
             notify::Cause::HumanAction
@@ -115,50 +235,56 @@ fn is_expected(e: &anyhow::Error) -> bool {
     )
 }
 
+/// A match, not an if-ladder.
+///
+/// The ladder this replaces tested every flag before `args.id`, so a command
+/// flag that had forgotten to declare a conflict with the id silently won —
+/// `beckon <id> -l` listed running apps and exited 0. Under one enum the
+/// commands are exclusive by construction, and there is no order to get wrong.
 fn run(args: &Args) -> Result<()> {
-    if let Some(path) = args.serve.as_deref() {
-        #[cfg(target_os = "windows")]
-        {
-            // Before the lock, so the "already running" refusal is logged
-            // too, and before anything else can fail — see the module doc on
-            // `beckon_windows::logfile`.
-            if let Some(log) = args.log.as_deref() {
-                beckon_windows::logfile::redirect_to_log(log)?;
+    match &args.command {
+        Some(Command::Serve {
+            config,
+            #[cfg(target_os = "windows")]
+            log,
+        }) => {
+            #[cfg(target_os = "windows")]
+            {
+                // Before the lock, so the "already running" refusal is logged
+                // too, and before anything else can fail — see the module doc
+                // on `beckon_windows::logfile`.
+                if let Some(log) = log.as_deref() {
+                    beckon_windows::logfile::redirect_to_log(log)?;
+                }
+                serve::cmd_serve(config)
             }
-            return serve::cmd_serve(path);
+            #[cfg(target_os = "macos")]
+            {
+                serve::cmd_serve(config)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                let _ = config;
+                Err(anyhow!(
+                    "`beckon serve` is only implemented on macOS and Windows"
+                ))
+            }
         }
-        #[cfg(target_os = "macos")]
-        {
-            return serve::cmd_serve(path);
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            let _ = path;
-            return Err(anyhow!("--serve is only implemented on macOS and Windows"));
-        }
+        Some(Command::Check { config }) => cmd_check(config),
+        Some(Command::Doctor) => cmd_doctor(),
+        Some(Command::List) => cmd_list(),
+        Some(Command::Installed) => cmd_list_installed(),
+        // `require_id` stays on both operands. clap enforces an operand's
+        // presence, never its non-emptiness, so `String` instead of
+        // `Option<String>` does not subsume the check.
+        Some(Command::Search { name }) => cmd_search(require_id(name, "search NAME")?),
+        Some(Command::Resolve { id }) => cmd_resolve(require_id(id, "resolve ID")?),
+        None => match args.id.as_deref() {
+            Some(id) => cmd_beckon(require_id(id, "id")?, args.verbose),
+            // `parse_checked` rejects (None, None) before we get here.
+            None => Err(anyhow!("no command given (use -h for help)")),
+        },
     }
-    if let Some(path) = args.check.as_deref() {
-        return cmd_check(path);
-    }
-    if args.doctor {
-        return cmd_doctor();
-    }
-    if args.list {
-        return cmd_list();
-    }
-    if args.list_installed {
-        return cmd_list_installed();
-    }
-    if let Some(name) = args.search.as_deref() {
-        return cmd_search(require_id(name, "--search")?);
-    }
-    if let Some(id) = args.resolve.as_deref() {
-        return cmd_resolve(require_id(id, "--resolve")?);
-    }
-    if let Some(id) = args.id.as_deref() {
-        return cmd_beckon(require_id(id, "id")?, args.verbose);
-    }
-    Err(anyhow!("no command given (use -h for help)"))
 }
 
 /// Reject an empty or whitespace-only id.

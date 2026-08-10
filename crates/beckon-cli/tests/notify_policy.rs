@@ -40,7 +40,7 @@ fn a_failure_nobody_can_see_is_notified() {
     let out = run(
         dir.path(),
         &log,
-        &["--check", "/nonexistent/beckon-test.toml"],
+        &["check", "/nonexistent/beckon-test.toml"],
     );
 
     assert!(!out.status.success());
@@ -57,7 +57,7 @@ fn muting_wins_over_everything() {
     let log = dir.path().join("notifications.txt");
     let mut cmd = beckon_unmuted();
     let out = cmd
-        .args(["--check", "/nonexistent/beckon-test.toml"])
+        .args(["check", "/nonexistent/beckon-test.toml"])
         .env("BECKON_NOTIFY_LOG", &log)
         .env("BECKON_NO_NOTIFY", "1")
         .env("TMPDIR", dir.path())
@@ -73,7 +73,7 @@ fn muting_wins_over_everything() {
     );
 }
 
-/// The storm guard. A supervisor re-runs the identical `--serve` command on a
+/// The storm guard. A supervisor re-runs the identical `serve` command on a
 /// timer; before this, each restart posted. Measured on macOS: 1440 a day.
 #[test]
 fn repeated_serve_startup_failures_notify_once() {
@@ -82,7 +82,7 @@ fn repeated_serve_startup_failures_notify_once() {
     let config = "/nonexistent/beckon-test-serve.toml";
 
     for _ in 0..3 {
-        let out = run(dir.path(), &log, &["--serve", config]);
+        let out = run(dir.path(), &log, &["serve", config]);
         assert!(!out.status.success(), "a missing config must still fail");
     }
 
@@ -104,20 +104,20 @@ fn repeated_human_invocations_notify_every_time() {
         run(
             dir.path(),
             &log,
-            &["--check", "/nonexistent/beckon-test.toml"],
+            &["check", "/nonexistent/beckon-test.toml"],
         );
     }
 
     assert_eq!(
         notifications(&log).len(),
         3,
-        "--check is not supervised; throttling it would swallow real answers"
+        "`check` is not supervised; throttling it would swallow real answers"
     );
 }
 
 /// Two different faults are two pieces of news, even inside the window.
 ///
-/// macOS and Windows only: elsewhere `--serve` is unimplemented and both runs
+/// macOS and Windows only: elsewhere `serve` is unimplemented and both runs
 /// fail with the same sentence regardless of which config was asked for, so
 /// the throttle collapses them — correctly, and this test would be asserting
 /// that two identical messages are distinct.
@@ -127,8 +127,8 @@ fn distinct_serve_failures_are_not_collapsed() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("notifications.txt");
 
-    run(dir.path(), &log, &["--serve", "/nonexistent/one.toml"]);
-    run(dir.path(), &log, &["--serve", "/nonexistent/two.toml"]);
+    run(dir.path(), &log, &["serve", "/nonexistent/one.toml"]);
+    run(dir.path(), &log, &["serve", "/nonexistent/two.toml"]);
 
     assert_eq!(
         notifications(&log).len(),

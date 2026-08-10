@@ -541,7 +541,7 @@ fn list_running_emits_apps_grouped_by_class() {
     state.active = Some("0xA".into());
     let srv = FakeServer::start(state);
 
-    let out = srv.run_beckon(&["-l"]);
+    let out = srv.run_beckon(&["list"]);
     ok_output(&out, "beckon -l");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -579,7 +579,7 @@ fn doctor_reports_hyprland_backend_and_running_count() {
     ];
     let srv = FakeServer::start(state);
 
-    let out = srv.run_beckon(&["-d"]);
+    let out = srv.run_beckon(&["doctor"]);
     ok_output(&out, "beckon -d");
 
     let stdout = String::from_utf8_lossy(&out.stdout);

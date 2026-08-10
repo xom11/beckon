@@ -8,7 +8,7 @@ fn run_check(content: &str) -> Output {
     let path = dir.path().join("apps.toml");
     std::fs::write(&path, content).expect("write config");
     beckon()
-        .arg("--check")
+        .arg("check")
         .arg(&path)
         .output()
         .expect("run beckon")
@@ -39,11 +39,19 @@ fn check_duplicate_exits_nonzero() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("duplicates"));
 }
 
+/// Pinned to exit 1 and to the message, not merely to "non-zero".
+///
+/// `assert!(!out.status.success())` used to be the whole test, and a clap
+/// usage error satisfies that too — so when `--check` became `check` this test
+/// stayed green while asserting nothing about `check` at all. Exit 1 is
+/// beckon's own handler; exit 2 would mean the subcommand never ran.
 #[test]
 fn check_missing_file_exits_nonzero() {
     let out = beckon()
-        .args(["--check", "/nonexistent/beckon-test-apps.toml"])
+        .args(["check", "/nonexistent/beckon-test-apps.toml"])
         .output()
         .expect("run beckon");
-    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
 }
