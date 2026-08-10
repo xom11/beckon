@@ -18,6 +18,8 @@ use beckon_core::{Backend, Result};
 #[cfg(target_os = "windows")]
 pub mod apps;
 #[cfg(target_os = "windows")]
+pub mod autostart;
+#[cfg(target_os = "windows")]
 mod backend;
 #[cfg(target_os = "windows")]
 pub mod hotkey;

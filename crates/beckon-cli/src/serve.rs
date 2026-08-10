@@ -81,6 +81,14 @@ struct ServeState {
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
     last_phrase: String,
+    /// Config path to bake into the autostart value, or `None` when the
+    /// running config is already the default. See
+    /// `serve_app::run_key_command_line`.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    autostart_config: Option<PathBuf>,
+    /// Log path to bake into the autostart value, or `None` when default.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    autostart_log: Option<PathBuf>,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -123,6 +131,8 @@ pub fn cmd_serve_with_log(config: &Path, log: Option<PathBuf>) -> Result<()> {
         paused: false,
         log,
         last_phrase: String::new(),
+        autostart_config: None,
+        autostart_log: None,
     }));
 
     let mgr = {
@@ -354,6 +364,8 @@ const MENU_LOG: u32 = 4;
 #[cfg(target_os = "windows")]
 const MENU_PAUSE: u32 = 5;
 #[cfg(target_os = "windows")]
+const MENU_AUTOSTART: u32 = 6;
+#[cfg(target_os = "windows")]
 const MENU_QUIT: u32 = 7;
 
 /// Everything the menu needs to draw itself, snapshotted out of `ServeState`
@@ -364,11 +376,6 @@ const MENU_QUIT: u32 = 7;
 struct MenuModel {
     phrase: String,
     paused: bool,
-    // Not read by `build_entries` yet -- Task 5 adds the MENU_AUTOSTART row
-    // that reads it. Kept on the struct now (rather than added in Task 5)
-    // so this task's tests can already assert the field exists and is
-    // threaded through; `allow` only until that row lands.
-    #[allow(dead_code)]
     autostart: bool,
     has_log: bool,
 }
@@ -414,6 +421,12 @@ fn build_entries(m: &MenuModel) -> Vec<hotkey::MenuEntry> {
             checked: Some(m.paused),
             enabled: true,
         },
+        MenuEntry {
+            id: MENU_AUTOSTART,
+            label: "Start with Windows".into(),
+            checked: Some(m.autostart),
+            enabled: true,
+        },
         MenuEntry::separator(),
         MenuEntry {
             id: MENU_QUIT,
@@ -432,7 +445,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
         build_entries(&MenuModel {
             phrase: s.last_phrase.clone(),
             paused: s.paused,
-            autostart: false, // Task 5 fills this in
+            autostart: beckon_windows::autostart::is_enabled(),
             has_log: s.log.is_some(),
         })
     });
@@ -462,6 +475,34 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             MENU_PAUSE => {
                 let now = !st.borrow().paused;
                 set_paused(&st, &mg, now);
+            }
+            MENU_AUTOSTART => {
+                let result = if beckon_windows::autostart::is_enabled() {
+                    beckon_windows::autostart::disable()
+                } else {
+                    match std::env::current_exe() {
+                        Ok(exe) => {
+                            let exe = crate::serve_app::scoop_current_path(&exe);
+                            let s = st.borrow();
+                            let cmd = crate::serve_app::run_key_command_line(
+                                &exe,
+                                s.autostart_config.as_deref(),
+                                s.autostart_log.as_deref(),
+                            );
+                            drop(s);
+                            beckon_windows::autostart::enable(&cmd)
+                        }
+                        Err(e) => Err(format!("cannot find our own path: {e}")),
+                    }
+                };
+                if let Err(e) = result {
+                    eprintln!("beckon serve: autostart: {e}");
+                    // The user just clicked this; tell them every time.
+                    crate::notify::report(
+                        &format!("could not change autostart: {e}"),
+                        crate::notify::Cause::HumanAction,
+                    );
+                }
             }
             MENU_QUIT => {
                 eprintln!("beckon serve: quit requested from the tray menu");
@@ -625,6 +666,19 @@ mod tests {
         let rows = build_entries(&paused);
         assert_eq!(
             rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
+            Some(true)
+        );
+
+        let on = MenuModel {
+            autostart: true,
+            ..m.clone()
+        };
+        assert_eq!(
+            build_entries(&on)
+                .iter()
+                .find(|r| r.id == MENU_AUTOSTART)
+                .unwrap()
+                .checked,
             Some(true)
         );
     }

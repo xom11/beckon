@@ -11,6 +11,7 @@ mod lockfile;
 mod notify;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod serve;
+mod serve_app;
 mod stable_id;
 
 /// Every subcommand name, and therefore every app Name that the bare
