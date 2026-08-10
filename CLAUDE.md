@@ -743,8 +743,9 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
    "Start with Windows" row in the tray menu writes the
    `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value directly —
    no new verb, no new flag — so the growth rule in *CLI surface* never had
-   to be spent. `beckon.exe serve <CONFIG>` is unchanged; the lifecycle
-   lives entirely inside the GUI-subsystem binary. See
+   to be spent. `beckon.exe serve <CONFIG>` now shares the tray menu too,
+   minus this row; the autostart lifecycle still lives entirely inside the
+   GUI-subsystem binary. See
    `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md` §6.
 
 2. **MRU tracking source per backend**

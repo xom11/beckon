@@ -239,8 +239,11 @@ any point (it's a separate GUI-subsystem binary, not `beckon.exe serve`
 wearing a different hat). First launch with no config writes a starter
 `apps.toml` and opens it in your editor. Right-click the tray icon to reload,
 pause, open the log, or open the config; tick **Start with Windows** to add
-it to `HKCU\...\Run`. `beckon.exe serve <CONFIG>` is unchanged and still
-works for scripting or the advanced path below.
+it to `HKCU\...\Run`. `beckon.exe serve <CONFIG>` still works for scripting
+or the advanced path below — same flags, same output — and now raises the
+same tray menu too, minus **Start with Windows**: a Run value pointing at
+`beckon.exe` has no `serve` verb or config path to invoke, so it would exit
+at the next logon while the checkbox stayed ticked forever.
 
 Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
 is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named
