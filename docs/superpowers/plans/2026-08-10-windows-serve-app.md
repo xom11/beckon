@@ -1889,6 +1889,20 @@ fn main() {
     //
     // Applies to every binary in the package, so `beckon.exe` gets the icon
     // in Explorer too.
+    // Both directives are required, and the icon one is the load-bearing
+    // half. `embed-resource` documents that it emits no rerun-if-changed
+    // annotation of its own, so with none here Cargo falls back to
+    // "rescan the package directory" -- and `assets/` is at the repo root,
+    // OUTSIDE this package. Editing the icon alone would then not rebuild
+    // the resource, and a stale icon would stay embedded until an
+    // unrelated change in `crates/beckon-cli/` or a `cargo clean`.
+    //
+    // Naming beckon.rc as well is belt-and-braces: the default heuristic
+    // already covers it, but stating it keeps the two inputs symmetrical
+    // for the next reader.
+    println!("cargo:rerun-if-changed=../../assets/beckon.ico");
+    println!("cargo:rerun-if-changed=beckon.rc");
+
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         embed_resource::compile("beckon.rc", embed_resource::NONE);
     }
