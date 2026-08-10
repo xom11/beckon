@@ -23,6 +23,15 @@ beckon/
 │   ├── beckon-core/          # Backend trait, shared types (RunningApp, WindowId)
 │   ├── beckon-macos/         # NSWorkspace + AX + CGWindowList — phase 2 done
 │   ├── beckon-windows/       # Win32 API (EnumWindows + COM IShellLinkW) — phase 3 done
+│   │   └── src/
+│   │       ├── lib.rs        # pick_backend, resolve report
+│   │       ├── backend.rs    # Backend trait impl: focus / launch / cycle / hide
+│   │       ├── apps.rs       # Start Menu .lnk + AppsFolder catalog, Name resolution
+│   │       ├── window_ops.rs # EnumWindows / SetForegroundWindow / AttachThreadInput
+│   │       ├── hotkey.rs     # RegisterHotKey + tray icon/menu (serve, beckon-serve)
+│   │       ├── autostart.rs  # HKCU…Run value ("Start with Windows")
+│   │       ├── shell.rs      # ShellExecuteW open path + MessageBoxW dialogs
+│   │       └── logfile.rs    # --log redirect + console detach, size-capped
 │   ├── beckon-linux/         # multi-backend, dispatch by env at runtime
 │   │   └── src/
 │   │       ├── lib.rs        # detect compositor/DE, return Box<dyn Backend>
@@ -33,7 +42,21 @@ beckon/
 │   │       ├── hyprland.rs   # native Unix-socket IPC — Hyprland
 │   │       ├── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
 │   │       └── gnome.rs      # zbus client → bundled GNOME Shell extension
-│   └── beckon-cli/           # main binary, picks backend via cfg!(target_os)
+│   └── beckon-cli/           # command surface as a lib.rs, shared by two Windows binaries
+│       ├── build.rs          # embeds ../../assets/beckon.ico into every binary (MSVC only)
+│       ├── beckon.rc         # Windows resource script; resource id 1 is the icon
+│       └── src/
+│           ├── lib.rs        # cli_main(), clap Args/Command, RESERVED
+│           ├── main.rs       # beckon.exe: console-subsystem shim -> cli_main()
+│           ├── serve.rs      # resident-mode loop + tray menu (macOS + Windows)
+│           ├── serve_app.rs  # beckon-serve.exe front door: defaults, starter config
+│           ├── lockfile.rs   # one `serve` per config path
+│           ├── notify.rs     # desktop notification policy
+│           ├── stable_id.rs  # per-config lock hash
+│           └── bin/
+│               └── beckon-serve.rs   # beckon-serve.exe: GUI-subsystem shim (Windows only)
+├── assets/
+│   └── beckon.ico             # tray / Explorer / Alt-Tab icon for both Windows binaries
 ├── extensions/
 │   └── beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
 │       ├── metadata.json

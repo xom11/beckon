@@ -185,18 +185,15 @@ path exists for the cases where it isn't a fit.
 
 `serve` puts an icon in the notification area — the same tray menu
 `beckon-serve.exe` has, since both run through `install_tray_menu` in
-`crates/beckon-cli/src/serve.rs`. Right-click it for a disabled status row
-(`beckon - 5 shortcuts registered`, `beckon - 3 of 5 shortcuts registered
-(2 failed)`, or `beckon - paused (...)`), plus Edit shortcuts, Reload now,
-Open log, Pause hotkeys, Start with Windows and Quit. Hovering the icon
+`crates/beckon-cli/src/serve.rs`, minus one row: **Start with Windows**
+never appears here, because `current_exe()` on this path resolves to
+`beckon.exe`, which has no bare `serve`-with-no-argument form to put in the
+Run key — ticking it here would write a value that can never fire at next
+logon. Use `beckon-serve.exe`'s own tray for that. Right-click for a
+disabled status row (`beckon - 5 shortcuts registered`, `beckon - 3 of 5
+shortcuts registered (2 failed)`, or `beckon - paused (...)`), plus Edit
+shortcuts, Reload now, Open log, Pause hotkeys and Quit. Hovering the icon
 shows the same registration count in the tooltip.
-
-One difference from `beckon-serve.exe`: this Scheduled Task path calls
-`beckon.exe serve <config>` directly, and that entry point doesn't thread
-its own `--log` path into the tray menu's notion of "where's the log" — so
-**Open log** stays greyed out here even though `--log` in the task action
-is correctly redirecting stderr to the file above. Read it with
-`Get-Content` instead.
 
 So the icon is no longer a bare one-way liveness light — hovering or
 opening the menu answers "is it alive and how many keys does it hold" the

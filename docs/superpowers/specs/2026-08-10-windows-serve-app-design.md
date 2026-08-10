@@ -16,9 +16,22 @@ does not want to read a README:
 - **Controllable while running.** Reload, pause, open the config, open the
   log, quit — without Task Manager.
 
-`beckon.exe serve <CONFIG>` is unchanged. Every word of its current
-behaviour, flags and docs stays valid. This adds a second front door; it
-does not move the existing one.
+`beckon.exe serve <CONFIG>` keeps every flag and every documented behaviour
+it had before this spec — the fix-up wave that closed it out confirmed this
+by construction rather than leaving it asserted: `cmd_serve` and
+`serve_app_main` funnel through the same `cmd_serve_app`, so there is only
+one implementation to keep honest. What is genuinely new on that path: it
+now also raises the same tray icon and context menu `beckon-serve.exe` does
+(Edit shortcuts, Reload now, Open log, Pause hotkeys, Quit), because both
+front doors share `install_tray_menu` in `serve.rs` (§1) instead of
+duplicating it. The one row it never shows is **Start with Windows**:
+`current_exe()` on the CLI path resolves to `beckon.exe`, which has no
+bare `serve`-with-no-argument form, so ticking the box there would write a
+Run value that can never fire at next logon — `serve.rs`'s
+`AutostartCapability` is `None` on this path for exactly that reason, and
+the row is omitted rather than shown disabled and unexplained. `--log` also
+now feeds that same menu's "Open log", where before it only redirected
+stderr. This adds a second front door; it does not move the existing one.
 
 ## Why now
 
@@ -312,12 +325,18 @@ no desktop notification, and the line still goes to the log.
 ### 9. Icon
 
 `IDI_APPLICATION` reads as unfinished in the Start Menu, in Alt-Tab and in
-the tray. `beckon-serve.exe` embeds a real `.ico` through the
+the tray. Both Windows binaries embed a real `.ico` through the
 `embed-resource` build-dependency, which drives the `rc.exe` already present
-in the Windows SDK the project requires.
+in the Windows SDK the project requires. `build.rs` applies the resource to
+**every binary in the package**, not just `beckon-serve.exe` — deliberately,
+per its own comment: `beckon.exe` picks up the same icon in Explorer,
+Alt-Tab and the taskbar, and there was no reason to withhold it from the
+console front door just because this spec's motivation was the tray app.
 
-**The asset does not exist in the repo yet** and is a blocker for the polish,
-not for the function. One icon only.
+`assets/beckon.ico` landed in commit `9365b73`. It is a generated
+placeholder rather than designed art — replacing it with real art is still
+open, but the asset itself is no longer a blocker for anything in this
+spec. One icon only.
 
 ### 10. Packaging
 
