@@ -283,6 +283,21 @@ fn watch_config(
     Ok(watcher)
 }
 
+/// Re-read `config`, replace the shortcut table, and (unless paused)
+/// re-register every hotkey.
+///
+/// **Borrow safety**: the `Ok` arm below holds `mgr.borrow_mut()` live
+/// across two calls to `set_tray_status` (Windows: `hotkey::set_status`,
+/// which bottoms out in `Shell_NotifyIconW(NIM_MODIFY)`). That is sound:
+/// `NIM_MODIFY` is an in-process icon update, not the out-of-process shell
+/// activation `ShellExecuteW` performs, so it does not pump this thread's
+/// message queue and cannot let a reentrant call back into this same
+/// `RefCell` while it is already borrowed -- the `BorrowMutError`-across-
+/// `extern "system"` hazard the module doc above describes. Contrast
+/// `beckon_windows::shell::open_path` (`ShellExecuteW`), which DOES pump:
+/// see `install_tray_menu`, where every call site clones what it needs and
+/// drops its borrow first, before calling it. `set_paused` holds the same
+/// two borrows across the same non-pumping calls, for the same reason.
 fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let config = state.borrow().config.clone();
     let parsed = std::fs::read_to_string(&config)
@@ -461,16 +476,11 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
 
 /// Unregister or re-register every hotkey, and say so in the tooltip.
 ///
-/// Neither `unregister_all` nor `register_all` pumps the message queue, so
-/// holding both borrows across them is sound here for the same reason
-/// `reload` may hold them. The same is true of the `hotkey::set_status`
-/// call below (and `reload`'s own `set_tray_status` calls): it bottoms out
-/// in `Shell_NotifyIconW(NIM_MODIFY)`, an in-process icon update, not the
-/// out-of-process shell activation `ShellExecuteW` performs -- it does not
-/// pump, so it is fine to call with `state`/`mgr` borrows still live.
-/// `beckon_windows::shell::open_path` (`ShellExecuteW`) is the one call in
-/// this file that does pump, which is why its two call sites in
-/// `install_tray_menu` clone what they need and drop every borrow first.
+/// Neither `unregister_all` nor `register_all` pumps the message queue, and
+/// neither does the `hotkey::set_status` call below -- see `reload`'s doc
+/// comment for why holding `state`/`mgr` borrows across a tooltip update is
+/// sound while holding them across `beckon_windows::shell::open_path`
+/// (`ShellExecuteW`) is not.
 #[cfg(target_os = "windows")]
 fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>, paused: bool) {
     let mut m = mgr.borrow_mut();
