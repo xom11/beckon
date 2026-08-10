@@ -67,6 +67,20 @@ fn set_tray_status(_text: &str) {}
 struct ServeState {
     shortcuts: Vec<Shortcut>,
     config: PathBuf,
+    /// Hotkeys deliberately unregistered from the tray menu. A reload while
+    /// paused updates the table but must not re-register — a file save is
+    /// not a request to un-pause.
+    paused: bool,
+    /// Where stderr went, when it went to a file. `None` on the CLI path,
+    /// which leaves the menu's "Open log" greyed out rather than lying.
+    /// Set on every platform (`cmd_serve_with_log` takes it unconditionally)
+    /// but only read by the Windows-only tray menu below, so non-Windows
+    /// builds see it as write-only.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    log: Option<PathBuf>,
+    /// The most recent `registration_phrase`, so the menu can show it
+    /// without re-running a registration pass.
+    last_phrase: String,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -86,6 +100,13 @@ fn acquire_lock(config: &Path) -> Result<std::fs::File> {
 }
 
 pub fn cmd_serve(config: &Path) -> Result<()> {
+    cmd_serve_with_log(config, None)
+}
+
+/// `log` is only ever `Some` on the Windows app path, where stderr was
+/// redirected to a file this process chose. It exists so the tray menu's
+/// "Open log" can point at the right file instead of guessing.
+pub fn cmd_serve_with_log(config: &Path, log: Option<PathBuf>) -> Result<()> {
     let _lock = acquire_lock(config)?;
     let config = config
         .canonicalize()
@@ -99,6 +120,9 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
     let state = Rc::new(RefCell::new(ServeState {
         shortcuts,
         config: config.clone(),
+        paused: false,
+        log,
+        last_phrase: String::new(),
     }));
 
     let mgr = {
@@ -130,7 +154,11 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
         );
     }
 
+    #[cfg(target_os = "windows")]
+    install_tray_menu(&state, &mgr);
+
     let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+    state.borrow_mut().last_phrase = phrase.clone();
     eprintln!("beckon serve: {} from {}", phrase, config.display());
     set_tray_status(&phrase);
     if let Some(toast) = failure_toast(&outcome.failed) {
@@ -274,14 +302,191 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             let mut m = mgr.borrow_mut();
             m.unregister_all();
             state.borrow_mut().shortcuts = new;
+            let paused = state.borrow().paused;
+            if paused {
+                // A file save is not a request to un-pause. The table is
+                // updated so resuming picks up the edit; nothing registers.
+                let phrase = format!("{} shortcuts", state.borrow().shortcuts.len());
+                state.borrow_mut().last_phrase = phrase.clone();
+                eprintln!("beckon serve: reloaded while paused - {phrase}");
+                set_tray_status(&format!("beckon - paused ({phrase})"));
+                return;
+            }
             let outcome = register_all(&mut m, &state.borrow().shortcuts);
             let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+            state.borrow_mut().last_phrase = phrase.clone();
             eprintln!("beckon serve: reloaded - {phrase}");
             set_tray_status(&phrase);
             if let Some(toast) = failure_toast(&outcome.failed) {
                 crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tray menu (Windows only). macOS `serve` runs under launchd with no tray.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+const MENU_STATUS: u32 = 1;
+#[cfg(target_os = "windows")]
+const MENU_EDIT: u32 = 2;
+#[cfg(target_os = "windows")]
+const MENU_RELOAD: u32 = 3;
+#[cfg(target_os = "windows")]
+const MENU_LOG: u32 = 4;
+#[cfg(target_os = "windows")]
+const MENU_PAUSE: u32 = 5;
+#[cfg(target_os = "windows")]
+const MENU_QUIT: u32 = 7;
+
+/// Everything the menu needs to draw itself, snapshotted out of `ServeState`
+/// so the drawing is a pure function and can be tested without a tray, a
+/// message loop or a registry.
+#[cfg(target_os = "windows")]
+#[derive(Clone)]
+struct MenuModel {
+    phrase: String,
+    paused: bool,
+    // Not read by `build_entries` yet -- Task 5 adds the MENU_AUTOSTART row
+    // that reads it. Kept on the struct now (rather than added in Task 5)
+    // so this task's tests can already assert the field exists and is
+    // threaded through; `allow` only until that row lands.
+    #[allow(dead_code)]
+    autostart: bool,
+    has_log: bool,
+}
+
+#[cfg(target_os = "windows")]
+fn build_entries(m: &MenuModel) -> Vec<hotkey::MenuEntry> {
+    use hotkey::MenuEntry;
+    let head = if m.paused {
+        format!("beckon - paused ({})", m.phrase)
+    } else {
+        format!("beckon - {}", m.phrase)
+    };
+    vec![
+        MenuEntry {
+            id: MENU_STATUS,
+            label: head,
+            checked: None,
+            enabled: false,
+        },
+        MenuEntry::separator(),
+        MenuEntry {
+            id: MENU_EDIT,
+            label: "Edit shortcuts...".into(),
+            checked: None,
+            enabled: true,
+        },
+        MenuEntry {
+            id: MENU_RELOAD,
+            label: "Reload now".into(),
+            checked: None,
+            enabled: true,
+        },
+        MenuEntry {
+            id: MENU_LOG,
+            label: "Open log".into(),
+            checked: None,
+            enabled: m.has_log,
+        },
+        MenuEntry::separator(),
+        MenuEntry {
+            id: MENU_PAUSE,
+            label: "Pause hotkeys".into(),
+            checked: Some(m.paused),
+            enabled: true,
+        },
+        MenuEntry::separator(),
+        MenuEntry {
+            id: MENU_QUIT,
+            label: "Quit".into(),
+            checked: None,
+            enabled: true,
+        },
+    ]
+}
+
+#[cfg(target_os = "windows")]
+fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
+    let st_build = Rc::clone(state);
+    let build = Box::new(move || {
+        let s = st_build.borrow();
+        build_entries(&MenuModel {
+            phrase: s.last_phrase.clone(),
+            paused: s.paused,
+            autostart: false, // Task 5 fills this in
+            has_log: s.log.is_some(),
+        })
+    });
+
+    let st = Rc::clone(state);
+    let mg = Rc::clone(mgr);
+    let on_click = Box::new(move |id: u32| {
+        match id {
+            // ShellExecuteW pumps this thread's queue, so the path is cloned
+            // out and every borrow is dropped BEFORE the call -- the same
+            // rule the module doc states for backend.beckon().
+            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => {
+                let path = st.borrow().config.clone();
+                if let Err(e) = beckon_windows::shell::open_path(&path) {
+                    eprintln!("beckon serve: {e}");
+                }
+            }
+            MENU_LOG => {
+                let path = st.borrow().log.clone();
+                if let Some(path) = path {
+                    if let Err(e) = beckon_windows::shell::open_path(&path) {
+                        eprintln!("beckon serve: {e}");
+                    }
+                }
+            }
+            MENU_RELOAD => reload(&st, &mg),
+            MENU_PAUSE => {
+                let now = !st.borrow().paused;
+                set_paused(&st, &mg, now);
+            }
+            MENU_QUIT => {
+                eprintln!("beckon serve: quit requested from the tray menu");
+                hotkey::request_quit();
+            }
+            _ => {}
+        }
+    });
+
+    hotkey::set_menu(build, on_click);
+}
+
+/// Unregister or re-register every hotkey, and say so in the tooltip.
+///
+/// Neither `unregister_all` nor `register_all` pumps the message queue, so
+/// holding both borrows across them is sound here for the same reason
+/// `reload` may hold them. The same is true of the `hotkey::set_status`
+/// call below (and `reload`'s own `set_tray_status` calls): it bottoms out
+/// in `Shell_NotifyIconW(NIM_MODIFY)`, an in-process icon update, not the
+/// out-of-process shell activation `ShellExecuteW` performs -- it does not
+/// pump, so it is fine to call with `state`/`mgr` borrows still live.
+/// `beckon_windows::shell::open_path` (`ShellExecuteW`) is the one call in
+/// this file that does pump, which is why its two call sites in
+/// `install_tray_menu` clone what they need and drop every borrow first.
+#[cfg(target_os = "windows")]
+fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>, paused: bool) {
+    let mut m = mgr.borrow_mut();
+    if paused {
+        m.unregister_all();
+        state.borrow_mut().paused = true;
+        let phrase = state.borrow().last_phrase.clone();
+        eprintln!("beckon serve: paused - {phrase}");
+        hotkey::set_status(&format!("beckon - paused ({phrase})"));
+    } else {
+        state.borrow_mut().paused = false;
+        let outcome = register_all(&mut m, &state.borrow().shortcuts);
+        let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+        state.borrow_mut().last_phrase = phrase.clone();
+        eprintln!("beckon serve: resumed - {phrase}");
+        hotkey::set_status(&phrase);
     }
 }
 
@@ -384,5 +589,70 @@ mod tests {
             &[PathBuf::from("/x/y/apps.macos.toml")],
             None
         ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn menu_shows_the_phrase_and_reflects_pause() {
+        let m = MenuModel {
+            phrase: "5 shortcuts registered".into(),
+            paused: false,
+            autostart: false,
+            has_log: true,
+        };
+        let rows = build_entries(&m);
+        assert_eq!(rows[0].label, "beckon - 5 shortcuts registered");
+        assert!(!rows[0].enabled, "the status row is a label, not a button");
+        let pause = rows.iter().find(|r| r.id == MENU_PAUSE).unwrap();
+        assert_eq!(pause.checked, Some(false));
+
+        // `..m.clone()`, not `..m`: Task 5 appends another case to this test
+        // and needs `m` to still be alive.
+        let paused = MenuModel {
+            paused: true,
+            ..m.clone()
+        };
+        let rows = build_entries(&paused);
+        assert_eq!(
+            rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
+            Some(true)
+        );
+    }
+
+    /// Moved here from Task 3, where the same intent could only be written
+    /// as an assertion about a constant. Here it runs against the real
+    /// entry list, so adding a menu row that collides with the reserved
+    /// double-click id fails the build instead of silently making
+    /// double-click fire that row.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn no_real_entry_collides_with_the_reserved_double_click_id() {
+        let m = MenuModel {
+            phrase: "5 shortcuts registered".into(),
+            paused: false,
+            autostart: false,
+            has_log: true,
+        };
+        for row in build_entries(&m) {
+            assert_ne!(
+                row.id,
+                hotkey::MENU_ID_DOUBLE_CLICK,
+                "entry {:?} shadows the reserved double-click id",
+                row.label
+            );
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn open_log_is_disabled_when_there_is_no_log() {
+        let m = MenuModel {
+            phrase: "0 shortcuts registered".into(),
+            paused: false,
+            autostart: false,
+            has_log: false,
+        };
+        let rows = build_entries(&m);
+        assert!(!rows.iter().find(|r| r.id == MENU_LOG).unwrap().enabled);
     }
 }

@@ -24,6 +24,8 @@ pub mod hotkey;
 #[cfg(target_os = "windows")]
 pub mod logfile;
 #[cfg(target_os = "windows")]
+pub mod shell;
+#[cfg(target_os = "windows")]
 pub mod window_ops;
 
 #[cfg(target_os = "windows")]
