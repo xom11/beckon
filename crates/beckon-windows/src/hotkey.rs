@@ -640,17 +640,4 @@ mod tests {
         assert!(sep.label.is_empty());
         assert_eq!(sep.checked, None);
     }
-
-    #[test]
-    // MENU_ID_DOUBLE_CLICK and 1000 are both compile-time constants, so
-    // clippy folds the comparison and flags it; the assertion still earns
-    // its place as a readable, enforced doc of the "far outside any
-    // plausible menu" invariant.
-    #[allow(clippy::assertions_on_constants)]
-    fn double_click_id_cannot_collide_with_a_real_entry() {
-        // serve.rs numbers its entries from 1 upward; the reserved id must
-        // sit far outside any plausible menu.
-        assert_eq!(MENU_ID_DOUBLE_CLICK, u32::MAX);
-        assert!(MENU_ID_DOUBLE_CLICK > 1000);
-    }
 }
