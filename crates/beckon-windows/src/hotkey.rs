@@ -21,6 +21,16 @@
 //! double-borrow the RefCell and panic across the extern "system" boundary
 //! — it goes on a small pending queue instead and runs immediately after the
 //! in-flight one returns.
+//!
+//! The tray menu (`show_menu`/`dispatch_menu`) is a separate story from the
+//! above: `TrackPopupMenu` is passed `TPM_RETURNCMD`, so the chosen id comes
+//! back as that call's own return value once its modal loop has already
+//! exited, rather than arriving through wndproc as a posted WM_COMMAND
+//! while the loop is still on the stack. `dispatch_menu` still takes-then-
+//! runs, matching the shape above, but for the menu that discipline guards
+//! a narrower case: a click handler that itself pumps (`open_path`'s
+//! ShellExecuteW) letting a second menu open and resolve before the first
+//! handler returns — not, any more, the modal loop's own delivery.
 
 use beckon_core::shortcuts::KeyDef;
 use std::cell::{Cell, RefCell};
@@ -40,12 +50,12 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetMessageW, LoadIconW, PeekMessageW, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu,
-    TranslateMessage, CW_USEDEFAULT, IDI_APPLICATION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, PM_REMOVE, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_COMMAND,
-    WM_CONTEXTMENU, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_OVERLAPPED,
+    GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, LoadImageW, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetTimer,
+    TrackPopupMenu, TranslateMessage, CW_USEDEFAULT, HICON, IDI_APPLICATION, IMAGE_ICON,
+    LR_DEFAULTCOLOR, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, PM_REMOVE, SM_CXSMICON,
+    SM_CYSMICON, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU,
+    WM_HOTKEY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
 };
 
 // Named so the thread_locals below (and install()'s identical parameter
@@ -100,9 +110,12 @@ thread_local! {
     static TICK_CBS: RefCell<TickCallbacks> = const { RefCell::new(Vec::new()) };
     static MENU_BUILD: RefCell<Option<MenuBuilder>> = const { RefCell::new(None) };
     static MENU_CB: RefCell<Option<MenuHandler>> = const { RefCell::new(None) };
-    // Same role as HOTKEY_PENDING: TrackPopupMenu runs its own modal message
-    // pump, so a second click can reach dispatch_menu while the first
-    // callback is still on the stack. Queue rather than drop.
+    // Same role as HOTKEY_PENDING. Not reachable via TrackPopupMenu's own
+    // modal loop any more (show_menu uses TPM_RETURNCMD, so that loop has
+    // already returned by the time dispatch_menu runs) -- but a click
+    // handler that itself pumps (open_path's ShellExecuteW) can still let a
+    // second WM_TRAY/TrackPopupMenu round-trip complete and call back in
+    // while the first handler is on the stack. Queue rather than drop.
     static MENU_PENDING: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
     static TICK_NEXT_ID: Cell<usize> = const { Cell::new(1) }; // 0 is SetTimer's failure sentinel
     // Set once in install(); add_tick (a free fn with no `self`) needs it to
@@ -172,10 +185,18 @@ fn dispatch_tick(id: usize) {
 }
 
 fn dispatch_menu(id: u32) {
-    // Take-then-run, exactly as dispatch_hotkey and dispatch_tick do: a
-    // menu action may itself pump (ShellExecuteW does), and re-entering a
-    // live RefCell borrow would panic across the extern "system" boundary,
-    // which aborts the process rather than the callback.
+    // Take-then-run, matching dispatch_hotkey and dispatch_tick's shape.
+    // Since show_menu passes TPM_RETURNCMD, TrackPopupMenu's own modal
+    // loop has already returned by the time this runs -- a menu click is no
+    // longer reentrant with ITSELF the way delivery via a posted WM_COMMAND
+    // arriving mid-modal-loop used to be, so this is belt-and-braces here
+    // rather than load-bearing (contrast dispatch_hotkey/dispatch_tick,
+    // where it still is). It stays exercised, not just defensive: a menu
+    // action may itself pump (open_path's ShellExecuteW does), and that
+    // nested pump can let a second click open and resolve another menu
+    // before the first handler returns -- re-entering a live RefCell borrow
+    // in that case would panic across the extern "system" boundary, which
+    // aborts the process rather than the callback.
     let Some(mut cb) = MENU_CB.with(|slot| slot.borrow_mut().take()) else {
         MENU_PENDING.with(|p| p.borrow_mut().push_back(id));
         return;
@@ -188,6 +209,13 @@ fn dispatch_menu(id: u32) {
 }
 
 fn show_menu(hwnd: HWND) {
+    // Shared borrow held across the call to `f()` -- the one dispatcher
+    // slot in this file that does NOT take-then-run. Deliberate, not an
+    // oversight: `build` is `Fn`, not `FnMut`, so a call into `f()` that
+    // somehow re-entered `show_menu` would only ever take a second SHARED
+    // borrow, and `RefCell` permits any number of those at once -- there is
+    // no concurrent mutable borrow to collide with, because `set_menu` (the
+    // only writer of MENU_BUILD) runs once before the message loop starts.
     let Some(entries) = MENU_BUILD.with(|b| b.borrow().as_ref().map(|f| f())) else {
         return;
     };
@@ -208,6 +236,11 @@ fn show_menu(hwnd: HWND) {
             if e.checked == Some(true) {
                 flags |= MF_CHECKED;
             }
+            // AppendMenuW copies the string `lpNewItem` points at into the
+            // menu's own storage before it returns, so `label` does not
+            // need to outlive this call -- hoisting the Vec out of the loop
+            // "for efficiency" would be reasoning about a lifetime that
+            // isn't actually there.
             let label: Vec<u16> = e.label.encode_utf16().chain(std::iter::once(0)).collect();
             let _ = AppendMenuW(menu, flags, e.id as usize, PCWSTR(label.as_ptr()));
         }
@@ -218,9 +251,36 @@ fn show_menu(hwnd: HWND) {
         // away, and without the trailing PostMessage the *next* menu fails
         // to appear. Documented in Microsoft KB135788.
         let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), hwnd, None);
+        // TPM_RETURNCMD: the chosen id comes back as this call's own return
+        // value (0 if the user cancelled -- menu ids start at 1 and
+        // separators aren't selectable, so 0 is unambiguous) instead of
+        // being posted as WM_COMMAND while TrackPopupMenu's modal loop is
+        // still on the stack. That closes two hardware risks the posted
+        // form had: Quit potentially hanging if Windows does not re-post
+        // WM_QUIT out of the nested loop, and a hotkey landing on
+        // HOTKEY_PENDING only to be dropped by unregister_all's
+        // PeekMessageW drain if the very next click is Pause or Reload.
+        //
+        // The BOOL return here is a documented Win32 wart: with
+        // TPM_RETURNCMD set, the value that comes back in the slot typed as
+        // BOOL is actually the menu command id, not a success flag -- so
+        // this reads `.0` for the id and must never call `.as_bool()`,
+        // which would collapse every id to `true`.
+        let id = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        )
+        .0;
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
+        if id != 0 {
+            dispatch_menu(id as u32);
+        }
     }
 }
 
@@ -262,12 +322,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESUL
         }
         return LRESULT(0);
     }
-    if msg == WM_COMMAND {
-        // TrackPopupMenu without TPM_RETURNCMD posts the chosen id here.
-        // The high word is the notification code and is 0 for a menu.
-        dispatch_menu((w.0 & 0xFFFF) as u32);
-        return LRESULT(0);
-    }
+    // No WM_COMMAND branch: show_menu passes TPM_RETURNCMD, so the chosen
+    // menu id comes back as TrackPopupMenu's own return value instead of
+    // being posted here, and this window has no other WM_COMMAND source --
+    // it's created with hMenu = None, no accelerators, no child controls.
     let taskbar_created = TASKBAR_CREATED_MSG.with(|c| c.get());
     if taskbar_created != 0 && msg == taskbar_created {
         // Explorer (re)created the notification area — logon race or an
@@ -307,13 +365,26 @@ fn tray_add(hwnd: HWND) {
         uCallbackMessage: WM_TRAY,
         ..Default::default()
     };
-    // Resource id 1 from beckon.rc; fall back to the stock icon if the
+    // Resource id 1 from beckon.rc, loaded at the *small* icon size
+    // (SM_CXSMICON/SM_CYSMICON -- typically 16x16) via LoadImageW rather
+    // than LoadIconW, which only ever returns the SM_CXICON (32x32)
+    // variant: NOTIFYICONDATAW.hIcon wants the small one, and letting the
+    // shell downsample 32->16 on the fly blurred an icon that is crisp at
+    // 16x16 in the .ico itself. Falls back to the stock icon if the
     // resource is missing, so an icon-less build still shows *something*
     // rather than no tray icon at all.
     nid.hIcon = unsafe {
         let hinst = GetModuleHandleW(None).unwrap_or_default();
-        LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
-            .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+        LoadImageW(
+            Some(hinst.into()),
+            PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_DEFAULTCOLOR,
+        )
+        .map(|h| HICON(h.0))
+        .or_else(|_| LoadIconW(None, IDI_APPLICATION))
     }
     .unwrap_or_default();
     TRAY_TIP.with(|t| fill_tip(&mut nid.szTip, &t.borrow()));
