@@ -42,8 +42,10 @@ fn serve_conflicts_with_check() {
         stderr.contains("unexpected argument 'check' found"),
         "stderr: {stderr}",
     );
+    // Match the usage line without the binary name: clap prints the argv[0]
+    // it was given, which is `beckon.exe` on Windows and `beckon` elsewhere.
     assert!(
-        stderr.contains("Usage: beckon serve"),
+        stderr.contains("serve [OPTIONS] <CONFIG>"),
         "the rejection did not come from the serve subcommand: {stderr}",
     );
 }
