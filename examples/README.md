@@ -30,16 +30,18 @@ press hotkey         (registered by your OS/WM dotfile,
 | i3 (X11) | i3-IPC (shared) | [`linux/i3/`](linux/i3/) |
 | Hyprland (Wayland) | Hyprland Unix-socket IPC | [`linux/hyprland/`](linux/hyprland/) |
 | GNOME on X11 | EWMH (`x11rb`) | [`linux/gnome-x11/`](linux/gnome-x11/) |
-| KDE Plasma on X11 | EWMH (`x11rb`) | [`linux/kde-x11/`](linux/kde-x11/) |
+| KDE Plasma on X11 | EWMH (`x11rb`) | [`linux/kde/`](linux/kde/) |
 | XFCE | EWMH (`x11rb`) | [`linux/xfce/`](linux/xfce/) |
 | openbox / awesome / fluxbox | EWMH (`x11rb`) | [`linux/openbox/`](linux/openbox/) |
 | GNOME on Wayland | bundled shell extension over D-Bus | [`../extensions/`](../extensions/) — install it, then bind keys in GNOME Settings |
+| KDE Plasma on Wayland | KWin scripting over D-Bus | [`linux/kde/`](linux/kde/) — same Custom Shortcuts UI as the X11 session |
 
-> KDE on **Wayland** blocks external focus by design and offers no
-> extension API to ride on — beckon doesn't work there. Switch to the
-> X11 session, or use sway / Hyprland. GNOME on Wayland *is* supported,
-> but only once the bundled `beckon@xom11.github.io` extension is
-> installed and you've logged back in.
+> Both Wayland desktops block external focus by design, and each needs a
+> collaborator running *inside* the compositor. The difference is what
+> that costs you: **KDE** needs nothing — KWin ships its own scripting
+> engine, so beckon loads a script, reads the answer back, and unloads
+> it. **GNOME** needs the bundled `beckon@xom11.github.io` extension
+> installed, plus a logout and login, before anything works.
 
 ### macOS
 

@@ -570,7 +570,39 @@ hs.hotkey.bind(hyper, "c", function() hs.execute("beckon Claude") end)
 ## Known constraints
 
 ### Wayland hotkey
-Wayland has no standard global hotkey API. On sway/Hyprland the compositor itself must bind the key and `exec beckon`. There is no app-level workaround.
+On every Linux target, the compositor / DE binds the key and `exec beckon`s.
+That is the shape of the integration, and `--serve` is not offered here.
+
+This entry used to read *"Wayland has no standard global hotkey API […]
+There is no app-level workaround."* That is not accurate and was leading
+sessions to conclude Linux resident mode is technically impossible. There
+**is** a standard — `org.freedesktop.portal.GlobalShortcuts` — plus
+per-desktop routes that predate it. Surveyed 2026-08, **from documentation
+only; none of this has been built or run against beckon**:
+
+| Environment | Route | State |
+|---|---|---|
+| X11 (i3, openbox, XFCE, GNOME-X11, KDE-X11) | `XGrabKey` on root — what sxhkd / xbindkeys do; beckon already links `x11rb`, which exposes `grab_key` | available |
+| KDE Wayland | KWin script `registerShortcut`, same engine `kde.rs` already drives via `loadScript`; or the portal | available, two routes |
+| Hyprland | GlobalShortcuts portal via `xdg-desktop-portal-hyprland` | available |
+| GNOME Wayland | the bundled extension could `addKeybinding` / `grab_accelerator`; the portal route is unreliable (Mutter ≥ 49 dropped XWayland-side key grabs) | awkward |
+| **sway** | wlroots has not implemented the GlobalShortcuts portal — still under discussion | **no route** |
+
+So "impossible" holds for exactly one compositor, and it is the one where
+`bindsym` is easiest. The reasons this stays out of scope are different,
+and they are what to re-read before anyone reopens this:
+
+1. **No single API.** macOS is one call, Windows is one call, Linux would be
+   four separate implementations — comparable to the cost of the entire
+   existing Linux backend layer, for one feature.
+2. **The portal model does not carry the shortcuts TOML.** An app asks for a
+   shortcut *by name* and the **user** assigns the keys in the compositor's
+   own UI — deliberate, per the Wayland security model. `"ctrl+super+alt+t" =
+   "kitty"` has nowhere to go, so a Wayland `--serve` would be a different
+   feature wearing the same flag.
+3. **Negative value.** Every environment in the table already ships a place
+   to bind a key to a command. `--serve` exists because macOS and Windows do
+   not.
 
 ### GNOME / KDE Wayland focus restrictions
 Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary windows on Wayland — this is by design (Wayland security model).
@@ -705,7 +737,7 @@ OS metadata on every call.
 ## Out of scope (explicitly)
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `--serve` TOML is a *hotkey table*, not a place to alias ids.
-- **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME Settings). Wayland has no app-level hotkey API, so there is nothing to implement. On macOS / Windows this is *in* scope and shipped: `--serve` registers via RegisterEventHotKey / RegisterHotKey.
+- **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `--serve` registers via RegisterEventHotKey / RegisterHotKey.
 - **GUI / TUI** — CLI only.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `-s` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.

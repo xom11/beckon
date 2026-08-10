@@ -1,12 +1,23 @@
-# KDE Plasma (X11)
+# KDE Plasma (X11 and Wayland)
 
-KWin on X11 supports EWMH. The **Wayland** session of KDE blocks
-external focus — beckon can't work there. Pick "Plasma (X11)" at the
-login screen.
+Both sessions work, through different backends — beckon picks the right
+one on its own, and the hotkey setup below is identical either way.
 
-> Verify session type:
+| Session | Backend | Needs installing |
+|---|---|---|
+| Plasma on X11 | EWMH via `x11rb` | nothing |
+| Plasma on Wayland | KWin's own scripting engine over D-Bus | nothing |
+
+KWin on Wayland does block external processes from focusing windows —
+that part of the Wayland security model is real. beckon gets around it
+the way KWin itself sanctions: it loads a small generated script into
+KWin, reads the window list back out over D-Bus, and unloads it. Unlike
+the GNOME Wayland path there is no extension to install and no logout.
+
+> Check which one you're on:
 > ```sh
-> echo $XDG_SESSION_TYPE     # must say "x11"
+> echo $XDG_SESSION_TYPE     # "x11" or "wayland"
+> beckon -d                  # prints the backend beckon picked
 > ```
 
 ## Wire bindings via System Settings
@@ -49,9 +60,14 @@ Brave PWAs and Flatpaks have whatever Name the install put into their
 ## Troubleshooting
 
 ```sh
-beckon -d            # session type + EWMH detection
+beckon -d            # session type + which backend was picked
 beckon -l            # what KWin currently exposes
-xprop -root _NET_SUPPORTED   # confirm EWMH atoms are advertised
+
+# X11 session only — confirm EWMH atoms are advertised:
+xprop -root _NET_SUPPORTED
+
+# Wayland session only — confirm KWin's scripting service is reachable:
+busctl --user introspect org.kde.KWin /Scripting | grep -i loadScript
 ```
 
 If pressing the hotkey does nothing and `beckon -d` looks healthy,

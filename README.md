@@ -29,7 +29,7 @@ beckon -d                      # diagnose your environment
 #    examples/ and follow its README:
 #       examples/linux/sway/         examples/linux/i3/
 #       examples/linux/hyprland/     examples/linux/gnome-x11/
-#       examples/linux/kde-x11/      examples/linux/xfce/
+#       examples/linux/kde/          examples/linux/xfce/
 #       examples/linux/openbox/      examples/macos/hammerspoon/
 #       examples/windows/ahk/
 #
@@ -62,9 +62,9 @@ notification a minute; a hotkey you press five times should tell you five times.
 | Linux / X11 generic (GNOME-X11, KDE-X11, XFCE, openbox, awesome) | ✅ Phase 1b.x11 — `x11rb` + EWMH |
 | Linux / Hyprland (Wayland) | ✅ Phase 1c — native Unix-socket IPC |
 | Linux / GNOME Wayland | ✅ Phase 1d — bundled GNOME Shell extension over D-Bus |
+| Linux / KDE Wayland | ✅ Phase 1e — KWin scripting over D-Bus, nothing to install |
 | macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
 | Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
-| KDE Wayland | ❌ Out of scope (KWin blocks external focus, no bridge to ride on) |
 
 Resident hotkey mode (`--serve`) is available on macOS and Windows. Linux
 stays compositor-bound by design — the compositor already owns the keybind.
@@ -93,10 +93,10 @@ cargo build --release
 
 Requirements: Rust 1.75+. Linux supports sway, i3, Hyprland, any
 EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome),
-and GNOME Wayland via the bundled shell extension in
+GNOME Wayland via the bundled shell extension in
 [`extensions/`](./extensions/) — install it with `gnome-extensions install`
-and log back in. KDE Wayland is unsupported; `beckon -d` reports which
-backend it picked.
+and log back in — and KDE Wayland via KWin's own scripting engine, which
+needs nothing installed. `beckon -d` reports which backend it picked.
 On Windows: VS Build Tools 2022 with the C++ ARM64/x64 component and
 Windows SDK.
 
