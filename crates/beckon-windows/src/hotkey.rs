@@ -34,7 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadIconW, PeekMessageW,
@@ -69,6 +69,11 @@ thread_local! {
     // still needs the live id list to unregister everything for an orderly
     // exit, since std::process::exit skips Drop entirely.
     static REGISTERED_IDS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    // The tooltip text currently displayed. Kept so a TaskbarCreated re-add
+    // (Explorer restart, logon race) restores the live status instead of
+    // reverting to the startup placeholder — the icon coming back with a
+    // stale tooltip would be a worse signal than no icon at all.
+    static TRAY_TIP: RefCell<String> = RefCell::new(String::from("beckon serve"));
 }
 
 fn dispatch_hotkey(id: u32) {
@@ -139,6 +144,22 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESUL
     unsafe { DefWindowProcW(hwnd, msg, w, l) }
 }
 
+/// Copy `text` into a fixed-size UTF-16 tip buffer, always NUL-terminated
+/// and always clearing whatever the buffer held before.
+///
+/// `szTip` is a fixed array, not a pointer: a shorter second call would
+/// otherwise leave the tail of the first call's text in place and the tray
+/// would show a concatenation of both.
+fn fill_tip(dst: &mut [u16; 128], text: &str) {
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let max = dst.len() - 1; // leave room for the NUL terminator
+    let n = utf16.len().min(max);
+    dst[..n].copy_from_slice(&utf16[..n]);
+    for slot in dst[n..].iter_mut() {
+        *slot = 0;
+    }
+}
+
 fn tray_add(hwnd: HWND) {
     let mut nid = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
@@ -152,14 +173,7 @@ fn tray_add(hwnd: HWND) {
         ..Default::default()
     };
     nid.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
-    // szTip is a fixed-size buffer; bound the copy instead of trusting the
-    // source string to always fit, and NUL-terminate explicitly so
-    // truncation (if the string ever changes) can't cut off the only NUL.
-    let tip: Vec<u16> = "beckon serve".encode_utf16().collect();
-    let max = nid.szTip.len() - 1; // leave room for the NUL terminator
-    let n = tip.len().min(max);
-    nid.szTip[..n].copy_from_slice(&tip[..n]);
-    nid.szTip[n] = 0;
+    TRAY_TIP.with(|t| fill_tip(&mut nid.szTip, &t.borrow()));
     // Best effort: a missing tray icon must not take the hotkeys down — but
     // it must not go silent either, or "no icon" reads as "daemon is dead"
     // and the user starts a second instance. Two known-benign causes: no
@@ -426,4 +440,62 @@ pub fn add_tick(seconds: f64, cb: Box<dyn FnMut()>) {
         return;
     }
     TICK_CBS.with(|cbs| cbs.borrow_mut().push((id, cb)));
+}
+
+/// Update the tray tooltip. Best effort: a tooltip that will not update must
+/// not take the hotkeys down, but it must not be silent either — the whole
+/// point of the tooltip is that it is the honest answer to "is this alive and
+/// how many keys does it hold".
+pub fn set_status(text: &str) {
+    TRAY_TIP.with(|t| *t.borrow_mut() = text.to_string());
+    let hwnd = TRAY_HWND.with(|c| c.get());
+    if hwnd.0.is_null() {
+        return; // install() has not run yet; tray_add will pick the text up
+    }
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        uFlags: NIF_TIP,
+        ..Default::default()
+    };
+    fill_tip(&mut nid.szTip, text);
+    if !unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) }.as_bool() {
+        eprintln!("hotkey: Shell_NotifyIconW(NIM_MODIFY) failed - tooltip is stale");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_tip_writes_text_and_terminates() {
+        let mut buf = [0xFFFFu16; 128];
+        fill_tip(&mut buf, "beckon - 5 shortcuts");
+        let text: String = String::from_utf16(&buf[..20]).unwrap();
+        assert_eq!(text, "beckon - 5 shortcuts");
+        assert_eq!(buf[20], 0, "must be NUL-terminated right after the text");
+    }
+
+    #[test]
+    fn fill_tip_truncates_and_still_terminates() {
+        let mut buf = [0xFFFFu16; 128];
+        let long = "x".repeat(500);
+        fill_tip(&mut buf, &long);
+        assert_eq!(buf[127], 0, "the last slot must always be the NUL");
+        assert!(buf[..127].iter().all(|&c| c == b'x' as u16));
+    }
+
+    #[test]
+    fn fill_tip_clears_the_tail_of_a_reused_buffer() {
+        let mut buf = [0u16; 128];
+        fill_tip(&mut buf, "a long previous tooltip");
+        fill_tip(&mut buf, "hi");
+        assert_eq!(String::from_utf16(&buf[..2]).unwrap(), "hi");
+        assert!(
+            buf[2..].iter().all(|&c| c == 0),
+            "stale text from the previous call must not survive"
+        );
+    }
 }

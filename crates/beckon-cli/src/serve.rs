@@ -54,6 +54,16 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+/// Publish a one-line status where the user can see it without reading the
+/// log. Windows has the tray tooltip; macOS has nowhere to put it, and the
+/// LaunchAgent's stderr already goes to a file launchd owns.
+#[cfg(target_os = "windows")]
+fn set_tray_status(text: &str) {
+    hotkey::set_status(text);
+}
+#[cfg(not(target_os = "windows"))]
+fn set_tray_status(_text: &str) {}
+
 struct ServeState {
     shortcuts: Vec<Shortcut>,
     config: PathBuf,
@@ -120,11 +130,9 @@ pub fn cmd_serve(config: &Path) -> Result<()> {
         );
     }
 
-    eprintln!(
-        "beckon serve: {} from {}",
-        registration_phrase(outcome.ok, state.borrow().shortcuts.len()),
-        config.display()
-    );
+    let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+    eprintln!("beckon serve: {} from {}", phrase, config.display());
+    set_tray_status(&phrase);
     if let Some(toast) = failure_toast(&outcome.failed) {
         crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
     }
@@ -267,10 +275,9 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             m.unregister_all();
             state.borrow_mut().shortcuts = new;
             let outcome = register_all(&mut m, &state.borrow().shortcuts);
-            eprintln!(
-                "beckon serve: reloaded - {}",
-                registration_phrase(outcome.ok, state.borrow().shortcuts.len())
-            );
+            let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+            eprintln!("beckon serve: reloaded - {phrase}");
+            set_tray_status(&phrase);
             if let Some(toast) = failure_toast(&outcome.failed) {
                 crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
