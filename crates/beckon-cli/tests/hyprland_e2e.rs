@@ -542,7 +542,7 @@ fn list_running_emits_apps_grouped_by_class() {
     let srv = FakeServer::start(state);
 
     let out = srv.run_beckon(&["list"]);
-    ok_output(&out, "beckon -l");
+    ok_output(&out, "beckon list");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     // Output is fixed-width: ID column, then WINS, then NAME. We only
@@ -580,7 +580,7 @@ fn doctor_reports_hyprland_backend_and_running_count() {
     let srv = FakeServer::start(state);
 
     let out = srv.run_beckon(&["doctor"]);
-    ok_output(&out, "beckon -d");
+    ok_output(&out, "beckon doctor");
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(

@@ -64,14 +64,14 @@ extern "C" {
 // ---------- Convenience wrappers ----------
 
 /// Whether the current process has been granted Accessibility permission.
-/// Used by `beckon -d`. Does not prompt the user.
+/// Used by `beckon doctor`. Does not prompt the user.
 pub fn ax_is_process_trusted() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
 /// Same as [`ax_is_process_trusted`] but pops the system "grant access" panel
 /// when `false`. Currently unused — beckon prefers a clear error message in
-/// `-d` over an unprompted system dialog from the hot path.
+/// `doctor` over an unprompted system dialog from the hot path.
 pub fn ax_is_process_trusted_prompt() -> bool {
     let key = CFString::from_static_string("AXTrustedCheckOptionPrompt");
     let value = core_foundation::boolean::CFBoolean::true_value();

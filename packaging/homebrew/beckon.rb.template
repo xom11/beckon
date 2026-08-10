@@ -30,7 +30,7 @@ class Beckon < Formula
     bin.install "beckon"
   end
 
-  # `--serve` (the resident hotkey host) exists only on macOS and Windows; on
+  # `serve` (the resident hotkey host) exists only on macOS and Windows; on
   # Linux the compositor owns the keybind, so there is deliberately no service
   # there. `OS.mac?` is evaluated when the formula is loaded, so on Linux no
   # service is registered at all and beckon never appears in
@@ -48,7 +48,7 @@ class Beckon < Formula
   # such treatment, which would leave launchd failing to open it in silence.
   if OS.mac?
     service do
-      run [opt_bin/"beckon", "--serve", "#{Dir.home}/.config/beckon/apps.toml"]
+      run [opt_bin/"beckon", "serve", "#{Dir.home}/.config/beckon/apps.toml"]
       keep_alive true
       process_type :interactive
       log_path var/"log/beckon.log"
@@ -66,7 +66,7 @@ class Beckon < Formula
 
         mkdir -p ~/.config/beckon
         printf '"ctrl+super+alt+t" = "kitty"\\n' > ~/.config/beckon/apps.toml
-        beckon --check ~/.config/beckon/apps.toml
+        beckon check ~/.config/beckon/apps.toml
         brew services start beckon
 
       Do not use `sudo brew services start`: that installs a LaunchDaemon,

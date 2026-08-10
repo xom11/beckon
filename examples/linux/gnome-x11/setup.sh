@@ -51,4 +51,4 @@ for i in "${!ENTRIES[@]}"; do
     printf "  %-15s → beckon %s\n" "$binding" "$app"
 done
 echo
-echo "Test one: press the binding, or run \`beckon -d\` to check the env."
+echo "Test one: press the binding, or run \`beckon doctor\` to check the env."

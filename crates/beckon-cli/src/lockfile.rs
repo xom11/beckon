@@ -1,6 +1,6 @@
 //! Single-instance lock per config path. flock-based: the lock dies with
 //! the process, so a crashed serve never wedges its successor.
-// Used by --serve (macOS, Windows); tests exercise it on every OS.
+// Used by `serve` (macOS, Windows); tests exercise it on every OS.
 #![cfg_attr(
     all(not(test), not(any(target_os = "macos", target_os = "windows"))),
     allow(dead_code)
@@ -46,7 +46,7 @@ impl std::fmt::Display for AcquireError {
             // nothing to a reader trying to work out which daemon is up.
             Self::AlreadyRunning { config, lock } => write!(
                 f,
-                "another `beckon --serve` is already running for `{}` (lock `{}`)",
+                "another `beckon serve` is already running for `{}` (lock `{}`)",
                 config.display(),
                 lock.display()
             ),

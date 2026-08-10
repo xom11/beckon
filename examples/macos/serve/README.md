@@ -1,11 +1,11 @@
-# macOS resident mode (`--serve` + launchd)
+# macOS resident mode (`serve` + launchd)
 
-`beckon --serve <config>` makes beckon host the hotkeys itself — no
+`beckon serve <config>` makes beckon host the hotkeys itself — no
 Hammerspoon layer. Pick this **or** [`../hammerspoon/`](../hammerspoon/),
 not both: two daemons registering the same chord means the second one
 loses the registration.
 
-| | Hammerspoon | `--serve` |
+| | Hammerspoon | `serve` |
 |---|---|---|
 | Extra dependency | Hammerspoon | none |
 | Config language | Lua | flat TOML |
@@ -28,13 +28,13 @@ cp apps.toml ~/.config/beckon/apps.toml
 $EDITOR ~/.config/beckon/apps.toml
 
 # 3. validate it — exit 0 means every combo parsed
-beckon --check ~/.config/beckon/apps.toml
+beckon check ~/.config/beckon/apps.toml
 ```
 
 Run it in the foreground first to confirm the keys actually fire:
 
 ```sh
-beckon --serve ~/.config/beckon/apps.toml
+beckon serve ~/.config/beckon/apps.toml
 # beckon serve: 5 shortcuts registered from /Users/you/.config/beckon/apps.toml
 ```
 
@@ -51,7 +51,7 @@ brew services list                       # beckon should be `started`
 tail -f "$(brew --prefix)/var/log/beckon.log"
 ```
 
-It reads `~/.config/beckon/apps.toml`. Create and `beckon --check` it
+It reads `~/.config/beckon/apps.toml`. Create and `beckon check` it
 first — `keep_alive` restarts a serve that cannot read its config every
 ~10 seconds, forever.
 
@@ -102,7 +102,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.xom11.beckon.
 > and without one `RegisterEventHotKey` returns success while silently
 > never delivering a press. beckon handles this by transforming itself
 > into a UIElement app at startup (no Dock icon, no menu bar). Nothing
-> for you to configure — but it's why `--serve` under launchd works at
+> for you to configure — but it's why `serve` under launchd works at
 > all, and why the log line to trust is the registration count, not the
 > absence of errors.
 
@@ -117,7 +117,7 @@ Accessibility API.
    `~/.cargo/bin/beckon`) → toggle on.
 
 Without it, launch / focus / toggle / hide still work; only same-app
-window cycling degrades. `beckon -d` reports the trust state.
+window cycling degrades. `beckon doctor` reports the trust state.
 
 > macOS binds the grant to the binary's code signature, so a fresh
 > `cargo build` invalidates it. Nix users get a stable
@@ -136,7 +136,7 @@ registered until the file parses again.
 
 ```sh
 # safe loop while experimenting
-beckon --check ~/.config/beckon/apps.toml && tail -f /tmp/beckon-serve.log
+beckon check ~/.config/beckon/apps.toml && tail -f /tmp/beckon-serve.log
 ```
 
 ## Troubleshooting
@@ -152,13 +152,13 @@ beckon serve: 3 of 5 shortcuts registered (2 failed)   # two chords lost
 The second form means another app already owns those chords — macOS
 gives a hotkey to the first registrant. Check System Settings →
 Keyboard → Keyboard Shortcuts, and any other hotkey daemon you have
-running (including a stale `beckon --serve`).
+running (including a stale `beckon serve`).
 
-**"another `beckon --serve` is already running for `...`"** — one
+**"another `beckon serve` is already running for `...`"** — one
 instance per config path is enforced with a lock file. Find the other
-one with `pgrep -fl "beckon --serve"`.
+one with `pgrep -fl "beckon serve"`.
 
 **Nothing fires at all, but the log says everything registered** — the
 UIElement transform likely failed; the log has
-`hotkey: TransformProcessType failed`. Run `--serve` from a terminal to
+`hotkey: TransformProcessType failed`. Run `serve` from a terminal to
 confirm the config itself is fine.

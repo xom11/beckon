@@ -49,7 +49,7 @@ Reload: `Reconfigure` from the root menu, or `Restart`.
 ## Troubleshooting
 
 ```sh
-beckon -d
+beckon doctor
 xprop -root _NET_SUPPORTED   # must list _NET_ACTIVE_WINDOW
 ```
 

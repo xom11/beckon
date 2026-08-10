@@ -9,7 +9,7 @@ one mental model.
 
 ```
 press hotkey         (registered by your OS/WM dotfile,
-   │                  or by `beckon --serve` on macOS / Windows)
+   │                  or by `beckon serve` on macOS / Windows)
    │
    └── invokes:  beckon <Name>
                    │
@@ -48,14 +48,14 @@ press hotkey         (registered by your OS/WM dotfile,
 | Hotkey source | Config |
 |---|---|
 | Hammerspoon | [`macos/hammerspoon/`](macos/hammerspoon/) |
-| beckon itself (`--serve` + launchd) | [`macos/serve/`](macos/serve/) |
+| beckon itself (`serve` + launchd) | [`macos/serve/`](macos/serve/) |
 
 ### Windows
 
 | Hotkey source | Config |
 |---|---|
 | AutoHotkey v2 | [`windows/ahk/`](windows/ahk/) |
-| beckon itself (`--serve` + Scheduled Task) | [`windows/serve/`](windows/serve/) |
+| beckon itself (`serve` + Scheduled Task) | [`windows/serve/`](windows/serve/) |
 
 Pick one per machine, not both — a hotkey chord goes to whichever
 daemon registers it first, so running two just makes the second one
@@ -90,15 +90,15 @@ slightly different display names (e.g. `Visual Studio Code` instead
 of `Code`). Always check before binding:
 
 ```sh
-beckon -L                # list installed apps with their Name
-beckon -l                # list currently running apps
-beckon -s claude         # search by partial name
-beckon -r Claude         # validate one id — shows match type + Exec
-beckon -d                # diagnose your environment
+beckon installed         # list installed apps with their Name
+beckon list              # list currently running apps
+beckon search claude     # search by partial name
+beckon resolve Claude    # validate one id — shows match type + Exec
+beckon doctor            # diagnose your environment
 ```
 
-If `beckon -r Claude` reports `❌ no match`, copy the actual Name from
-`beckon -L` into your hotkey binding instead.
+If `beckon resolve Claude` reports `❌ no match`, copy the actual Name
+from `beckon installed` into your hotkey binding instead.
 
 ## Why one tool, many configs?
 
@@ -110,11 +110,11 @@ right place in each tool's config language.
 
 macOS and Windows do expose a hotkey API that doesn't need a
 permission prompt (`RegisterEventHotKey` / `RegisterHotKey`), so
-there `--serve` can skip the middleman entirely. The Hammerspoon and
+there `serve` can skip the middleman entirely. The Hammerspoon and
 AutoHotkey examples remain first-class — keep them if you already run
 those tools for other automation.
 
 Either way: same Names everywhere, and zero alias mapping. The only
-config file beckon ever reads is the `--serve` shortcuts TOML, which
+config file beckon ever reads is the `serve` shortcuts TOML, which
 maps keys to Names — `beckon <Name>` itself stays config-free and
 resolves against your OS's own app metadata.

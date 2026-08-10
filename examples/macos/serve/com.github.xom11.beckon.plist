@@ -11,7 +11,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/Users/YOUR_USERNAME/.cargo/bin/beckon</string>
-        <string>--serve</string>
+        <string>serve</string>
         <string>/Users/YOUR_USERNAME/.config/beckon/apps.toml</string>
     </array>
 
@@ -20,11 +20,11 @@
 
     <!-- Restart if the process dies. Note this also retries a startup
          failure (unreadable or invalid config) on launchd's ~10 s
-         throttle, so run `beckon --check` before loading the agent. -->
+         throttle, so run `beckon check` before loading the agent. -->
     <key>KeepAlive</key>
     <true/>
 
-    <!-- `--serve` logs registrations, reloads and per-hotkey errors to
+    <!-- `serve` logs registrations, reloads and per-hotkey errors to
          stderr. This is the only place you can see them once launchd
          owns the process. -->
     <key>StandardOutPath</key>

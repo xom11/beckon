@@ -246,7 +246,7 @@ impl<'a> From<&'a RunningAppInfo> for RunningRef<'a> {
 /// Resolve, reusing a `running_apps()` snapshot the caller already has.
 /// Used by `beckon()` to avoid querying NSWorkspace twice in the hot path.
 /// Calls `bundle_path_for` for running matches (NSWorkspace lookup) so the
-/// `-r` debug output can show a path; `installed_apps()` is queried lazily.
+/// `resolve` debug output can show a path; `installed_apps()` is queried lazily.
 pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<ResolvedMatch> {
     let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
     resolve_inner(id, &refs, installed_apps, bundle_path_for)
@@ -312,7 +312,7 @@ pub(crate) fn resolve_inner(
 }
 
 /// Substring matches across installed apps, sorted by bundle id. Used by
-/// `-r` to flag ambiguity ("4 other entries also match by name substring").
+/// `resolve` to flag ambiguity ("4 other entries also match by name substring").
 pub fn name_substring_matches(id: &str) -> Vec<InstalledAppInfo> {
     let needle = normalize(id);
     if needle.is_empty() {

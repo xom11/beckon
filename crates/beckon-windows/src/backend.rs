@@ -55,7 +55,8 @@ impl Backend for WindowsBackend {
                 id: id.to_string(),
                 reason: format!(
                     "no running window and no installed Windows app matches `{}`. \
-                     Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
+                     Run `beckon installed` to list installed apps, or `beckon search {}` \
+                     to search.",
                     id, id
                 ),
             })?;
@@ -343,7 +344,7 @@ fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// `beckon -r <id>` report on Windows.
+/// `beckon resolve <id>` report on Windows.
 pub fn print_resolve_report(id: &str) -> Result<()> {
     let installed = apps::scan_installed_apps();
     let resolved = apps::resolve(id, &installed);
@@ -372,7 +373,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
             }
             println!();
         }
-        println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
+        println!("Hint: `beckon installed` lists installed, `beckon list` lists running.");
         return Ok(());
     };
 
@@ -423,7 +424,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         for e in other_subs.iter().take(5) {
             println!("       {:<40} ({})", e.name, e.exe_name);
         }
-        println!("   Hint: use the exact Name from `beckon -L` to disambiguate.");
+        println!("   Hint: use the exact Name from `beckon installed` to disambiguate.");
     }
     Ok(())
 }

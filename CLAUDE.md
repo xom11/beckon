@@ -8,7 +8,7 @@ Cross-platform focus-or-launch app switcher for macOS, Windows, and Linux. A thi
 
 **Behavior**: press hotkey → if app not running, launch it. If running but not focused, focus it. If already focused, cycle to next window of the same app, or hide.
 
-**No config file on the hot path.** `beckon <id>` resolves a user-supplied id at runtime against the OS's own metadata (Linux `.desktop` files, macOS LaunchServices, Windows Start menu). The dotfile per OS holds the id. beckon ships discovery commands (`-l`, `-s`, `-r`) so users don't have to dig the id out of the OS by hand. The one file beckon does read is the resident-mode shortcuts TOML (`--serve` / `--check`, macOS + Windows) — a hotkey→Name table, not an id-alias layer.
+**No config file on the hot path.** `beckon <id>` resolves a user-supplied id at runtime against the OS's own metadata (Linux `.desktop` files, macOS LaunchServices, Windows Start menu). The dotfile per OS holds the id. beckon ships discovery commands (`list`, `search`, `resolve`) so users don't have to dig the id out of the OS by hand. The one file beckon does read is the resident-mode shortcuts TOML (`serve` / `check`, macOS + Windows) — a hotkey→Name table, not an id-alias layer.
 
 **Name-first identifiers.** The id can be a human-readable Name (e.g. `Claude`, `Brave`) or a canonical OS-level id (e.g. sway `app_id`, macOS `bundle_id`). beckon resolves Names against installed-app metadata (`.desktop` `Name=` on Linux). Names are stable across machines; OS-level ids often are not (Brave PWA hashes vary per install). Bindings should prefer Names; canonical ids are a fallback for ambiguity.
 
@@ -80,26 +80,66 @@ pub trait Backend {
 
 Why one entrypoint: focus / cycle / hide are intertwined per-OS (sway tree query is one IPC call that yields all the info; AppleScript activation is similar). Splitting into 5 trait methods would mean re-querying the window tree multiple times per invocation. One method = one query = simplest.
 
-### CLI surface (pure-flag style)
+### CLI surface (bare positional + subcommands, since 0.6.0)
 
 ```
-beckon <id>                  # focus-or-launch (default, hot path)
-beckon -l, --list            # list running apps with their ids
-beckon -L, --list-installed  # list installed apps with launch ids
-beckon -s, --search <name>   # fuzzy search across running + installed
-beckon -r, --resolve <id>    # validate id, print metadata + suggestions
-beckon -d, --doctor          # check environment (permissions, IPC, etc.)
-beckon --check <config>      # validate a shortcuts TOML file (CI-friendly)
-beckon --serve <config>      # resident hotkey service (macOS, Windows)
-beckon -v, --verbose         # debug logging (combine with any command)
+beckon <id>                          # focus-or-launch (default, hot path)
+beckon list                          # list running apps with their ids
+beckon installed                     # list installed apps with launch ids
+beckon search <NAME>                 # fuzzy search across running + installed
+beckon resolve <ID>                  # validate id, print metadata + suggestions
+beckon doctor                        # check environment (permissions, IPC, etc.)
+beckon check <CONFIG>                # validate a shortcuts TOML file (CI-friendly)
+beckon serve <CONFIG> [--log PATH]   # resident hotkey service (macOS, Windows)
+beckon -v, --verbose                 # debug logging (combine with any command)
 beckon -h, --help
 beckon -V, --version
 
-# Edge case: id starting with `-`
+# Edge case: id starting with `-`, or an app Name that shadows a subcommand
 beckon -- -weird.id
+beckon -- list
 ```
 
-The hot path (`beckon <id>`) is positional with no subcommand verb — the user types this 99% of the time from a hotkey binding. Discovery/admin actions are flags.
+The hot path (`beckon <id>`) is positional with no subcommand verb — the user types this 99% of the time from a hotkey binding. Discovery/admin actions are subcommands.
+
+`--log` belongs to `serve`, so the order is verb-then-operand-then-flag:
+`beckon serve C --log P`. `beckon --log P serve C` is a usage error, and that
+is structural — the argument is declared inside the `Serve` variant, so it is
+rejected everywhere else without a `requires =` guard.
+
+#### Reserved names are a closed list
+
+Eight words — `list`, `installed`, `search`, `resolve`, `doctor`, `check`,
+`serve`, `help` — and `RESERVED` in `crates/beckon-cli/src/main.rs` is the
+list. `help` is in it because clap injects that subcommand whether or not we
+declare it. An app whose Name is one of the eight is unreachable through the
+bare positional and can only be beckoned as `beckon -- <name>`. Subcommand
+matching is byte-exact while every beckon resolver is case-insensitive, so
+capitalisation alone decides the reading: `beckon Resolve` reaches the id
+path, `beckon resolve` does not.
+
+**Growth rule: new capabilities are flags on an existing verb, never a new
+top-level verb.** Each verb costs an app name permanently, and the cost is
+paid by users who never touch the verb. **No aliases, ever** — an alias costs
+a name and saves nothing.
+
+**Never set `args_conflicts_with_subcommands`.** Measured on clap 4.6.1: that
+flag makes clap stop looking for a subcommand once any argument has been
+parsed (`clap_builder/src/parser/parser.rs:592`), so `beckon -v list`
+silently binds `list` to the id positional and exits 0 — the 0.5.x defect
+respelled — and `testing/linux_live_test.py:509` runs eight live focus tests
+through exactly that `-v` shape. The id/subcommand conflict is instead
+enforced by hand in `Args::parse_checked`, which must not be deleted: without
+it clap accepts `beckon Claude list` silently and discards the id. Re-run
+both cases before touching either half.
+
+**`run <id>` was considered and dropped.** `--` escapes both a reserved name
+and a leading dash; `run` escapes only the first, and `run -weird.id` is
+itself a usage error (measured) that still needs `run -- -weird.id`. The
+escape hatch that strictly dominates is the one that already exists.
+
+Full measurements and the rejected alternatives are in
+`docs/superpowers/specs/2026-08-10-cli-subcommands-design.md`.
 
 ### Linux backend dispatch
 
@@ -158,11 +198,11 @@ Single behavior, not configurable. The backend implements the full algorithm; CL
 Each backend resolves its OS's installed-app metadata. Linux scans `.desktop` files in `$XDG_DATA_DIRS/applications/` and tries:
 
 1. **`Name=` exact** (case-insensitive, normalized to drop bidi/format marks). Recommended for dotfiles — Names are stable across machines.
-2. **Filename stem** (`kitty.desktop` → `kitty`). Useful when copy-pasting an id from `beckon -l`.
+2. **Filename stem** (`kitty.desktop` → `kitty`). Useful when copy-pasting an id from `beckon list`.
 3. **`StartupWMClass=`**. Often wrong on Wayland (Brave ignores it) but harmless to try.
 4. **`Name=` substring** (case-insensitive). Multiple matches → alphabetical first wins ("first wins" like rofi).
 
-If priorities 1-4 all fail, fall back to treating `id` as a literal `app_id`. This still allows focusing apps that aren't in any `.desktop` file (ad-hoc programs); launching such an unknown id is an error with a "run `beckon -L` / `-s`" hint.
+If priorities 1-4 all fail, fall back to treating `id` as a literal `app_id`. This still allows focusing apps that aren't in any `.desktop` file (ad-hoc programs); launching such an unknown id is an error with a "run `beckon installed` / `beckon search`" hint.
 
 An empty id is rejected at the CLI boundary. It used to reach tier 4, where
 it is a substring of every `Name`, so a dotfile doing `beckon "$APP"` with
@@ -176,13 +216,13 @@ Scanning rules that the tiers depend on:
   Firefox, a user override under a new filename, two PWAs with the same
   display name) the *same* keypress resolved differently from run to run and
   beckon alternated between focusing the window and launching a second copy.
-  Measured before the fix: 20 runs of `beckon -r Dup` split 12/8 between two
+  Measured before the fix: 20 runs of `beckon resolve Dup` split 12/8 between two
   entries. Sorting gives every tier the "alphabetically first `.desktop` id
   wins" rule tier 4 already documented.
 - **Subdirectories are scanned, and the id is the relative path with `/`
   replaced by `-`** — the XDG menu spec's *desktop file id*. Wine
   (`applications/wine/Programs/…`) and KDE (`applications/kde4/…`) install
-  that way; a flat `read_dir` made those apps invisible to `-L` and
+  that way; a flat `read_dir` made those apps invisible to `installed` and
   unlaunchable. Symlinked directories are not followed (`applications/foo -> /`
   would walk the whole filesystem).
 - **`XDG_DATA_HOME` / `XDG_DATA_DIRS` set-but-empty is treated as unset, and
@@ -469,7 +509,7 @@ a generated script, gets the answer back, and unloads it.
   realistically contain a quote today — but building source by concatenation
   without escaping is how that stops being true.
 - **Hot-path cost, measured on the headless VM**: `beckon <id>` 7–41 ms
-  (median ~15), `beckon -l` 5–6 ms. Comfortably inside the 50 ms budget, and
+  (median ~15), `beckon list` 5–6 ms. Comfortably inside the 50 ms budget, and
   cheaper than both macOS (~95–105 ms) and Windows (~57 ms).
 
 Testing: `kwin_wayland --virtual` runs headless with no GPU at all — see
@@ -529,7 +569,7 @@ What beckon should add:
 - Replace `osascript` shell-out (~50ms) with native `objc2-app-kit` (`NSWorkspace.runningApplications`, `NSRunningApplication.activate`).
 - Add step 5a (cycle within same app) — Hammerspoon skipped this.
 - Use `CGWindowListCopyWindowInfo(.optionOnScreenOnly)` for z-order → free MRU, no state file needed (unlike Linux).
-- **Accessibility permission required**. Detect via `AXIsProcessTrusted()` and surface a clear message in `beckon -d` if missing.
+- **Accessibility permission required**. Detect via `AXIsProcessTrusted()` and surface a clear message in `beckon doctor` if missing.
 
 ### Windows — AHK script
 
@@ -571,7 +611,7 @@ hs.hotkey.bind(hyper, "c", function() hs.execute("beckon Claude") end)
 
 ### Wayland hotkey
 On every Linux target, the compositor / DE binds the key and `exec beckon`s.
-That is the shape of the integration, and `--serve` is not offered here.
+That is the shape of the integration, and `serve` is not offered here.
 
 This entry used to read *"Wayland has no standard global hotkey API […]
 There is no app-level workaround."* That is not accurate and was leading
@@ -598,10 +638,10 @@ and they are what to re-read before anyone reopens this:
 2. **The portal model does not carry the shortcuts TOML.** An app asks for a
    shortcut *by name* and the **user** assigns the keys in the compositor's
    own UI — deliberate, per the Wayland security model. `"ctrl+super+alt+t" =
-   "kitty"` has nowhere to go, so a Wayland `--serve` would be a different
-   feature wearing the same flag.
+   "kitty"` has nowhere to go, so a Wayland `serve` would be a different
+   feature wearing the same name.
 3. **Negative value.** Every environment in the table already ships a place
-   to bind a key to a command. `--serve` exists because macOS and Windows do
+   to bind a key to a command. `serve` exists because macOS and Windows do
    not.
 
 ### GNOME / KDE Wayland focus restrictions
@@ -638,17 +678,17 @@ Required to focus arbitrary apps. Permission is bound to the codesigned binary i
 PWAs must be **installed as standalone apps** (Brave/Chrome → "Install this site as an app") so each gets a stable bundle ID / `.desktop` / `WM_CLASS`. beckon does NOT handle `--app=URL` invocations — that approach is too brittle to detect/focus reliably.
 
 ### Per-OS identifier asymmetry
-Names typically resolve consistently across OSes (`Claude` works on Linux/macOS/Windows). Where they don't — e.g. macOS app display name is localized, or two apps share a `Name=` on Linux — users fall back to a canonical OS id (bundle_id / .desktop filename / exe). Discovery via `beckon -s <name>` per machine.
+Names typically resolve consistently across OSes (`Claude` works on Linux/macOS/Windows). Where they don't — e.g. macOS app display name is localized, or two apps share a `Name=` on Linux — users fall back to a canonical OS id (bundle_id / .desktop filename / exe). Discovery via `beckon search <name>` per machine.
 
 ### PWA hash drift (Brave / Chrome)
-PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` filename (Linux) or bundle_id (macOS) — e.g. `brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default`. **The hash is generated locally during install and differs across machines**, so canonical ids can't be synced via dotfile copy. The Name field, however, is stable: `Name=Claude` on every machine. **This is the primary reason Name-based resolution is the recommended id format.** `beckon -r <id>` reports "no match" with fuzzy suggestions when a stale canonical id appears in a dotfile.
+PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` filename (Linux) or bundle_id (macOS) — e.g. `brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default`. **The hash is generated locally during install and differs across machines**, so canonical ids can't be synced via dotfile copy. The Name field, however, is stable: `Name=Claude` on every machine. **This is the primary reason Name-based resolution is the recommended id format.** `beckon resolve <id>` reports "no match" with fuzzy suggestions when a stale canonical id appears in a dotfile.
 
 ## Open questions (decide in implementation session)
 
 1. **Daemon vs one-shot CLI**
    Decided: **one-shot for the hot path, plus an opt-in resident mode.**
    `beckon <id>` stays a one-shot CLI (~10ms cold start) for compositor-bound
-   hotkeys (sway/GNOME). `--serve <config>` (2026-08) additionally hosts the
+   hotkeys (sway/GNOME). `serve <config>` (2026-08) additionally hosts the
    hotkeys itself on macOS/Windows — where no compositor binds keys for us —
    reading a flat TOML (`"ctrl+super+alt+t" = "kitty"`), watching it for
    reloads. Hotkey registration uses RegisterEventHotKey / RegisterHotKey:
@@ -665,8 +705,16 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
    all. Above all it solves the wrong problem: forking buys "survives
    closing the terminal", while what users need is "starts at login" and
    "restarts if it dies" — both of which still require launchd / Task
-   Scheduler afterwards. The ergonomic step that *is* open is a `--service
-   install/start/stop` subcommand (the skhd / espanso pattern); not built.
+   Scheduler afterwards. The ergonomic step that *is* open is an
+   install/start/stop lifecycle (the skhd / espanso pattern); not built, and
+   its shape is not decided. The growth rule in *CLI surface* rules out a
+   top-level `service` verb, which leaves two candidates — flags on the
+   existing verb (`serve --install`, which reads oddly for an operation that
+   installs a launchd agent rather than serving) or subcommands nested under
+   it (`serve install`, which reads correctly and costs no top-level name,
+   but puts a positional `<CONFIG>` and a subcommand on the same level and so
+   inherits the `(Some, Some)` problem documented above, one level down).
+   Pick one when it is actually built.
 
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at
@@ -682,8 +730,8 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
 3. **Notification on errors**
    Decided: **auto-detect TTY**. If stderr is not a terminal (typical hotkey-bound invocation), beckon fires a desktop notification in addition to the stderr line. Linux uses `notify-send` (best-effort: silent if absent). macOS will use `osascript display notification`; Windows will use a toast — both pending phase 2/3.
 
-4. **`-s` search scope and ranking**
-   Should `beckon -s claude` match against window titles too, or only app id / app name? Title match is more forgiving but volatile. Default likely: id + name only, `--include-titles` opt-in.
+4. **`search` scope and ranking**
+   Should `beckon search claude` match against window titles too, or only app id / app name? Title match is more forgiving but volatile. Default likely: id + name only, `--include-titles` opt-in.
 
 ## Crate dependencies
 
@@ -724,22 +772,22 @@ zbus       = "4"      # session bus client for the GNOME Shell extension bridge
 # Future:
 # freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
 
-# resident mode (--check / --serve, since 2026-08)
+# resident mode (check / serve, since 2026-08)
 toml   = "0.8"    # beckon-core: parse the shortcuts file
 notify = "6"      # beckon-cli:  watch it for live reload
-fs4    = "0.8"    # beckon-cli:  flock, one --serve per config path
+fs4    = "0.8"    # beckon-cli:  flock, one serve per config path
 ```
 
-The **only** file beckon reads is the `--serve` shortcuts TOML. There is still
+The **only** file beckon reads is the `serve` shortcuts TOML. There is still
 no config for `beckon <id>` itself and no resolve cache — ids resolve against
 OS metadata on every call.
 
 ## Out of scope (explicitly)
 
-- **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `--serve` TOML is a *hotkey table*, not a place to alias ids.
-- **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `--serve` registers via RegisterEventHotKey / RegisterHotKey.
+- **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
+- **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `serve` registers via RegisterEventHotKey / RegisterHotKey.
 - **GUI / TUI** — CLI only.
-- **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `-s` is for ad-hoc id discovery during setup, not interactive launching.
+- **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `search` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.
 - **PWA install helper** — user installs PWAs manually via Brave/Chrome's "Install this site as an app". beckon does not wrap this.
 
@@ -752,12 +800,12 @@ OS metadata on every call.
   is the whole resident-mode install. Guarded by a top-level `if OS.mac?`:
   `brew style` rejects a `service` block nested in `on_macos do`
   (`FormulaAudit/ComponentsOrder`), and the `run macos:` form leaves
-  `service?` true on Linux — where `--serve` does not exist — so
+  `service?` true on Linux — where `serve` does not exist — so
   `brew services start` fails there instead of the formula simply having no
   service.
 - **Scoop bucket** (Windows, x86_64 + arm64): `scoop bucket add xom11 https://github.com/xom11/scoop-bucket && scoop install xom11/beckon` — bucket repo `xom11/scoop-bucket`. Manifest auto-bumped by the same workflow.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
-- **Nix flake**: `nix run github:xom11/beckon -- -l` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+- **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
 
 The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Default expiry 90 days — renewal procedure documented in the tap repo's README.
 
@@ -802,13 +850,13 @@ That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pin
 
 State at session close:
 - ✅ Phase 1a (sway), 1b.i3 done — name-based MRU toggle, `.desktop` launch, `notify-send` on hotkey error, Nix flake + overlay.
-- ✅ Phase 2 (macOS) done **and deployed on `airm3`** — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon -d` reports Accessibility trust state. Hammerspoon spoon ported and live.
+- ✅ Phase 2 (macOS) done **and deployed on `airm3`** — `crates/beckon-macos/` ships full focus / launch / cycle / toggle / hide via `objc2-app-kit` (NSWorkspace, NSRunningApplication), AX (`AXUIElementCreateApplication`, `AXWindows`, `AXRaise`), and CGWindowListCopyWindowInfo for z-order. Launch shells out to `/usr/bin/open -b <bundle_id>`. `beckon doctor` reports Accessibility trust state. Hammerspoon spoon ported and live.
 - ✅ Phase 3 (Windows) done — `crates/beckon-windows/` ships full focus / launch / cycle / toggle / hide via Win32 `EnumWindows` (z-order = MRU), COM `IShellLinkW` for Start Menu `.lnk` parsing, native MSIX/AppX catalog resolution and activation through AUMIDs, and `SetForegroundWindow` + `AttachThreadInput` for anti-focus-stealing. Toast notification on hotkey errors. Tested on ARM64 Windows 11.
 
 Reasonable next-session order:
 1. **AHK integration** — wire beckon into `~/.nix/windows/ahk/launch-app.ahk` replacing the old title-match approach. Each binding becomes `Run("beckon <Name>")`.
 2. **PWA AUMID matching** — MSIX/AppX identity is handled natively; browser PWAs still need validation because their window ownership and AUMID behavior varies by browser.
-3. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `-r` typos. Maybe `--include-titles` for `-s` (open question 4).
+3. **Polish** (when needed): X11 generic backend, Hyprland, integration tests on CI, fuzzy match for `resolve` typos. Maybe `--include-titles` for `search` (open question 4).
 
 ### Phase 3 Windows notes (for future maintenance)
 
@@ -842,14 +890,15 @@ Reasonable next-session order:
   STA and serialise anyway) plus a two-phase walk to keep the traversal-order
   dedupe intact. Measured, not assumed.
 
-  Discovery commands (`-l`, `-L`, `-r`, `-s`) deliberately keep using the full
-  `scan_installed_apps` — correctness and completeness beat latency there.
+  Discovery commands (`list`, `installed`, `resolve`, `search`) deliberately
+  keep using the full `scan_installed_apps` — correctness and completeness
+  beat latency there.
 - **Matching running windows**: Packaged apps match by HWND `PKEY_AppUserModel_ID`, falling back to process AUMID from `GetApplicationUserModelId`; `CabinetWClass` windows map to the built-in `Microsoft.Windows.Explorer` AUMID; classic applications retain exe filename and title fallback matching. Browser PWAs sharing an exe still require browser-specific validation.
 - **UWP/Store apps**: Apps installed via Microsoft Store (e.g. Windows Terminal) are cataloged by friendly name and AUMID; launch uses `IApplicationActivationManager::ActivateApplication`.
 - **Launch path**: Classic shortcut entries use `ShellExecuteW` with the exe path and arguments extracted from the `.lnk`; MSIX/AppX entries use `IApplicationActivationManager::ActivateApplication` with the AUMID. `Microsoft.Windows.Explorer` is identified by AUMID/class but launches through `explorer.exe`, since activation manager rejects that built-in shell AppID.
 - **COM initialization**: `CoInitializeEx(COINIT_APARTMENTTHREADED)` is called for catalog and activation threads. The call is idempotent (returns `S_FALSE` if already initialized on the thread).
 - **Toast notifications**: When stderr is not a terminal (hotkey invocation), errors are surfaced via PowerShell-spawned Windows toast notifications (best-effort, same pattern as Linux `notify-send`).
-- **`--log <PATH>` (with `--serve`) redirects stderr and detaches the
+- **`--log <PATH>` (with `serve`) redirects stderr and detaches the
   console** — `crates/beckon-windows/src/logfile.rs`. It exists so a
   Scheduled Task can run `beckon.exe` directly: Task Scheduler cannot
   redirect stderr, so the task used to go through `cmd.exe` for a `2>`,
@@ -882,14 +931,14 @@ Reasonable next-session order:
       Owning the file is *why* this is beckon's job: on macOS launchd owns
       it via `StandardErrorPath` and on Linux journald owns it, but Task
       Scheduler discards stderr entirely, so on Windows nobody else can.
-    - **`--serve` log messages stay ASCII.** Windows PowerShell 5.1's
+    - **`serve` log messages stay ASCII.** Windows PowerShell 5.1's
       `Get-Content` defaults to ANSI, so a UTF-8 em-dash came back as
       `�?"` in the log. The doctor/resolve output keeps its emoji — those
       go to a terminal, never to `--log`.
     - **Pre-existing hazard this does not fix**: whenever stderr is a file
       (already true under `cmd /c … 2>`), a write failure — full disk,
       disconnected network share — panics the printing thread rather than
-      returning an error. In `--serve` that surfaces as "hotkeys silently
+      returning an error. In `serve` that surfaces as "hotkeys silently
       stop", not a crash.
     - **The toast spawn needs `CREATE_NO_WINDOW` because of this.** After
       `FreeConsole`, `CreateProcess` hands a console-subsystem child of a
@@ -904,8 +953,8 @@ Reasonable next-session order:
       console-subsystem process without allocating a console first;
       `FreeConsole` only closes it afterwards. On Windows 11 ARM64 (build
       26200), inside session 1, 25 ms sampling, with a control: bare
-      `--serve` leaves a console **and** a `PseudoConsoleWindow` up for the
-      life of the daemon; `--serve --log` shows one window at ~150 ms that
+      `serve` leaves a console **and** a `PseudoConsoleWindow` up for the
+      life of the daemon; `serve --log` shows one window at ~150 ms that
       is gone by ~210 ms and leaves nothing; `conhost.exe --headless` in
       front of the same command shows nothing at any point. Worse than it
       sounds where Windows Terminal is the default terminal: the console
@@ -918,7 +967,7 @@ Reasonable next-session order:
     - The escalation, if the flash ever matters, is a separate
       GUI-subsystem `beckon-serve.exe` — never a whole-binary
       `windows_subsystem = "windows"`, which would swallow the output of
-      `-l`, `-L`, `-s`, `-r`, `-d`.
+      `list`, `installed`, `search`, `resolve`, `doctor`.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)

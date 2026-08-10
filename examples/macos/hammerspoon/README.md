@@ -45,7 +45,7 @@ path.
 > users via Nix get a stable `/etc/profiles/per-user/<user>/bin/beckon`
 > wrapper path that survives rebuilds.
 
-Run `beckon -d` to confirm the trust state.
+Run `beckon doctor` to confirm the trust state.
 
 ## App Names on macOS
 
@@ -55,9 +55,9 @@ Most macOS apps surface their `localizedName` ("Claude", "Brave Browser",
 that subdir too, so PWAs work the same way as native apps.
 
 ```sh
-beckon -L            # all installed apps
-beckon -l            # currently running apps
-beckon -r Claude     # validate one id
+beckon installed        # all installed apps
+beckon list             # currently running apps
+beckon resolve Claude   # validate one id
 ```
 
 ## Troubleshooting
@@ -70,5 +70,5 @@ If a hotkey fires but nothing happens, check Hammerspoon's console
 hs.task.new(BECKON, callback, { "-v", name })
 ```
 
-`beckon -d` reports whether macOS Accessibility is granted, plus
+`beckon doctor` reports whether macOS Accessibility is granted, plus
 NSWorkspace health.

@@ -13,7 +13,7 @@
 //!
 //! Accessibility permission: required for window-level operations (5a). Without
 //! it, focus / launch / hide still work but cycle degrades to "do nothing
-//! visible". `beckon -d` reports state and how to grant.
+//! visible". `beckon doctor` reports state and how to grant.
 
 #[cfg(not(target_os = "macos"))]
 use beckon_core::BackendError;
@@ -49,7 +49,7 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
 }
 
 /// Whether the current process is trusted for the Accessibility API.
-/// Used by `beckon -d`. Returns `false` on non-macOS.
+/// Used by `beckon doctor`. Returns `false` on non-macOS.
 #[cfg(target_os = "macos")]
 pub fn is_accessibility_trusted() -> bool {
     ffi::ax_is_process_trusted()
@@ -60,7 +60,7 @@ pub fn is_accessibility_trusted() -> bool {
     false
 }
 
-/// Print a `-r` resolution report for `id` on stdout. Mirrors the Linux
+/// Print a `resolve` resolution report for `id` on stdout. Mirrors the Linux
 /// `cmd_resolve_linux` shape but uses macOS metadata (running apps + installed
 /// .app bundles).
 #[cfg(target_os = "macos")]

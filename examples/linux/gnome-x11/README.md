@@ -39,14 +39,14 @@ the per-path `reset` if you have other custom shortcuts to preserve.)
    - **Shortcut**: press `Super+C`
 3. Repeat for each app you want a hotkey for.
 
-Names must match what `beckon -L` reports. Run that first.
+Names must match what `beckon installed` reports. Run that first.
 
 ## Troubleshooting
 
 ```sh
-beckon -d            # check DISPLAY + EWMH support
-beckon -l            # list windows beckon can see
-beckon -r Claude     # validate that "Claude" resolves
+beckon doctor             # check DISPLAY + EWMH support
+beckon list               # list windows beckon can see
+beckon resolve Claude     # validate that "Claude" resolves
 ```
 
 If the hotkey works but focus doesn't change, `xprop _NET_SUPPORTED -root`

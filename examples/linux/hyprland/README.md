@@ -39,13 +39,13 @@ hyprctl clients | grep -A1 'workspace: special:beckon'
 ## Customizing
 
 Edit `~/.config/hypr/beckon.conf` and change the Name on each `bind = ...,
-exec, beckon <Name>` line. Run `beckon -L` first to see what's
+exec, beckon <Name>` line. Run `beckon installed` first to see what's
 installed.
 
 ## Troubleshooting
 
 ```sh
-beckon -d            # check $HYPRLAND_INSTANCE_SIGNATURE + socket reachability
+beckon doctor        # check $HYPRLAND_INSTANCE_SIGNATURE + socket reachability
 hyprctl clients      # see what classes the live tree exposes
 ```
 

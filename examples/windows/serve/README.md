@@ -1,11 +1,11 @@
-# Windows resident mode (`--serve` + Scheduled Task)
+# Windows resident mode (`serve` + Scheduled Task)
 
-`beckon --serve <config>` makes beckon host the hotkeys itself — no
+`beckon serve <config>` makes beckon host the hotkeys itself — no
 AutoHotkey layer. Pick this **or** [`../ahk/`](../ahk/), not both:
 `RegisterHotKey` gives a chord to the first registrant, so a second
 daemon on the same chord just fails to register.
 
-| | AutoHotkey | `--serve` |
+| | AutoHotkey | `serve` |
 |---|---|---|
 | Extra dependency | AutoHotkey v2 | none |
 | Config language | AHK script | flat TOML |
@@ -29,13 +29,13 @@ copy apps.toml "$env:USERPROFILE\.config\beckon\apps.toml"
 notepad "$env:USERPROFILE\.config\beckon\apps.toml"
 
 # 3. validate it — exit code 0 means every combo parsed
-beckon --check "$env:USERPROFILE\.config\beckon\apps.toml"
+beckon check "$env:USERPROFILE\.config\beckon\apps.toml"
 ```
 
 Run it in the foreground first and press a hotkey:
 
 ```powershell
-beckon --serve "$env:USERPROFILE\.config\beckon\apps.toml"
+beckon serve "$env:USERPROFILE\.config\beckon\apps.toml"
 # beckon serve: 5 shortcuts registered from C:\Users\you\.config\beckon\apps.toml
 ```
 
@@ -43,7 +43,7 @@ beckon --serve "$env:USERPROFILE\.config\beckon\apps.toml"
 
 ## Run at logon via Scheduled Task
 
-`--serve` is a foreground process, not a Windows service. It **must**
+`serve` is a foreground process, not a Windows service. It **must**
 run inside your interactive desktop session — `RegisterHotKey` needs a
 desktop to bind to, so a task configured to "run whether user is logged
 on or not" registers nothing and silently never fires.
@@ -111,7 +111,7 @@ daemon opens its log once per logon and writes a couple of lines per boot,
 while a 5-minute watchdog opens *its* log 288 times a day and is the only
 writer producing a line on a schedule (~55 KB/day, measured).
 
-Read it with `Get-Content -Tail`. beckon keeps its `--serve` messages
+Read it with `Get-Content -Tail`. beckon keeps its `serve` messages
 ASCII, so the default `Get-Content` encoding of Windows PowerShell 5.1
 renders them correctly without `-Encoding utf8`.
 
@@ -141,9 +141,9 @@ sampling, with a control:
 
 | action | windows |
 |---|---|
-| `beckon.exe --serve <cfg>` (no `--log`) | console + `PseudoConsoleWindow`, **both persist for the life of the daemon** |
-| `beckon.exe --serve <cfg> --log <log>` | one window at ~150 ms, **gone by ~210 ms** — a ~60 ms flash, nothing lingers |
-| `conhost.exe --headless beckon.exe --serve <cfg> --log <log>` | **none at all** |
+| `beckon.exe serve <cfg>` (no `--log`) | console + `PseudoConsoleWindow`, **both persist for the life of the daemon** |
+| `beckon.exe serve <cfg> --log <log>` | one window at ~150 ms, **gone by ~210 ms** — a ~60 ms flash, nothing lingers |
+| `conhost.exe --headless beckon.exe serve <cfg> --log <log>` | **none at all** |
 
 So `--log` is enough to stop anything *staying* on screen, and that is what
 the shipped XML does. If even the flash is unacceptable, put
@@ -162,12 +162,13 @@ the real `beckon.exe`, not a wrapper that stays alive: a launcher which
 remains as a live parent (a Scoop shim, `cmd /c`) holds the console open,
 so beckon detaching does not close it. And a whole-binary
 `windows_subsystem = "windows"` is **not** an option — it would silently
-swallow the output of `beckon -l`, `-L`, `-s`, `-r` and `-d`. A separate
-GUI-subsystem `beckon-serve.exe` is the escalation if one is ever needed.
+swallow the output of `beckon list`, `installed`, `search`, `resolve`
+and `doctor`. A separate GUI-subsystem `beckon-serve.exe` is the
+escalation if one is ever needed.
 
 ## The tray icon
 
-`--serve` puts an icon in the notification area. It is a **one-way**
+`serve` puts an icon in the notification area. It is a **one-way**
 liveness signal:
 
 - icon present → the daemon is alive
@@ -185,11 +186,11 @@ and in again. `<RestartOnFailure>` only covers what the task engine
 itself considers a failure, which is not the same thing.
 
 A second task that simply *tries* to start beckon every 5 minutes fixes
-this with no extra tooling, because `--serve` already takes a per-config
+this with no extra tooling, because `serve` already takes a per-config
 lock: when one is healthy the redundant instance exits immediately with
 
 ```
-beckon: another `beckon --serve` is already running for `...apps.windows.toml` (lock `...`)
+beckon: another `beckon serve` is already running for `...apps.windows.toml` (lock `...`)
 ```
 
 Register the same XML under a second name, replacing the `<LogonTrigger>`
@@ -234,7 +235,7 @@ failure wave is collapsed into a single toast listing up to 5 combos
 rather than one toast per key, so check stderr for the full per-key
 detail.
 
-**"another `beckon --serve` is already running for `...`"** — one
+**"another `beckon serve` is already running for `...`"** — one
 instance per config path, enforced with a lock file. Look for a leftover
 process:
 
@@ -247,6 +248,6 @@ what `--log` in the task action is for. If the log is empty,
 the task never started: check `Get-ScheduledTaskInfo beckon-serve`
 (`LastTaskResult` 267009 = `SCHED_S_TASK_RUNNING`, which is healthy).
 
-**A Name doesn't resolve.** `beckon -r "Windows Terminal"` shows the
-match type. Prefer the exact friendly name from `beckon -L`; `Explorer`
-is ambiguous, use `File Explorer`.
+**A Name doesn't resolve.** `beckon resolve "Windows Terminal"` shows
+the match type. Prefer the exact friendly name from `beckon installed`;
+`Explorer` is ambiguous, use `File Explorer`.

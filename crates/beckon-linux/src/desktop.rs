@@ -128,7 +128,7 @@ pub struct ResolvedMatch {
 ///      This is the recommended way to reference apps in dotfiles because
 ///      Name is stable across machines (Brave PWA hashes are not).
 ///   2. `.desktop` filename stem (`kitty.desktop` → id `kitty`).
-///      Useful when the user copy-pastes a runtime app_id from `beckon -l`.
+///      Useful when the user copy-pastes a runtime app_id from `beckon list`.
 ///   3. `StartupWMClass` (rarely correct on Wayland because clients like
 ///      Brave ignore it, but harmless to try).
 ///   4. `Name` substring (case-insensitive). Multiple matches resolve to
@@ -141,7 +141,7 @@ pub fn resolve(id: &str) -> Option<DesktopEntry> {
 }
 
 /// Same as [`resolve`] but reports which priority matched and lets the
-/// `-r` debug command explain its reasoning.
+/// `beckon resolve` debug command explain its reasoning.
 pub fn resolve_detailed(id: &str) -> Option<ResolvedMatch> {
     resolve_detailed_in(&scan(), id)
 }
@@ -215,8 +215,9 @@ pub fn target_classes(entry: Option<&DesktopEntry>, raw_id: &str) -> crate::algo
 }
 
 /// All entries whose Name contains `id` as a case-insensitive substring,
-/// sorted alphabetically by `.desktop` filename. Used by `-r` to flag
-/// ambiguity (multiple substring matches) and to suggest "did you mean".
+/// sorted alphabetically by `.desktop` filename. Used by `beckon resolve`
+/// to flag ambiguity (multiple substring matches) and to suggest "did you
+/// mean".
 pub fn name_substring_matches(id: &str) -> Vec<DesktopEntry> {
     let needle = normalize(id);
     if needle.is_empty() {

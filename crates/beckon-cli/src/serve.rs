@@ -1,4 +1,4 @@
-//! `--serve`: resident hotkey service (macOS, Windows). Single-threaded by
+//! `serve`: resident hotkey service (macOS, Windows). Single-threaded by
 //! design: hotkey dispatch and reload ticks all run on the main event loop,
 //! so plain `Rc<RefCell<…>>` state needs no locking — with one exception,
 //! enforced below.

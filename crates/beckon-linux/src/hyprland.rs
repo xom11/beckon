@@ -200,7 +200,8 @@ impl Backend for HyprlandBackend {
                     id: id.to_string(),
                     reason: format!(
                         "no .desktop entry matches `{}` and no running window has class `{}`. \
-                         Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
+                         Run `beckon installed` to list installed apps, \
+                         or `beckon search {}` to search.",
                         id, id, id
                     ),
                 })?;

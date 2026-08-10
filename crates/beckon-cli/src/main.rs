@@ -458,7 +458,7 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
             );
             println!("      Focus will work; launch will not.");
         }
-        println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
+        println!("Hint: `beckon installed` lists installed, `beckon list` lists running.");
         return Ok(());
     };
 
@@ -498,7 +498,7 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
         for e in other_subs.iter().take(5) {
             println!("       {:<40} ({})", e.name, e.id);
         }
-        println!("   Hint: use the exact Name from `beckon -L` to disambiguate.");
+        println!("   Hint: use the exact Name from `beckon installed` to disambiguate.");
     }
     Ok(())
 }

@@ -109,7 +109,7 @@ fn collect_app_windows(pid: i32) -> Option<AppWindows> {
 }
 
 /// Count of user-cyclable (standard) windows for `pid`. Mirrors what step 5a
-/// cycles, so `-l` / `-r` report a count that matches actual behaviour (a
+/// cycles, so `list` / `resolve` report a count that matches actual behaviour (a
 /// fullscreen app shows 1, not 2). `None` when AX is unavailable.
 pub fn standard_window_count(pid: i32) -> Option<usize> {
     collect_app_windows(pid).map(|w| w.elements.len())

@@ -117,7 +117,8 @@ impl MacBackend {
                 id: id.to_string(),
                 reason: format!(
                     "no running app and no installed bundle matches `{id}`. \
-                     Run `beckon -L` to list installed apps, or `beckon -s {id}` to search."
+                     Run `beckon installed` to list installed apps, or \
+                     `beckon search {id}` to search."
                 ),
             })?;
             launch_bundle(&m).map_err(|e| BackendError::LaunchFailed {
@@ -200,7 +201,7 @@ impl MacBackend {
             eprintln!(
                 "verbose: cycle_to_next_window returned false for pid {target_pid} \
                  (single-window app, OR Accessibility permission missing — \
-                 run `beckon -d` to check)"
+                 run `beckon doctor` to check)"
             );
         }
 
@@ -314,7 +315,7 @@ fn focus_running(app: &RunningAppInfo) -> bool {
     windows::activate_app(app)
 }
 
-/// `beckon -r <id>` report on macOS.
+/// `beckon resolve <id>` report on macOS.
 pub fn print_resolve_report(id: &str) -> Result<()> {
     let running = apps::running_apps();
     let resolved = apps::resolve(id);
@@ -334,7 +335,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
             println!("Note: a running app has bundle id `{id}` but no installed bundle matches.");
             println!("      Focus may work; launch will not.");
         }
-        println!("Hint: `beckon -L` lists installed, `beckon -l` lists running.");
+        println!("Hint: `beckon installed` lists installed, `beckon list` lists running.");
         return Ok(());
     };
 
@@ -373,7 +374,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         for e in other_subs.iter().take(5) {
             println!("       {:<40} ({})", e.name, e.bundle_id);
         }
-        println!("   Hint: use the exact Name from `beckon -L` to disambiguate.");
+        println!("   Hint: use the exact Name from `beckon installed` to disambiguate.");
     }
 
     if !ffi::ax_is_process_trusted() {
@@ -382,7 +383,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
         println!(
             "    to toggle-back. Grant in System Settings → Privacy & Security → Accessibility,"
         );
-        println!("    or run `beckon -d` for the full check.");
+        println!("    or run `beckon doctor` for the full check.");
     }
     Ok(())
 }

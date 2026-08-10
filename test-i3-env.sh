@@ -15,7 +15,7 @@
 #   ./test-i3-env.sh xterm   # spawn an xterm in :2
 #
 # After `start`, run beckon manually with the right env:
-#   env -u SWAYSOCK -u WAYLAND_DISPLAY DISPLAY=:2 ./target/release/beckon -d
+#   env -u SWAYSOCK -u WAYLAND_DISPLAY DISPLAY=:2 ./target/release/beckon doctor
 
 set -e
 

@@ -1,7 +1,7 @@
 # beckon resident-mode shortcuts for Windows.
 #
-# Validate before installing:  beckon --check apps.toml
-# Run in the foreground:       beckon --serve apps.toml
+# Validate before installing:  beckon check apps.toml
+# Run in the foreground:       beckon serve apps.toml
 #
 # Format: flat TOML. Every key is a hotkey combo, every value is exactly
 # one app Name. Edits apply live — beckon watches this file.
@@ -16,7 +16,7 @@
 #
 # Ctrl+Win+Alt matches the AutoHotkey example and rarely collides with
 # built-in Windows shortcuts. Prefer exact friendly names from
-# `beckon -L` — `File Explorer`, not `Explorer`.
+# `beckon installed` — `File Explorer`, not `Explorer`.
 
 "ctrl+super+alt+space" = "Terminal"
 "ctrl+super+alt+c"     = "Claude"

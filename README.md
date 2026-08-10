@@ -21,9 +21,9 @@ press hotkey
 cargo install --git https://github.com/xom11/beckon
 
 # 2. discover the Names beckon sees on your machine
-beckon -L | grep -i claude     # is "Claude" the right Name?
-beckon -r Claude               # confirm: shows match type + Exec
-beckon -d                      # diagnose your environment
+beckon installed | grep -i claude     # is "Claude" the right Name?
+beckon resolve Claude                 # confirm: shows match type + Exec
+beckon doctor                         # diagnose your environment
 
 # 3. wire a hotkey via your existing dotfile — pick yours from
 #    examples/ and follow its README:
@@ -66,7 +66,7 @@ notification a minute; a hotkey you press five times should tell you five times.
 | macOS | ✅ Phase 2 — NSWorkspace + AX + CGWindowList |
 | Windows | ✅ Phase 3 — Win32 EnumWindows + COM IShellLinkW |
 
-Resident hotkey mode (`--serve`) is available on macOS and Windows. Linux
+Resident hotkey mode (`serve`) is available on macOS and Windows. Linux
 stays compositor-bound by design — the compositor already owns the keybind.
 
 ## Install
@@ -96,7 +96,7 @@ EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome),
 GNOME Wayland via the bundled shell extension in
 [`extensions/`](./extensions/) — install it with `gnome-extensions install`
 and log back in — and KDE Wayland via KWin's own scripting engine, which
-needs nothing installed. `beckon -d` reports which backend it picked.
+needs nothing installed. `beckon doctor` reports which backend it picked.
 On Windows: VS Build Tools 2022 with the C++ ARM64/x64 component and
 Windows SDK.
 
@@ -113,7 +113,7 @@ Binary lands in `~/.cargo/bin/beckon` (already in PATH).
 ### Nix flake
 
 ```sh
-nix run github:xom11/beckon -- -l
+nix run github:xom11/beckon -- list
 nix build .#beckon          # binary at ./result/bin/beckon
 nix develop                 # dev shell with rustfmt / clippy / rust-analyzer
 ```
@@ -138,6 +138,15 @@ The hot path is `beckon <id>` — invoke from a hotkey binding:
 
 ```sh
 beckon Claude            # focus / launch / cycle Claude
+```
+
+Eight names are reserved for subcommands — `list`, `installed`, `search`,
+`resolve`, `doctor`, `check`, `serve`, `help`. An app whose id is one of those,
+or whose id starts with `-`, goes after a double dash:
+
+```sh
+beckon -- search         # the app named "search", not the subcommand
+beckon -- -weird.id      # an id that starts with a dash
 ```
 
 `<id>` resolves against installed-app metadata. Priority per OS:
@@ -179,11 +188,11 @@ through `explorer.exe`.
 ### Discovery
 
 ```sh
-beckon -l           # list running apps with their app_ids
-beckon -L           # list installed apps (parsed from .desktop)
-beckon -s claude    # fuzzy-search ids matching "claude"
-beckon -r Claude    # show how an id resolves (match type, exec, status)
-beckon -d           # check environment (compositor / IPC / notification daemon)
+beckon list              # list running apps with their app_ids
+beckon installed         # list installed apps (parsed from .desktop)
+beckon search claude     # fuzzy-search ids matching "claude"
+beckon resolve Claude    # show how an id resolves (match type, exec, status)
+beckon doctor            # check environment (compositor / IPC / notification daemon)
 ```
 
 ### Dotfile examples — see [`examples/`](./examples/)
@@ -206,11 +215,11 @@ remember the letter, not the modifier:
 
 Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
 `Ctrl+Win+Alt` on Windows. Replace the Names with whatever
-`beckon -L` reports on your machine.
+`beckon installed` reports on your machine.
 
 ## Resident mode (macOS & Windows)
 
-`beckon --serve shortcuts.toml` turns beckon into the hotkey host itself —
+`beckon serve shortcuts.toml` turns beckon into the hotkey host itself —
 no Hammerspoon/AHK layer needed. The file is flat TOML, one combo per line:
 
     "ctrl+super+alt+t" = "kitty"
@@ -221,7 +230,7 @@ definition: [`examples/macos/serve/`](examples/macos/serve/) and
 [`examples/windows/serve/`](examples/windows/serve/).
 
 On macOS installed via Homebrew, `brew services start beckon` is the whole
-install — the formula ships the LaunchAgent. Create and `beckon --check`
+install — the formula ships the LaunchAgent. Create and `beckon check`
 `~/.config/beckon/apps.toml` first. On Windows the Scheduled Task runs
 `beckon.exe` directly and passes `--log`, which sends stderr to a file and
 detaches the console in one step.
@@ -233,10 +242,10 @@ the base key plus an explicit `shift`. `f20` is the ceiling because macOS
 has no keycode above it, and every key must exist on both OSes so a config
 validates anywhere.
 
-`beckon --check shortcuts.toml` validates a file (exit 0/1) without touching
+`beckon check shortcuts.toml` validates a file (exit 0/1) without touching
 the OS — it runs on Linux too, so it works in CI. The file is watched: edits
 apply live, and a broken edit keeps the current bindings and fires a
-notification instead of dropping your keys. One `--serve` per config path is
+notification instead of dropping your keys. One `serve` per config path is
 enforced with a lock file.
 
 **Trust the registration count, not the shortcut count.** Startup and reload
@@ -297,7 +306,7 @@ Then inside the i3 sandbox:
 ```sh
 env -u SWAYSOCK -u WAYLAND_DISPLAY \
     I3SOCK=$(ls /run/user/1000/i3/ipc-socket.* | head -1) DISPLAY=:2 \
-    ./target/release/beckon -l
+    ./target/release/beckon list
 ```
 
 ## Out of scope
@@ -306,7 +315,7 @@ No alias mapping and no resolve cache — ids resolve against OS metadata
 (`.desktop` / LaunchServices / Start Menu) on every call. No interactive
 launcher (use rofi for that). No window tiling or layout management.
 
-The one config file beckon reads is the `--serve` shortcuts TOML, and it maps
+The one config file beckon reads is the `serve` shortcuts TOML, and it maps
 hotkeys to Names — it is not a place to alias or configure `beckon <id>`
 itself, which stays config-free. Hotkey registration is still the dotfile's
 job everywhere except macOS/Windows resident mode.

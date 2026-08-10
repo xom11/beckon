@@ -179,7 +179,8 @@ impl Backend for I3IpcBackend {
                     id: id.to_string(),
                     reason: format!(
                         "no .desktop entry matches `{}` and no running window has that app_id. \
-                         Run `beckon -L` to list installed apps, or `beckon -s {}` to search.",
+                         Run `beckon installed` to list installed apps, \
+                         or `beckon search {}` to search.",
                         id, id
                     ),
                 })?;
@@ -245,7 +246,7 @@ impl Backend for I3IpcBackend {
         // apps. StartupWMClass is unreliable on Wayland because clients
         // like Brave ignore it and pick the filename instead.
         //
-        // After running the app once, `beckon -l` is the source of truth:
+        // After running the app once, `beckon list` is the source of truth:
         // copy the id from there into the dotfile.
         let mut entries = crate::desktop::scan();
         entries.sort_by(|a, b| a.name.cmp(&b.name));

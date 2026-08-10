@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!--
   Scheduled Task definition for the beckon resident hotkey service.
-  (XML comments cannot contain a double hyphen, so the flag itself is
-  spelled out only in the Arguments element below.)
+  (XML comments cannot contain a double hyphen. The serve command has
+  none, so it appears freely below; the log option still does, so it is
+  spelled out only in the Arguments element.)
 
   The UTF-16 declaration above is REQUIRED and is not a typo: Task
   Scheduler rejects anything else with
@@ -98,7 +99,7 @@
   <Actions Context="Author">
     <Exec>
       <Command>C:\Users\YOUR_USERNAME\.cargo\bin\beckon.exe</Command>
-      <Arguments>--serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml" --log "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log"</Arguments>
+      <Arguments>serve "C:\Users\YOUR_USERNAME\.config\beckon\apps.toml" --log "C:\Users\YOUR_USERNAME\AppData\Local\beckon\serve.log"</Arguments>
     </Exec>
   </Actions>
 </Task>

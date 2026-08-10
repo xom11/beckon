@@ -198,7 +198,7 @@ fn post(message: &str) {
         /// beckon-cli deliberately has no dependency on it (the Win32 surface
         /// lives in beckon-windows), and this is one integer.
         ///
-        /// Load-bearing, and invisible from the call site. `--serve --log`
+        /// Load-bearing, and invisible from the call site. `serve --log`
         /// calls `FreeConsole()`, so the daemon has no console for the rest of
         /// its life — and `CreateProcess` gives a console-subsystem child of a
         /// console-less parent a brand-new console, shown, because `std`

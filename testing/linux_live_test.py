@@ -638,34 +638,36 @@ class Suite:
     # ---- discovery commands ---------------------------------------------
 
     def t_doctor(self) -> None:
-        res = run([self.beckon, "-d"])
+        res = run([self.beckon, "doctor"])
         if res.returncode != 0:
-            raise AssertionError(f"-d exited {res.returncode}: {res.stderr[:300]}")
+            raise AssertionError(f"doctor exited {res.returncode}: {res.stderr[:300]}")
         if "Backend selected" not in res.stdout:
-            raise AssertionError(f"-d did not report a backend:\n{res.stdout[:500]}")
+            raise AssertionError(f"doctor did not report a backend:\n{res.stdout[:500]}")
 
     def t_list_installed(self) -> None:
-        res = run([self.beckon, "-L"], timeout=30)
+        res = run([self.beckon, "installed"], timeout=30)
         if res.returncode != 0:
-            raise AssertionError(f"-L exited {res.returncode}: {res.stderr[:300]}")
+            raise AssertionError(f"installed exited {res.returncode}: {res.stderr[:300]}")
         if len(res.stdout.splitlines()) < 5:
-            raise AssertionError(f"-L listed almost nothing:\n{res.stdout[:300]}")
+            raise AssertionError(f"installed listed almost nothing:\n{res.stdout[:300]}")
 
     def t_search(self) -> None:
-        res = run([self.beckon, "-s", self.multi[:4]], timeout=30)
+        res = run([self.beckon, "search", self.multi[:4]], timeout=30)
         if res.returncode != 0:
-            raise AssertionError(f"-s exited {res.returncode}: {res.stderr[:300]}")
+            raise AssertionError(f"search exited {res.returncode}: {res.stderr[:300]}")
 
     def t_resolve(self) -> None:
-        res = run([self.beckon, "-r", self.multi], timeout=30)
+        res = run([self.beckon, "resolve", self.multi], timeout=30)
         if res.returncode != 0:
-            raise AssertionError(f"-r {self.multi} exited {res.returncode}: {res.stderr[:300]}")
+            raise AssertionError(
+                f"resolve {self.multi} exited {res.returncode}: {res.stderr[:300]}"
+            )
 
     def t_resolve_unknown(self) -> None:
-        res = run([self.beckon, "-r", "definitely-not-installed-zzz"], timeout=30)
+        res = run([self.beckon, "resolve", "definitely-not-installed-zzz"], timeout=30)
         if res.returncode == 0 and "no match" not in (res.stdout + res.stderr).lower():
             raise AssertionError(
-                "-r on an unknown id neither failed nor said 'no match':\n"
+                "resolve on an unknown id neither failed nor said 'no match':\n"
                 f"{(res.stdout + res.stderr)[:300]}"
             )
 
@@ -861,29 +863,29 @@ class Suite:
         """Same input, same answer — `scan()` must not expose HashMap order."""
         outs = set()
         for _ in range(8):
-            res = run([self.beckon, "-r", self.multi], timeout=20)
+            res = run([self.beckon, "resolve", self.multi], timeout=20)
             m = re.search(r"^\s*Runtime id:\s*(.+)$", res.stdout, re.M)
             outs.add(m.group(1).strip() if m else res.stdout)
         if len(outs) > 1:
-            raise AssertionError(f"-r {self.multi} resolved differently across runs: {outs}")
+            raise AssertionError(f"resolve {self.multi} resolved differently across runs: {outs}")
 
     def t_list_running(self) -> None:
         self.multi_cls = self.launch_and_wait(self.multi).cls
-        res = run([self.beckon, "-l"], timeout=20)
+        res = run([self.beckon, "list"], timeout=20)
         if res.returncode != 0:
-            raise AssertionError(f"-l exited {res.returncode}: {res.stderr[:300]}")
+            raise AssertionError(f"list exited {res.returncode}: {res.stderr[:300]}")
         if self.multi_cls not in res.stdout:
             raise AssertionError(
-                f"-l does not list the running app {self.multi_cls!r}:\n{res.stdout[:400]}"
+                f"list does not list the running app {self.multi_cls!r}:\n{res.stdout[:400]}"
             )
 
     def t_beckon_by_name(self) -> None:
         """The documented happy path: bind by human-readable Name, not by id."""
         self.multi_cls = self.launch_and_wait(self.multi).cls
-        res = run([self.beckon, "-r", self.multi], timeout=20)
+        res = run([self.beckon, "resolve", self.multi], timeout=20)
         m = re.search(r"^\s*name\s*[:=]\s*(.+)$", res.stdout, re.M | re.I)
         if not m:
-            raise Skip(f"-r output has no Name line to test with:\n{res.stdout[:300]}")
+            raise Skip(f"resolve output has no Name line to test with:\n{res.stdout[:300]}")
         name = m.group(1).strip()
         rc, _, err = self.call(name)
         if rc != 0:
@@ -902,22 +904,22 @@ class Suite:
 
         print("discovery commands")
         for name, fn in [
-            ("-d doctor reports a backend", self.t_doctor),
-            ("-L lists installed apps", self.t_list_installed),
-            ("-s search runs", self.t_search),
-            ("-r resolves a known id", self.t_resolve),
-            ("-r on unknown id reports no match", self.t_resolve_unknown),
+            ("doctor reports a backend", self.t_doctor),
+            ("installed lists installed apps", self.t_list_installed),
+            ("search runs", self.t_search),
+            ("resolve resolves a known id", self.t_resolve),
+            ("resolve on unknown id reports no match", self.t_resolve_unknown),
             ("unknown id is a hard error", self.t_unknown_id_fails),
             ("empty id is a hard error", self.t_empty_id_is_an_error),
             ("`-- -weird.id` parses as an id", self.t_dash_id),
-            ("-r resolves deterministically", self.t_resolve_is_deterministic),
+            ("resolve resolves deterministically", self.t_resolve_is_deterministic),
         ]:
             self.case(name, fn)
 
         print("\nfocus algorithm")
         for name, fn in [
             ("step 2: launch when not running", self.t_launch),
-            ("-l lists the running app", self.t_list_running),
+            ("list lists the running app", self.t_list_running),
             ("running app is never launched twice", self.t_no_duplicate_launch),
             ("step 3: focus when running, unfocused", self.t_focus),
             ("step 5a: cycle within the same app", self.t_cycle),

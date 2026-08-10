@@ -1,11 +1,11 @@
-//! Shortcut-config model shared by `--check` and `--serve`: canonical key
+//! Shortcut-config model shared by `check` and `serve`: canonical key
 //! table (name → Carbon virtual keycode / Win32 VK) and combo parsing.
 
 use std::sync::OnceLock;
 
 /// One canonical key: the name used in shortcut files, plus its Carbon
 /// virtual keycode (macOS, HIToolbox Events.h `kVK_*`) and Win32 virtual-key
-/// code. Every canonical key MUST have a code on BOTH OSes so `--check`
+/// code. Every canonical key MUST have a code on BOTH OSes so `check`
 /// works without knowing which target a file belongs to (hence f20 is the
 /// ceiling: macOS has no F21+).
 #[derive(Debug, PartialEq, Eq)]

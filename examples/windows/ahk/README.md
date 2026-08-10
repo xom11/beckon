@@ -34,16 +34,16 @@ shell/MSIX/AppX apps. It uses friendly Start Menu names and AppUserModelIDs
 Explorer launches through `explorer.exe`.
 
 ```cmd
-beckon -L            list installed desktop and MSIX/AppX apps
-beckon -l            list currently running apps
-beckon -r Claude     validate an id
+beckon installed       list installed desktop and MSIX/AppX apps
+beckon list            list currently running apps
+beckon resolve Claude  validate an id
 ```
 
 For example, Windows Terminal is commonly exposed as `Terminal`; verify the
-local friendly name with `beckon -L | findstr /i terminal` before binding it.
-`Settings` and `File Explorer` are also supported. Use the exact name
-`File Explorer`, because `Explorer` can match another shortcut whose target is
-`explorer.exe` (for example a cloud-storage promotion shortcut).
+local friendly name with `beckon installed | findstr /i terminal` before
+binding it. `Settings` and `File Explorer` are also supported. Use the exact
+name `File Explorer`, because `Explorer` can match another shortcut whose
+target is `explorer.exe` (for example a cloud-storage promotion shortcut).
 
 ```ahk
 ^#!,:: Beckon("Settings")
@@ -61,8 +61,8 @@ key), so the trick succeeds.
 ## Troubleshooting
 
 ```cmd
-beckon -d            check environment
-beckon -l            see what beckon enumerates
+beckon doctor        check environment
+beckon list          see what beckon enumerates
 ```
 
 If a hotkey runs (the AHK tray icon flashes) but nothing happens:
@@ -74,7 +74,7 @@ If a hotkey runs (the AHK tray icon flashes) but nothing happens:
   }
   ```
 - Check the Windows event log for any process that crashed.
-- Confirm the Name resolves: `beckon -r "<Name>"`.
+- Confirm the Name resolves: `beckon resolve "<Name>"`.
 
 beckon also fires a Windows toast notification on errors (best-effort
 via PowerShell), so silent failures still surface.

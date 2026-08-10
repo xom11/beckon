@@ -111,8 +111,9 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
-/// Distinguishes which compositor we resolved via env vars. Used by `-d`
-/// to give the user a precise message even though the IPC backend is shared.
+/// Distinguishes which compositor we resolved via env vars. Used by
+/// `beckon doctor` to give the user a precise message even though the IPC
+/// backend is shared.
 #[cfg(target_os = "linux")]
 pub fn detect_compositor() -> Option<&'static str> {
     if std::env::var_os("SWAYSOCK").is_some() {

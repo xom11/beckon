@@ -23,7 +23,7 @@ swaymsg reload
 ## Customizing
 
 Edit `~/.config/sway/beckon.conf` and change the Name on each line.
-Run `beckon -L` first to see the exact Names available on your
+Run `beckon installed` first to see the exact Names available on your
 machine — Brave PWAs, Flatpaks and snap-packaged apps all have
 their own `.desktop` entries.
 
@@ -39,5 +39,5 @@ journalctl --user -t sway -e | grep beckon
 beckon also fires a `notify-send` desktop notification on errors,
 provided your session has a notification daemon (mako, dunst, etc.).
 
-`beckon -d` diagnoses environment problems (missing `SWAYSOCK`,
+`beckon doctor` diagnoses environment problems (missing `SWAYSOCK`,
 notification daemon down, etc.) without you having to press a hotkey.

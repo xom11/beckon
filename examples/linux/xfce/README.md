@@ -46,8 +46,8 @@ xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Super>c" -r
 ## Troubleshooting
 
 ```sh
-beckon -d
-beckon -l
+beckon doctor
+beckon list
 ```
 
 If your hotkey conflicts with an existing xfwm4 shortcut, the

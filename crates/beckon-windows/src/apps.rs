@@ -437,7 +437,7 @@ fn to_match(app: &InstalledAppInfo, match_type: MatchType) -> ResolvedMatch {
     }
 }
 
-/// Substring matches across installed apps (for `-r` ambiguity warnings).
+/// Substring matches across installed apps (for `resolve` ambiguity warnings).
 pub fn name_substring_matches(id: &str, installed: &[InstalledAppInfo]) -> Vec<InstalledAppInfo> {
     let needle = normalize(id);
     if needle.is_empty() {

@@ -41,7 +41,7 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
-/// `beckon -r <id>` report on Windows.
+/// `beckon resolve <id>` report on Windows.
 #[cfg(target_os = "windows")]
 pub fn print_resolve_report(id: &str) -> Result<()> {
     backend::print_resolve_report(id)

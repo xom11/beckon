@@ -105,7 +105,7 @@ fn roll_if_oversized(path: &Path, max: u64) {
 
 /// Point stderr and stdout at `path`, then detach the console.
 ///
-/// Call once, from the `--serve` path only, before anything else can fail.
+/// Call once, from the `serve` path only, before anything else can fail.
 pub fn redirect_to_log(path: &Path) -> Result<()> {
     let file = open_log(path).with_context(|| format!("open log file `{}`", path.display()))?;
     // Park the owner before publishing the handle: the moment `SetStdHandle`
@@ -120,8 +120,8 @@ pub fn redirect_to_log(path: &Path) -> Result<()> {
     // Everything below is best-effort by design — see the module doc.
     unsafe {
         // stdout too, so the detach below leaves no slot pointing at the dead
-        // console. `--serve` logs through stderr; stdout is a `LineWriter` std
-        // only flushes on a newline or at a normal exit, and `--serve` exits by
+        // console. `serve` logs through stderr; stdout is a `LineWriter` std
+        // only flushes on a newline or at a normal exit, and `serve` exits by
         // being killed.
         let _ = SetStdHandle(STD_OUTPUT_HANDLE, handle);
         let _ = FreeConsole();

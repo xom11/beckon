@@ -187,7 +187,8 @@ impl Backend for GnomeBackend {
                     id: id.to_string(),
                     reason: format!(
                         "no .desktop entry matches `{0}` and no running window has class=`{0}`. \
-                         Run `beckon -L` to list installed apps, or `beckon -s {0}` to search.",
+                         Run `beckon installed` to list installed apps, \
+                         or `beckon search {0}` to search.",
                         id
                     ),
                 })?;

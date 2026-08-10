@@ -14,10 +14,10 @@
 ; rarely conflict with built-in Windows shortcuts.
 ;
 ; Discover ids on your machine:
-;   beckon -L            list installed desktop and MSIX/AppX apps
-;   beckon -l            list currently running apps
-;   beckon -s claude     fuzzy search
-;   beckon -r Claude     validate an id
+;   beckon installed       list installed desktop and MSIX/AppX apps
+;   beckon list            list currently running apps
+;   beckon search claude   fuzzy search
+;   beckon resolve Claude  validate an id
 
 #Requires AutoHotkey v2.0
 

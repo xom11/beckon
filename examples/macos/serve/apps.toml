@@ -1,7 +1,7 @@
 # beckon resident-mode shortcuts for macOS.
 #
-# Validate before loading:   beckon --check apps.toml
-# Run in the foreground:     beckon --serve apps.toml
+# Validate before loading:   beckon check apps.toml
+# Run in the foreground:     beckon serve apps.toml
 #
 # Format: flat TOML. Every key is a hotkey combo, every value is exactly
 # one app Name. Edits apply live — beckon watches this file.
@@ -15,7 +15,7 @@
 #   "ctrl+super+alt+shift+t"   — not "ctrl+super+alt+T".
 #
 # Hyper = ctrl+super+alt, matching the Hammerspoon example. Swap the
-# Names for whatever `beckon -L` reports on your machine.
+# Names for whatever `beckon installed` reports on your machine.
 
 "ctrl+super+alt+space" = "kitty"
 "ctrl+super+alt+c"     = "Claude"

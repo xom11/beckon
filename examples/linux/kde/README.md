@@ -17,7 +17,7 @@ the GNOME Wayland path there is no extension to install and no logout.
 > Check which one you're on:
 > ```sh
 > echo $XDG_SESSION_TYPE     # "x11" or "wayland"
-> beckon -d                  # prints the backend beckon picked
+> beckon doctor              # prints the backend beckon picked
 > ```
 
 ## Wire bindings via System Settings
@@ -52,16 +52,16 @@ opens the previous owner's UI for confirmation.
 
 ## Names
 
-Run `beckon -L` first to see the exact Names KDE's `.desktop` files
-expose. KDE-built apps (Konsole, Dolphin, Kate) have stable Names;
-Brave PWAs and Flatpaks have whatever Name the install put into their
-`.desktop` file.
+Run `beckon installed` first to see the exact Names KDE's `.desktop`
+files expose. KDE-built apps (Konsole, Dolphin, Kate) have stable
+Names; Brave PWAs and Flatpaks have whatever Name the install put into
+their `.desktop` file.
 
 ## Troubleshooting
 
 ```sh
-beckon -d            # session type + which backend was picked
-beckon -l            # what KWin currently exposes
+beckon doctor        # session type + which backend was picked
+beckon list          # what KWin currently exposes
 
 # X11 session only — confirm EWMH atoms are advertised:
 xprop -root _NET_SUPPORTED
@@ -70,5 +70,5 @@ xprop -root _NET_SUPPORTED
 busctl --user introspect org.kde.KWin /Scripting | grep -i loadScript
 ```
 
-If pressing the hotkey does nothing and `beckon -d` looks healthy,
+If pressing the hotkey does nothing and `beckon doctor` looks healthy,
 KDE may have grabbed the key for itself — try a different letter.
