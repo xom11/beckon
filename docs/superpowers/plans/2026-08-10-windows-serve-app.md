@@ -55,11 +55,24 @@
 
 ## Task 0: Establish a Windows compile-check loop — **DONE 2026-08-10**
 
-**Result: the GNU route works.** `WINCHECK` is:
+**Result: the GNU route works.** `WINCHECK` is **two** commands, and both are
+required:
 
 ```bash
-cargo check --target x86_64-pc-windows-gnu -p beckon-windows -p beckon-cli --all-targets
+cargo check  --target x86_64-pc-windows-gnu -p beckon-windows -p beckon-cli --all-targets
+cargo clippy --target x86_64-pc-windows-gnu -p beckon-windows -p beckon-cli --all-targets -- -D warnings
 ```
+
+**The clippy half was added after it was needed.** Task 6 originally ran only
+the `check` half, passed locally, passed review — and failed on
+`windows-latest` with four `dead_code` errors. `check` reports `dead_code` as
+a *warning* and exits 0; CI runs `cargo clippy … -- -D warnings`, where the
+same warning is a build failure. A `#[cfg_attr(not(target_os = "windows"),
+allow(dead_code))]` therefore looked sufficient locally while leaving the
+Windows build broken, because the code was unused on **both** platforms.
+
+Reproduced on the macOS host after the fact: the clippy command above emits
+exactly the four errors CI did. One local command would have caught it.
 
 Verified against unmodified `main`: `beckon-core`, `beckon-windows` and
 `beckon-cli` all check clean in 7.35 s. `cargo check` does not link, so no
