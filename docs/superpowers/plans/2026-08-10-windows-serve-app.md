@@ -472,13 +472,16 @@ Add to the `mod tests` block created in Task 2:
         assert_eq!(sep.checked, None);
     }
 
-    #[test]
-    fn double_click_id_cannot_collide_with_a_real_entry() {
-        // serve.rs numbers its entries from 1 upward; the reserved id must
-        // sit far outside any plausible menu.
-        assert_eq!(MENU_ID_DOUBLE_CLICK, u32::MAX);
-        assert!(MENU_ID_DOUBLE_CLICK > 1000);
-    }
+> **Revised during execution (2026-08-10).** This step originally also
+> specified `double_click_id_cannot_collide_with_a_real_entry`, asserting
+> `MENU_ID_DOUBLE_CLICK == u32::MAX` and `> 1000`. Both sides are
+> compile-time constants, so it asserted something the compiler already
+> guarantees — it proved nothing, and clippy's `assertions_on_constants`
+> said so, which would have needed an `#[allow]` to silence. The invariant
+> actually worth protecting is *"no real menu entry ever collides with the
+> reserved id"*, and real menu entries are built in `serve.rs`, not here —
+> so it moved to Task 4, where `build_entries` exists to test it against.
+> Ruling: human, during execution. Do not reinstate it here.
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -799,6 +802,30 @@ Append to `crates/beckon-cli/src/serve.rs`'s existing `#[cfg(test)] mod tests`:
             rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
             Some(true)
         );
+    }
+
+    /// Moved here from Task 3, where the same intent could only be written
+    /// as an assertion about a constant. Here it runs against the real
+    /// entry list, so adding a menu row that collides with the reserved
+    /// double-click id fails the build instead of silently making
+    /// double-click fire that row.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn no_real_entry_collides_with_the_reserved_double_click_id() {
+        let m = MenuModel {
+            phrase: "5 shortcuts registered".into(),
+            paused: false,
+            autostart: false,
+            has_log: true,
+        };
+        for row in build_entries(&m) {
+            assert_ne!(
+                row.id,
+                hotkey::MENU_ID_DOUBLE_CLICK,
+                "entry {:?} shadows the reserved double-click id",
+                row.label
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]
