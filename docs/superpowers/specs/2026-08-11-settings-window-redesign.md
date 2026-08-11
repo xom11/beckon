@@ -60,6 +60,12 @@ sequencing is deliberate: the pain suggestions are aimed at ("I had to type
 working autocomplete solves, for a quarter of the code. Ship the combo box
 fix, then decide whether Part E is still wanted.
 
+**Read that with §7.15 beside it.** "A working autocomplete" is written here
+as if the control had a broken one. It does not have one at all — a
+`CBS_DROPDOWN` never autocompletes, measured — so this sentence is a case for
+*adding* type-ahead, not for repairing it, and §B.7's fix does not deliver it.
+Part E is therefore still open on its own merits.
+
 ---
 
 # Part A — the foundation
@@ -387,14 +393,30 @@ Two consequences that are the point of the change:
   language with the offending line, offer `Open config file`, and keep
   editing disabled until it parses. beckon still never writes over something
   it does not understand.
-- **Fix the App combo box autocomplete.** A populated `CBS_DROPDOWN` rewrites
-  its own text as you type and the `CBN_EDITCHANGE` that arrives carries the
-  text from *before* the rewrite — measured on a14: typing "Notepad" wrote
-  `"d"` to the config while the screen showed something else. `commit_fields`
-  papers over it at Apply time; the field itself still lies while you type.
-  This may be the highest felt-value item in the whole spec, because the pain
-  it causes ("I had to type `Windows Terminal` and did not know that was the
-  Name") is the pain the suggestions feature in Part E is also aimed at.
+- **Fix the App field's typing defect.** Typing "Notepad" wrote `"d"` to the
+  config while the screen showed "Debuggable Package Manager" — measured on
+  a14. `commit_fields` papers over it at Apply time; the field itself still
+  lies while you type. This may be the highest felt-value item in the whole
+  spec, because the pain it causes ("I had to type `Windows Terminal` and did
+  not know that was the Name") is the pain the suggestions feature in Part E
+  is also aimed at.
+
+  **CORRECTED 2026-08-11 — the cause named here was wrong.** This bullet, and
+  its heading, used to read *"Fix the App combo box autocomplete. A populated
+  `CBS_DROPDOWN` rewrites its own text as you type and the `CBN_EDITCHANGE`
+  that arrives carries the text from before the rewrite."* Both sentences are
+  false, and the first is what sent the first fix attempt (deferring the read)
+  down a path that could not work — it changed nothing on hardware, because
+  the read was never wrong. The combo box does not autocomplete while you
+  type: `combo_probe` on a14, comctl32 6.16, 121 items, session 1, real
+  `SendInput` keystrokes, found the field holding exactly what was typed,
+  `CB_GETCURSEL` at -1, and the child EDIT receiving nothing but
+  `WM_KEYDOWN`/`WM_CHAR`. What it *does* do is re-synchronise its edit to the
+  closest catalogue item, and select the whole string, when it is **resized** —
+  and `apply_state` ended with an unconditional `layout`, which `SetWindowPos`es
+  every control on every keystroke. See §7.15, `Ui::shown_external` /
+  `Ui::shown_empty`, and
+  `docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §24–26.
 
 ---
 
@@ -1373,3 +1395,42 @@ the Scoop-installing audience is likeliest to have set.
 
 **7.14 "Use `Taskband\Favorites` for pin order."** Undocumented PIDL blob,
 shape changes between builds, reported gone in 24H2.
+
+**7.15 — REFUTED 2026-08-11, by measurement. "A populated `CBS_DROPDOWN`
+rewrites its own edit text as you type, and the `CBN_EDITCHANGE` that arrives
+carries the text from before the rewrite."** This spec asserted it in §B.7 and
+the code asserted it in four comments; it is false, and it cost a day. It was
+inferred from the outside-in symptom (typing "Notepad" left `"d"` in the
+config and "Debuggable Package Manager" on screen) and never checked, and the
+fix it motivated — deferring the `CBN_EDITCHANGE` read through a posted
+message — produced a byte-identical failure on hardware, because the read was
+never wrong.
+
+What is true: a `CBS_DROPDOWN` does **not** autocomplete while you type.
+`crates/beckon-windows/examples/combo_probe.rs` builds the control in-process
+with beckon's exact styles, subclasses its child EDIT, and reports the field
+holding exactly what was typed, `CB_GETCURSEL` at -1, and the EDIT receiving
+nothing but `WM_KEYDOWN`/`WM_CHAR` — no `WM_SETTEXT`, no `EM_REPLACESEL`, no
+`EM_SETSEL`. It ran with an empty combo and a plain EDIT as controls, under
+comctl32 **5.82 and 6.16** (same binary, manifest stamped by `mt.exe`), in
+session 1 with real focus and `SendInput` keystrokes — because a control that
+never runs and a clean result look identical.
+
+The control *does* re-synchronise its edit field to the closest matching item,
+and select the whole string, when it is **resized**. `apply_state` ran on every
+keystroke and ended with an unconditional `layout`, which `SetWindowPos`es
+every control — so each character was replaced by a catalogue entry and
+reselected, leaving the next character to replace the lot. `combo_probe`'s
+`ModelLoopWithLayout` scenario reproduces the exact `"d"` signature from first
+principles, with the no-layout run beside it as the control. The fix is
+`Ui::shown_external` (banner visibility) plus `Ui::shown_empty` (the list's
+row height, the fourth input to `layout`).
+
+Two things follow, and both are the reason this entry is long. **Do not
+re-derive the old mechanism from a gap** — every site that stated it now says
+what was believed and what replaced it. And **`WM_APP_EDITED`, `Ui::app_epoch`
+and the deferred read are now deferred debt**, kept only because collapsing
+them would have to re-establish the `CBN_CLOSEUP` ordering `05db60b` fixed;
+their survival is not evidence they are load-bearing. Full record:
+`docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §24–26 and
+`.superpowers/sdd/2026-08-11-settings-window-landing-2a/combo-investigation.md`.

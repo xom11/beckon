@@ -89,6 +89,30 @@ Two things in there look like overkill and are not:
 Both were hit and fixed against a real machine (Windows 11 ARM64, build
 26200); the file as shipped registers cleanly.
 
+**One more thing, if you register a task by hand rather than importing this
+XML** — which is how everything on this project's Windows test machine gets
+observed, since an SSH shell lands in session 0 and cannot see a desktop at
+all. Two settings, not one:
+
+```powershell
+$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+                                  -DontStopIfGoingOnBatteries `
+                                  -Priority 4
+```
+
+`-AllowStartIfOnBatteries` is the known one — without it `schtasks`' defaults
+refuse to start on battery and leave the task `Queued` forever on a laptop.
+`-Priority 4` is the one that cost this landing time: `New-ScheduledTask*`
+defaults to **priority 7**, and a task left there on battery does not report
+anything — it looks exactly like the program hanging, which is the worst
+possible signature when the program you are testing is a GUI you cannot see.
+Set both.
+
+The XML in this directory already carries the battery settings and keeps
+`<Priority>7</Priority>`, which is fine for what it launches: a daemon asleep
+in a message loop for the length of a session. It is the one-shot
+drive-something-and-exit probes that want 4.
+
 Verify, and start it without logging out:
 
 ```powershell

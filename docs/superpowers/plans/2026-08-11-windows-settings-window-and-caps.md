@@ -82,12 +82,25 @@ None were visible to 159 green unit tests or to either `WINCHECK` command.
    positions through `GetDlgItem`, which resolves every `-1` to the same
    first match — so the App label and the Keyboard group box were never
    placed. Found by reading the live control list out of the running window.
-3. **The combo box rewrote its own text without saying so.** With the
-   catalog loaded it jumps to the matching entry as you type — `N` leaves
-   "Narrator", `o` leaves "Obsidian" — and the `CBN_EDITCHANGE` that arrives
-   carries the text from *before* the rewrite. Typing "Notepad" wrote `"d"`
-   to the config while the screen said "Debuggable Package Manager". Fixed
-   by re-reading both fields at Apply and on kill-focus.
+3. **The App field showed one thing and recorded another.** Typing
+   "Notepad" wrote `"d"` to the config while the screen said "Debuggable
+   Package Manager"; `N` left "Narrator" on screen, `o` left "Obsidian".
+   Papered over at the time by re-reading both fields at Apply and on
+   kill-focus.
+
+   **CORRECTED 2026-08-11 — the cause recorded here was wrong.** This entry
+   read *"The combo box rewrote its own text without saying so. With the
+   catalog loaded it jumps to the matching entry as you type."* It does not.
+   Measured on a14 with `crates/beckon-windows/examples/combo_probe.rs`
+   (comctl32 6.16, 121 items, session 1, real `SendInput` keystrokes): the
+   field holds exactly what was typed, `CB_GETCURSEL` stays -1, and the child
+   EDIT receives nothing but `WM_KEYDOWN`/`WM_CHAR`. The control
+   re-synchronises its edit to the nearest catalogue item, and selects all of
+   it, when it is **resized** — and `apply_state` ended with an unconditional
+   `layout` that `SetWindowPos`es every control on every keystroke, so the
+   next character replaced the whole selection. Fixed in landing 2a by
+   `Ui::shown_external` + `Ui::shown_empty`. The wrong cause survived here
+   long enough to send a later fix down the same path; see spec §7.15.
 
 ### Deviations from the plan as written
 

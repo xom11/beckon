@@ -103,11 +103,36 @@ Defects they caught, none reachable from a unit test:
 Running them: **SSH into a14 lands in session 0**, which has no desktop and
 no keyboard, so every result there is a confident false negative. Go through
 a scheduled task in session 1, registered with `New-ScheduledTaskSettingsSet
--AllowStartIfOnBatteries` — `schtasks`' defaults refuse to start on battery
-and leave the task `Queued` forever on a laptop. Use `-EncodedCommand` for
+-AllowStartIfOnBatteries -Priority 4`. **Both flags, not one.** `schtasks`'
+defaults refuse to start on battery and leave the task `Queued` forever on a
+laptop; separately, `New-ScheduledTask*` defaults to **priority 7**, and a
+task left there on battery produces no diagnostic of any kind — it looks
+exactly like the thing under test hanging, which is unfalsifiable when the
+thing under test is a GUI you cannot see. Use `-EncodedCommand` for
 the PowerShell, and a `.bat` for anything with a redirect, or the quoting is
 eaten. **`cargo build --examples` does not build `[[bin]]` targets** — use
 `--all-targets`, or you will test a stale `beckon-serve.exe`.
+
+**REFUTED 2026-08-12: "`cargo fmt --all -- --check` does not cover
+`crates/beckon-windows/src/*`."** Landing 2a lost time to this belief and it
+was about to be written down here as fact. The reasoning was plausible —
+`lib.rs` gates nine modules behind `#[cfg(target_os = "windows")]`, so on a
+macOS host those `mod` items are not compiled, and CI's `fmt` job runs on
+`ubuntu-latest`, meaning nothing anywhere would ever have looked at them.
+**Measured on rustfmt 1.9.0-stable, and it is wrong: rustfmt does not
+evaluate `cfg` when it walks the module tree.** Probe, per file: append
+`fn   __p( )  ->i32{  1 }` and run `cargo fmt --all -- --check`. It exits 1
+and names the file for `settings_window.rs`, `autostart.rs`, `caps_hook.rs`,
+`hotkey.rs`, `examples/settings_probe.rs` and `src/bin/beckon-serve.rs` —
+cfg-gated modules, an example and a `[[bin]]` alike. Do not re-add the claim
+without re-running that probe.
+
+`rustfmt --edition 2021 --check <file>` is still worth knowing, because it is
+the *fast* check on one file rather than a different one. It is not a stronger
+gate, and a session that reaches for it believing `cargo fmt` is blind is
+about to trust something it has not tested — which is how the two `--examples`
+and `WINCHECK` traps above actually work, and why this one is written up
+despite turning out not to be one.
 
 Reading control text across processes needs `SendMessage(WM_GETTEXT)`;
 `GetWindowText` returns the kernel-side caption instead and reads back empty
@@ -937,6 +962,54 @@ OS metadata on every call.
   only to fill in a Name while authoring a binding — the job `beckon
   search` already has — and never focuses or launches anything. Design:
   `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`.
+
+  **Shape: bands stacked top to bottom, not a split pane** (landing 2a,
+  `settings_window.rs::layout`). Banner (external change; contributes no
+  height when hidden) / `Shortcuts` head with Remove + Add / the list /
+  editor strip / suggestion row (nothing built for it yet) / keyboard group
+  / command bar. The 45/55 column split it replaced put 561 px of fixed
+  columns inside a 482 px pane, so beckon shipped a horizontal scroll bar
+  and a clipped App column; widths are now a proportion of the live list
+  width, which is why that cannot recur. **App leads, Shortcut follows** —
+  the app is what the user is looking for. The list is a **fixed eight
+  rows** (`tok::ROWS`) at every DPI, measured rather than scaled from a
+  token, so it does not grow with the config. Per-row `LVS_EX_CHECKBOXES`
+  ride in column 0's state image and make Remove a multi-delete;
+  `Save` (was `Apply`; the id is still `IDC_APPLY`, because
+  `examples/settings_probe.rs` hard-codes 1002-1007) is
+  `BS_DEFPUSHBUTTON`, so Enter and `Ctrl+S` do the same thing from anywhere
+  in the window.
+
+  **The status vocabulary is four words, and a healthy row says nothing.**
+  `paused` > `key in use` > `not installed` > `custom`, and that order IS
+  the precedence — a row can be several at once while the cell holds one
+  word. `paused` sits above the registration map deliberately: `serve`
+  CLEARS that map when it pauses, so consulting the map first would render
+  every row "not registered yet" and never say why. **One function,
+  `beckon_core::settings::row_condition`, produces the list flag AND the
+  editor's notes**, and derives `mark` from the notes at the end rather
+  than assigning it along the way — so "the cell and the note cannot
+  disagree" is true by construction rather than by discipline. It was not:
+  `items` used to read only the registration map while `detail` read the
+  catalog too, and they contradicted each other.
+
+  **`beckon-serve.exe` starts on a config that does not parse** (commit
+  `4f82b94`). It installs the tray, registers no hotkeys, arms no Caps
+  hook — the parsed `keyboard` block is discarded along with the shortcuts,
+  because a half-parsed file must not decide whether to install a
+  `WH_KEYBOARD_LL` hook — and writes nothing. The settings window then
+  opens read-only with the parse error as ordinary notes. Refusing was
+  measured on a14 to end in a modal dialog with *no tray icon*, which made
+  the one window built for exactly this file unreachable from the one
+  starting condition that most needs it. **`beckon.exe serve` still refuses
+  and exits non-zero** (`BrokenConfig::Refuse`): it has a console to print
+  to and callers that check the code. macOS `serve` refuses too — no tray,
+  no window, nothing for a tolerant start to rescue — and `beckon check` is
+  untouched. Note the interaction the old behaviour had with
+  `examples/windows/serve/beckon-serve.xml`: `<RestartOnFailure>` there is
+  `PT1M` x 3, and pairing it with a deterministic exit 1 spends all three
+  restarts on a file only a human can fix, then gives up — leaving no
+  hotkeys and, before `4f82b94`, no tray to say so.
 
   **Chord capture stays out.** Combos are typed as text. `msctls_hotkey32`
   cannot capture the Windows key, and `Win+T` and its siblings are shell

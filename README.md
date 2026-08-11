@@ -249,17 +249,64 @@ at the next logon while the checkbox stayed ticked forever.
 
 **Settings...** in the tray menu — or double-clicking the icon — opens a
 window listing every binding with whether it actually registered and whether
-its app name resolves. Both columns are editable, and **Apply** writes the
-same `apps.toml` you would edit by hand: comments, key order and spelling
-survive, so the two routes stay interchangeable. Edit the file in Notepad
-while the window is open and it follows along; if you had unsaved changes it
-asks rather than choosing for you.
+its app name resolves. **Save** writes the same `apps.toml` you would edit by
+hand: comments, key order and spelling survive, so the two routes stay
+interchangeable. Edit the file in Notepad while the window is open and it
+follows along; if you had unsaved changes it asks rather than choosing for
+you.
+
+The window is bands stacked top to bottom, not panes side by side:
+
+- a banner, only when the file changed on disk under you — **Reload** or
+  **Keep mine**;
+- **Shortcuts**, with **Remove** and **Add** on the same line;
+- the list itself, eight rows tall and staying eight rows tall whatever is in
+  it. **App** leads and **Shortcut** follows, because the app is what you are
+  looking for. Every row carries a checkbox: tick as many as you like and
+  **Remove** takes them all at once;
+- an editor strip — **App** as a combo box you can type into or pick from,
+  **Shortcut** as plain text — plus a notes line explaining the selected row;
+- a command bar: **Open config file** on the left, then **Close** and
+  **Save**. **Save** is the default button, so Enter saves from anywhere in
+  the window, and `Ctrl+S` does the same.
+
+Rows say nothing when they are fine. When they are not, the App cell carries
+one word, and the notes line under the editor says the rest:
+
+| Flag | Means |
+|---|---|
+| `key in use` | Windows refused the chord — something else already owns it |
+| `not installed` | no app of that Name on this machine |
+| `paused` | beckon is paused, so nothing is active |
+| `custom` | the chord does not match your Caps Lock hold, so Caps cannot reach it |
+
+A row can be more than one of these; the flag shows the first that applies, in
+the order above, and the notes line lists them all. Both come out of one
+function, so the cell and the note cannot tell you different things.
+
+The App combo box types freely — it does not autocomplete or jump to a
+catalogue entry as you type. Apps with no Start Menu entry are typed in by
+hand, which is why.
 
 Combos are typed, not captured by pressing them. That is deliberate: the
 stock Windows control for chord capture cannot see the Windows key, and
 Explorer eats `Win+T` and its siblings before a normal window ever gets
 them, so a capture field would quietly fail on exactly the chords beckon
 recommends.
+
+**If `apps.toml` does not parse, `beckon-serve.exe` starts anyway.** You get
+the tray icon, no hotkeys registered, and nothing written to the file — and
+**Settings...** opens read-only with the parse error on screen and **Open
+config file** one click away. Fix the file, and the next reload picks it up.
+Refusing to start was worse: it left a first-time user with a modal error, no
+tray, and the one window built to explain the problem unreachable.
+
+`beckon.exe serve` still refuses a file it cannot parse and exits non-zero —
+it has a console to print to and callers that check the code — and
+`beckon check` is unchanged. If you drive `beckon.exe serve` from the
+Scheduled Task in [`examples/windows/serve/`](examples/windows/serve/), note
+that its `<RestartOnFailure>` and an exit-1 on a broken config make a
+restart loop that never gets anywhere; the tray binary is the better host.
 
 ### Caps Lock as the beckon key (Windows, opt-in)
 
