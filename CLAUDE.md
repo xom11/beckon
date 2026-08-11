@@ -82,16 +82,23 @@ commands.
 | `caps_probe` | Does an injected chord fire our own `RegisterHotKey`? Does the burst open Start (with a control that proves the detector works)? Does an injected `VK_CAPITAL` toggle? What does `SendInput` cost? |
 | `caps_live` | End-to-end `Caps+<key>`, run once without `serve` and once with it — the difference is the result |
 | `settings_probe` | Opens the settings window via the tray's own double-click notification, reads every control back with `EnumChildWindows`, drives an edit and an Apply |
+| `combo_probe` | Does a populated `CBS_DROPDOWN` rewrite its own edit text as you type? (No.) Builds the control in-process, subclasses its child EDIT, and runs an empty combo, a plain EDIT, comctl32 v5-vs-v6 and `SendInput` as controls |
 
 Defects they caught, none reachable from a unit test:
 
 - Three settings labels shared control id `-1`, and `layout` positions
   through `GetDlgItem`, which resolves every `-1` to the same first match —
   so two controls were never placed.
-- A combo box with a populated list rewrites its own text as you type
-  (`N` → "Narrator", `o` → "Obsidian") and the `CBN_EDITCHANGE` that arrives
-  carries the text from *before* the rewrite. Typing "Notepad" wrote `"d"`
-  to the config while the screen said something else.
+- Typing "Notepad" into the App combo wrote `"d"` to the model while the
+  screen said "Debuggable Package Manager". **The cause is not the combo
+  box.** `apply_state` runs on every keystroke and ends by calling `layout`,
+  whose `SetWindowPos` makes a *populated* combo re-synchronise its edit to
+  the closest matching item and select the whole string — so the next
+  character replaced all of it. A `CBS_DROPDOWN` does **not** autocomplete
+  while you type; `combo_probe` measured that under comctl32 6.16 with real
+  keystrokes, and the first fix failed on hardware precisely because it
+  assumed otherwise. Guarded by `Ui::shown_external`; see
+  `docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §24–26.
 
 Running them: **SSH into a14 lands in session 0**, which has no desktop and
 no keyboard, so every result there is a confident false negative. Go through

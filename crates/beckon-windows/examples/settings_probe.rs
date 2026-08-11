@@ -46,6 +46,59 @@ mod win {
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     const WM_TRAY: u32 = WM_APP + 1;
+    /// Spelled as winuser.h gives it; `windows` 0.61 files `EM_*` under a
+    /// different module from the `WM_*` glob this file imports.
+    const EM_GETSEL: u32 = 0x00B0;
+
+    thread_local! {
+        /// The App COMBOBOX, while `type_into` is driving its child EDIT.
+        /// Set by `drive_an_edit` around the App half only, so the Shortcut
+        /// control run prints nothing extra and stays a clean comparison.
+        static APP_COMBO: RefCell<isize> = const { RefCell::new(0) };
+    }
+
+    /// The four numbers that separate "the combo box rewrote itself" from
+    /// "somebody wrote to it".
+    ///
+    /// `combo_probe` established on this machine (comctl32 6.16, session 1,
+    /// real focus, real keystrokes) that a populated `CBS_DROPDOWN` does NOT
+    /// autocomplete: `cursel` stays -1 and the child EDIT is sent nothing but
+    /// `WM_CHAR`. So if the field here ever holds a catalog entry the user
+    /// did not type, one of these says where it came from:
+    ///
+    /// - `cursel` other than -1 means the LIST selection moved, i.e. a
+    ///   `CB_SETCURSEL` / `CB_SELECTSTRING` reached the control;
+    /// - `sel` spanning the whole text means something selected it, which is
+    ///   what a select-string does and what typing does not;
+    /// - `combo` differing from the field means `GetWindowTextW` on the
+    ///   COMBOBOX (what `settings_window::text_of` reads) and `WM_GETTEXT` on
+    ///   its child EDIT (what this probe reads) are not the same string.
+    fn combo_detail(edit: HWND) -> String {
+        let c = APP_COMBO.with(|c| *c.borrow());
+        if c == 0 {
+            return String::new();
+        }
+        let combo = HWND(c as *mut c_void);
+        unsafe {
+            let count = SendMessageW(combo, CB_GETCOUNT, Some(WPARAM(0)), Some(LPARAM(0))).0;
+            let cursel = SendMessageW(combo, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))).0;
+            // Both pointers NULL: the packed result carries start in the low
+            // word and end in the high word, which is the only form that
+            // works across a process boundary without a remote buffer.
+            let sel = SendMessageW(edit, EM_GETSEL, Some(WPARAM(0)), Some(LPARAM(0))).0;
+            // An open drop-down is the one state in which comctl32 does
+            // search the list as you type, so it has to be ruled out by
+            // reading it rather than by assuming the probe never opened it.
+            let dropped =
+                SendMessageW(combo, CB_GETDROPPEDSTATE, Some(WPARAM(0)), Some(LPARAM(0))).0;
+            format!(
+                "  [items={count} cursel={cursel} sel={}..{} dropped={dropped} combo={:?}]",
+                sel & 0xFFFF,
+                (sel >> 16) & 0xFFFF,
+                ctl_text(combo),
+            )
+        }
+    }
 
     struct Kid {
         cls: String,
@@ -538,7 +591,44 @@ mod win {
                 Some(LPARAM(empty.as_mut_ptr() as isize)),
             );
             for ch in s.encode_utf16() {
-                SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
+                // WHEN the text changes, not just what it ends up as.
+                //
+                // `SendMessageW` returns only after the target has finished
+                // handling the character, so anything visible at the FIRST
+                // sample happened inside that handling -- comctl32, or a
+                // notification beckon answered synchronously. Anything that
+                // appears at a later sample happened on the message loop
+                // afterwards, which is where the posted read and
+                // `apply_state` run. The two are indistinguishable from a
+                // single reading taken 120 ms later, which is all this probe
+                // used to take.
+                let t0 = std::time::Instant::now();
+                let tracing = APP_COMBO.with(|c| *c.borrow()) != 0;
+                let mut trail: Vec<(u128, String)> = Vec::new();
+                if tracing {
+                    // POSTED, not sent, and only on the traced field.
+                    //
+                    // `SendMessageW` does not return until the character has
+                    // been fully handled, so the earliest possible reading is
+                    // already after everything comctl32 did -- which makes an
+                    // atomic rewrite and a two-step rewrite look identical.
+                    // Posting hands the character to the target's own message
+                    // loop and returns at once, so the polling below can see
+                    // the intermediate state if there is one. If the field
+                    // never reads as the bare character, there is no
+                    // intermediate state to catch.
+                    let _ = PostMessageW(Some(h), WM_CHAR, WPARAM(ch as usize), LPARAM(1));
+                    let mut last = String::from("\u{0}unset");
+                    for _ in 0..600 {
+                        let now = ctl_text(h);
+                        if now != last {
+                            trail.push((t0.elapsed().as_micros(), now.clone()));
+                            last = now;
+                        }
+                    }
+                } else {
+                    SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
+                }
                 // Long enough for the window to have pumped the POSTED
                 // message the App field's read now rides on. A synchronous
                 // read needs no wait, so a probe with no wait here would
@@ -584,10 +674,18 @@ mod win {
                     None => "(no witness)".to_string(),
                 };
                 println!(
-                    "      typed {:?} -> field {:?}   {verdict}",
+                    "      typed {:?} -> field {:?}   {verdict}{}",
                     char::from_u32(ch as u32).unwrap_or('?'),
                     field,
+                    combo_detail(h),
                 );
+                if APP_COMBO.with(|c| *c.borrow()) != 0 {
+                    let t: Vec<String> = trail
+                        .iter()
+                        .map(|(us, s)| format!("+{}us {s:?}", us))
+                        .collect();
+                    println!("        transitions: {}", t.join("  ->  "));
+                }
             }
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -824,7 +922,40 @@ mod win {
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
         // only that child raises the change notification the window listens
         // for. Setting the combo itself is silent.
-        let app_edit = dlg_item(h, IDC_APP).and_then(|c| first_child_of_class(c, "Edit"));
+        let app_combo = dlg_item(h, IDC_APP);
+        // The style the control ACTUALLY has, not the one the source passes
+        // to `CreateWindowExW`. `combo_probe` reproduced the documented style
+        // and saw no rewrite, so the first thing to check on the live control
+        // is whether its style is what the code says.
+        if let Some(c) = app_combo {
+            let st = unsafe { GetWindowLongPtrW(c, GWL_STYLE) } as u32;
+            let kind = match st & 0x3 {
+                1 => "CBS_SIMPLE",
+                2 => "CBS_DROPDOWN",
+                3 => "CBS_DROPDOWNLIST",
+                _ => "CBS_?",
+            };
+            println!(
+                "    App combo style: 0x{st:08X} ({kind}{}{})",
+                if st & 0x0040 != 0 {
+                    " CBS_AUTOHSCROLL"
+                } else {
+                    ""
+                },
+                if st & 0x0100 != 0 { " CBS_SORT" } else { "" },
+            );
+            let mut kid = unsafe { GetWindow(c, GW_CHILD) }.unwrap_or_default();
+            while !kid.0.is_null() {
+                println!(
+                    "      combo child: class {:?} style 0x{:08X}",
+                    class_of(kid),
+                    unsafe { GetWindowLongPtrW(kid, GWL_STYLE) } as u32
+                );
+                kid = unsafe { GetWindow(kid, GW_HWNDNEXT) }.unwrap_or_default();
+            }
+        }
+        let app_edit = app_combo.and_then(|c| first_child_of_class(c, "Edit"));
+        APP_COMBO.with(|c| *c.borrow_mut() = app_combo.map(|x| x.0 as isize).unwrap_or(0));
         let (app_lies, app_late) = match app_edit {
             Some(e) => type_into(e, "Notepad", witness(0)),
             None => {
@@ -832,6 +963,7 @@ mod win {
                 (usize::MAX, 0)
             }
         };
+        APP_COMBO.with(|c| *c.borrow_mut() = 0);
         dump(h, "after app text");
         println!(
             "    per-keystroke agreement: Shortcut field {} ({combo_lies} wrong, \

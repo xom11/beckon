@@ -127,21 +127,30 @@ pub const WM_CATALOG: u32 = WM_APP + 2;
 /// below and cannot be undone by the `CBN_CLOSEUP` backstop that follows it.
 /// See the two arms in `handle_command`.
 ///
-/// **The whole point is that it is POSTED, not sent.** A populated
-/// `CBS_DROPDOWN` rewrites its own edit text as you type -- measured on a14,
-/// `N` leaves "Narrator" in the field and `o` leaves "Obsidian" -- and the
-/// `CBN_EDITCHANGE` that reaches us carries the text from BEFORE that
-/// rewrite, so reading the control inside the notification returned the one
-/// character just typed while the screen said something else entirely.
-/// Typing `Notepad` put `d` in the model. Every per-keystroke derivative --
-/// the dirty mark, the notes, the list row -- was computed from text the
-/// user never typed.
+/// It is POSTED rather than sent, which costs nothing and keeps the read off
+/// the notification's own stack. It is **not** what fixed the App field, and
+/// the claim that used to stand here was wrong.
 ///
-/// Reading LATER, from the message loop, is a fix that does not depend on
-/// knowing WHY the control rewrites itself: by the time a posted message is
-/// dispatched, the control has finished whatever it was doing -- autocomplete,
-/// an IME composition, comctl32 internals -- and the edit holds exactly what
-/// the user is looking at. The screen is the source of truth.
+/// **A populated `CBS_DROPDOWN` does not rewrite its own edit text as you
+/// type.** That was asserted here from the outside-in symptom and is false:
+/// measured on a14 under comctl32 **6.16** with 121 items, in session 1, with
+/// real focus and real `SendInput` keystrokes, the field reads exactly what
+/// was typed, `CB_GETCURSEL` stays -1, and a subclass on the child EDIT sees
+/// nothing but `WM_KEYDOWN`/`WM_CHAR` -- no `WM_SETTEXT`, no `EM_REPLACESEL`,
+/// no `EM_SETSEL`. `crates/beckon-windows/examples/combo_probe.rs` is that
+/// measurement, with an empty combo box and a plain EDIT as controls.
+///
+/// What actually replaced the user's typing with "Narrator" was `apply_state`
+/// calling `layout`, whose `SetWindowPos` on the COMBOBOX makes the control
+/// re-synchronise its edit to the closest matching item. See
+/// `Ui::shown_external`, which is the fix, and `combo_probe`'s
+/// `ModelLoopWithLayout` scenario, which reproduces the whole defect by
+/// adding that one call to a loop that otherwise agrees.
+///
+/// So this message is now belt-and-braces rather than load-bearing. It could
+/// be collapsed back into a synchronous read; that is a separate change, and
+/// it would have to re-establish the `CBN_CLOSEUP` ordering that `05db60b`
+/// fixed, so it is not worth doing without a reason.
 ///
 /// Private, unlike `WM_CATALOG`: nothing outside this file may post it, and
 /// a stamp forged from outside would defeat the staleness check.
@@ -544,6 +553,28 @@ struct Ui {
     /// which runs on every keystroke -- only rewrites the caption when the
     /// mark actually flips. `None` until the first push.
     shown_dirty: Option<bool>,
+    /// The banner visibility the CURRENT layout was computed for, so
+    /// `apply_state` re-runs `layout` only when the geometry can actually
+    /// have changed. `None` until the first push, which therefore always
+    /// lays out.
+    ///
+    /// **This is a correctness guard, not an optimisation, and removing it
+    /// reintroduces a measured data-loss bug.** `layout` re-places the App
+    /// COMBOBOX with `SetWindowPos`, and a populated combo box responds to
+    /// being resized by re-synchronising its edit field to the closest
+    /// matching item in its list -- so a `SetWindowPos` on the keystroke path
+    /// silently replaced what the user had typed with a catalogue entry.
+    /// Measured on a14 (comctl32 6.16, 121 items): typing `N` left `N` in the
+    /// model and `Narrator` on screen, 2.8 ms later, inside `apply_state`
+    /// itself. See `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
+    /// section 24 for the bisect that pinned it to this one call.
+    ///
+    /// `layout`'s output depends on exactly three things -- the client rect,
+    /// the DPI, and whether the banner is showing. The first two arrive as
+    /// `WM_SIZE` / `WM_DPICHANGED`, which call `layout` directly and still
+    /// do. Only the third can change on a data push, and only through
+    /// `external_change`.
+    shown_external: Option<bool>,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -1677,6 +1708,7 @@ unsafe fn build_children(hwnd: HWND) {
             // comctl32 a pointer to travels with it.
             tip_text,
             shown_dirty: None,
+            shown_external: None,
             suppress: false,
             external_change: false,
             items: Vec::new(),
@@ -2297,7 +2329,24 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         show(banner, external_change);
         show(reload, external_change);
         show(keep, external_change);
-        layout(hwnd);
+        // Geometry only, and ONLY when the geometry can have changed.
+        //
+        // `layout` re-places every control, the App COMBOBOX included, and a
+        // populated combo box rewrites its own edit field when it is resized
+        // -- so running this on every keystroke threw the user's typing away
+        // and put a catalogue entry on screen instead. See
+        // `Ui::shown_external`. `WM_SIZE` and `WM_DPICHANGED` still call
+        // `layout` directly; this is the data path, where nothing moves
+        // unless the banner appears or disappears.
+        let relayout = UI.with(|u| {
+            u.borrow()
+                .as_ref()
+                .map(|x| x.shown_external != Some(external_change))
+                .unwrap_or(true)
+        });
+        if relayout {
+            layout(hwnd);
+        }
         // LAST, after every `enable` and every `show` above: this is what
         // makes it the authoritative moment rather than one more place that
         // has to be kept in step. See `repair_default_button`.
@@ -2313,6 +2362,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             // Recorded AFTER the write, not instead of it, so a caption that
             // never made it to the screen is retried on the next push.
             ui.shown_dirty = Some(st.dirty);
+            // Recorded after the layout above, for the same reason
+            // `shown_dirty` is recorded after the caption write.
+            ui.shown_external = Some(external_change);
             // Any read of the App field posted before this push is now about
             // text WE wrote, not text the user typed. See `Ui::app_epoch`.
             if wrote_app {
@@ -3059,10 +3111,12 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         }
         // ONE of the two codes is deferred, and the asymmetry is the point.
         //
-        // `CBN_EDITCHANGE` is the measured defect: the control rewrites its
-        // own text as you type and this notification carries the text from
-        // BEFORE the rewrite, so it must be read later -- see
-        // `WM_APP_EDITED`.
+        // `CBN_EDITCHANGE` is deferred through `WM_APP_EDITED`. NOT because
+        // the control rewrites its own text -- it does not, and the comment
+        // that used to say so here was falsified by measurement; see
+        // `WM_APP_EDITED` and `examples/combo_probe.rs`. The deferral is
+        // merely harmless, and the App field's actual defect was `layout`
+        // resizing the combo box on the keystroke path (`Ui::shown_external`).
         //
         // `CBN_SELCHANGE` is read synchronously out of the LIST, and
         // deferring it was a regression. A mouse pick raises `CBN_SELCHANGE`
