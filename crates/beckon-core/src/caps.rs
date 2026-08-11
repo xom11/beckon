@@ -420,6 +420,32 @@ mod tests {
         assert!(bound_keys(&m, Chord::default()).contains(&0x54));
     }
 
+    /// Every other test in this file passes `Chord::default()` (all three
+    /// modifiers), which cannot tell an exact-equality filter apart from a
+    /// subset test -- a superset of the chord always matches too when the
+    /// chord is "everything". A non-default chord separates the two: a combo
+    /// carrying a modifier the chord lacks must be excluded, not merely one
+    /// carrying every modifier the chord has.
+    #[test]
+    fn bound_keys_is_exact_not_a_subset_match() {
+        const VK_E: u32 = 0x45;
+        let hold = Chord::parse("ctrl+super").unwrap();
+        let m = reg(&[
+            ("ctrl+super+alt+t", true), // extra `alt` the chord does not have
+            ("ctrl+super+e", true),     // matches the chord exactly
+        ]);
+        let b = bound_keys(&m, hold);
+        assert!(
+            !b.contains(&0x54),
+            "ctrl+super+alt+t carries a modifier `ctrl+super` doesn't -- a \
+             subset filter would wrongly let it through: {b:?}"
+        );
+        assert!(
+            b.contains(&VK_E),
+            "ctrl+super+e matches the chord exactly and must be reachable: {b:?}"
+        );
+    }
+
     // ---------- the chord ----------
 
     #[test]
