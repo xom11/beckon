@@ -667,7 +667,7 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
             s.keyboard.caps && !s.paused,
             s.keyboard.caps_tap,
             s.keyboard.caps_hold,
-            beckon_core::caps::bound_keys(&s.shortcuts),
+            beckon_core::caps::bound_keys(&s.registered, s.keyboard.caps_hold),
         )
     };
 

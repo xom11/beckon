@@ -24,7 +24,7 @@
 //! kanata's `tap-hold-press` behaviour and needs no 200 ms wait before the
 //! first chord works.
 
-use crate::shortcuts::{CapsTap, Chord, Shortcut};
+use crate::shortcuts::{CapsTap, Chord, Combo};
 use std::collections::HashSet;
 
 /// How long Caps may be held before a release stops counting as a tap.
@@ -101,18 +101,29 @@ pub struct CapsState {
     down_at: u32,
 }
 
-/// Keys reachable through Caps: the main key of every binding whose combo
-/// carries ctrl + super + alt.
+/// Keys reachable through Caps: the main key of every binding that BOTH
+/// carries the configured chord AND actually registered.
+///
+/// Keyed off the registration results rather than the file, so the contract
+/// "Caps injects the chord `RegisterHotKey` is listening for" is true
+/// literally instead of by assumption. A row whose registration failed is
+/// absent, and pressing `Caps+<that key>` therefore injects nothing rather
+/// than a burst nobody is listening for.
 ///
 /// Shift is deliberately not part of the filter. The user's physical Shift
 /// is still down while the chord is injected, so `Caps+Shift+T` arrives at
-/// the system as `ctrl+super+alt+shift+t` and lands on a shift binding by
-/// itself. Filtering shift out here would make that binding unreachable.
-pub fn bound_keys(shortcuts: &[Shortcut]) -> HashSet<u32> {
-    shortcuts
+/// the system as `<chord>+shift+t` and lands on a shift binding by itself.
+/// Filtering shift out here would make that binding unreachable.
+pub fn bound_keys(
+    registered: &std::collections::HashMap<String, Result<(), String>>,
+    hold: Chord,
+) -> HashSet<u32> {
+    registered
         .iter()
-        .filter(|s| s.combo.ctrl && s.combo.super_ && s.combo.alt)
-        .map(|s| s.combo.key.win)
+        .filter(|(_, outcome)| outcome.is_ok())
+        .filter_map(|(canonical, _)| Combo::parse(canonical).ok())
+        .filter(|c| c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt)
+        .map(|c| c.key.win)
         .collect()
 }
 
@@ -309,10 +320,22 @@ pub fn decide(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shortcuts::parse_shortcuts;
 
-    fn shortcuts(text: &str) -> Vec<Shortcut> {
-        parse_shortcuts(text).unwrap()
+    /// Build a `registered`-shaped map: `(canonical combo, did it register)`.
+    fn reg(pairs: &[(&str, bool)]) -> std::collections::HashMap<String, Result<(), String>> {
+        pairs
+            .iter()
+            .map(|(k, ok)| {
+                (
+                    k.to_string(),
+                    if *ok {
+                        Ok(())
+                    } else {
+                        Err("hotkey already registered".to_string())
+                    },
+                )
+            })
+            .collect()
     }
 
     fn down(vk: u32) -> KeyEvent {
@@ -337,27 +360,44 @@ mod tests {
     const VK_SHIFT: u32 = 0x10;
 
     fn bound_t() -> HashSet<u32> {
-        bound_keys(&shortcuts(r#""ctrl+super+alt+t" = "Terminal""#))
+        bound_keys(&reg(&[("ctrl+super+alt+t", true)]), Chord::default())
     }
 
     // ---------- bound_keys ----------
 
     #[test]
-    fn bound_keys_takes_the_beckon_chord_only() {
-        let b = bound_keys(&shortcuts(
-            "\"ctrl+super+alt+t\" = \"Terminal\"\n\"ctrl+alt+e\" = \"Explorer\"\n",
-        ));
-        assert!(b.contains(&VK_T));
-        assert_eq!(b.len(), 1, "ctrl+alt+e is not reachable through Caps");
+    fn only_successfully_registered_keys_are_reachable_through_caps() {
+        let m = reg(&[("ctrl+super+alt+t", true), ("ctrl+super+alt+e", false)]);
+        let b = bound_keys(&m, Chord::default());
+        assert!(b.contains(&0x54), "T registered, so Caps+T must inject");
+        assert!(
+            !b.contains(&0x45),
+            "E failed to register; injecting its chord sends a burst nobody is \
+             listening for"
+        );
     }
 
-    /// Shift is deliberately ignored when collecting bound keys: the user's
-    /// physical Shift is still down while the chord is injected, so
-    /// `Caps+Shift+T` naturally lands on a `ctrl+super+alt+shift+t` binding.
     #[test]
-    fn bound_keys_ignores_shift() {
-        let b = bound_keys(&shortcuts(r#""ctrl+super+alt+shift+t" = "Terminal""#));
-        assert!(b.contains(&VK_T));
+    fn a_binding_on_a_different_chord_is_not_reachable_through_caps() {
+        let m = reg(&[("ctrl+alt+x", true)]);
+        assert!(bound_keys(&m, Chord::default()).is_empty());
+    }
+
+    /// The test is on the resolved modifier set, not on how the line was
+    /// spelled: Caps stands in for the chord, and this binding uses the chord.
+    #[test]
+    fn a_row_that_happens_to_use_the_chord_is_reachable_however_it_was_written() {
+        let m = reg(&[("ctrl+super+alt+j", true)]);
+        assert!(bound_keys(&m, Chord::default()).contains(&0x4A));
+    }
+
+    /// Shift is deliberately not part of the filter: the user's physical Shift
+    /// is still down while the chord is injected, so `Caps+Shift+T` arrives as
+    /// ctrl+super+alt+shift+t and lands on a shift binding by itself.
+    #[test]
+    fn a_shift_binding_on_the_chord_is_still_reachable() {
+        let m = reg(&[("ctrl+super+alt+shift+t", true)]);
+        assert!(bound_keys(&m, Chord::default()).contains(&0x54));
     }
 
     // ---------- the chord ----------
