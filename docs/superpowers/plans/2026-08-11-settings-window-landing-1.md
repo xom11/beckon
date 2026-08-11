@@ -287,6 +287,27 @@ fn a_default_caps_hold_is_not_written_at_all() {
     );
 }
 
+/// The removal branch, which the test above cannot reach: it starts from an
+/// empty document, where `kb.remove` is a no-op. Resetting the chord to its
+/// default on a file that already carries a non-default line must delete
+/// that line -- otherwise an older beckon binary keeps rejecting the file
+/// over a setting the user already turned off.
+#[test]
+fn resetting_caps_hold_to_default_removes_an_existing_line() {
+    let original = "keyboard.caps_hold = \"ctrl+alt\"\n\"ctrl+alt+t\" = \"Terminal\"\n";
+    let rows = vec![RowWrite {
+        orig_key: Some("ctrl+alt+t".into()),
+        combo: "ctrl+alt+t".into(),
+        app: "Terminal".into(),
+    }];
+    let out = render(original, &rows, &KeyboardConfig::default()).unwrap();
+    assert!(
+        !out.contains("caps_hold"),
+        "a stale non-default line survived a reset to default:\n{out}"
+    );
+    parse_config(&out).expect("the writer must emit what the reader accepts");
+}
+
 #[test]
 fn a_non_default_caps_hold_is_written() {
     let kb = KeyboardConfig {
@@ -408,10 +429,10 @@ impl Chord {
 pub const KEYBOARD_CAPS_HOLD: &str = "keyboard.caps_hold";
 ```
 
-Extend `KeyboardConfig` (it currently derives `Default`, which no longer produces the right `caps_hold`, so write the impl by hand):
+Extend `KeyboardConfig`. **Keep `#[derive(Default)]`** — a derived `Default` calls each field type's own `Default::default()`, and `Chord`'s is the hand-written impl above, so the derive already yields `caps_hold = ctrl+super+alt`. Writing the impl by hand would be byte-identical and `clippy::derivable_impls` would correctly reject it.
 
 ```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KeyboardConfig {
     pub caps: bool,
     pub caps_tap: CapsTap,
@@ -419,15 +440,16 @@ pub struct KeyboardConfig {
     /// true; parsed everywhere so one config file travels between machines.
     pub caps_hold: Chord,
 }
+```
 
-impl Default for KeyboardConfig {
-    fn default() -> Self {
-        KeyboardConfig {
-            caps: false,
-            caps_tap: CapsTap::default(),
-            caps_hold: Chord::default(),
-        }
-    }
+A test must still pin the behaviour, since the guarantee lives in `Chord`'s
+`Default` rather than here:
+
+```rust
+#[test]
+fn the_default_keyboard_config_holds_the_default_chord() {
+    assert_eq!(KeyboardConfig::default().caps_hold, Chord::default());
+    assert!(!KeyboardConfig::default().caps, "the hook stays opt-in");
 }
 ```
 
