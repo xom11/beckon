@@ -44,8 +44,22 @@ jobs:
           done
 
           echo
-          echo "token identity:"
-          gh api rate_limit --jq '"  requests remaining: \(.rate.remaining)"' || true
+          # GitHub returns the token's own expiry in a response header, which
+          # beats guessing "90 days from whenever it was made".
+          exp=$(gh api rate_limit --include 2>/dev/null \
+                | tr -d '\r' \
+                | grep -i '^github-authentication-token-expiration:' \
+                | cut -d' ' -f2-)
+          if [ -n "${exp:-}" ]; then
+            echo "PACKAGER_TOKEN expires: $exp"
+            now=$(date -u +%s)
+            end=$(date -u -d "$(printf '%s' "$exp" | sed 's/ UTC$//')" +%s 2>/dev/null || echo "")
+            if [ -n "$end" ]; then
+              echo "days remaining: $(( (end - now) / 86400 ))"
+            fi
+          else
+            echo "no expiry header returned (token may never expire)"
+          fi
 
           if [ "$fail" -ne 0 ]; then
             echo "::error::PACKAGER_TOKEN is not usable for the next release"
