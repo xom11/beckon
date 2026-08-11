@@ -12,39 +12,71 @@
 
 ## Status — 2026-08-11, branch `settings-window-and-caps`
 
-| Task | State |
-|---|---|
-| 1 `parse_config` | **done**, tested on the host |
-| 2 `config_write` | **done**, tested on the host |
-| 3 `caps::decide` | **done**, tested on the host |
-| 4 `settings::Model` | **done**, tested on the host |
-| 5 per-shortcut results | **done**, tested on the host |
-| 6 measurement on a14 | **probe written and typechecked; NOT RUN** |
-| 7 Caps hook | **BLOCKED on Task 6** |
-| 8 window frame | **done**, typechecked via `WINCHECK`; never executed |
-| 9 window wiring | **done**, typechecked via `WINCHECK`; never executed |
-| 10 starter template | **done**, tested on the host |
-| 11 documentation | **done** (probe deletion deferred until Task 6 runs) |
+**All eleven tasks done. Verified on a14 (Windows 11 ARM64, build 26200),
+in session 1, through scheduled tasks.**
 
-159 tests pass on the macOS host; both `WINCHECK` commands are clean. Nothing
-in tasks 8 and 9 has ever been executed — `cargo check` does not run a
-message loop.
+159 tests on the macOS host, 179 natively on a14 (MSVC), both `WINCHECK`
+commands clean.
 
-**Do not merge this branch yet.** Tasks 1–5 and 8–10 are real, but the
-settings window's **Use Caps Lock** tick box currently writes
-`keyboard.caps = true` into the config and nothing reads it, because the
-hook that would act on it is Task 7. Shipping that would be a control that
-visibly does nothing. Either land Task 7 first, or disable the Keyboard
-group until it lands.
+### Task 6 — the measurements, taken
 
-Two deviations from the plan as written, both recorded in commits:
+| # | Question | Result |
+|---|---|---|
+| **1** | Does an injected `SendInput` chord fire our **own** `RegisterHotKey`? | **PASS** — the gate the whole alias design rested on |
+| **2** | Does the one-burst chord open the Start menu? | **PASS** — it does not. Control fired: a bare Win tap *did* open it (`SearchHost.exe`), so the detector was demonstrably not blind |
+| **3** | Does swallowing physical Caps stop the Caps Lock toggle? | **PASS** — with the hook live and `caps_tap = "capslock"`, a tap still toggles, so the swallow-and-reinject works |
+| **4** | Does an injected `VK_CAPITAL` flip the toggle? | **PASS** |
+| **5** | UIPI behaviour with an elevated window focused | **not measured** — needs a UAC consent a scheduled task cannot give. Documented, not claimed |
+| **6** | Injection cost against the 300 ms `LowLevelHooksTimeout` | 13 ms cold, 5.2 ms warm. **The plan said "microseconds"; that was wrong by ~1000x and is corrected here.** Still 2–4 % of budget |
 
-1. **`caps` and `settings` moved to `beckon-core`**, not `beckon-cli`
+### Live end-to-end results
+
+- **Caps hook**, with a proper before/after: without `beckon-serve`, `Caps+N`
+  did nothing; with it, `Notepad.exe` came to the foreground. A single run
+  could not have separated "the hook works" from "Windows would have done
+  that anyway".
+- **Settings window** opens from the tray double-click, builds all 21
+  controls, hides the external-change banner until needed, and closes on
+  `WM_CLOSE`.
+- **Apply** writes the file, the `# comment` survives, `beckon check` accepts
+  the result, and `serve` reloads within a second — read out of the log as
+  `settings saved` → `reloaded - 3 shortcuts registered`.
+- **Hook lifecycle**: `keyboard.caps = false` produced `caps hook removed`.
+
+### Three real defects the live tests found
+
+None were visible to 159 green unit tests or to either `WINCHECK` command.
+
+1. **`toml_edit` dropped trailing comments** — `doc[key] = value(..)`
+   replaces the whole `Item`, and the decor is where `# comment` lives.
+   Caught by a unit test on its first run.
+2. **All three settings labels shared control id `-1`**, and `layout`
+   positions through `GetDlgItem`, which resolves every `-1` to the same
+   first match — so the App label and the Keyboard group box were never
+   placed. Found by reading the live control list out of the running window.
+3. **The combo box rewrote its own text without saying so.** With the
+   catalog loaded it jumps to the matching entry as you type — `N` leaves
+   "Narrator", `o` leaves "Obsidian" — and the `CBN_EDITCHANGE` that arrives
+   carries the text from *before* the rewrite. Typing "Notepad" wrote `"d"`
+   to the config while the screen said "Debuggable Package Manager". Fixed
+   by re-reading both fields at Apply and on kill-focus.
+
+### Deviations from the plan as written
+
+1. **`caps` and `settings` live in `beckon-core`**, not `beckon-cli`
    (commit `9d28f5a`). Both depend only on `beckon-core`, and
-   `beckon-windows` may not depend on `beckon-cli` — so leaving them where
-   the plan put them would have forced a full mirror of `ControlState` and
+   `beckon-windows` may not depend on `beckon-cli` — leaving them where the
+   plan put them would have forced a full mirror of `ControlState` and
    `Action` inside `beckon-windows`. CI coverage is identical.
-2. **The probe is not deleted** in Task 11, because Task 6 has not run.
+2. **The probes are kept, not deleted.** `caps_probe`, `caps_live` and
+   `settings_probe` under `crates/beckon-windows/examples/` are the only
+   layer that can reach this code at all — the same argument `CLAUDE.md`
+   already makes for `testing/linux_live_test.py`. They found all three
+   defects above. They are examples, so no shipped binary contains them.
+3. **A build trap worth remembering**: `cargo build --examples` does **not**
+   build `[[bin]]` targets, so a run that looked like it was testing a fix
+   was exercising a stale `beckon-serve.exe`. Use `cargo build --all-targets`
+   when testing on hardware.
 
 ## Global Constraints
 

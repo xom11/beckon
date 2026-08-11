@@ -68,6 +68,44 @@ beckon/
 └── README.md
 ```
 
+### Live Windows tests
+
+`crates/beckon-windows/examples/` holds three probes that drive the real
+binary on real hardware. They exist for the same reason
+`testing/linux_live_test.py` does: they are the **only** layer that can
+reach a tray icon, a message loop or a keyboard hook, and every defect
+listed below was invisible to 159 green unit tests and to both `WINCHECK`
+commands.
+
+| Probe | Answers |
+|---|---|
+| `caps_probe` | Does an injected chord fire our own `RegisterHotKey`? Does the burst open Start (with a control that proves the detector works)? Does an injected `VK_CAPITAL` toggle? What does `SendInput` cost? |
+| `caps_live` | End-to-end `Caps+<key>`, run once without `serve` and once with it — the difference is the result |
+| `settings_probe` | Opens the settings window via the tray's own double-click notification, reads every control back with `EnumChildWindows`, drives an edit and an Apply |
+
+Defects they caught, none reachable from a unit test:
+
+- Three settings labels shared control id `-1`, and `layout` positions
+  through `GetDlgItem`, which resolves every `-1` to the same first match —
+  so two controls were never placed.
+- A combo box with a populated list rewrites its own text as you type
+  (`N` → "Narrator", `o` → "Obsidian") and the `CBN_EDITCHANGE` that arrives
+  carries the text from *before* the rewrite. Typing "Notepad" wrote `"d"`
+  to the config while the screen said something else.
+
+Running them: **SSH into a14 lands in session 0**, which has no desktop and
+no keyboard, so every result there is a confident false negative. Go through
+a scheduled task in session 1, registered with `New-ScheduledTaskSettingsSet
+-AllowStartIfOnBatteries` — `schtasks`' defaults refuse to start on battery
+and leave the task `Queued` forever on a laptop. Use `-EncodedCommand` for
+the PowerShell, and a `.bat` for anything with a redirect, or the quoting is
+eaten. **`cargo build --examples` does not build `[[bin]]` targets** — use
+`--all-targets`, or you will test a stale `beckon-serve.exe`.
+
+Reading control text across processes needs `SendMessage(WM_GETTEXT)`;
+`GetWindowText` returns the kernel-side caption instead and reads back empty
+for an EDIT or COMBOBOX.
+
 ### Live backend tests
 
 `testing/linux_live_test.py` drives the real binary against a real
@@ -723,8 +761,19 @@ easy to reintroduce by "simplifying":
 `LowLevelHooksTimeout` (300 ms default) is silently unhooked by Windows with
 no error anywhere, and `backend.beckon()` measured ~57 ms typical / ~945 ms
 on the miss path. The alias design keeps the callback at a hash lookup plus
-one `SendInput`; the real work happens later on the ordinary `WM_HOTKEY`
-path.
+one `SendInput` — **13 ms cold, 5.2 ms warm, measured on a14**, so 2–4 % of
+budget. (An earlier estimate of "microseconds" was wrong by three orders of
+magnitude; the headroom is real but it is not unlimited, so nothing else
+belongs in that callback.) The real work happens later on the ordinary
+`WM_HOTKEY` path.
+
+**Measured on a14 2026-08-11, not reasoned:** an injected chord does fire
+our own `RegisterHotKey`; the one-burst chord does not open the Start menu
+(verified against a control that proved a bare Win tap does — without that
+control a blind detector and a clean result are indistinguishable); an
+injected `VK_CAPITAL` flips the toggle, so `caps_tap = "capslock"` is
+implementable; and end-to-end, `Caps+N` focused Notepad with `serve` running
+and did nothing without it.
 
 Known gaps, documented in the README rather than hidden:
 
