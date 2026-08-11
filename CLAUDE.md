@@ -1074,12 +1074,28 @@ Reasonable next-session order:
         - `--version` / `--help` show a dialog and exit 0; an unknown flag
           shows a dialog and exits 2, matching `beckon.exe`'s usage-error code.
         - First run wrote the starter config and `beckon check` accepted it.
+        - **Autostart survives a reboot.** Ticked through the tray menu, then
+          rebooted a14: boot 09:15:34, logon 09:15:48, `beckon-serve` up at
+          09:16:01 — 13 s after logon — with a fresh pid, the exact Run
+          command line, `18 shortcuts registered` in the log, and **parent
+          process `explorer.exe`**, which is what a Run-key launch looks like
+          and is the part that distinguishes it from a leftover process.
+        - The Run value it wrote names the scoop **`current` junction**, not
+          the version directory. That mitigation was reasoned from how scoop
+          lays out its store; it is now observed.
         - **Still unverified, because it needs a human at the keyboard**:
           the hover tooltip's text, the menu dismissing on click-away (the
           `SetForegroundWindow` half of KB135788), menu placement on a
-          high-DPI display, Pause actually swallowing a real keypress, a
-          hotkey pressed while the menu is open, config-edit-to-tooltip
-          latency, and Run-key survival across a reboot.
+          high-DPI display, whether Pause actually swallows a physical
+          keypress (only the unregister-and-report half was checked), a
+          hotkey pressed while the menu is open, and config-edit-to-tooltip
+          latency.
+        - **a14 cannot be rebooted unattended into a signed-in state.**
+          `AutoAdminLogon` is 0 and `shutdown /g` (restart + auto sign-on) is
+          rejected with error 87, so the machine stops at the sign-in screen
+          and a Run value does not fire until someone signs in. Enabling
+          autologon would mean storing the password in the registry in the
+          clear — don't. Plan on a person being present.
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
