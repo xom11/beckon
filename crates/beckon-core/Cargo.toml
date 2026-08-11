@@ -8,3 +8,9 @@ rust-version = { workspace = true }
 [dependencies]
 thiserror = { workspace = true }
 toml      = { workspace = true }
+# Writing the shortcuts file, not reading it. `toml::Table` loses every
+# comment on re-serialization and this is a file beckon invites people to
+# edit by hand, so the settings window edits the document in place instead.
+# Already in Cargo.lock as a transitive dep of toml 0.8 -- naming it here
+# does not grow the build graph.
+toml_edit = "0.22"
