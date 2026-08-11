@@ -39,6 +39,10 @@ pub const VK_ESCAPE: u32 = 0x1B;
 pub const VK_LCONTROL: u32 = 0xA2;
 pub const VK_LWIN: u32 = 0x5B;
 pub const VK_LMENU: u32 = 0xA4;
+/// `VK_NONAME` (0xFC) is documented as reserved and produces no character,
+/// no navigation and no shell action. It exists here only to be a
+/// non-modifier key between a modifier's down and its up.
+pub const VK_NONAME: u32 = 0xFC;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
@@ -170,14 +174,29 @@ fn tap(vk: u32) -> Vec<Stroke> {
 /// a `ctrl+win+alt` chord, which is unrecoverable without killing beckon.
 ///
 /// This exists because the chord's own key-ups are not guaranteed to land.
-/// `SendInput` can insert fewer events than asked for — UIPI blocks it
+/// `SendInput` can insert fewer events than asked for -- UIPI blocks it
 /// without setting an error, and another thread holding the input queue
-/// makes it return zero — and the `n↓` in the middle of the burst fires
+/// makes it return zero -- and the `n` down in the middle of the burst fires
 /// `WM_HOTKEY`, whose handler runs `backend.beckon()` (57 ms typical, 945 ms
 /// on the miss path) and pumps the message queue while it does. Anything in
 /// that window can reorder or drop what follows.
+///
+/// The burst OPENS WITH A FILLER KEY, and that is load-bearing. The
+/// invariant `chord()` satisfies -- every modifier has a non-modifier key
+/// between its own down and its own up -- spans both bursts, because the
+/// down happened in the chord and the up happens here. In the exact case
+/// this function exists for (the chord was truncated after `Win` down), a
+/// bare `Win` up is the Start-menu gesture. `VK_NONAME` breaks the pair.
 fn release_modifiers() -> Vec<Stroke> {
     vec![
+        Stroke {
+            vk: VK_NONAME,
+            edge: Edge::Down,
+        },
+        Stroke {
+            vk: VK_NONAME,
+            edge: Edge::Up,
+        },
         Stroke {
             vk: VK_LMENU,
             edge: Edge::Up,
@@ -546,9 +565,15 @@ mod tests {
                 "modifier 0x{vk:02X} was not released: {s:?}"
             );
         }
+        // Not "must not press anything" -- the filler key legitimately goes
+        // down and up (see `release_modifiers`). What must hold is narrower
+        // and still load-bearing: none of the three modifiers themselves is
+        // ever pressed here, only released.
         assert!(
-            s.iter().all(|k| k.edge == Edge::Up),
-            "the release must not press anything: {s:?}"
+            s.iter()
+                .filter(|k| [VK_LCONTROL, VK_LWIN, VK_LMENU].contains(&k.vk))
+                .all(|k| k.edge == Edge::Up),
+            "the release must not press a modifier: {s:?}"
         );
     }
 
@@ -744,5 +769,33 @@ mod tests {
             ),
             Action::Swallow
         );
+    }
+
+    /// The property that actually matters, stated correctly: every modifier in
+    /// a burst must have a non-modifier key between its own down and its own
+    /// up. `chord()` satisfies it by construction. `release_modifiers()` did
+    /// not -- it emitted only modifier-ups, and a bare Win-up is the gesture
+    /// that opens the Start menu.
+    #[test]
+    fn release_modifiers_never_starts_with_a_bare_modifier_up() {
+        let out = release_modifiers();
+        let first = out.first().expect("release burst must not be empty");
+        assert_eq!(
+            (first.vk, first.edge),
+            (VK_NONAME, Edge::Down),
+            "the burst must open with a filler key-down, or the Win-up that \
+             follows is a bare Win tap and opens Start: {out:?}"
+        );
+        assert_eq!(
+            (out[1].vk, out[1].edge),
+            (VK_NONAME, Edge::Up),
+            "the filler must be released immediately: {out:?}"
+        );
+        for vk in [VK_LCONTROL, VK_LWIN, VK_LMENU] {
+            assert!(
+                out.iter().any(|s| s.vk == vk && s.edge == Edge::Up),
+                "still must release {vk:#x}: {out:?}"
+            );
+        }
     }
 }
