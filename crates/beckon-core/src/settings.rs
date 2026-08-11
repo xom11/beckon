@@ -119,6 +119,13 @@ pub struct ControlState {
     pub detail: Option<Detail>,
     pub caps_checked: bool,
     pub caps_tap: CapsTap,
+    /// Are there unsaved edits? **Not the same question as
+    /// `apply_enabled`**, which is `dirty && no errors` -- an invalid model
+    /// is still dirty, and the title bar's `*` has to say so even while
+    /// Save is greyed out. It rides on every push because the title has to
+    /// follow every keystroke; the config PATH does not, because it cannot
+    /// change while the window is open.
+    pub dirty: bool,
     pub apply_enabled: bool,
     pub remove_enabled: bool,
     /// How many rows are ticked. The window uses this to caption the
@@ -593,6 +600,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         detail,
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
+        dirty: m.dirty(),
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         remove_enabled: m.selected.is_some(),
         marked_count: m.marked_count(),
@@ -823,6 +831,35 @@ mod tests {
         assert!(
             !control_state(&m, &status_all_ok()).apply_enabled,
             "a broken model must not be writable"
+        );
+    }
+
+    /// The title bar's `*` is driven by `dirty`, and it must keep showing
+    /// while Save is greyed out -- an unsaved edit that broke the file is
+    /// the state where "you have unsaved changes" matters MOST. Reusing
+    /// `apply_enabled` for it would drop the mark exactly there.
+    #[test]
+    fn dirty_outlives_apply_enabled_on_a_broken_model() {
+        let mut m = model();
+        let clean = control_state(&m, &status_all_ok());
+        assert!(!clean.dirty, "just-loaded is not dirty");
+        assert!(!clean.apply_enabled);
+
+        m.set_app(0, "Windows Terminal");
+        let edited = control_state(&m, &status_all_ok());
+        assert!(edited.dirty);
+        assert!(edited.apply_enabled);
+
+        m.set_combo(0, "bad+++");
+        let broken = control_state(&m, &status_all_ok());
+        assert!(
+            broken.dirty,
+            "a broken model still has unsaved edits in it -- the title must \
+             keep its mark"
+        );
+        assert!(
+            !broken.apply_enabled,
+            "...while Save stays disabled, which is why these are two fields"
         );
     }
 

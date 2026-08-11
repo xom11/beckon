@@ -1046,7 +1046,10 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         }),
     };
 
-    if let Err(e) = win::open(cb) {
+    // The path is what names the window (`beckon - shortcuts.toml`) and what
+    // its `Open config file` tooltip shows. Handed over once, at open: it is
+    // `ServeState::config`, which nothing can repoint while the window is up.
+    if let Err(e) = win::open(cb, &path.to_string_lossy()) {
         eprintln!("beckon serve: cannot open settings: {e}");
         beckon_windows::settings_window::error(&format!("Cannot open settings:\n\n{e}"));
         state.borrow_mut().settings = None;

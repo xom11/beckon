@@ -15,7 +15,8 @@
 //! **Modeless, and created on the `serve` thread.** Hotkeys must keep
 //! firing while it is open, so it cannot be a dialog box with its own modal
 //! loop; `hotkey::run_forever` dispatches its messages like any others and
-//! calls `filter_dialog_message` first so Tab/Esc/arrows work inside it.
+//! calls `filter_dialog_message` first so Ctrl+S, Tab, Enter, Esc, the
+//! arrows and the Alt-mnemonics work inside it.
 //!
 //! A deliberate non-feature: there is no "press a key to capture the
 //! shortcut" field. `msctls_hotkey32` cannot capture the Windows key and
@@ -36,11 +37,37 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi,
     MDT_EFFECTIVE_DPI,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// `SS_LEFT` is 0 and `windows` 0.61 does not export it as a constant.
 const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
+
+/// `SS_NOPREFIX` (0x0080), which `windows` 0.61 does not export either.
+///
+/// A STATIC treats `&` in its text as a mnemonic marker and draws the next
+/// character underlined instead of drawing the ampersand. `IDC_NOTES` is the
+/// one control in this window whose text comes from the CATALOG rather than
+/// from us -- Start Menu display names really do contain `&` (`Notes & To
+/// Do`, `Arts & Crafts`) -- so without this an app name renders as a
+/// mangled, underlined string that looks like a beckon bug.
+///
+/// **`SS_ENDELLIPSIS` is deliberately NOT here.** The three ellipsis styles
+/// force a static onto ONE line with no word wrap (documented on Static
+/// Control Styles, and the reason is that the control switches to a
+/// single-line DrawText path). `IDC_NOTES` is a multi-line strip -- several
+/// `\r\n`-joined note lines, and `layout` hands it every pixel the flex band
+/// has -- so adding the style would collapse the whole notes band to its
+/// first line. Ellipsised multi-line text needs an owner-draw `DrawText`
+/// with `DT_WORDBREAK | DT_END_ELLIPSIS`, which is not this landing.
+const SS_NOPREFIX_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0080);
+
+/// `DM_GETDEFID` is `WM_USER + 0`, and `DC_HASDEFID` is the magic `0x534B`
+/// winuser.h gives it -- not a bit flag, and not 1. Defined here rather than
+/// imported so this file compiles the same whatever the `windows` crate's
+/// metadata does or does not carry for the dialog-manager messages.
+const DM_GETDEFID_MSG: u32 = WM_USER;
+const DC_HASDEFID_FLAG: u32 = 0x534B;
 
 /// `SS_CENTERIMAGE` (0x0200), which `windows` 0.61 does not export either.
 /// On a STATIC holding text it centres that text vertically in the control
@@ -79,6 +106,95 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// 1001-1007 and the class name are hard-coded in
 /// `examples/settings_probe.rs` and are fixed points.
 const IDC_LBL_SECTION: i32 = 1020;
+
+/// Every operable control's caption, with its mnemonic.
+///
+/// **One table, because two call sites read it**: `build_children` creates
+/// the control with it and `layout` MEASURES it to size the control's box.
+/// A literal repeated in both is a button that silently stops fitting its
+/// own caption the first time one of the two is edited.
+///
+/// **No two mnemonics collide, and that is a property of this table.**
+/// Windows does not check, and a duplicate does not fail -- `Alt+R` simply
+/// cycles between the two claimants instead of pressing either, which reads
+/// as "the keyboard is broken" rather than as a conflict. The letters:
+///
+/// | Key | Control | Key | Control |
+/// |---|---|---|---|
+/// | `A` | Add | `R` | Reload |
+/// | `M` | Re**m**ove | `K` | Keep mine |
+/// | `S` | Save | `U` | **U**se Caps Lock (check box) |
+/// | `C` | Close | `T` | Tapping Caps alone (radio) |
+/// | `O` | Open config file | `E` | Esc (radio) |
+/// |  |  | `N` | nothing (radio) |
+///
+/// `Remove` cannot take `R` because `Reload` has it, and `Reload` is the
+/// one that appears without warning -- a banner the user did not ask for is
+/// the worse place to make someone hunt for a letter. The two field labels
+/// (`App`, `Shortcut`) deliberately carry NO mnemonic: a STATIC's mnemonic
+/// moves focus to the next control in tab order, so each one would have to
+/// hold a letter for a control that is already one Tab away.
+mod cap {
+    pub const ADD: &str = "&Add";
+    pub const REMOVE: &str = "Re&move";
+    /// Was `Apply`. The id is still `IDC_APPLY` on purpose: 1002-1007 are
+    /// hard-coded in `examples/settings_probe.rs`, which reads this button
+    /// by id and `IsWindowEnabled` and never by caption, so renaming is
+    /// free and renumbering would not be.
+    pub const SAVE: &str = "&Save";
+    pub const CLOSE: &str = "&Close";
+    pub const OPEN_FILE: &str = "&Open config file";
+    pub const RELOAD: &str = "&Reload";
+    pub const KEEP_MINE: &str = "&Keep mine";
+    pub const CAPS: &str = "&Use Caps Lock as the beckon key";
+    pub const TAP_CAPSLOCK: &str = "&Tapping Caps alone: Caps Lock";
+    pub const TAP_ESCAPE: &str = "&Esc";
+    pub const TAP_NONE: &str = "&nothing";
+}
+
+/// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
+/// drawn at all, `&&` draws one literal ampersand.
+///
+/// `layout` measures through this rather than measuring the raw caption,
+/// because the marker is not ink -- measuring it makes every button one
+/// character wider than it needs to be, and the error grows with DPI.
+fn shown(caption: &str) -> String {
+    let mut out = String::with_capacity(caption.len());
+    let mut chars = caption.chars();
+    while let Some(c) = chars.next() {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('&') => out.push('&'),
+            Some(next) => out.push(next),
+            None => {}
+        }
+    }
+    out
+}
+
+/// The window title, without the dirty mark: `beckon - <file name>`.
+///
+/// **ASCII hyphen, not an em-dash**, for the reason `mark_glyph` already
+/// gives -- this window inherits the shell's text face, and a glyph it does
+/// not carry draws as a box that reads like a rendering bug rather than as
+/// information. beckon has been bitten by exactly this once already: a UTF-8
+/// em-dash written to a `serve --log` came back as `?"` through Windows
+/// PowerShell 5.1's `Get-Content`.
+///
+/// The FILE NAME, not the path: `serve` can be pointed anywhere and nothing
+/// on screen used to say where, but a full path in a title bar is truncated
+/// from the right by every taskbar and Alt-Tab label there is -- i.e. it
+/// loses precisely the file name it was there to show. The path goes in the
+/// `Open config file` tooltip instead, where there is room for it.
+fn title_base(config_path: &str) -> String {
+    match std::path::Path::new(config_path).file_name() {
+        Some(f) => format!("beckon - {}", f.to_string_lossy()),
+        None => "beckon".to_string(),
+    }
+}
 
 /// Layout tokens, at 96 DPI. Every one of them goes through `scale`.
 ///
@@ -293,6 +409,26 @@ struct Ui {
     /// `WM_DESTROY`. Which control uses which is `role_of`'s answer, never
     /// a decision taken at a call site.
     fonts: Fonts,
+    /// `Ctrl+S`, and nothing else -- Enter and Esc are the dialog manager's
+    /// (`DM_GETDEFID` and `IDCANCEL`), not this table's. Created in
+    /// `build_children` and destroyed in `WM_DESTROY`: an accelerator table
+    /// is a system resource with the same lifetime discipline as the
+    /// `HFONT`s beside it, and Landing 1 had to close a one-per-open leak of
+    /// those already.
+    accel: HACCEL,
+    /// `beckon - <file name>`, computed once at creation. The `*` prefix is
+    /// added per push; this half never changes, because `serve` cannot be
+    /// repointed at another file while its window is open.
+    title_base: String,
+    /// The full config path, kept alive because the tooltip holds a POINTER
+    /// to it rather than a copy (`TTM_ADDTOOLW` stores `lpszText`). Moving
+    /// the `Vec` into this struct does not move its heap buffer, so the
+    /// pointer handed to comctl32 in `build_children` stays valid.
+    tip_text: Vec<u16>,
+    /// The dirty state the title bar currently shows, so `apply_state` --
+    /// which runs on every keystroke -- only rewrites the caption when the
+    /// mark actually flips. `None` until the first push.
+    shown_dirty: Option<bool>,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -354,6 +490,17 @@ impl LayoutHandles {
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
     static CB: RefCell<Option<Callbacks>> = const { RefCell::new(None) };
+    /// The config path, handed over by `open` and consumed by
+    /// `build_children` inside `WM_CREATE`. Same shape as `CB` for the same
+    /// reason: `CreateWindowExW` calls the wndproc before it returns, so
+    /// there is no window handle to hang an argument on yet.
+    ///
+    /// **Constant for the window's lifetime**, which is why it lives here
+    /// and not in `ControlState`: `serve` opens the window against
+    /// `ServeState::config` and nothing can repoint that while it is open,
+    /// so making it ride on every keystroke's push would be paying per
+    /// keystroke for a fact that is fixed at creation.
+    static CFG: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// The window's handle, or `None` when it is closed.
@@ -383,17 +530,41 @@ pub fn open_existing() -> bool {
     }
 }
 
-/// Give the settings window first refusal on a message so Tab, Esc and
-/// arrow navigation work inside it. Returns `true` when it consumed the
-/// message and the caller must not dispatch it.
+/// Give the settings window first refusal on a message so `Ctrl+S`, Tab,
+/// Enter, Esc and arrow navigation work inside it. Returns `true` when it
+/// consumed the message and the caller must not dispatch it.
 ///
 /// `WM_HOTKEY` is not a dialog message and is never consumed here, so
 /// hotkeys keep firing while the window is open — which is the entire
 /// reason this window is modeless.
+///
+/// **`TranslateAcceleratorW` runs BEFORE `IsDialogMessageW`, and the order
+/// is the whole point.** The dialog manager claims keys on its own account
+/// — Tab, the arrows, Enter, Esc, and every `Alt`-mnemonic — and it does
+/// not consult an accelerator table before doing so. Behind it, a table
+/// entry for any key it wants is simply never reached.
 pub fn filter_dialog_message(msg: &MSG) -> bool {
-    match hwnd() {
-        Some(h) => unsafe { IsDialogMessageW(h, msg) }.as_bool(),
-        None => false,
+    // ONE borrow, taken and dropped on this line. Both calls below dispatch
+    // straight into this window's wndproc, and a second `RefCell` borrow
+    // across an `extern "system"` boundary ABORTS the process rather than
+    // unwinding.
+    let Some((h, accel)) = UI.with(|u| u.borrow().as_ref().map(|ui| (ui.hwnd, ui.accel))) else {
+        return false;
+    };
+    unsafe {
+        // `TranslateAcceleratorW` does NOT check that the message belongs to
+        // the window it is given -- it translates any WM_KEYDOWN in `msg`
+        // and sends the WM_COMMAND to `h` regardless. This thread also pumps
+        // the tray window and whatever hidden windows the shell/COM
+        // machinery creates on it, so the ownership test `IsDialogMessageW`
+        // makes internally has to be made by hand out here.
+        if !accel.is_invalid()
+            && (msg.hwnd == h || IsChild(h, msg.hwnd).as_bool())
+            && TranslateAcceleratorW(h, accel, msg) != 0
+        {
+            return true;
+        }
+        IsDialogMessageW(h, msg).as_bool()
     }
 }
 
@@ -422,6 +593,17 @@ fn enable(parent: HWND, id: i32, on: bool) {
         unsafe {
             let _ = EnableWindow(h, on);
         }
+    }
+}
+
+/// Is this control currently operable? The mirror of `enable`, and the
+/// gate every keyboard route through `handle_command` has to pass — a
+/// disabled button is a promise that the command is unavailable, and an
+/// accelerator that ignores it makes a liar of the greying.
+fn enabled(parent: HWND, id: i32) -> bool {
+    match unsafe { GetDlgItem(Some(parent), id) } {
+        Ok(h) => unsafe { IsWindowEnabled(h) }.as_bool(),
+        Err(_) => false,
     }
 }
 
@@ -455,7 +637,12 @@ fn mark_glyph(m: Mark) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Open the window, or raise it if it is already open.
-pub fn open(cb: Callbacks) -> Result<(), String> {
+///
+/// `config_path` is the file the caller's callbacks read and write. It names
+/// the window (`beckon - <file name>`) and fills the `Open config file`
+/// tooltip; it is taken ONCE, here, because it cannot change while the
+/// window is open.
+pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
     if let Some(h) = hwnd() {
         unsafe {
             let _ = SetForegroundWindow(h);
@@ -465,6 +652,7 @@ pub fn open(cb: Callbacks) -> Result<(), String> {
         return Ok(());
     }
     CB.with(|c| *c.borrow_mut() = Some(cb));
+    CFG.with(|c| *c.borrow_mut() = Some(config_path.to_string()));
     unsafe { create() }
 }
 
@@ -473,9 +661,12 @@ unsafe fn create() -> Result<(), String> {
 
     // The common-controls DLL must be loaded before a SysListView32 is
     // created, or CreateWindowExW fails with "class not found".
+    // ICC_BAR_CLASSES is what registers `tooltips_class32`; neither of the
+    // other two does, and the tooltip on `Open config file` is the only
+    // place the full config path is shown.
     let icc = INITCOMMONCONTROLSEX {
         dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES,
+        dwICC: ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
     };
     let _ = InitCommonControlsEx(&icc);
 
@@ -539,10 +730,19 @@ unsafe fn create() -> Result<(), String> {
     let w = scale(WINDOW_WIDTH, dpi);
     let h = scale(WINDOW_HEIGHT, dpi);
 
+    // Named at birth rather than on the first `apply_state`, so the window
+    // never flashes a bare `beckon` in the taskbar before the first push.
+    // The borrow is dropped on this line: `CreateWindowExW` runs the wndproc
+    // -- and therefore `build_children`, which takes `CFG` -- before it
+    // returns.
+    let title = wide(&title_base(
+        &CFG.with(|c| c.borrow().clone()).unwrap_or_default(),
+    ));
+
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         class,
-        w!("beckon"),
+        PCWSTR(title.as_ptr()),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -871,7 +1071,7 @@ unsafe fn build_children(hwnd: HWND) {
     let reload = child(
         hwnd,
         w!("BUTTON"),
-        "Reload",
+        cap::RELOAD,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_RELOAD,
         &fonts,
@@ -879,7 +1079,7 @@ unsafe fn build_children(hwnd: HWND) {
     let keep = child(
         hwnd,
         w!("BUTTON"),
-        "Keep mine",
+        cap::KEEP_MINE,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_KEEPMINE,
         &fonts,
@@ -906,7 +1106,7 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Remove",
+        cap::REMOVE,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_REMOVE,
         &fonts,
@@ -914,7 +1114,7 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Add",
+        cap::ADD,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_ADD,
         &fonts,
@@ -1006,8 +1206,16 @@ unsafe fn build_children(hwnd: HWND) {
         &fonts,
     );
     // On its own line directly beneath the strip, which is where B.1's
-    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE.
-    let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, &fonts);
+    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE -- and, for
+    // the same reason, no SS_ENDELLIPSIS either; see SS_NOPREFIX_STYLE.
+    let notes = child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_LEFT_STYLE | SS_NOPREFIX_STYLE,
+        IDC_NOTES,
+        &fonts,
+    );
 
     // -- Band 5: the suggestion row. Nothing is created for it and it
     // contributes zero height. A placeholder would be a control to keep in
@@ -1027,7 +1235,7 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Use Caps Lock as the beckon key",
+        cap::CAPS,
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
         IDC_CAPS,
         &fonts,
@@ -1035,7 +1243,7 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Tapping Caps alone: Caps Lock",
+        cap::TAP_CAPSLOCK,
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_GROUP | WS_TABSTOP,
         IDC_TAP_CAPSLOCK,
         &fonts,
@@ -1043,7 +1251,7 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Esc",
+        cap::TAP_ESCAPE,
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
         IDC_TAP_ESCAPE,
         &fonts,
@@ -1051,26 +1259,30 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "nothing",
+        cap::TAP_NONE,
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
         IDC_TAP_NONE,
         &fonts,
     );
 
     // -- Band 7: the command bar. `Open config file` far left, then Close
-    // and Apply on the right.
+    // and Save on the right, Save outermost and default.
+    //
+    // **Save is here, and Remove is not.** They used to share a row
+    // mid-window -- a destructive button with no confirm and no undo as the
+    // visual peer of the one that writes to disk -- while the bottom bar
+    // held only Close. So the bar people aim at held the one command that
+    // does not save, and the save prompt on the way out became the real
+    // save path.
     //
     // WS_GROUP terminates the radio group above it. IDC_TAP_CAPSLOCK opens
     // a group and nothing closed it, so Right/Down from `nothing` used to
     // walk focus straight out of the group and into whatever was created
     // next -- which, before this reordering, was the hidden banner.
-    //
-    // Captions are unchanged on purpose: renaming Apply to Save, the
-    // mnemonics and the accelerator table are the next task.
-    child(
+    let openfile = child(
         hwnd,
         w!("BUTTON"),
-        "Open config file",
+        cap::OPEN_FILE,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_GROUP | WS_TABSTOP,
         IDC_OPENFILE,
         &fonts,
@@ -1078,19 +1290,34 @@ unsafe fn build_children(hwnd: HWND) {
     child(
         hwnd,
         w!("BUTTON"),
-        "Close",
+        cap::CLOSE,
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_CLOSE,
         &fonts,
     );
+    // BS_DEFPUSHBUTTON draws the default ring; the `DM_GETDEFID` arm of
+    // `wndproc` is what makes Enter honour it. This window is not a dialog
+    // box, so without that arm `IsDialogMessageW` falls back to IDOK -- an
+    // id nothing here answers to -- and the ring promises a key that does
+    // nothing, which is exactly what shipped.
     child(
         hwnd,
         w!("BUTTON"),
-        "Apply",
+        cap::SAVE,
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         IDC_APPLY,
         &fonts,
     );
+
+    // The config path: the title bar gets its file name, the tooltip on
+    // `Open config file` gets the whole thing. A title bar cannot hold a
+    // path -- taskbar and Alt-Tab labels truncate from the right, dropping
+    // the one part that identifies the file -- and a title bar has no
+    // tooltip of its own, so the button that opens the file is where the
+    // answer to "which file?" belongs.
+    let path = CFG.with(|c| c.borrow_mut().take()).unwrap_or_default();
+    let mut tip_text = wide(&path);
+    add_tooltip(hwnd, openfile, &mut tip_text);
 
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
@@ -1103,11 +1330,97 @@ unsafe fn build_children(hwnd: HWND) {
             reload,
             keep,
             fonts,
+            accel: build_accelerators(),
+            title_base: title_base(&path),
+            // Moved, not copied: the heap buffer `add_tooltip` handed
+            // comctl32 a pointer to travels with it.
+            tip_text,
+            shown_dirty: None,
             suppress: false,
             external_change: false,
             items: Vec::new(),
         })
     });
+}
+
+/// The window's accelerator table: `Ctrl+S` -> Save, and nothing else.
+///
+/// Enter and Esc are deliberately absent. Both are the dialog manager's
+/// already — Enter through `DM_GETDEFID`, Esc through the `IDCANCEL`
+/// `WM_COMMAND` it synthesises — and an entry here would only race
+/// `IsDialogMessageW` for keys it already routes correctly.
+///
+/// An empty or failed table is not fatal: `filter_dialog_message` skips an
+/// invalid handle and every command it would have carried is still reachable
+/// by mouse, by mnemonic and by Tab-then-Enter.
+unsafe fn build_accelerators() -> HACCEL {
+    let table = [ACCEL {
+        // FVIRTKEY is what makes `key` a virtual-key code rather than a
+        // character, and it is REQUIRED for FCONTROL to mean anything.
+        fVirt: FVIRTKEY | FCONTROL,
+        key: b'S' as u16,
+        cmd: IDC_APPLY as u16,
+    }];
+    CreateAcceleratorTableW(&table).unwrap_or_default()
+}
+
+/// Attach `text` to `tool` as a tooltip, through a tooltip window owned by
+/// `parent`.
+///
+/// Three details that are each load-bearing:
+///
+/// - **`TTS_NOPREFIX`**, for the same reason `IDC_NOTES` carries
+///   `SS_NOPREFIX`: this text is a file path, and a path may contain `&`
+///   (`C:\Users\A&B\...`), which a tooltip would otherwise eat as a
+///   mnemonic marker.
+/// - **`TTF_SUBCLASS`** makes the tooltip subclass `tool` to collect its own
+///   mouse messages, so no relaying is needed from `serve`'s message loop.
+/// - **`text` is borrowed, not copied.** `TTM_ADDTOOLW` stores the
+///   `lpszText` pointer; the buffer must outlive the tooltip, which is why
+///   the caller keeps it in `Ui`.
+///
+/// The tooltip is a `WS_POPUP` OWNED by `parent`, not a child of it, so it
+/// is destroyed with the window and it is skipped by the `GW_CHILD` walks
+/// that rebroadcast `WM_SETFONT` and `WM_THEMECHANGED` — which is right:
+/// a tooltip draws itself from the theme, and it has no `role_of` entry.
+unsafe fn add_tooltip(parent: HWND, tool: HWND, text: &mut [u16]) {
+    // `wide("")` is one NUL, not an empty slice -- so test the first wchar,
+    // not the length. A tooltip with nothing in it is worse than none: it
+    // still opens, as an empty box.
+    if tool.is_invalid() || text.first().copied().unwrap_or(0) == 0 {
+        return;
+    }
+    let Ok(tip) = CreateWindowExW(
+        WINDOW_EX_STYLE(0),
+        w!("tooltips_class32"),
+        PCWSTR::null(),
+        WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        Some(parent),
+        None,
+        None,
+        None,
+    ) else {
+        return;
+    };
+    let info = TTTOOLINFOW {
+        cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: parent,
+        // With TTF_IDISHWND the id IS the control's handle.
+        uId: tool.0 as usize,
+        lpszText: windows::core::PWSTR(text.as_mut_ptr()),
+        ..Default::default()
+    };
+    SendMessageW(
+        tip,
+        TTM_ADDTOOLW,
+        Some(WPARAM(0)),
+        Some(LPARAM(&info as *const _ as isize)),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,7 +1592,11 @@ unsafe fn layout(hwnd: HWND) {
     // and the "Ag" that sizes the EDIT. The `Shortcuts` heading is the one
     // Subtitle in the window and its width is never measured; it takes
     // whatever Add and Remove leave it.
-    let tw = |t: &str| text_size(hwnd, ui.fonts.get(Role::Body), dpi, t).0;
+    //
+    // Measured through `shown`, so a caption's `&` -- a mnemonic marker,
+    // which is not drawn -- does not buy the control a character of width it
+    // will never use.
+    let tw = |t: &str| text_size(hwnd, ui.fonts.get(Role::Body), dpi, &shown(t)).0;
     let btn = |t: &str| s(tok::BTN).max(tw(t) + s(24));
 
     let place = |id: i32, x: i32, y: i32, cxx: i32, cy: i32| {
@@ -1303,8 +1620,8 @@ unsafe fn layout(hwnd: HWND) {
 
     // -- Band 1: the banner. Contributes NO height when hidden.
     if ui.external_change {
-        let bw_reload = btn("Reload");
-        let bw_keep = btn("Keep mine");
+        let bw_reload = btn(cap::RELOAD);
+        let bw_keep = btn(cap::KEEP_MINE);
         let buttons = bw_reload + gap + bw_keep;
         place_h(ui.banner, cx, y, clamp(cw - buttons - gap), ctl);
         place_h(ui.reload, cx + clamp(cw - buttons), y, bw_reload, ctl);
@@ -1314,8 +1631,8 @@ unsafe fn layout(hwnd: HWND) {
 
     // -- Band 2: the section head. `Shortcuts` leading, Remove and Add
     // right-aligned. No filter control -- see `build_children`.
-    let bw_add = btn("Add");
-    let bw_remove = btn("Remove");
+    let bw_add = btn(cap::ADD);
+    let bw_remove = btn(cap::REMOVE);
     place(IDC_ADD, cx + clamp(cw - bw_add), y, bw_add, ctl);
     place(
         IDC_REMOVE,
@@ -1436,9 +1753,9 @@ unsafe fn layout(hwnd: HWND) {
     let rx = inner_x + gap;
     // The radio's own circle, plus the gap it leaves before its caption.
     let glyph = s(24);
-    let w_caps = tw("Tapping Caps alone: Caps Lock") + glyph;
-    let w_esc = tw("Esc") + glyph;
-    let w_none = tw("nothing") + glyph;
+    let w_caps = tw(cap::TAP_CAPSLOCK) + glyph;
+    let w_esc = tw(cap::TAP_ESCAPE) + glyph;
+    let w_none = tw(cap::TAP_NONE) + glyph;
     place(IDC_TAP_CAPSLOCK, rx, ry, w_caps, ctl);
     place(IDC_TAP_ESCAPE, rx + w_caps + gap, ry, w_esc, ctl);
     place(
@@ -1449,10 +1766,12 @@ unsafe fn layout(hwnd: HWND) {
         ctl,
     );
 
-    // -- Band 7: the command bar.
-    let bw_open = btn("Open config file");
-    let bw_apply = btn("Apply");
-    let bw_close = btn("Close");
+    // -- Band 7: the command bar. Save is the outermost button on the right,
+    // Close inboard of it, `Open config file` hard left -- as far from Save
+    // as the bar allows.
+    let bw_open = btn(cap::OPEN_FILE);
+    let bw_apply = btn(cap::SAVE);
+    let bw_close = btn(cap::CLOSE);
     place(IDC_OPENFILE, cx, bar_y, bw_open, ctl);
     place(IDC_APPLY, cx + clamp(cw - bw_apply), bar_y, bw_apply, ctl);
     place(
@@ -1492,6 +1811,25 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             .map(|x| std::mem::take(&mut x.items))
             .unwrap_or_default()
     });
+    // The title, when and only when the dirty mark flips. `apply_state` runs
+    // on every keystroke and `SetWindowTextW` on a top-level window repaints
+    // the caption and pokes the taskbar, so an unconditional write would put
+    // that on the typing path for no change on screen.
+    //
+    // `*`, ASCII, for the reason `title_base` gives. The borrow is taken and
+    // dropped on these lines -- `set_text` below is a `WM_SETTEXT` send.
+    let new_title: Option<String> = UI.with(|u| {
+        u.borrow().as_ref().and_then(|x| {
+            if x.shown_dirty == Some(st.dirty) {
+                return None;
+            }
+            Some(if st.dirty {
+                format!("*{}", x.title_base)
+            } else {
+                x.title_base.clone()
+            })
+        })
+    });
     // Writing control text raises EN_CHANGE / CBN_EDITCHANGE. Without this
     // guard every repaint would feed the control's own text back into the
     // model and mark it dirty. It is also what swallows the LVN_ITEMCHANGED
@@ -1504,6 +1842,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     });
 
     unsafe {
+        if let Some(t) = &new_title {
+            set_text(hwnd, t);
+        }
         sync_list(list, &prev, st);
 
         if let Some(names) = catalog {
@@ -1572,6 +1913,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         if let Some(ui) = u.borrow_mut().as_mut() {
             ui.suppress = false;
             ui.items = st.items.clone();
+            // Recorded AFTER the write, not instead of it, so a caption that
+            // never made it to the screen is retried on the next push.
+            ui.shown_dirty = Some(st.dirty);
         }
     });
 }
@@ -1914,6 +2258,27 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 layout(hwnd);
                 LRESULT(0)
             }
+            DM_GETDEFID_MSG => {
+                // What makes Enter press Save.
+                //
+                // `IsDialogMessageW` asks the window which control is the
+                // default, and this window is not a dialog box -- so without
+                // this arm the question reaches `DefWindowProcW`, which does
+                // not answer it, and the dialog manager falls back to IDOK
+                // (1). Nothing here has that id, so Enter did nothing at all
+                // while `BS_DEFPUSHBUTTON` drew the ring that promises it.
+                //
+                // The answer is MAKELONG(id, DC_HASDEFID): the id in the low
+                // word, the "yes, I have one" magic in the high word.
+                // Returning the id alone reads as `DC_HASDEFID == 0`, i.e.
+                // no default at all.
+                //
+                // A disabled Save is handled by the dialog manager, which
+                // does not send a command to a disabled control -- and the
+                // `IDC_APPLY` arm of `handle_command` checks anyway, because
+                // `TranslateAcceleratorW` has no such scruple about Ctrl+S.
+                LRESULT(((DC_HASDEFID_FLAG << 16) | IDC_APPLY as u32) as isize)
+            }
             WM_GETMINMAXINFO => {
                 // A frame promise, not an arithmetic one -- Step 2 clamps
                 // independently, because a floor does not make subtraction
@@ -2104,8 +2469,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let ui = UI.with(|u| u.borrow_mut().take());
                 if let Some(ui) = ui {
                     ui.fonts.delete();
+                    // Same discipline as the fonts, and for the same
+                    // reason: an accelerator table is a system resource, and
+                    // this window can be opened and closed all day from the
+                    // tray. `DestroyAcceleratorTable` on an invalid handle
+                    // is not something to rely on, so ask first.
+                    if !ui.accel.is_invalid() {
+                        let _ = DestroyAcceleratorTable(ui.accel);
+                    }
+                    // The tooltip window is OWNED by this one, so Windows
+                    // destroyed it before this message arrived -- which is
+                    // the only reason freeing the buffer it held a POINTER
+                    // into is safe. Written out rather than left to `ui`
+                    // going out of scope, because "nothing reads this field"
+                    // is exactly the impression that gets it deleted.
+                    drop(ui.tip_text);
                 }
                 CB.with(|c| *c.borrow_mut() = None);
+                CFG.with(|c| *c.borrow_mut() = None);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
@@ -2163,7 +2544,17 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
         (IDC_APPLY, _) => {
-            // The fields are the source of truth at the moment Apply is
+            // Ctrl+S reaches this arm too, and `TranslateAcceleratorW` does
+            // not care whether the button it names is enabled -- it sends
+            // the WM_COMMAND either way. Without this check the keyboard
+            // route could save a model the button refuses to save: one that
+            // is clean (a pointless rewrite that trips the file watcher) or,
+            // worse, one `apply_state` disabled Save for because it has
+            // errors in it. A key must never do what its button cannot.
+            if !enabled(hwnd, IDC_APPLY) {
+                return;
+            }
+            // The fields are the source of truth at the moment Save is
             // pressed.
             //
             // Measured on a14: a COMBOBOX whose list is populated jumps to
@@ -2195,8 +2586,15 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),
         (IDC_KEEPMINE, _) => with_cb(|cb| (cb.on_keep_mine)()),
-        // Both the Close button and Esc (which IsDialogMessage turns into
-        // IDCANCEL) go through WM_CLOSE, so the save prompt is asked once.
+        // Both the Close button and Esc go through WM_CLOSE, so the save
+        // prompt is asked once however the window is dismissed. Esc arrives
+        // as a WM_COMMAND with IDCANCEL, synthesised by `IsDialogMessageW`
+        // -- the id is spelled 2 here because `windows` types the constant
+        // as a MESSAGEBOX_RESULT, which is what `shell::ask_save` returns
+        // and not what a control id is. There is exactly one caller of
+        // `on_close_request`, which is what makes "asked once" true: the
+        // system's own [X] posts WM_CLOSE straight to the wndproc and lands
+        // in the same arm.
         (IDC_CLOSE, _) | (2 /* IDCANCEL */, _) => unsafe {
             let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
         },
