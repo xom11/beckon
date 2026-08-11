@@ -62,12 +62,27 @@ const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
 /// with `DT_WORDBREAK | DT_END_ELLIPSIS`, which is not this landing.
 const SS_NOPREFIX_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0080);
 
-/// `DM_GETDEFID` is `WM_USER + 0`, and `DC_HASDEFID` is the magic `0x534B`
-/// winuser.h gives it -- not a bit flag, and not 1. Defined here rather than
-/// imported so this file compiles the same whatever the `windows` crate's
-/// metadata does or does not carry for the dialog-manager messages.
+/// `DM_GETDEFID` is `WM_USER + 0`, `DM_SETDEFID` is `WM_USER + 1`, and
+/// `DC_HASDEFID` is the magic `0x534B` winuser.h gives it -- not a bit flag,
+/// and not 1. Defined here rather than imported so this file compiles the
+/// same whatever the `windows` crate's metadata does or does not carry for
+/// the dialog-manager messages.
 const DM_GETDEFID_MSG: u32 = WM_USER;
+const DM_SETDEFID_MSG: u32 = WM_USER + 1;
 const DC_HASDEFID_FLAG: u32 = 0x534B;
+
+/// `BS_TYPEMASK` -- the four bits of a BUTTON's style that say which KIND of
+/// button it is. `BM_SETSTYLE` is a read-modify-write through this mask
+/// rather than a bare assignment, so migrating the default ring cannot
+/// switch off `BS_NOTIFY` and take the focus notifications that drive the
+/// migration with it.
+const BS_TYPEMASK_BITS: u32 = 0x0F;
+
+/// The code in a `WM_COMMAND`'s high word when it came from an accelerator
+/// rather than from a control. `Ctrl+S` arrives this way; every other route
+/// to a button (mouse, mnemonic, Enter, Esc's synthesised `IDCANCEL`) sends
+/// `BN_CLICKED`.
+const CMD_FROM_ACCELERATOR: u32 = 1;
 
 /// `SS_CENTERIMAGE` (0x0200), which `windows` 0.61 does not export either.
 /// On a STATIC holding text it centres that text vertically in the control
@@ -106,6 +121,34 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// 1001-1007 and the class name are hard-coded in
 /// `examples/settings_probe.rs` and are fixed points.
 const IDC_LBL_SECTION: i32 = 1020;
+
+/// Every `BS_PUSHBUTTON`/`BS_DEFPUSHBUTTON` in the window. Three things key
+/// off exactly this set, which is why it is one list and not three:
+///
+/// 1. `BS_NOTIFY` is set on each of them -- without that style a button
+///    never reports `BN_SETFOCUS` / `BN_KILLFOCUS` at all.
+/// 2. `handle_command` migrates the default ring on those notifications.
+/// 3. `handle_command` also drops every other non-click notification these
+///    controls now emit. `BS_NOTIFY` widens what a button says to its
+///    parent, and the per-id arms below match `(id, _)` -- ANY code -- so
+///    without that filter merely tabbing onto Save would press it.
+///
+/// The check box and the three radios are deliberately absent: they carry no
+/// `BS_NOTIFY`, they cannot be the default button, and a default ring on a
+/// radio is not a thing Windows draws.
+const PUSH_BUTTONS: [i32; 7] = [
+    IDC_ADD,
+    IDC_REMOVE,
+    IDC_APPLY,
+    IDC_OPENFILE,
+    IDC_CLOSE,
+    IDC_RELOAD,
+    IDC_KEEPMINE,
+];
+
+fn is_push_button(id: i32) -> bool {
+    PUSH_BUTTONS.contains(&id)
+}
 
 /// Every operable control's caption, with its mnemonic.
 ///
@@ -229,6 +272,11 @@ mod tok {
     pub const SHORTCUT_COL: i32 = 200;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
+    /// Widest a tooltip may draw before it wraps. Comfortably narrower than
+    /// `MIN_WIDTH`, so the balloon never overhangs the window that owns it,
+    /// and wide enough that an ordinary `%APPDATA%` config path takes two
+    /// lines rather than six.
+    pub const TOOLTIP_MAX: i32 = 420;
 }
 
 /// ListView columns, in order: title and text alignment.
@@ -416,6 +464,21 @@ struct Ui {
     /// `HFONT`s beside it, and Landing 1 had to close a one-per-open leak of
     /// those already.
     accel: HACCEL,
+    /// Which button Enter presses, and therefore which one wears the ring.
+    /// `IDC_APPLY` at rest; `set_default_id` moves it to whichever push
+    /// button has focus and back again when that focus goes.
+    ///
+    /// A real dialog keeps this inside `DefDlgProc`, which migrates it by
+    /// sending itself `DM_SETDEFID` as focus moves. This window is not a
+    /// dialog box, so it keeps the field and answers both dialog-manager
+    /// messages itself -- and it MUST, because `IsDialogMessageW` only
+    /// activates the focused control on Enter when that control answers
+    /// `WM_GETDLGCODE` with `DLGC_DEFPUSHBUTTON`. A plain `BS_PUSHBUTTON`
+    /// answers `DLGC_UNDEFPUSHBUTTON` instead, so Enter falls through to
+    /// `DM_GETDEFID` -- and a fixed answer there meant Enter on Close SAVED,
+    /// and Enter on the external-change banner's Reload overwrote the very
+    /// edit the banner had appeared to warn about.
+    defid: i32,
     /// `beckon - <file name>`, computed once at creation. The `*` prefix is
     /// added per push; this half never changes, because `serve` cannot be
     /// repointed at another file while its window is open.
@@ -605,6 +668,71 @@ fn enabled(parent: HWND, id: i32) -> bool {
         Ok(h) => unsafe { IsWindowEnabled(h) }.as_bool(),
         Err(_) => false,
     }
+}
+
+/// Move the default ring -- the button Enter presses -- onto `id`, and
+/// record it so `DM_GETDEFID` names the same button the ring is drawn on.
+///
+/// `DefDlgProc` does this for a real dialog, by sending itself `DM_SETDEFID`
+/// as focus moves; this window is not a dialog box and has to do it by hand.
+/// It cannot be skipped, because `IsDialogMessageW`'s `VK_RETURN` path
+/// activates the FOCUSED control only when that control answers
+/// `WM_GETDLGCODE` with `DLGC_DEFPUSHBUTTON`. A plain `BS_PUSHBUTTON`
+/// answers `DLGC_UNDEFPUSHBUTTON`, so Enter falls through to `DM_GETDEFID`
+/// -- which, until this existed, always said Save.
+///
+/// **No `UI` borrow survives the first statement.** `BM_SETSTYLE` repaints a
+/// child and can re-enter this window's wndproc, and a second `RefCell`
+/// borrow across an `extern "system"` boundary ABORTS the process rather
+/// than unwinding. The one borrow here reads and writes an `i32` and drops
+/// with its closure.
+fn set_default_id(parent: HWND, id: i32) {
+    let Some(prev) = UI.with(|u| {
+        u.borrow_mut().as_mut().map(|ui| {
+            let prev = ui.defid;
+            ui.defid = id;
+            prev
+        })
+    }) else {
+        return;
+    };
+    if prev == id {
+        // Not merely an optimisation. `BM_SETSTYLE` carries a redraw flag,
+        // and Tab from Close back to Save raises `BN_KILLFOCUS`(Close) --
+        // which restores Save -- immediately followed by `BN_SETFOCUS`(Save),
+        // i.e. asks for Save twice in a row.
+        return;
+    }
+    unsafe {
+        set_button_type(parent, prev, BS_PUSHBUTTON as u32);
+        set_button_type(parent, id, BS_DEFPUSHBUTTON as u32);
+    }
+}
+
+/// Swap which KIND of button `id` is, keeping every other `BS_` bit it has.
+///
+/// Read-modify-write through `BS_TYPEMASK` rather than assigning the type on
+/// its own: `BS_NOTIFY` sits in the same low word, and it is what makes the
+/// focus notifications that drive this migration arrive at all -- so a bare
+/// assignment would move the ring once and then never again. The style's
+/// HIGH word (`WS_TABSTOP`, `WS_GROUP`, `WS_VISIBLE`) is not
+/// `BM_SETSTYLE`'s to touch, and is masked off here rather than trusted to
+/// comctl32's own masking.
+unsafe fn set_button_type(parent: HWND, id: i32, ty: u32) {
+    let Ok(h) = GetDlgItem(Some(parent), id) else {
+        return;
+    };
+    let cur = GetWindowLongW(h, GWL_STYLE) as u32;
+    let new = (cur & 0xFFFF & !BS_TYPEMASK_BITS) | (ty & BS_TYPEMASK_BITS);
+    SendMessageW(
+        h,
+        BM_SETSTYLE,
+        Some(WPARAM(new as usize)),
+        // Redraw. The ring has to MOVE on screen, not just in the style
+        // bits: a ring that stays on Save while Enter presses Close is the
+        // same lie in a different place.
+        Some(LPARAM(1)),
+    );
 }
 
 fn show(h: HWND, on: bool) {
@@ -1068,11 +1196,19 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_BANNER,
         &fonts,
     );
+    // `BS_NOTIFY` on this and every other push button (`PUSH_BUTTONS`), and
+    // it is not decoration: without it a BUTTON never reports `BN_SETFOCUS` /
+    // `BN_KILLFOCUS`, and those are what carry the default ring to the
+    // focused button. Enter on a focused non-default button does NOT press
+    // it -- `IsDialogMessageW` asks `DM_GETDEFID` instead -- so a ring that
+    // cannot move is a ring that lies. On THIS button that was the sharp
+    // end: Enter on Reload used to Save, i.e. overwrite the external edit
+    // the banner had just appeared to warn about.
     let reload = child(
         hwnd,
         w!("BUTTON"),
         cap::RELOAD,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_RELOAD,
         &fonts,
     );
@@ -1080,7 +1216,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::KEEP_MINE,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_KEEPMINE,
         &fonts,
     );
@@ -1107,7 +1243,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::REMOVE,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_REMOVE,
         &fonts,
     );
@@ -1115,7 +1251,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::ADD,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_ADD,
         &fonts,
     );
@@ -1283,7 +1419,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::OPEN_FILE,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_GROUP | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_GROUP | WS_TABSTOP,
         IDC_OPENFILE,
         &fonts,
     );
@@ -1291,7 +1427,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::CLOSE,
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_CLOSE,
         &fonts,
     );
@@ -1300,11 +1436,15 @@ unsafe fn build_children(hwnd: HWND) {
     // box, so without that arm `IsDialogMessageW` falls back to IDOK -- an
     // id nothing here answers to -- and the ring promises a key that does
     // nothing, which is exactly what shipped.
+    //
+    // This is only the STARTING default. `set_default_id` moves both the
+    // style and `Ui::defid` as focus walks the command bar, so the ring and
+    // the key agree wherever focus is.
     child(
         hwnd,
         w!("BUTTON"),
         cap::SAVE,
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE((BS_DEFPUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
         IDC_APPLY,
         &fonts,
     );
@@ -1331,6 +1471,11 @@ unsafe fn build_children(hwnd: HWND) {
             keep,
             fonts,
             accel: build_accelerators(),
+            // Matches the `BS_DEFPUSHBUTTON` handed to `IDC_APPLY` above.
+            // The field and the style start out agreeing, and
+            // `set_default_id` is the only thing that moves either, so they
+            // cannot drift apart.
+            defid: IDC_APPLY,
             title_base: title_base(&path),
             // Moved, not copied: the heap buffer `add_tooltip` handed
             // comctl32 a pointer to travels with it.
@@ -1406,6 +1551,26 @@ unsafe fn add_tooltip(parent: HWND, tool: HWND, text: &mut [u16]) {
     ) else {
         return;
     };
+    // Without a maximum width a tooltip is ONE line, however long the text
+    // is -- and this text is a file path, which is the longest string the
+    // window can be asked to show. `C:\Users\<user>\AppData\Roaming\beckon\
+    // shortcuts.toml` is already wider than the window at 96 DPI, and a
+    // tooltip is not clipped to the monitor politely: it is drawn where it
+    // was asked for and runs off the edge, losing the tail, which is the
+    // half that says which file.
+    //
+    // Setting any positive maximum is also what switches the control into
+    // its multi-line layout at all -- the width is the trigger, not just a
+    // bound. Scaled, like every other pixel in this file: an unscaled 400
+    // would wrap after a third of a line at 300 % DPI.
+    SendMessageW(
+        tip,
+        TTM_SETMAXTIPWIDTH,
+        Some(WPARAM(0)),
+        Some(LPARAM(
+            scale(tok::TOOLTIP_MAX, GetDpiForWindow(parent).max(96)) as isize,
+        )),
+    );
     let info = TTTOOLINFOW {
         cbSize: std::mem::size_of::<TTTOOLINFOW>() as u32,
         uFlags: TTF_IDISHWND | TTF_SUBCLASS,
@@ -2259,7 +2424,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             DM_GETDEFID_MSG => {
-                // What makes Enter press Save.
+                // What makes Enter press a button.
                 //
                 // `IsDialogMessageW` asks the window which control is the
                 // default, and this window is not a dialog box -- so without
@@ -2273,11 +2438,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // Returning the id alone reads as `DC_HASDEFID == 0`, i.e.
                 // no default at all.
                 //
-                // A disabled Save is handled by the dialog manager, which
+                // `Ui::defid`, NOT a constant. The dialog manager reaches
+                // this message even when a push button has focus, because
+                // Enter only activates the focused control directly when it
+                // answers `WM_GETDLGCODE` with `DLGC_DEFPUSHBUTTON` -- so a
+                // constant here made Enter on Close save, and Enter on the
+                // banner's Reload save OVER the external change it was
+                // warning about. The borrow is taken and dropped inside the
+                // closure; nothing is sent from this arm.
+                //
+                // A disabled default is handled by the dialog manager, which
                 // does not send a command to a disabled control -- and the
                 // `IDC_APPLY` arm of `handle_command` checks anyway, because
                 // `TranslateAcceleratorW` has no such scruple about Ctrl+S.
-                LRESULT(((DC_HASDEFID_FLAG << 16) | IDC_APPLY as u32) as isize)
+                let id = UI
+                    .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
+                    .unwrap_or(IDC_APPLY);
+                LRESULT(((DC_HASDEFID_FLAG << 16) | id as u32) as isize)
+            }
+            DM_SETDEFID_MSG => {
+                // The other half. Nothing in beckon sends this today --
+                // `handle_command` calls `set_default_id` directly -- but the
+                // dialog manager may, and a window that answers
+                // `DM_GETDEFID` while ignoring `DM_SETDEFID` is a window
+                // whose ring and whose Enter key can be driven apart from
+                // outside. Both routes converge on one function, so they
+                // cannot disagree.
+                set_default_id(hwnd, (wp.0 & 0xFFFF) as i32);
+                LRESULT(1)
             }
             WM_GETMINMAXINFO => {
                 // A frame promise, not an arithmetic one -- Step 2 clamps
@@ -2519,6 +2707,38 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         None => return,
     };
     match (id, code) {
+        // ---- The default ring follows focus. THESE ARMS MUST COME FIRST.
+        //
+        // Every per-id arm below matches `(id, _)` -- any notification code
+        // whatsoever -- and `BS_NOTIFY` has just widened what a push button
+        // reports. Behind those arms, tabbing onto Save would PRESS Save.
+        //
+        // On `BN_SETFOCUS` the focused button becomes the default; on
+        // `BN_KILLFOCUS` Save takes it back. The order sorts itself out:
+        // Windows delivers the outgoing control's `WM_KILLFOCUS` before the
+        // incoming one's `WM_SETFOCUS`, so moving between two buttons
+        // restores Save and then immediately overrides it -- and
+        // `set_default_id` no-ops when the id it is handed is already the
+        // default, so the common Tab step repaints nothing.
+        //
+        // Deliberately NOT `suppressed()`-guarded, unlike `commit_fields`.
+        // Suppression exists to stop `apply_state`'s own control writes being
+        // read back as user edits; this changes no model state at all. It
+        // does run from inside `apply_state` -- `enable(hwnd, IDC_REMOVE,
+        // false)` on a focused Remove raises `BN_KILLFOCUS` -- and that is
+        // exactly when the ring MUST leave: focus has genuinely gone. (Safe
+        // to re-enter from there: `apply_state` holds no borrow across the
+        // block that calls `enable`.)
+        (_, c) if is_push_button(id) && (c == BN_SETFOCUS || c == BN_KILLFOCUS) => {
+            set_default_id(hwnd, if c == BN_SETFOCUS { id } else { IDC_APPLY });
+        }
+        // Anything else a push button says is not a command. `BS_NOTIFY`
+        // documents `BN_PAINT` / `BN_PUSHED` / `BN_UNPUSHED` / `BN_DISABLE`
+        // alongside the two above, and `BN_DOUBLECLICKED` arrives with it in
+        // every implementation -- so leaving `(id, _)` to catch them would
+        // let a double-click Add twice, or a repaint Save. Only a real click
+        // and the accelerator's own code get through.
+        (_, c) if is_push_button(id) && c != BN_CLICKED && c != CMD_FROM_ACCELERATOR => {}
         (IDC_COMBO, c) if c == EN_CHANGE => {
             if !suppressed() {
                 let t = text_of(combo);
@@ -2634,4 +2854,89 @@ fn selected_combo_text(app: HWND) -> Option<String> {
 /// bare `serve`.
 pub fn error(body: &str) {
     shell::error_dialog("beckon", body);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Nearly everything in this file needs a live window, and a window on a
+    // CI agent is a different question from a window on a desktop -- which
+    // is what `examples/settings_probe.rs` exists for. These two functions
+    // are the exception: pure, total, and each with an edge case that is
+    // silent when it is wrong. They run on the Windows CI job, which is the
+    // only one that compiles this module.
+
+    #[test]
+    fn shown_drops_the_mnemonic_marker() {
+        assert_eq!(shown("&Save"), "Save");
+        assert_eq!(shown("Re&move"), "Remove");
+        assert_eq!(shown("Close"), "Close");
+    }
+
+    #[test]
+    fn shown_collapses_a_doubled_ampersand_to_one() {
+        // The case that makes this a function rather than a `replace`.
+        // `layout` measures through `shown`, and a doubled ampersand is one
+        // character of INK -- dropping both would size the button too
+        // narrow for its own caption, which is the defect measurement was
+        // introduced to prevent.
+        assert_eq!(shown("Notes && To Do"), "Notes & To Do");
+        assert_eq!(shown("&&"), "&");
+        assert_eq!(shown("&&&Save"), "&Save");
+    }
+
+    #[test]
+    fn shown_swallows_a_trailing_ampersand() {
+        // A marker with nothing to mark. Windows draws nothing for it, so
+        // measuring it would make the button one character too wide -- and
+        // the naive loop that reads the NEXT character would run off the
+        // end.
+        assert_eq!(shown("Save&"), "Save");
+        assert_eq!(shown("&"), "");
+    }
+
+    #[test]
+    fn title_base_is_the_file_name_only() {
+        assert_eq!(
+            title_base(r"C:\Users\a\AppData\Roaming\beckon\shortcuts.toml"),
+            "beckon - shortcuts.toml"
+        );
+        // Forward slashes are separators on Windows too, and `serve` is
+        // perfectly reachable with a path typed that way.
+        assert_eq!(
+            title_base("C:/cfg/shortcuts.toml"),
+            "beckon - shortcuts.toml"
+        );
+        assert_eq!(title_base("shortcuts.toml"), "beckon - shortcuts.toml");
+    }
+
+    #[test]
+    fn title_base_falls_back_when_there_is_no_file_name() {
+        // Every one of these makes `Path::file_name` return None, and the
+        // format string would otherwise put an empty name after the
+        // separator -- a title bar reading `beckon - ` looks like the window
+        // failed to load something.
+        assert_eq!(title_base(""), "beckon");
+        assert_eq!(title_base(r"C:\"), "beckon");
+        assert_eq!(title_base(".."), "beckon");
+        assert_eq!(title_base(r"C:\cfg\.."), "beckon");
+    }
+
+    #[test]
+    fn the_starting_default_button_is_a_push_button() {
+        // `set_default_id` only ever moves the ring between members of this
+        // set, and `handle_command` only filters notifications for members
+        // of it. A Save left out of it would take the ring off the window
+        // the first time focus touched any other button.
+        assert!(is_push_button(IDC_APPLY));
+        assert!(is_push_button(IDC_RELOAD));
+        assert!(is_push_button(IDC_CLOSE));
+        // The check box and radios must stay out: they are BUTTONs, they
+        // have no `BS_NOTIFY`, and their `(id, _)` arms in `handle_command`
+        // are what carries a click to `on_caps` / `on_caps_tap`.
+        assert!(!is_push_button(IDC_CAPS));
+        assert!(!is_push_button(IDC_TAP_CAPSLOCK));
+        assert!(!is_push_button(IDC_LIST));
+    }
 }
