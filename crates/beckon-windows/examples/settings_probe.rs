@@ -85,20 +85,51 @@ mod win {
         std::thread::sleep(Duration::from_millis(400));
     }
 
-    /// `WM_SETTEXT` is one of the few messages USER32 marshals across a
-    /// process boundary, which is what makes driving another process's edit
-    /// fields possible at all.
-    fn set_text(h: HWND, s: &str) {
-        let mut buf: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    /// Type into a control the way a person does: clear it, then one
+    /// `WM_CHAR` per character.
+    ///
+    /// `WM_SETTEXT` alone is not enough and the difference is the point. An
+    /// EDIT raises `EN_CHANGE` for a programmatic set, but a COMBOBOX only
+    /// forwards `CBN_EDITCHANGE` for input it processed itself — so a
+    /// `WM_SETTEXT` test would pass on the Shortcut field and fail on the
+    /// App field for a reason that has nothing to do with beckon.
+    fn type_into(h: HWND, s: &str) {
+        let mut empty: Vec<u16> = vec![0];
         unsafe {
             SendMessageW(
                 h,
                 WM_SETTEXT,
                 Some(WPARAM(0)),
-                Some(LPARAM(buf.as_mut_ptr() as isize)),
+                Some(LPARAM(empty.as_mut_ptr() as isize)),
             );
+            for ch in s.encode_utf16() {
+                SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
+            }
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    /// Dismiss a modal dialog by clicking one of its buttons.
+    /// `#32770` is the system dialog class, which is what `MessageBox` uses.
+    fn dismiss_dialog(button: i32) -> bool {
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(250));
+            if let Ok(dlg) = unsafe { FindWindowW(w!("#32770"), None) } {
+                if !dlg.0.is_null() {
+                    println!("    modal dialog present: {:?}", text_of(dlg));
+                    unsafe {
+                        let _ = PostMessageW(
+                            Some(dlg),
+                            WM_COMMAND,
+                            WPARAM(button as usize),
+                            LPARAM(0),
+                        );
+                    }
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     fn first_child_of_class(parent: HWND, class: &str) -> Option<HWND> {
@@ -125,13 +156,16 @@ mod win {
     /// The notes pane is rendered from the model, so its text is the
     /// cheapest window into whether an event actually landed.
     fn dump(h: HWND, label: &str) {
+        // Only the notes pane is readable from here. GetWindowText on a
+        // control in ANOTHER process returns the window caption from the
+        // kernel structure rather than sending WM_GETTEXT, so an EDIT or a
+        // COMBOBOX always reads back empty -- a STATIC does not, because
+        // its text IS its caption.
         let notes = dlg_item(h, IDC_NOTES).map(text_of).unwrap_or_default();
-        let combo = dlg_item(h, IDC_COMBO).map(text_of).unwrap_or_default();
-        let app = dlg_item(h, IDC_APP).map(text_of).unwrap_or_default();
         let apply = dlg_item(h, IDC_APPLY)
             .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
             .unwrap_or(false);
-        println!("    [{label}] combo={combo:?} app={app:?} apply={apply}");
+        println!("    [{label}] apply={apply}");
         println!("      notes: {}", notes.replace('\r', "").replace('\n', " | "));
     }
 
@@ -145,7 +179,7 @@ mod win {
             println!("    FAIL: no shortcut field");
             return;
         };
-        set_text(combo_edit, "ctrl+super+alt+j");
+        type_into(combo_edit, "ctrl+super+alt+j");
         dump(h, "after shortcut text");
 
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
@@ -153,7 +187,7 @@ mod win {
         // for. Setting the combo itself is silent.
         let app_edit = dlg_item(h, IDC_APP).and_then(|c| first_child_of_class(c, "Edit"));
         match app_edit {
-            Some(e) => set_text(e, "Notepad"),
+            Some(e) => type_into(e, "Notepad"),
             None => println!("    FAIL: combo box has no edit child"),
         }
         dump(h, "after app text");
@@ -240,10 +274,19 @@ mod win {
 
         drive_an_edit(h);
 
-        // Leave the machine as it was found.
+        // Leave the machine as it was found. If the model is still dirty
+        // the window asks before closing -- that prompt is a feature, so
+        // answer it rather than treating it as a hang.
         std::thread::sleep(Duration::from_millis(500));
         unsafe {
             let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        std::thread::sleep(Duration::from_millis(600));
+        if find_settings().is_some() {
+            // IDNO = 7: discard, so the probe never leaves an edit behind.
+            if dismiss_dialog(7) {
+                println!("    (answered the unsaved-changes prompt with Discard)");
+            }
         }
         let mut gone = false;
         for _ in 0..20 {
