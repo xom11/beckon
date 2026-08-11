@@ -18,6 +18,11 @@ mod notify;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod serve;
 mod serve_app;
+// Model behind the Windows settings window; here rather than in
+// beckon-windows for the same CI-coverage reason as `caps`. Wired up in a
+// later task.
+#[allow(dead_code)]
+mod settings;
 mod stable_id;
 
 #[cfg(target_os = "windows")]
