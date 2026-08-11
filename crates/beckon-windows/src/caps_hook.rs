@@ -145,6 +145,12 @@ fn debug() -> bool {
 
 /// Replace the key set, chord and tap behaviour without touching the hook
 /// itself. Called on every reload; installing is a separate decision.
+///
+/// This function must NEVER touch `STATE`. Clearing `CapsState.consumed`
+/// mid-stream leaks an unpaired key-up into whichever application has focus:
+/// the key-down was swallowed, so the up must be too, and only the next
+/// Caps-down may clear the set. A reload arriving while a key is held is
+/// ordinary, not exceptional.
 pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
     CONFIG.with(|c| *c.borrow_mut() = Config { bound, hold, tap });
 }

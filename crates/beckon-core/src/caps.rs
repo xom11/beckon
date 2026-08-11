@@ -245,13 +245,23 @@ pub fn decide(
     }
     match (ev.vk, ev.edge) {
         (VK_CAPITAL, Edge::Down) => {
-            if !st.held {
-                st.held = true;
-                st.used = false;
-                st.injected = None;
-                st.consumed.clear();
-                st.down_at = ev.time_ms;
-            }
+            // Unconditional, deliberately. A second down with no up in
+            // between is either auto-repeat -- where re-stamping every field
+            // is harmless -- or a Caps-up that was lost, and losing one is
+            // real: this hook is bound to the desktop of the thread that
+            // installed it and sees nothing at all while the secure desktop
+            // is up (UAC, Ctrl+Alt+Del, the lock screen). Guarding on
+            // `!st.held` pins `down_at` to the first press, so the next
+            // release is judged a multi-second hold and the user's tap is
+            // silently eaten.
+            //
+            // `consumed` is the exception and must NOT be cleared: a key
+            // released after Caps must still have its physical key-up
+            // swallowed, or the application receives an up with no down.
+            st.held = true;
+            st.used = false;
+            st.injected = None;
+            st.down_at = ev.time_ms;
             Action::Swallow
         }
         (VK_CAPITAL, Edge::Up) => {
@@ -816,6 +826,78 @@ mod tests {
         assert!(
             matches!(a, Action::SwallowAndInject(_)),
             "a 15 ms tap across the rollover read as a hold: {a:?}"
+        );
+    }
+
+    /// A second Caps-down with no up in between is either auto-repeat -- where
+    /// re-stamping is harmless -- or a Caps-up that was lost. Losing one is
+    /// real: the hook is bound to the desktop of the thread that installed it
+    /// and sees nothing while the secure desktop is up (UAC, Ctrl+Alt+Del, the
+    /// lock screen). Treating the second down as noise leaves `down_at` pinned
+    /// to the first, so the next release is judged a hold and the tap is eaten.
+    #[test]
+    fn a_second_caps_down_restamps_the_clock() {
+        let mut st = CapsState::default();
+        let b: HashSet<u32> = HashSet::new();
+        decide(
+            at(VK_CAPITAL, Edge::Down, 0),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        // The Caps-up here is lost to a secure-desktop excursion.
+        decide(
+            at(VK_CAPITAL, Edge::Down, 5_000),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        let act = decide(
+            at(VK_CAPITAL, Edge::Up, 5_050),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        assert!(
+            matches!(act, Action::SwallowAndInject(ref v) if v[0].vk == VK_CAPITAL),
+            "50 ms after the second press is a tap, not a 5-second hold: {act:?}"
+        );
+    }
+
+    /// `consumed` must survive, or a key released after Caps reaches the
+    /// application as an up with no matching down.
+    #[test]
+    fn a_second_caps_down_keeps_consumed() {
+        let mut st = CapsState::default();
+        let b: HashSet<u32> = [0x4E].into_iter().collect();
+        decide(
+            at(VK_CAPITAL, Edge::Down, 0),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        decide(
+            at(0x4E, Edge::Down, 1),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        decide(
+            at(VK_CAPITAL, Edge::Down, 2),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        assert_eq!(
+            decide(at(0x4E, Edge::Up, 3), &mut st, &b, HOLD, CapsTap::CapsLock),
+            Action::Swallow,
+            "the physical key-up must still be swallowed"
         );
     }
 
