@@ -10,12 +10,29 @@
 //! callback does a hash lookup and at most one `SendInput`; the real work
 //! happens later on the ordinary `WM_HOTKEY` path.
 //!
-//! Windows-only in effect, but it lives in `beckon-cli` because CI passes
+//! Windows-only in effect, but it lives in `beckon-core` because CI passes
 //! `--exclude beckon-windows` on the Linux and macOS jobs. A keyboard state
 //! machine is the last thing that should be tested by one job in three.
+//!
+//! Tap-vs-hold follows the same rule kanata does, since that is what this
+//! project's users already have in their fingers: a release inside
+//! `HOLD_TIMEOUT_MS` with no key pressed is a tap, anything else is a hold.
+//! Where beckon differs deliberately: kanata's plain `tap-hold` engages the
+//! hold purely on the clock, so `Caps+N` pressed quickly emits `Esc` then
+//! `n`. beckon engages the hold as soon as any key is pressed, which is
+//! kanata's `tap-hold-press` behaviour and needs no 200 ms wait before the
+//! first chord works.
 
 use crate::shortcuts::{CapsTap, Shortcut};
 use std::collections::HashSet;
+
+/// How long Caps may be held before a release stops counting as a tap.
+///
+/// 200 ms, matching the `tap-hold 200 200` this user's kanata config binds
+/// Caps to. Resting a finger on Caps and letting go must not emit anything;
+/// that is what "hold" means, and every tap-hold implementation decides it
+/// on a clock.
+pub const HOLD_TIMEOUT_MS: u32 = 200;
 
 pub const VK_CAPITAL: u32 = 0x14;
 pub const VK_ESCAPE: u32 = 0x1B;
@@ -38,6 +55,10 @@ pub struct KeyEvent {
     /// injected it. Without this the first injected stroke would re-enter
     /// `decide` and the whole thing would spiral.
     pub injected_by_us: bool,
+    /// `KBDLLHOOKSTRUCT.time` — milliseconds since boot. Compared only
+    /// against another value from the same source, with `wrapping_sub`, so
+    /// the 49-day rollover costs at most one mistimed keypress.
+    pub time_ms: u32,
 }
 
 /// One key transition we are asking the OS to perform.
@@ -60,8 +81,17 @@ pub enum Action {
 #[derive(Debug, Default)]
 pub struct CapsState {
     held: bool,
+    /// Set by ANY key pressed while Caps is down, not only a bound one.
+    /// `Caps+g` where `g` is unbound is still someone using Caps as a
+    /// modifier and getting nothing; it must not also toggle Caps Lock on
+    /// release.
     used: bool,
+    /// Set only when a chord was actually injected, which is the only case
+    /// that leaves modifiers to clean up. Distinct from `used`: `Caps+F5`
+    /// with F5 unbound counts as using Caps but pressed no modifier.
+    injected: bool,
     consumed: HashSet<u32>,
+    down_at: u32,
 }
 
 /// Keys reachable through Caps: the main key of every binding whose combo
@@ -173,14 +203,22 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
             if !st.held {
                 st.held = true;
                 st.used = false;
+                st.injected = false;
                 st.consumed.clear();
+                st.down_at = ev.time_ms;
             }
             Action::Swallow
         }
         (VK_CAPITAL, Edge::Up) => {
-            let used = st.used;
+            // Tap only when Caps did nothing AND was let go quickly. A long
+            // hold is a hold even if no key followed it -- see
+            // `HOLD_TIMEOUT_MS`.
+            let held_ms = ev.time_ms.wrapping_sub(st.down_at);
+            let used = st.used || held_ms >= HOLD_TIMEOUT_MS;
+            let injected = st.injected;
             st.held = false;
             st.used = false;
+            st.injected = false;
             // `consumed` is deliberately NOT cleared here: a key released
             // after Caps must still have its physical key-up swallowed, or
             // the application receives an up with no matching down. The
@@ -189,7 +227,15 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
                 // See `release_modifiers`: the chord's own key-ups are not
                 // guaranteed to have landed, and the failure mode is a
                 // keyboard where every key is silently a ctrl+win+alt chord.
-                Action::SwallowAndInject(release_modifiers())
+                // Only worth doing when a chord was actually injected. A
+                // timed-out hold, or Caps plus an unbound key, pressed no
+                // modifier -- releasing one there would desync a modifier
+                // the user is genuinely holding.
+                if injected {
+                    Action::SwallowAndInject(release_modifiers())
+                } else {
+                    Action::Swallow
+                }
             } else {
                 match caps_tap {
                     CapsTap::CapsLock => Action::SwallowAndInject(tap(VK_CAPITAL)),
@@ -199,6 +245,11 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
             }
         }
         (vk, Edge::Down) if st.held => {
+            // ANY key marks Caps as used, including one with no binding and
+            // including a modifier the user is stacking on top. Otherwise
+            // `Caps+g` types `g` and then toggles Caps Lock on release,
+            // which is the surprise this flag exists to prevent.
+            st.used = true;
             if !bound.contains(&vk) {
                 return Action::PassThrough;
             }
@@ -206,7 +257,7 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
                 return Action::Swallow; // auto-repeat
             }
             st.consumed.insert(vk);
-            st.used = true;
+            st.injected = true;
             Action::SwallowAndInject(chord(vk))
         }
         (vk, Edge::Up) if st.consumed.contains(&vk) => {
@@ -227,17 +278,19 @@ mod tests {
     }
 
     fn down(vk: u32) -> KeyEvent {
-        KeyEvent {
-            vk,
-            edge: Edge::Down,
-            injected_by_us: false,
-        }
+        at(vk, Edge::Down, 0)
     }
     fn up(vk: u32) -> KeyEvent {
+        // Default releases are "immediate": inside the hold timeout, so a
+        // test that says nothing about timing gets the tap branch.
+        at(vk, Edge::Up, 10)
+    }
+    fn at(vk: u32, edge: Edge, time_ms: u32) -> KeyEvent {
         KeyEvent {
             vk,
-            edge: Edge::Up,
+            edge,
             injected_by_us: false,
+            time_ms,
         }
     }
 
@@ -547,6 +600,7 @@ mod tests {
             vk: VK_LWIN,
             edge: Edge::Down,
             injected_by_us: true,
+            time_ms: 0,
         };
         assert_eq!(
             decide(mine, &mut st, &b, CapsTap::CapsLock),
@@ -556,6 +610,7 @@ mod tests {
             vk: VK_CAPITAL,
             edge: Edge::Down,
             injected_by_us: true,
+            time_ms: 0,
         };
         assert_eq!(
             decide(mine_caps, &mut st, &b, CapsTap::CapsLock),
@@ -586,6 +641,84 @@ mod tests {
             decide(down(VK_SHIFT), &mut st, &b, CapsTap::CapsLock),
             Action::PassThrough,
             "Shift must stay physically down so Caps+Shift+T reaches a shift binding"
+        );
+    }
+
+    // ---------- tap vs hold ----------
+
+    /// `Caps+<unbound key>` is someone using Caps as a modifier and getting
+    /// nothing back. It must not ALSO toggle Caps Lock when they let go.
+    #[test]
+    fn an_unbound_key_still_counts_as_using_caps() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_F5), &mut st, &b, CapsTap::CapsLock);
+        decide(up(VK_F5), &mut st, &b, CapsTap::CapsLock);
+        assert_eq!(
+            decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
+            Action::Swallow,
+            "Caps+F5 must not toggle Caps Lock on release"
+        );
+    }
+
+    /// A hold is a hold even when no key follows it. kanata decides this on
+    /// a 200 ms clock and so does beckon.
+    #[test]
+    fn holding_caps_past_the_timeout_is_never_a_tap() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(at(VK_CAPITAL, Edge::Down, 1_000), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(
+            at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
+        assert_eq!(a, Action::Swallow, "a long hold emitted something: {a:?}");
+    }
+
+    #[test]
+    fn a_quick_tap_is_still_a_tap() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(at(VK_CAPITAL, Edge::Down, 1_000), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(
+            at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS - 1),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
+        assert!(
+            matches!(a, Action::SwallowAndInject(ref s) if s.iter().any(|k| k.vk == VK_CAPITAL)),
+            "a quick tap must still toggle Caps Lock: {a:?}"
+        );
+    }
+
+    /// The tick count wraps every ~49 days. `wrapping_sub` must keep a tap
+    /// across the boundary a tap rather than reading as a 49-day hold.
+    #[test]
+    fn the_millisecond_counter_may_wrap() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(at(VK_CAPITAL, Edge::Down, u32::MAX - 5), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(at(VK_CAPITAL, Edge::Up, 10), &mut st, &b, CapsTap::CapsLock);
+        assert!(
+            matches!(a, Action::SwallowAndInject(_)),
+            "a 15 ms tap across the rollover read as a hold: {a:?}"
+        );
+    }
+
+    /// A timed-out hold pressed nothing, so there is nothing to release --
+    /// emitting modifier-ups there would desync a modifier the user holds.
+    #[test]
+    fn a_timed_out_hold_does_not_release_modifiers() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(at(VK_CAPITAL, Edge::Down, 0), &mut st, &b, CapsTap::CapsLock);
+        assert_eq!(
+            decide(at(VK_CAPITAL, Edge::Up, 5_000), &mut st, &b, CapsTap::CapsLock),
+            Action::Swallow
         );
     }
 }

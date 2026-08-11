@@ -52,6 +52,10 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             vk: kb.vkCode,
             edge,
             injected_by_us: kb.dwExtraInfo == MARK,
+            // The event's own timestamp, not `Instant::now()`: it is the
+            // time the keystroke happened rather than the time our callback
+            // got around to it, so a slow hook cannot turn a tap into a hold.
+            time_ms: kb.time,
         };
         let action = CONFIG.with(|c| {
             let c = c.borrow();
