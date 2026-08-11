@@ -449,18 +449,23 @@ fn row_condition(
         }
     }
 
-    // 3. Reachable by holding Caps? Only a question when Caps is on: with
-    //    `keyboard.caps` off there is no chord to deviate from, and an
-    //    ordinary `ctrl+alt+t` binding is not a deviation from anything.
-    if m.keyboard.caps {
-        if let Ok(c) = &combo {
-            if !combo_is_caps_chord(c, &m.keyboard.caps_hold) {
-                flag.get_or_insert_with(|| "custom".into());
-                notes.push(Note {
-                    mark: Mark::Warn,
-                    text: "Uses a different chord.".into(),
-                });
-            }
+    // 3. Reachable by holding Caps? Compared against `keyboard.caps_hold`
+    //    unconditionally -- NOT gated on `keyboard.caps`. A gate was tried
+    //    and reverted: the spec names this flag with no such qualifier, and
+    //    the README's own justifying example,
+    //    `"ctrl+super+alt+shift+t" = "Telegram Web"`, ships with no
+    //    `keyboard.caps` block at all -- so a gate would silently unflag
+    //    the one case the spec cites as the reason `custom` exists. It also
+    //    reinstates the coupling between the list's appearance and a
+    //    keyboard setting three sections away that was deliberately removed
+    //    elsewhere (the keycap-dimming rule).
+    if let Ok(c) = &combo {
+        if !combo_is_caps_chord(c, &m.keyboard.caps_hold) {
+            flag.get_or_insert_with(|| "custom".into());
+            notes.push(Note {
+                mark: Mark::Warn,
+                text: "Uses a different chord.".into(),
+            });
         }
     }
 
@@ -892,7 +897,7 @@ mod tests {
     #[test]
     fn the_flag_precedence_is_paused_then_key_in_use_then_not_installed_then_custom() {
         let mut m = model();
-        m.set_caps(true); // `custom` only means anything with Caps on
+        m.set_caps(true); // realistic config; `custom` does not need this on
         m.set_combo(0, "ctrl+alt+t"); // not the caps_hold chord
         m.set_app(0, "Nonexistent App"); // not in the catalog
         let mut rt = status_all_ok();
@@ -912,26 +917,31 @@ mod tests {
         assert_eq!(flag(&m, &rt), None);
     }
 
-    /// `custom` answers one question: "can I reach this by holding Caps?".
-    /// So it is measured against `keyboard.caps_hold`, and it is silent when
-    /// `keyboard.caps` is off -- with Caps off there is no chord to deviate
-    /// from, and an ordinary `ctrl+alt+t` binding is not a deviation.
+    /// `custom` answers one question: "does this combo match
+    /// `keyboard.caps_hold`?" -- decided purely by comparing modifiers, with
+    /// NO dependency on whether `keyboard.caps` itself is on. A gate on
+    /// `keyboard.caps` was tried and reverted: the README's own
+    /// `"ctrl+super+alt+shift+t" = "Telegram Web"` example, cited by the
+    /// spec as the reason this flag exists, ships with no `keyboard.caps`
+    /// block at all, so the gate would have left the spec's own example
+    /// silently unflagged.
     #[test]
-    fn custom_follows_caps_hold_and_is_silent_when_caps_is_off() {
+    fn custom_follows_caps_hold_regardless_of_whether_caps_is_on() {
         let mut m = model();
-        m.set_combo(0, "ctrl+alt+t");
+        m.set_combo(0, "ctrl+alt+t"); // not the default caps_hold (ctrl+super+alt)
         let mut rt = status_all_ok();
         rt.registered.insert("ctrl+alt+t".into(), Ok(()));
         assert_eq!(
-            control_state(&m, &rt).items[0].flag,
-            None,
-            "Caps off: nothing is custom"
+            control_state(&m, &rt).items[0].flag.as_deref(),
+            Some("custom"),
+            "Caps off must not silence `custom`"
         );
 
         m.set_caps(true);
         assert_eq!(
             control_state(&m, &rt).items[0].flag.as_deref(),
-            Some("custom")
+            Some("custom"),
+            "and turning Caps on changes nothing about it"
         );
 
         m.keyboard.caps_hold = Chord::parse("ctrl+alt").unwrap();
