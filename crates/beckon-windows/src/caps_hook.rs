@@ -57,7 +57,11 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let c = c.borrow();
             STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.tap))
         });
-        if debug() {
+        // Trace only what beckon acted on, plus Caps itself. A trace of
+        // every event that merely passed through would be a log of
+        // everything the user types, virtual-key by virtual-key -- a
+        // keylogger written to disk. There is no diagnostic worth that.
+        if debug() && (ev.vk == beckon_core::caps::VK_CAPITAL || action != Action::PassThrough) {
             eprintln!(
                 "beckon serve: caps hook: vk=0x{:02X} {:?}{} -> {}",
                 ev.vk,
