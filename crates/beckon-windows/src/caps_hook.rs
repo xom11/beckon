@@ -57,6 +57,19 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let c = c.borrow();
             STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.tap))
         });
+        if debug() {
+            eprintln!(
+                "beckon serve: caps hook: vk=0x{:02X} {:?}{} -> {}",
+                ev.vk,
+                ev.edge,
+                if ev.injected_by_us { " (ours)" } else { "" },
+                match &action {
+                    Action::PassThrough => "pass".to_string(),
+                    Action::Swallow => "swallow".to_string(),
+                    Action::SwallowAndInject(s) => format!("swallow+inject {} strokes", s.len()),
+                }
+            );
+        }
         match action {
             Action::PassThrough => {}
             Action::Swallow => return LRESULT(1),
@@ -88,9 +101,36 @@ fn inject(strokes: &[beckon_core::caps::Stroke]) {
             },
         })
         .collect();
-    unsafe {
-        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+    let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) } as usize;
+    // A short insert is how a keyboard gets stuck: the chord's downs land
+    // and its ups do not. `SendInput` reports this only through its return
+    // value -- UIPI blocks it without setting an error, and another thread
+    // holding the input queue makes it return zero. Say so rather than
+    // leaving the user to discover it by typing.
+    if sent != inputs.len() {
+        eprintln!(
+            "beckon serve: caps hook: SendInput inserted {sent} of {} events - \
+             modifiers may be left down",
+            inputs.len()
+        );
     }
+    if debug() {
+        eprintln!("beckon serve: caps hook: injected {strokes:?} ({sent} inserted)");
+    }
+}
+
+/// Per-event tracing, off unless `BECKON_CAPS_DEBUG` is set to something
+/// other than `0`. Read once: this is consulted from the hook callback,
+/// which has a 300 ms budget and no business touching the environment
+/// repeatedly.
+fn debug() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("BECKON_CAPS_DEBUG")
+            .map(|v| v != "0")
+            .unwrap_or(false)
+    })
 }
 
 /// Replace the key set and tap behaviour without touching the hook itself.

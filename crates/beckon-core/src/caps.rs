@@ -132,6 +132,37 @@ fn tap(vk: u32) -> Vec<Stroke> {
     ]
 }
 
+/// Release the three modifiers the chord presses, unconditionally.
+///
+/// Emitted when Caps is released after at least one chord. Releasing a key
+/// that is already up is a no-op, so the cost is one extra `SendInput`; the
+/// cost of NOT doing it is a keyboard where every subsequent key is silently
+/// a `ctrl+win+alt` chord, which is unrecoverable without killing beckon.
+///
+/// This exists because the chord's own key-ups are not guaranteed to land.
+/// `SendInput` can insert fewer events than asked for — UIPI blocks it
+/// without setting an error, and another thread holding the input queue
+/// makes it return zero — and the `n↓` in the middle of the burst fires
+/// `WM_HOTKEY`, whose handler runs `backend.beckon()` (57 ms typical, 945 ms
+/// on the miss path) and pumps the message queue while it does. Anything in
+/// that window can reorder or drop what follows.
+fn release_modifiers() -> Vec<Stroke> {
+    vec![
+        Stroke {
+            vk: VK_LMENU,
+            edge: Edge::Up,
+        },
+        Stroke {
+            vk: VK_LWIN,
+            edge: Edge::Up,
+        },
+        Stroke {
+            vk: VK_LCONTROL,
+            edge: Edge::Up,
+        },
+    ]
+}
+
 /// Decide what to do with one key transition. Pure apart from `st`.
 pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: CapsTap) -> Action {
     if ev.injected_by_us {
@@ -155,7 +186,10 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
             // the application receives an up with no matching down. The
             // next Caps-down clears it.
             if used {
-                Action::Swallow
+                // See `release_modifiers`: the chord's own key-ups are not
+                // guaranteed to have landed, and the failure mode is a
+                // keyboard where every key is silently a ctrl+win+alt chord.
+                Action::SwallowAndInject(release_modifiers())
             } else {
                 match caps_tap {
                     CapsTap::CapsLock => Action::SwallowAndInject(tap(VK_CAPITAL)),
@@ -429,10 +463,57 @@ mod tests {
         decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
         decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
         decide(up(VK_T), &mut st, &b, CapsTap::CapsLock);
-        assert_eq!(
-            decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
-            Action::Swallow,
-            "Caps+T must not also toggle Caps Lock"
+        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let Action::SwallowAndInject(s) = a else {
+            panic!("expected the defensive modifier release, got {a:?}");
+        };
+        assert!(
+            !s.iter().any(|k| k.vk == VK_CAPITAL),
+            "Caps+T must not also toggle Caps Lock: {s:?}"
+        );
+    }
+
+    /// The 2026-08-11 stuck-keyboard report: after Caps+N, every subsequent
+    /// key behaved as ctrl+win+alt+key. Releasing Caps must put the
+    /// modifiers down unconditionally, because the chord's own key-ups are
+    /// not guaranteed to have landed.
+    #[test]
+    fn releasing_caps_after_a_chord_releases_every_modifier_it_pressed() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let Action::SwallowAndInject(s) = a else {
+            panic!("expected an injection, got {a:?}");
+        };
+        for vk in [VK_LCONTROL, VK_LWIN, VK_LMENU] {
+            assert!(
+                s.iter()
+                    .any(|k| k.vk == vk && k.edge == Edge::Up),
+                "modifier 0x{vk:02X} was not released: {s:?}"
+            );
+        }
+        assert!(
+            s.iter().all(|k| k.edge == Edge::Up),
+            "the release must not press anything: {s:?}"
+        );
+    }
+
+    /// A bare tap pressed no modifiers, so it must not release any either --
+    /// that would desync a modifier the user is genuinely holding.
+    #[test]
+    fn a_bare_tap_does_not_release_modifiers() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let Action::SwallowAndInject(s) = a else {
+            panic!("expected the tap action, got {a:?}");
+        };
+        assert!(
+            s.iter().all(|k| k.vk == VK_CAPITAL),
+            "a tap must only send Caps: {s:?}"
         );
     }
 
@@ -445,12 +526,13 @@ mod tests {
         decide(up(VK_T), &mut st, &b, CapsTap::CapsLock);
         decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
         decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        let Action::SwallowAndInject(s) = a else {
+            panic!("state leaked from the previous press: {a:?}");
+        };
         assert!(
-            matches!(
-                decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
-                Action::SwallowAndInject(_)
-            ),
-            "state leaked from the previous press"
+            s.iter().any(|k| k.vk == VK_CAPITAL),
+            "the second press was a bare tap and must toggle Caps Lock: {s:?}"
         );
     }
 
