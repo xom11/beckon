@@ -63,6 +63,20 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// (`LVM_SETCOLUMNWIDTH`), so the two widths cannot drift apart.
 const LIST_COLUMNS: [(&str, i32); 3] = [("", 34), ("Shortcut", 190), ("App", 150)];
 
+/// Window creation size, at 96 DPI. Shared between the initial
+/// `CreateWindowExW` and the post-creation `SetWindowPos` correction (the
+/// window is born on whichever monitor `CW_USEDEFAULT` picked, which
+/// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
+/// on the un-scaled size or the correction would resize to the wrong target.
+const WINDOW_WIDTH: i32 = 760;
+const WINDOW_HEIGHT: i32 = 560;
+
+/// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO`. Smaller
+/// than `WINDOW_WIDTH`/`WINDOW_HEIGHT` so the window can be shrunk, but not
+/// below the point where `layout` starts overlapping controls.
+const MIN_WIDTH: i32 = 720;
+const MIN_HEIGHT: i32 = 460;
+
 /// Scales a 96-DPI value to `dpi`. The only scaling rule in this file --
 /// `MulDiv` (round-half-up) was tried for the creation size and the list
 /// columns and dropped, because it quietly disagrees with this truncating
@@ -292,8 +306,8 @@ unsafe fn create() -> Result<(), String> {
         let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut x, &mut y);
         x.max(96)
     };
-    let w = scale(760, dpi);
-    let h = scale(560, dpi);
+    let w = scale(WINDOW_WIDTH, dpi);
+    let h = scale(WINDOW_HEIGHT, dpi);
 
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE(0),
@@ -324,8 +338,8 @@ unsafe fn create() -> Result<(), String> {
             None,
             0,
             0,
-            scale(760, real_dpi),
-            scale(560, real_dpi),
+            scale(WINDOW_WIDTH, real_dpi),
+            scale(WINDOW_HEIGHT, real_dpi),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
         );
     }
@@ -938,8 +952,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // safe, it only makes it unlikely.
                 let dpi = GetDpiForWindow(hwnd).max(96);
                 let mm = &mut *(lp.0 as *mut MINMAXINFO);
-                mm.ptMinTrackSize.x = scale(720, dpi);
-                mm.ptMinTrackSize.y = scale(460, dpi);
+                mm.ptMinTrackSize.x = scale(MIN_WIDTH, dpi);
+                mm.ptMinTrackSize.y = scale(MIN_HEIGHT, dpi);
                 LRESULT(0)
             }
             WM_SIZE => {
