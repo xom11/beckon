@@ -148,6 +148,13 @@ pub fn starter_template() -> &'static str {
 #
 # Check a file without starting anything:
 #   beckon check "%USERPROFILE%\.config\beckon\apps.toml"
+#
+# Prefer Caps Lock to the three-finger chord below? Tick "Use Caps Lock as
+# the beckon key" in Settings, or uncomment these two lines -- they are the
+# same setting. Holding Caps then becomes ctrl+super+alt.
+#
+#   keyboard.caps = true
+#   keyboard.caps_tap = "capslock"   # or "escape", or "none"
 
 "ctrl+super+alt+t" = "Terminal"
 "ctrl+super+alt+e" = "File Explorer"
@@ -370,6 +377,18 @@ mod tests {
             !parsed.is_empty(),
             "an empty template teaches nothing and registers nothing"
         );
+    }
+
+    /// The Caps option must be discoverable from the file itself, and it
+    /// must be OFF. A hook that swallows Caps Lock is not something a first
+    /// run turns on without being asked.
+    #[test]
+    fn the_starter_template_documents_the_caps_option_without_enabling_it() {
+        let t = starter_template();
+        assert!(t.contains("keyboard.caps"), "the option must be discoverable");
+        let parsed = beckon_core::shortcuts::parse_config(t)
+            .expect("the very first file a new user sees must not fail validation");
+        assert!(!parsed.keyboard.caps, "it must be commented out, not on");
     }
 
     #[test]
