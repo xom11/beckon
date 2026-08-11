@@ -237,9 +237,28 @@ unsafe fn create() -> Result<(), String> {
 
     let class = w!("BeckonSettingsWindow");
     // Resource id 1, the same icon beckon.rc embeds and the tray already
-    // uses. Null here is why the title bar and Alt-Tab show the default
-    // while the tray shows beckon's.
-    let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16)).unwrap_or_default();
+    // uses. hIcon wants the large (SM_CXICON, 32x32) variant LoadIconW
+    // returns; hIconSm wants the small (SM_CXSMICON, typically 16x16) one,
+    // loaded explicitly via LoadImageW exactly like the tray's own
+    // tray_add -- letting the shell downsample the large icon to 16x16 on
+    // the fly is what tray_add's comment says blurs an icon that is crisp
+    // at 16x16 in the .ico itself. Both fall back to the stock
+    // IDI_APPLICATION icon, matching tray_add, so a build without the .rc
+    // resource still shows an icon instead of none.
+    let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
+        .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+        .unwrap_or_default();
+    let icon_sm = LoadImageW(
+        Some(hinst.into()),
+        PCWSTR(1 as *const u16),
+        IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON),
+        GetSystemMetrics(SM_CYSMICON),
+        LR_DEFAULTCOLOR,
+    )
+    .map(|h| HICON(h.0))
+    .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+    .unwrap_or_default();
     // WNDCLASSEXW, not WNDCLASSW: the brief called for hIconSm, but that
     // field only exists on the Ex struct (paired with RegisterClassExW) --
     // WNDCLASSW has no small-icon slot at all. Same feature flag either way
@@ -255,7 +274,7 @@ unsafe fn create() -> Result<(), String> {
         // COLOR_BTNFACE unshifted paints the window with COLOR_BTNSHADOW.
         hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
         hIcon: icon,
-        hIconSm: icon,
+        hIconSm: icon_sm,
         ..Default::default()
     };
     // Non-zero on success; a second call for an already-registered class
@@ -634,7 +653,11 @@ unsafe fn layout(hwnd: HWND) {
 
     let top = pad + banner_h;
     let mid_h = clamp(h - top - kb_h - bottom_h - pad * 2);
-    let list_w = (w - pad * 3) * 45 / 100;
+    // Widths need the same guard as heights: WM_SIZE fires with a 0x0
+    // client rect on minimize (ptMinTrackSize only constrains dragging,
+    // not that), so w == 0 here on every minimize, on every machine, and
+    // every subtraction below goes negative without this.
+    let list_w = clamp((w - pad * 3) * 45 / 100);
 
     let place = |id: i32, x: i32, y: i32, cx: i32, cy: i32| {
         if let Ok(c) = GetDlgItem(Some(hwnd), id) {
@@ -655,7 +678,7 @@ unsafe fn layout(hwnd: HWND) {
     };
 
     if banner_h > 0 {
-        let bw = w - pad * 2 - s(180);
+        let bw = clamp(w - pad * 2 - s(180));
         place_h(banner, pad, pad + s(4), bw, row);
         place_h(reload, pad + bw + s(4), pad, s(84), row);
         place_h(keep, pad + bw + s(92), pad, s(84), row);
@@ -666,7 +689,7 @@ unsafe fn layout(hwnd: HWND) {
     place(IDC_REMOVE, pad + s(76), top + mid_h - btn_h, s(80), btn_h);
 
     let rx = pad * 2 + list_w;
-    let rw = w - rx - pad;
+    let rw = clamp(w - rx - pad);
     let mut y = top;
     place(IDC_LBL_SHORTCUT, rx, y, rw, row);
     y += row - s(6);
@@ -675,7 +698,12 @@ unsafe fn layout(hwnd: HWND) {
     place(IDC_LBL_APP, rx, y, rw, row);
     y += row - s(6);
     // A combo box's height is the height of its dropped-down list, not of
-    // the closed control; the closed control is sized by the system.
+    // the closed control; the closed control is sized by the system. That
+    // was the whole story under comctl32 v5, but not v6: there, `cy` here
+    // is capped by the minimum-visible-items count, and `build_children`'s
+    // CB_SETMINVISIBLE(app, 8) is what actually governs the drop-down
+    // height now. Changing `row * 8` alone, without touching that call,
+    // does nothing on a v6 box.
     place_h(app, rx, y, rw, row * 8);
     y += row + s(10);
     place_h(notes, rx, y, rw, clamp(mid_h - (y - top) - btn_h - s(6)));
@@ -688,8 +716,17 @@ unsafe fn layout(hwnd: HWND) {
     );
 
     let ky = top + mid_h + pad;
-    place(IDC_GRP_KEYBOARD, pad, ky, w - pad * 2, kb_h);
-    place(IDC_CAPS, pad + s(12), ky + row, w - pad * 2 - s(24), row);
+    // Not named in the review that asked for this guard, but the same
+    // formula minus one term (w - pad * 2, vs. IDC_CAPS's w - pad * 2 -
+    // s(24) right below) -- same 0x0-on-minimize hazard, same fix.
+    place(IDC_GRP_KEYBOARD, pad, ky, clamp(w - pad * 2), kb_h);
+    place(
+        IDC_CAPS,
+        pad + s(12),
+        ky + row,
+        clamp(w - pad * 2 - s(24)),
+        row,
+    );
     let tx = pad + s(24);
     place(IDC_TAP_CAPSLOCK, tx, ky + row * 2, s(190), row);
     place(IDC_TAP_ESCAPE, tx + s(196), ky + row * 2, s(70), row);
