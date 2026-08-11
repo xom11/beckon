@@ -19,11 +19,14 @@ use beckon_core::settings::{ControlState, Mark};
 use beckon_core::shortcuts::CapsTap;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::WindowsProgramming::MulDiv;
 use windows::Win32::UI::Controls::*;
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{
+    GetDpiForMonitor, GetDpiForWindow, SystemParametersInfoForDpi, MDT_EFFECTIVE_DPI,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -88,6 +91,7 @@ struct Ui {
     reload: HWND,
     keep: HWND,
     font: HFONT,
+    dpi: u32,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -234,6 +238,20 @@ unsafe fn create() -> Result<(), String> {
     // fails harmlessly, which is what happens when the window is reopened.
     RegisterClassW(&wc);
 
+    // CW_USEDEFAULT for position, but the SIZE must be scaled by hand:
+    // under per-monitor-v2 these are physical pixels, and no WM_DPICHANGED
+    // arrives to correct a window that was born the wrong size.
+    let dpi = {
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let mon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+        let (mut x, mut y) = (96u32, 96u32);
+        let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut x, &mut y);
+        x.max(96)
+    };
+    let w = MulDiv(760, dpi as i32, 96);
+    let h = MulDiv(560, dpi as i32, 96);
+
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE(0),
         class,
@@ -241,8 +259,8 @@ unsafe fn create() -> Result<(), String> {
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
-        760,
-        560,
+        w,
+        h,
         None,
         None,
         Some(hinst.into()),
@@ -255,18 +273,22 @@ unsafe fn create() -> Result<(), String> {
     Ok(())
 }
 
-/// The shell's UI font, so the window does not render in the 1995 bitmap
-/// font Win32 defaults to.
-unsafe fn ui_font() -> HFONT {
+/// The shell's UI font at a specific DPI.
+///
+/// `SystemParametersInfoForDpi` and not `SystemParametersInfoW`: the latter
+/// answers for the system DPI, which is the wrong number for a
+/// per-monitor-v2 process on a secondary display.
+unsafe fn ui_font(dpi: u32) -> HFONT {
     let mut ncm = NONCLIENTMETRICSW {
         cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
         ..Default::default()
     };
-    let ok = SystemParametersInfoW(
-        SPI_GETNONCLIENTMETRICS,
+    let ok = SystemParametersInfoForDpi(
+        SPI_GETNONCLIENTMETRICS.0,
         ncm.cbSize,
         Some(&mut ncm as *mut _ as *mut _),
-        Default::default(),
+        0,
+        dpi,
     )
     .is_ok();
     if ok {
@@ -311,7 +333,8 @@ unsafe fn child(
 }
 
 unsafe fn build_children(hwnd: HWND) {
-    let font = ui_font();
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let font = ui_font(dpi);
 
     let list = child(
         hwnd,
@@ -331,6 +354,7 @@ unsafe fn build_children(hwnd: HWND) {
             (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize,
         )),
     );
+    let sx = |v: i32| MulDiv(v, dpi as i32, 96);
     for (i, (title, cx)) in [("", 34), ("Shortcut", 190), ("App", 150)]
         .iter()
         .enumerate()
@@ -338,7 +362,7 @@ unsafe fn build_children(hwnd: HWND) {
         let mut t = wide(title);
         let col = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
-            cx: *cx,
+            cx: sx(*cx),
             pszText: windows::core::PWSTR(t.as_mut_ptr()),
             iSubItem: i as i32,
             ..Default::default()
@@ -503,6 +527,7 @@ unsafe fn build_children(hwnd: HWND) {
             reload,
             keep,
             font,
+            dpi,
             suppress: false,
             external_change: false,
         })
@@ -806,7 +831,50 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 layout(hwnd);
                 LRESULT(0)
             }
-            WM_SIZE | WM_DPICHANGED => {
+            WM_SIZE => {
+                layout(hwnd);
+                LRESULT(0)
+            }
+            WM_DPICHANGED => {
+                // HIWORD(wParam) is the new DPI; lParam is a RECT with the
+                // position and size Windows wants. Ignoring lParam leaves
+                // the window the wrong size on the new monitor, and no
+                // second message arrives to correct it.
+                let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
+                let font = ui_font(dpi);
+                let old = UI.with(|u| {
+                    u.borrow_mut().as_mut().map(|ui| {
+                        let prev = ui.font;
+                        ui.font = font;
+                        ui.dpi = dpi;
+                        prev
+                    })
+                });
+                // Every child must be told, including ones `layout` places
+                // through GetDlgItem rather than a stored handle.
+                let mut child = GetWindow(hwnd, GW_CHILD).unwrap_or_default();
+                while !child.is_invalid() {
+                    SendMessageW(
+                        child,
+                        WM_SETFONT,
+                        Some(WPARAM(font.0 as usize)),
+                        Some(LPARAM(1)),
+                    );
+                    child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
+                }
+                if let Some(prev) = old {
+                    let _ = DeleteObject(HGDIOBJ(prev.0));
+                }
+                let rc = &*(lp.0 as *const RECT);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    rc.left,
+                    rc.top,
+                    rc.right - rc.left,
+                    rc.bottom - rc.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
                 layout(hwnd);
                 LRESULT(0)
             }
