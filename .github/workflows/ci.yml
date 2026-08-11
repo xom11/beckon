@@ -63,5 +63,31 @@ jobs:
             }
           }
           Write-Host "manifest present"
+
+      - name: the binary actually starts
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # The byte search above proves the manifest is IN the binary. It
+          # cannot prove Windows accepts it. Measured on a14 2026-08-11: a
+          # manifest whose XML comments contained `--` (illegal inside an XML
+          # comment) embedded perfectly, passed the search above, and then
+          # every binary failed to start with "the side-by-side configuration
+          # is incorrect". Three code reviews, a byte-search gate and a
+          # cross-compile check all went green on it.
+          #
+          # Running the thing is the only gate that catches that class, and it
+          # costs one process start. Console subsystem only: beckon-serve.exe
+          # answers --version with a MessageBox, which would hang a runner.
+          $exe = "target/debug/beckon.exe"
+          if (-not (Test-Path $exe)) { throw "not built: $exe" }
+          $out = & $exe --version 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "beckon.exe --version exited $LASTEXITCODE. Output: $out"
+          }
+          if ($out -notmatch "beckon") {
+            throw "beckon.exe --version printed something unexpected: $out"
+          }
+          Write-Host "starts cleanly: $out"
       - name: Clippy
         run: cargo clippy --workspace ${{ matrix.exclude_flags }} --all-targets -- -D warnings

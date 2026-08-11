@@ -42,7 +42,7 @@
       <!-- ORDER IS LOAD-BEARING, per Microsoft's own documentation: older
            Windows reads dpiAware and ignores dpiAwareness; newer Windows
            lets dpiAwareness win. Swapping these two is claimed to silently
-           lose per-monitor-v2 on Windows 10. Documented, not measured --
+           lose per-monitor-v2 on Windows 10. Documented, not measured:
            nobody in this chain has a Windows machine, so this has not been
            tried against real hardware; see Task 10 in
            docs/superpowers/plans/2026-08-11-settings-window-landing-1.md
@@ -51,11 +51,11 @@
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
       <!-- Opts every MAX_PATH-limited Win32 call beckon makes (.lnk parsing,
-           AppsFolder enumeration, `--log`) out of the 260-character ceiling,
+           AppsFolder enumeration, the log flag) out of the 260-character ceiling,
            for the user who installs under a long Start Menu or profile path. -->
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
       <!-- Inert today: beckon calls no `*A` API, no `MultiByteToWideChar` and
-           no `CP_ACP` -- every string on the hot path is already UTF-16 via
+           no `CP_ACP`; every string on the hot path is already UTF-16 via
            the `W` APIs. Declared anyway so it stays correct by construction
            if an `*A` call is ever added, instead of silently defaulting to
            the legacy system codepage on a non-English Windows install. -->
