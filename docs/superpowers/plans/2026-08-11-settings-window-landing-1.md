@@ -934,9 +934,33 @@ sync_caps_hook; passing it in makes the contract literal."
 
 ---
 
-### Task 5: Caps-down reinitialises unconditionally
+### Task 5: keep the Caps-down guard, and pin why — REVISED 2026-08-11
 
-A lost Caps-up is real: a `WH_KEYBOARD_LL` hook is bound to the desktop of the thread that installed it and receives nothing while the secure desktop is up — UAC, Ctrl+Alt+Del, the lock screen.
+> **This task originally said the opposite**, and was wrong. It told the
+> implementer to drop the `if !st.held` guard so a lost Caps-up could not pin
+> `down_at` to the first press. Review proved by experiment that the cure is
+> worse than the disease, and the human partner ruled to revert.
+>
+> With the guard gone, ordinary OS auto-repeat of a still-held Caps key
+> re-runs the reinit: `Caps↓ → T↓ (chord injected) → Caps↓ (repeat) → T↑ →
+> Caps↑` returns `SwallowAndInject(tap(VK_CAPITAL))` — a fabricated keystroke
+> into the focused application — instead of `release_modifiers`. It both
+> injects on a gesture that was never a tap and skips the defensive modifier
+> release. Reachable on any `Caps+key` hold longer than the keyboard repeat
+> delay, i.e. ordinary typing.
+>
+> `KBDLLHOOKSTRUCT` carries no repeat count, so auto-repeat and a lost
+> Caps-up are indistinguishable from the event stream. This is therefore a
+> choice between two failures, not a bug with a fix. The guarded one costs
+> **one swallowed tap** after a secure-desktop excursion and then self-heals
+> on the next press; the unguarded one costs a fabricated keystroke on every
+> long hold. Keep the guard.
+>
+> **Do not re-propose removing it without a way to distinguish the two
+> events.** `GetAsyncKeyState` does not help — Caps is physically down in
+> both cases at the moment the second down arrives.
+
+A lost Caps-up is real: a `WH_KEYBOARD_LL` hook is bound to the desktop of the thread that installed it and receives nothing while the secure desktop is up — UAC, Ctrl+Alt+Del, the lock screen. The accepted cost of that is one swallowed tap, and this task's job is to **pin that behaviour with tests** — including the auto-repeat trace above, whose absence let the regression through — and to add the `set_bindings` comment.
 
 **Files:**
 - Modify: `crates/beckon-core/src/caps.rs:202-211` (the `(VK_CAPITAL, Edge::Down)` arm)
