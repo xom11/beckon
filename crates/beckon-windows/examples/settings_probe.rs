@@ -43,6 +43,26 @@ mod win {
         String::from_utf16_lossy(&buf[..n.max(0) as usize])
     }
 
+    /// Read a control's text from ANOTHER process.
+    ///
+    /// `GetWindowText` cannot: it returns the kernel-side caption instead of
+    /// sending `WM_GETTEXT`, deliberately, so a hung target cannot hang the
+    /// caller. An EDIT keeps its text in its own buffer, so that read comes
+    /// back empty. `WM_GETTEXT` sent explicitly IS marshalled.
+    fn ctl_text(h: HWND) -> String {
+        let mut buf = [0u16; 512];
+        let n = unsafe {
+            SendMessageW(
+                h,
+                WM_GETTEXT,
+                Some(WPARAM(buf.len())),
+                Some(LPARAM(buf.as_mut_ptr() as isize)),
+            )
+        }
+        .0;
+        String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    }
+
     unsafe extern "system" fn on_child(h: HWND, _l: LPARAM) -> BOOL {
         let visible = IsWindowVisible(h).as_bool();
         KIDS.with(|k| k.borrow_mut().push((class_of(h), text_of(h), visible)));
@@ -104,6 +124,9 @@ mod win {
             );
             for ch in s.encode_utf16() {
                 SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
+                std::thread::sleep(Duration::from_millis(60));
+                println!("      typed {:?} -> control now {:?}", 
+                    char::from_u32(ch as u32).unwrap_or('?'), ctl_text(h));
             }
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -156,16 +179,13 @@ mod win {
     /// The notes pane is rendered from the model, so its text is the
     /// cheapest window into whether an event actually landed.
     fn dump(h: HWND, label: &str) {
-        // Only the notes pane is readable from here. GetWindowText on a
-        // control in ANOTHER process returns the window caption from the
-        // kernel structure rather than sending WM_GETTEXT, so an EDIT or a
-        // COMBOBOX always reads back empty -- a STATIC does not, because
-        // its text IS its caption.
-        let notes = dlg_item(h, IDC_NOTES).map(text_of).unwrap_or_default();
+        let notes = dlg_item(h, IDC_NOTES).map(ctl_text).unwrap_or_default();
+        let shortcut = dlg_item(h, IDC_COMBO).map(ctl_text).unwrap_or_default();
+        let appfld = dlg_item(h, IDC_APP).map(ctl_text).unwrap_or_default();
         let apply = dlg_item(h, IDC_APPLY)
             .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
             .unwrap_or(false);
-        println!("    [{label}] apply={apply}");
+        println!("    [{label}] apply={apply} shortcut={shortcut:?} app={appfld:?}");
         println!("      notes: {}", notes.replace('\r', "").replace('\n', " | "));
     }
 
