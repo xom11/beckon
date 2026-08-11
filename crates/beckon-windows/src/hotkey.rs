@@ -606,6 +606,18 @@ impl HotkeyManager {
                         WM_HOTKEY if ours => dispatch_hotkey(msg.wParam.0 as u32),
                         WM_TIMER if ours => dispatch_tick(msg.wParam.0),
                         _ => {
+                            // Give the settings window (modeless, on this
+                            // thread) first refusal so Tab, Esc and arrow
+                            // navigation work inside it. It only claims
+                            // messages addressed to itself or its children,
+                            // and WM_HOTKEY is not a dialog message -- the
+                            // two arms above have already taken ours
+                            // anyway. This is what lets the window be
+                            // modeless: hotkeys keep firing while it is
+                            // open.
+                            if crate::settings_window::filter_dialog_message(&msg) {
+                                continue;
+                            }
                             let _ = unsafe { TranslateMessage(&msg) };
                             unsafe { DispatchMessageW(&msg) };
                         }
