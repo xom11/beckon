@@ -981,8 +981,13 @@ OS metadata on every call.
   the ticked ones behind. `remove_enabled` is `selected.is_some() ||
   marked_count() > 0`. The caption stays the constant `Remove` rather than
   `Remove N`: `layout` sizes buttons from `text_size` of their caption, so a
-  live count would be a further `layout` input, and honouring it on a data
-  push means `SetWindowPos` on the App combo — the measured data-loss path.
+  live count would be a further `layout` input, and calling `layout` on a
+  data push means `SetWindowPos` on the App combo — the measured data-loss
+  path. That is not the only route to a live count — reserving width for the
+  widest caption at `layout` time and driving the count with
+  `SetWindowTextW` alone on pushes would honour it without `layout` or
+  `SetWindowPos` — just one not taken this pass, cosmetic gain against no
+  hardware time left.
   `Save` (was `Apply`; the id is still `IDC_APPLY`, because
   `examples/settings_probe.rs` hard-codes 1002-1007) is `BS_DEFPUSHBUTTON`
   and is where the default ring RESTS — **not where it stays**.

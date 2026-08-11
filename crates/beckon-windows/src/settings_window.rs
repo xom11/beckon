@@ -919,11 +919,24 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 /// Two repairs, in this order, because the first can make the second
 /// unnecessary:
 ///
-/// 1. **Focus.** `ShowWindow(SW_HIDE)` does not move focus off the child it
-///    hides, so clicking `Reload` leaves focus on a button that has vanished
-///    -- where Space would press it again. Focus goes to `IDC_CLOSE`,
-///    looked up with `GetDlgItem` -- **not to the window itself.** An
-///    earlier version of this fix parked focus on `hwnd` on the theory that
+/// 1. **Focus.** Measured on Windows ARM64: by the time this function runs,
+///    focus is usually already off the vanished button. `show(reload,
+///    external_change)` / `show(keep, external_change)` above -- called
+///    earlier in the same push, before this function -- hide whichever of
+///    Reload/KeepMine just lost `visible()`, and hiding a control that
+///    currently holds focus is enough for user32 to hand focus to the
+///    PARENT on its own, as part of that same `ShowWindow(SW_HIDE)` call.
+///    So `GetFocus()` below typically already resolves to the window itself
+///    -- `GetDlgCtrlID` reads back `0`, not `IDC_CLOSE` -- `is_push_button`
+///    on that id is false, and the match has nothing left to do. It stays
+///    written for whatever still resolves to a live push button whose
+///    `visible()` disagrees: `Ok(close)` is the repair for that case, moving
+///    focus onto `IDC_CLOSE` -- looked up with `GetDlgItem` -- **not onto
+///    the window itself.** The `Err(_)` arm below is not dead code either:
+///    `GetDlgItem` failing to resolve `IDC_CLOSE` is reached in practice,
+///    not just a defensive branch that never fires, so it falls back to
+///    `hwnd` rather than leave focus wherever the failed lookup found it.
+///    An earlier version of this fix parked focus on `hwnd` on the theory that
 ///    `IsDialogMessageW` would then tab out of it into the control table;
 ///    that is true for a real dialog, where `DefDlgProc`'s `WM_SETFOCUS`
 ///    forwards focus to the first tabstop, but this window is a custom
@@ -966,14 +979,13 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
                     let _ = SetFocus(Some(close));
                 }
                 Err(_) => {
-                    // Unreached in practice: `IDC_CLOSE` is created
-                    // unconditionally in `build_children`, long before this
-                    // function can ever run. But a hidden button holding
-                    // focus is the Space hazard this function exists to
-                    // close, so fall back to the window itself rather than
-                    // leave focus stranded on a vanished control -- a dead
-                    // Tab key is a smaller defect than Space reaching a
-                    // hidden button.
+                    // Not dead code: `IDC_CLOSE` is created unconditionally
+                    // in `build_children`, but this arm is reached in
+                    // practice, not merely a defensive branch that never
+                    // fires -- see `repair_default_button`'s doc comment.
+                    // Fall back to the window itself rather than leave focus
+                    // stranded on a vanished control -- a dead Tab key is a
+                    // smaller defect than Space reaching a hidden button.
                     if beckon_core::verbose() {
                         eprintln!(
                             "verbose: settings window: GetDlgItem(IDC_CLOSE) \

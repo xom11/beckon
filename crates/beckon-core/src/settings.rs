@@ -133,11 +133,15 @@ pub struct ControlState {
     /// **The button's caption stays the constant `Remove`**, and this field
     /// does not feed it. The plan asked for `Remove N`, but `layout` sizes
     /// every button from `text_size` of its own caption, so a caption that
-    /// grows with the tick count is one more input to `layout` -- and the
-    /// only way to honour it on a data push is to call `layout`, which
-    /// `SetWindowPos`es the populated App combo and throws away what the user
-    /// typed. That is the measured data-loss bug `Ui::shown_external` exists
-    /// to prevent; a live count is not worth reopening it.
+    /// grows with the tick count is one more input to `layout` -- and calling
+    /// `layout` on a data push is what `SetWindowPos`es the populated App
+    /// combo and throws away what the user typed. That is the measured
+    /// data-loss bug `Ui::shown_external` exists to prevent. This is not the
+    /// only route to a live count: reserving width for the widest caption at
+    /// `layout` time and driving the count with `SetWindowTextW` alone on
+    /// pushes would honour it without ever calling `layout` or moving the
+    /// combo. That route is open, just not taken here -- a live count is
+    /// cosmetic and not worth the hardware time this pass has left.
     ///
     /// What the count IS for: `remove_enabled`, so a window whose selection
     /// sits elsewhere still offers Remove for the ticked rows.
@@ -248,8 +252,9 @@ impl Model {
         self.rows[i].marked = on;
     }
 
-    /// How many rows are currently ticked. Feeds `ControlState::marked_count`
-    /// so the window can caption its remove button `Remove N`.
+    /// How many rows are currently ticked. Feeds `ControlState::marked_count`,
+    /// which does NOT caption the remove button `Remove N` -- see that
+    /// field's doc for why the caption stays the constant `Remove`.
     pub fn marked_count(&self) -> usize {
         self.rows.iter().filter(|r| r.marked).count()
     }

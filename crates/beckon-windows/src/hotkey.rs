@@ -422,7 +422,7 @@ impl HotkeyManager {
         let pid = unsafe { GetCurrentProcessId() };
         if unsafe { ProcessIdToSessionId(pid, &mut session_id) }.is_ok() && session_id == 0 {
             eprintln!(
-                "hotkey: running in session 0 (no interactive desktop) — hotkeys will never fire; \
+                "hotkey: running in session 0 (no interactive desktop) - hotkeys will never fire; \
                  use an 'At log on' trigger, not 'Run whether user is logged on or not'"
             );
         }
@@ -545,7 +545,7 @@ impl HotkeyManager {
             if !dropped.is_empty() {
                 eprintln!(
                     "hotkey: dropping {} in-flight hotkey press(es) ({dropped:?}) that raced \
-                     this config reload — press again if still needed",
+                     this config reload - press again if still needed",
                     dropped.len()
                 );
             }
