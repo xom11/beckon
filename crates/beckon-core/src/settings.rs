@@ -626,6 +626,130 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
 }
 
 // ---------------------------------------------------------------------------
+// The default button
+// ---------------------------------------------------------------------------
+
+/// A push button the default ring -- the one Enter presses -- can sit on.
+///
+/// The window keeps the ring's position in `Ui::defid` as a control id and
+/// migrates it as focus moves. That much is Win32; **which button is a legal
+/// place for it to stop is not**, and it lives here so it can be tested on
+/// all three CI jobs rather than on the one that compiles a wndproc.
+///
+/// The set is `settings_window::PUSH_BUTTONS`, in the same order. It is not
+/// derived from anything -- a check box cannot wear a default ring and the
+/// two field labels are not buttons at all -- so the two lists are kept in
+/// step by `default_button_of` / `id_of_default_button`, which are total in
+/// both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultButton {
+    Save,
+    Add,
+    Remove,
+    OpenFile,
+    Close,
+    /// Reload and Keep mine live in the external-change banner, which is
+    /// HIDDEN unless the file changed underneath an unsaved window. They are
+    /// the only two members of this set that can be off screen, and they are
+    /// the whole reason this module exists -- see `default_button`.
+    Reload,
+    KeepMine,
+}
+
+impl DefaultButton {
+    /// Every variant, for exhaustive tests. A new button added to the enum
+    /// and forgotten here weakens those tests silently, so the array is
+    /// length-annotated: adding a variant without extending it fails to
+    /// compile.
+    pub const ALL: [DefaultButton; 7] = [
+        DefaultButton::Save,
+        DefaultButton::Add,
+        DefaultButton::Remove,
+        DefaultButton::OpenFile,
+        DefaultButton::Close,
+        DefaultButton::Reload,
+        DefaultButton::KeepMine,
+    ];
+
+    /// Where the ring rests, and the one button `default_button` will fall
+    /// back to. Always on screen, and it is what `DM_GETDEFID` answers before
+    /// focus has ever touched a button.
+    pub const HOME: DefaultButton = DefaultButton::Save;
+
+    /// Is this button on screen in the state described?
+    ///
+    /// `external_change` is the banner's visibility, which is the window's
+    /// only conditional geometry: everything else in the command bar is
+    /// created once and never hidden.
+    pub fn visible(self, external_change: bool) -> bool {
+        match self {
+            DefaultButton::Reload | DefaultButton::KeepMine => external_change,
+            _ => true,
+        }
+    }
+
+    /// Would pressing it do anything -- on screen AND enabled?
+    ///
+    /// Each arm reads the same `ControlState` field the window's own `enable`
+    /// call uses, so the two cannot drift: if this says a button is pressable
+    /// and the window greys it out, one of the two is reading a different
+    /// field and the disagreement is a one-line diff.
+    pub fn pressable(self, st: &ControlState, external_change: bool) -> bool {
+        self.visible(external_change)
+            && match self {
+                DefaultButton::Save => st.apply_enabled,
+                DefaultButton::Add => st.editable,
+                DefaultButton::Remove => st.remove_enabled,
+                // The two escape routes are enabled in every state,
+                // including read only -- that is what makes them escapes.
+                // The banner's two answers are enabled whenever the banner is
+                // up, which `visible` above has already established.
+                DefaultButton::OpenFile
+                | DefaultButton::Close
+                | DefaultButton::Reload
+                | DefaultButton::KeepMine => true,
+            }
+    }
+}
+
+/// Where the default ring belongs, given where it is now.
+///
+/// **The defect this exists for, measured on a14 2026-08-11:**
+/// `ShowWindow(SW_HIDE)` raises no `BN_KILLFOCUS`, so the window's own
+/// focus-driven migration never fires when the external-change banner is
+/// dismissed -- and `DM_GETDEFID` was left naming `Reload`, a button no
+/// longer on screen. Enter then pressed it, discarding the user's edits from
+/// a control they could not see. Reachable with the mouse alone: the banner
+/// appears on its own when the file changes, the user clicks `Reload`, and
+/// the next Enter reloads again.
+///
+/// The invariant: **the ring never stops on a button that is not visible,
+/// and never on a disabled button other than `HOME`.**
+///
+/// `HOME`'s exemption is deliberate and is not a hole. Save is on screen in
+/// every state, and the dialog manager does not dispatch a command to a
+/// disabled control -- so a disabled Save means Enter does nothing, which is
+/// exactly right when there is nothing to save. Chasing Save's enabled state
+/// as well would hand the ring to Close in a clean model, so Enter would mean
+/// "close the window" until the first keystroke and "save" after it: the
+/// meaning of a key changing under the user, which is worse than an inert
+/// one.
+pub fn default_button(
+    current: DefaultButton,
+    st: &ControlState,
+    external_change: bool,
+) -> DefaultButton {
+    if current == DefaultButton::HOME {
+        return DefaultButton::HOME;
+    }
+    if current.pressable(st, external_change) {
+        current
+    } else {
+        DefaultButton::HOME
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The file did not parse
 // ---------------------------------------------------------------------------
 
@@ -1584,6 +1708,141 @@ mod tests {
         let notes = cs.detail.expect("the notes strip is the explanation").notes;
         assert!(!notes.is_empty());
         assert!(notes.iter().any(|n| n.mark == Mark::Bad));
+    }
+
+    // -----------------------------------------------------------------
+    // The default button
+    //
+    // Measured on a14 2026-08-11: after the external-change banner was
+    // dismissed, `DM_GETDEFID` still answered `IDC_RELOAD` (1015) -- a
+    // button that is no longer on screen -- because `ShowWindow(SW_HIDE)`
+    // raises no `BN_KILLFOCUS` for the window's focus-driven migration to
+    // react to. Enter then pressed a hidden button. These tests are the
+    // decision that closes it, and they run on all three CI jobs; the
+    // wndproc that applies it compiles on one.
+    // -----------------------------------------------------------------
+
+    /// A clean model: Save disabled, nothing selected, no banner.
+    fn rest_state() -> ControlState {
+        control_state(&model(), &RuntimeStatus::default())
+    }
+
+    /// A dirty model with a row selected: Save and Remove both live.
+    fn busy_state() -> ControlState {
+        let mut m = model();
+        m.selected = Some(0);
+        m.set_app(0, "Something Else");
+        control_state(&m, &RuntimeStatus::default())
+    }
+
+    #[test]
+    fn a_hidden_reload_loses_the_default() {
+        // The measured defect, stated as the decision that prevents it.
+        let st = busy_state();
+        assert_eq!(
+            default_button(DefaultButton::Reload, &st, false),
+            DefaultButton::Save,
+            "the banner is down, so Enter must not reach Reload"
+        );
+        assert_eq!(
+            default_button(DefaultButton::KeepMine, &st, false),
+            DefaultButton::Save
+        );
+    }
+
+    #[test]
+    fn reload_keeps_the_default_while_the_banner_is_up() {
+        // The other half: the fix must not take the ring off a button the
+        // user has genuinely tabbed to.
+        let st = busy_state();
+        assert_eq!(
+            default_button(DefaultButton::Reload, &st, true),
+            DefaultButton::Reload
+        );
+        assert_eq!(
+            default_button(DefaultButton::KeepMine, &st, true),
+            DefaultButton::KeepMine
+        );
+    }
+
+    #[test]
+    fn a_disabled_button_loses_the_default() {
+        let rest = rest_state();
+        assert!(!rest.remove_enabled, "precondition: nothing is selected");
+        assert_eq!(
+            default_button(DefaultButton::Remove, &rest, false),
+            DefaultButton::Save
+        );
+        // And keeps it while it is live, so this is a real test and not one
+        // that passes because everything falls back.
+        let busy = busy_state();
+        assert!(busy.remove_enabled, "precondition: a row is selected");
+        assert_eq!(
+            default_button(DefaultButton::Remove, &busy, false),
+            DefaultButton::Remove
+        );
+    }
+
+    #[test]
+    fn save_keeps_the_default_even_when_it_is_disabled() {
+        // The one exemption, and it is deliberate: Save is always on screen,
+        // and the dialog manager will not dispatch to a disabled control, so
+        // Enter is inert -- which is what "there is nothing to save" should
+        // feel like. Moving the ring to Close here would make Enter close a
+        // clean window and save a dirty one.
+        let rest = rest_state();
+        assert!(!rest.apply_enabled, "precondition: nothing to save");
+        assert_eq!(
+            default_button(DefaultButton::Save, &rest, false),
+            DefaultButton::Save
+        );
+    }
+
+    #[test]
+    fn the_read_only_state_leaves_the_default_on_save_or_an_escape() {
+        // A file that did not parse: everything that mutates is off, and the
+        // two escape routes are the only live buttons. The ring must land on
+        // one of those or on Save, never on Add.
+        let ro = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
+        assert_eq!(
+            default_button(DefaultButton::Add, &ro, false),
+            DefaultButton::Save
+        );
+        assert_eq!(
+            default_button(DefaultButton::Close, &ro, false),
+            DefaultButton::Close
+        );
+        assert_eq!(
+            default_button(DefaultButton::OpenFile, &ro, false),
+            DefaultButton::OpenFile
+        );
+    }
+
+    /// The invariant itself, over every button and every state this crate
+    /// can produce. A new `ControlState` field that gates a button, wired
+    /// into the window but not into `pressable`, is what this catches.
+    #[test]
+    fn the_default_is_never_left_on_a_hidden_button() {
+        let states = [
+            rest_state(),
+            busy_state(),
+            unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n")),
+        ];
+        for st in &states {
+            for external in [false, true] {
+                for b in DefaultButton::ALL {
+                    let got = default_button(b, st, external);
+                    assert!(
+                        got.visible(external),
+                        "{b:?} -> {got:?} is off screen (external_change={external})"
+                    );
+                    assert!(
+                        got.pressable(st, external) || got == DefaultButton::HOME,
+                        "{b:?} -> {got:?} is disabled and is not HOME"
+                    );
+                }
+            }
+        }
     }
 
     /// The mirror of the test above: a state projected from a real model is

@@ -46,7 +46,7 @@
 //! uses.
 
 use crate::shell;
-use beckon_core::settings::{ControlState, ListItem, Mark};
+use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
 use beckon_core::shortcuts::CapsTap;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
@@ -58,7 +58,9 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi,
     MDT_EFFECTIVE_DPI,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, IsWindowEnabled, SetFocus,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// `SS_LEFT` is 0 and `windows` 0.61 does not export it as a constant.
@@ -778,6 +780,85 @@ fn set_default_id(parent: HWND, id: i32) {
         set_button_type(parent, prev, BS_PUSHBUTTON as u32);
         set_button_type(parent, id, BS_DEFPUSHBUTTON as u32);
     }
+}
+
+/// `Ui::defid` in the vocabulary the pure decision speaks.
+///
+/// Total: anything that is not one of the seven push buttons reads as
+/// `HOME`, which is where the ring lives at rest and what `DM_GETDEFID`
+/// answers before focus has ever touched a button.
+fn default_button_of(id: i32) -> DefaultButton {
+    match id {
+        IDC_ADD => DefaultButton::Add,
+        IDC_REMOVE => DefaultButton::Remove,
+        IDC_OPENFILE => DefaultButton::OpenFile,
+        IDC_CLOSE => DefaultButton::Close,
+        IDC_RELOAD => DefaultButton::Reload,
+        IDC_KEEPMINE => DefaultButton::KeepMine,
+        _ => DefaultButton::HOME,
+    }
+}
+
+/// The other direction. Total by construction -- the enum has no variant
+/// without an id.
+fn id_of_default_button(b: DefaultButton) -> i32 {
+    match b {
+        DefaultButton::Save => IDC_APPLY,
+        DefaultButton::Add => IDC_ADD,
+        DefaultButton::Remove => IDC_REMOVE,
+        DefaultButton::OpenFile => IDC_OPENFILE,
+        DefaultButton::Close => IDC_CLOSE,
+        DefaultButton::Reload => IDC_RELOAD,
+        DefaultButton::KeepMine => IDC_KEEPMINE,
+    }
+}
+
+/// Take the ring -- and the focus -- off anything this push has just put out
+/// of reach.
+///
+/// **`apply_state` is the authoritative moment, and it is the only one.**
+/// The window's normal migration is focus-driven (`BN_SETFOCUS` /
+/// `BN_KILLFOCUS` in `handle_command`), and that covers every way a user can
+/// move the ring by hand. What it cannot cover is a control going away
+/// underneath it: hiding a window raises no focus notification at all
+/// (measured on a14 2026-08-11 -- `DM_GETDEFID` still answered `IDC_RELOAD`
+/// after the banner was dismissed, and Enter pressed a button that was not on
+/// screen). Every `show` and every `enable` in this window happens in
+/// `apply_state`, so running this after the last of them closes the gap by
+/// construction rather than by listing the cases.
+///
+/// Two repairs, in this order, because the first can make the second
+/// unnecessary:
+///
+/// 1. **Focus.** `ShowWindow(SW_HIDE)` does not move focus off the child it
+///    hides, so clicking `Reload` leaves focus on a button that has vanished
+///    -- where Space would press it again. Focus goes to the window itself:
+///    always visible, always enabled, and `IsDialogMessageW` tabs out of it
+///    into the control table. Only for a HIDDEN button; a *disabled* one
+///    already raises `BN_KILLFOCUS`, which the existing arm handles.
+/// 2. **The ring**, read AFTER the focus move so it sees the
+///    `BN_KILLFOCUS` that move just raised.
+///
+/// **Borrows.** `SetFocus` re-enters this wndproc and `set_default_id` sends
+/// `BM_SETSTYLE`; a second `UI` borrow across either would abort the process.
+/// No borrow is held here across anything: `GetFocus`/`GetDlgCtrlID` take
+/// none, the `defid` read is taken and dropped inside its own `UI.with`, and
+/// `set_default_id` takes and drops its own before it sends.
+unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: bool) {
+    let focus = GetFocus();
+    if !focus.is_invalid() {
+        let fid = GetDlgCtrlID(focus);
+        if is_push_button(fid) && !default_button_of(fid).visible(external_change) {
+            let _ = SetFocus(Some(hwnd));
+        }
+    }
+    let cur = UI
+        .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
+        .unwrap_or(IDC_APPLY);
+    let want = default_button(default_button_of(cur), st, external_change);
+    // `set_default_id` no-ops when the id it is handed is already the
+    // default, so the overwhelmingly common push repaints nothing.
+    set_default_id(hwnd, id_of_default_button(want));
 }
 
 /// Swap which KIND of button `id` is, keeping every other `BS_` bit it has.
@@ -2173,6 +2254,10 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         show(reload, external_change);
         show(keep, external_change);
         layout(hwnd);
+        // LAST, after every `enable` and every `show` above: this is what
+        // makes it the authoritative moment rather than one more place that
+        // has to be kept in step. See `repair_default_button`.
+        repair_default_button(hwnd, st, external_change);
     }
 
     // Nothing is sent from here on, so this borrow is safe to hold while it
@@ -3164,5 +3249,40 @@ mod tests {
         assert!(!is_push_button(IDC_CAPS));
         assert!(!is_push_button(IDC_TAP_CAPSLOCK));
         assert!(!is_push_button(IDC_LIST));
+    }
+
+    /// The seam between `Ui::defid` (a control id) and the pure decision (an
+    /// enum). It carries the whole default-button fix, and a mapping that
+    /// disagreed with itself would be silent: the ring would simply stop
+    /// moving, exactly as it did before the fix existed.
+    #[test]
+    fn every_push_button_round_trips_through_the_default_button_enum() {
+        for id in PUSH_BUTTONS {
+            assert_eq!(
+                id_of_default_button(default_button_of(id)),
+                id,
+                "control {id} does not survive the round trip"
+            );
+        }
+        for b in DefaultButton::ALL {
+            assert_eq!(default_button_of(id_of_default_button(b)), b);
+            assert!(
+                is_push_button(id_of_default_button(b)),
+                "{b:?} maps to an id `handle_command` does not treat as a \
+                 push button, so its ring would never move"
+            );
+        }
+    }
+
+    /// The mapping is total, and anything unknown reads as the button the
+    /// ring rests on. `GetDlgCtrlID` returns 0 for the parent window and
+    /// comctl32 gives a combo box's inner EDIT an id of its own choosing --
+    /// both reach `default_button_of`.
+    #[test]
+    fn an_id_that_is_not_a_push_button_reads_as_home() {
+        assert_eq!(default_button_of(0), DefaultButton::HOME);
+        assert_eq!(default_button_of(IDC_CAPS), DefaultButton::HOME);
+        assert_eq!(default_button_of(-1), DefaultButton::HOME);
+        assert_eq!(id_of_default_button(DefaultButton::HOME), IDC_APPLY);
     }
 }
