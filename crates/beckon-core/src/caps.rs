@@ -14,7 +14,7 @@
 //! `--exclude beckon-windows` on the Linux and macOS jobs. A keyboard state
 //! machine is the last thing that should be tested by one job in three.
 
-use beckon_core::shortcuts::{CapsTap, Shortcut};
+use crate::shortcuts::{CapsTap, Shortcut};
 use std::collections::HashSet;
 
 pub const VK_CAPITAL: u32 = 0x14;
@@ -186,7 +186,7 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use beckon_core::shortcuts::parse_shortcuts;
+    use crate::shortcuts::parse_shortcuts;
 
     fn shortcuts(text: &str) -> Vec<Shortcut> {
         parse_shortcuts(text).unwrap()

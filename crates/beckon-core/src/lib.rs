@@ -70,5 +70,7 @@ pub trait Backend {
     fn beckon(&self, id: &str) -> Result<BeckonAction>;
 }
 
+pub mod caps;
 pub mod config_write;
+pub mod settings;
 pub mod shortcuts;

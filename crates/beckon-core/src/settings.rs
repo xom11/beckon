@@ -4,8 +4,8 @@
 //! same reason: it can be tested without a window, a message loop or a
 //! registry.
 
-use beckon_core::config_write::{render, RowWrite};
-use beckon_core::shortcuts::{parse_config, CapsTap, Combo, KeyboardConfig};
+use crate::config_write::{render, RowWrite};
+use crate::shortcuts::{parse_config, CapsTap, Combo, KeyboardConfig};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
