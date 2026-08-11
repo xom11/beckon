@@ -166,6 +166,85 @@ const WINDOW_HEIGHT: i32 = 640;
 const MIN_WIDTH: i32 = 720;
 const MIN_HEIGHT: i32 = 460;
 
+/// One of §B.3's three type roles. There is no fourth: the `Keys` role the
+/// spec table also lists belongs to keycap rendering, which this window
+/// does not do -- combos are typed as text into an ordinary EDIT.
+#[derive(Clone, Copy)]
+enum Role {
+    Subtitle,
+    Body,
+    Caption,
+}
+
+/// Which role a control takes, keyed on its id.
+///
+/// **This is the single mapping**, consulted by the creation path (`child`,
+/// which every control in the window goes through) and by the
+/// `WM_DPICHANGED` rebroadcast (which walks `GW_HWNDNEXT` and asks
+/// `GetDlgCtrlID`). Those two must not each hold an opinion, for the same
+/// reason `cells()` is the one funnel for column text: the second copy is
+/// the one that drifts.
+fn role_of(id: i32) -> Role {
+    match id {
+        // The one band heading. Subtitle exists so the list reads as a
+        // section of the window rather than as the whole of it.
+        IDC_LBL_SECTION => Role::Subtitle,
+        // Secondary prose, and the only thing at Caption size. The banner
+        // is deliberately NOT here: it announces that the file moved under
+        // us, which is the least appropriate text in the window to shrink.
+        IDC_NOTES => Role::Caption,
+        // Everything the user reads or operates: the ListView, the shortcut
+        // EDIT, the App COMBOBOX, their labels, every BUTTON (push, check,
+        // radio, and the group box), the banner -- and anything added later
+        // that does not say otherwise.
+        _ => Role::Body,
+    }
+}
+
+/// The three live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
+/// abort-class rule below keeps holding.
+#[derive(Clone, Copy)]
+struct Fonts {
+    subtitle: HFONT,
+    body: HFONT,
+    caption: HFONT,
+}
+
+impl Fonts {
+    fn get(self, role: Role) -> HFONT {
+        match role {
+            Role::Subtitle => self.subtitle,
+            Role::Body => self.body,
+            Role::Caption => self.caption,
+        }
+    }
+
+    fn for_id(self, id: i32) -> HFONT {
+        self.get(role_of(id))
+    }
+
+    /// Release all three.
+    ///
+    /// Only ever called AFTER the controls have been told about their
+    /// replacements -- deleting a font that is still selected into a DC is
+    /// undefined. Landing 1 established this discipline for one font
+    /// because one `HFONT` was leaking per window open; three roles means
+    /// three leaks if only one of them is freed.
+    ///
+    /// Deduplicated because the total-failure path hands every role the
+    /// same stock handle. `DeleteObject` on a stock object is documented
+    /// harmless, but "harmless twice" is not a property worth relying on.
+    unsafe fn delete(self) {
+        let all = [self.subtitle, self.body, self.caption];
+        for (i, f) in all.iter().enumerate() {
+            if f.is_invalid() || all[..i].iter().any(|p| p.0 == f.0) {
+                continue;
+            }
+            let _ = DeleteObject(HGDIOBJ(f.0));
+        }
+    }
+}
+
 /// Scales a 96-DPI value to `dpi`. The only scaling rule in this file --
 /// `MulDiv` (round-half-up) was tried for the creation size and the list
 /// columns and dropped, because it quietly disagrees with this truncating
@@ -210,7 +289,10 @@ struct Ui {
     banner: HWND,
     reload: HWND,
     keep: HWND,
-    font: HFONT,
+    /// The three type roles, rebuilt on every `WM_DPICHANGED` and freed on
+    /// `WM_DESTROY`. Which control uses which is `role_of`'s answer, never
+    /// a decision taken at a call site.
+    fonts: Fonts,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -249,7 +331,7 @@ struct LayoutHandles {
     banner: HWND,
     reload: HWND,
     keep: HWND,
-    font: HFONT,
+    fonts: Fonts,
     external_change: bool,
 }
 
@@ -263,7 +345,7 @@ impl LayoutHandles {
             banner: ui.banner,
             reload: ui.reload,
             keep: ui.keep,
-            font: ui.font,
+            fonts: ui.fonts,
             external_change: ui.external_change,
         }
     }
@@ -353,10 +435,13 @@ fn show(h: HWND, on: bool) {
 /// carry `ListItem::flag` beside the app name now (see `app_cell`), and a
 /// healthy row says nothing at all rather than `OK`.
 fn mark_glyph(m: Mark) -> &'static str {
-    // ASCII on purpose: this window inherits the shell font, and a missing
-    // glyph shows as a box that reads like a rendering bug rather than a
-    // status. All four are two columns wide so the note lines line up --
-    // the trailing space on `Warn` is load-bearing, not a typo.
+    // ASCII on purpose: the notes carry a Segoe UI Variable text face, or
+    // the shell's own on the fallback path, and neither is a symbol font --
+    // a missing glyph shows as a box that reads like a rendering bug rather
+    // than a status. (Segoe Fluent Icons IS installed, measured on a14, but
+    // spec B.5 defers those glyphs to the NM_CUSTOMDRAW pass that can give
+    // them their own font.) All four are two columns wide so the note lines
+    // line up -- the trailing space on `Warn` is load-bearing, not a typo.
     match m {
         Mark::Ok => "OK",
         Mark::Warn => "! ",
@@ -494,7 +579,8 @@ unsafe fn create() -> Result<(), String> {
     Ok(())
 }
 
-/// The shell's UI font at a specific DPI.
+/// The shell's own `lfMessageFont` at a specific DPI: the base every role's
+/// `LOGFONT` is derived from, and the face all three fall back to.
 ///
 /// `SystemParametersInfoForDpi` first: `SystemParametersInfoW` answers for
 /// the system DPI, which is the wrong number for a per-monitor-v2 process on
@@ -508,7 +594,12 @@ unsafe fn create() -> Result<(), String> {
 /// `SystemParametersInfoForDpi` actually returns FALSE on a non-PM process,
 /// rather than silently answering for the system DPI, is not something a
 /// cross-compile can confirm -- unverified, flagged for the hardware pass.
-unsafe fn ui_font(dpi: u32) -> HFONT {
+///
+/// Measured on a14 2026-08-11: this returns plain `Segoe UI`, weight 400,
+/// at `lfHeight = -12`. NOT Segoe UI Variable -- that reaches the shell
+/// through DirectWrite and XAML, never through `NONCLIENTMETRICS`, so a
+/// Win32 app has to ask for it by name (`build_fonts`).
+unsafe fn message_logfont(dpi: u32) -> LOGFONTW {
     let mut ncm = NONCLIENTMETRICSW {
         cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
         ..Default::default()
@@ -529,12 +620,162 @@ unsafe fn ui_font(dpi: u32) -> HFONT {
         )
         .is_ok();
     if ok {
-        let f = CreateFontIndirectW(&ncm.lfMessageFont);
+        return ncm.lfMessageFont;
+    }
+    // Describe the stock GUI font rather than hand back a zeroed LOGFONT: a
+    // zeroed one asks the mapper for "any face at any size", which is how
+    // you land on the 1995 bitmap font this path exists to avoid.
+    let mut lf = LOGFONTW::default();
+    GetObjectW(
+        GetStockObject(DEFAULT_GUI_FONT),
+        std::mem::size_of::<LOGFONTW>() as i32,
+        Some(&mut lf as *mut _ as *mut _),
+    );
+    lf
+}
+
+/// Write `face` into `lf.lfFaceName`, or report that it does not fit.
+///
+/// `lfFaceName` is 32 wchars INCLUDING the NUL, so 31 characters is the
+/// ceiling -- and a silent truncation there is the exact trap §B.3 records.
+/// `Segoe UI Variable Display Semibold` truncated to `Segoe UI Variable
+/// Display Semib` names nothing, and GDI answers a name that names nothing
+/// with **Arial**, not with an error. Refusing to truncate means no future
+/// edit can reintroduce that by accident; `face_matches` is the second net
+/// under it.
+fn set_face(lf: &mut LOGFONTW, face: &str) -> bool {
+    let name: Vec<u16> = face.encode_utf16().collect();
+    if name.len() >= lf.lfFaceName.len() {
+        return false;
+    }
+    lf.lfFaceName = [0; 32];
+    lf.lfFaceName[..name.len()].copy_from_slice(&name);
+    true
+}
+
+/// Did GDI actually hand back the face we asked for?
+///
+/// **`CreateFontIndirectW` never fails on an unknown name** -- the font
+/// mapper substitutes silently, so a successful create proves nothing.
+/// Measured on a14 2026-08-11: asking for `Segoe UI Variable Text Semib`
+/// returned `Arial`, exactly as a `This Font Does Not Exist` control did.
+/// The only way to know is to select the font into a DC and read back what
+/// the DC now holds.
+unsafe fn face_matches(hwnd: HWND, font: HFONT, want: &str) -> bool {
+    let dc = GetDC(Some(hwnd));
+    if dc.is_invalid() {
+        return false;
+    }
+    let prev = SelectObject(dc, HGDIOBJ(font.0));
+    // LF_FACESIZE is 32; the slack costs nothing and removes the question of
+    // whether the returned count includes the terminator.
+    let mut buf = [0u16; 64];
+    let n = GetTextFaceW(dc, Some(&mut buf));
+    if !prev.is_invalid() {
+        SelectObject(dc, prev);
+    }
+    ReleaseDC(Some(hwnd), dc);
+    if n <= 0 {
+        return false;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..end]).eq_ignore_ascii_case(want)
+}
+
+/// One role's font: the shell's `lfMessageFont` with this role's face,
+/// pixel height and weight -- and the requested face only when GDI really
+/// produced it.
+///
+/// **`px` is a PIXEL height**, applied as a negative `lfHeight` (character
+/// height, the usual GDI convention). Our own measurement is the
+/// corroboration: a14 reported `lfMessageFont.lfHeight = -12`, so the shell
+/// font is exactly the Caption size. Read as points, Body would be 14 pt --
+/// larger than any shell UI and inconsistent with that baseline.
+///
+/// The fallback keeps this role's SIZE and WEIGHT and gives up only the
+/// face, because size and weight are the hierarchy. Segoe UI ships a
+/// Semibold, so even a fallen-back Subtitle stays heavier than the Body
+/// around it.
+unsafe fn make_font(
+    hwnd: HWND,
+    base: &LOGFONTW,
+    face: &str,
+    px: i32,
+    weight: i32,
+    dpi: u32,
+) -> HFONT {
+    let mut spec = *base;
+    spec.lfHeight = -scale(px, dpi);
+    // The height is ours now, so the base's paired width would stretch the
+    // glyphs; 0 asks the mapper for the face's own aspect ratio.
+    spec.lfWidth = 0;
+    spec.lfWeight = weight;
+
+    let mut want = spec;
+    if set_face(&mut want, face) {
+        let f = CreateFontIndirectW(&want);
         if !f.is_invalid() {
-            return f;
+            if face_matches(hwnd, f, face) {
+                return f;
+            }
+            // A real handle, ours to free -- just the wrong font in it.
+            let _ = DeleteObject(HGDIOBJ(f.0));
         }
     }
+
+    let f = CreateFontIndirectW(&spec);
+    if !f.is_invalid() {
+        return f;
+    }
     HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+}
+
+/// The three type roles of §B.3, built for `dpi`.
+///
+/// | Role | Size | Weight | Used for |
+/// |---|---|---|---|
+/// | Subtitle | 20 px | semibold | band headings |
+/// | Body | 14 px | regular | list, fields, buttons |
+/// | Caption | 12 px | regular | notes |
+///
+/// **The face names are spelled in full, from the a14 measurement.**
+/// `Segoe UI Variable Text Semibold` is exactly 31 characters and survives
+/// `lfFaceName` intact; the Display and Small semibolds do not, which is
+/// why the family here is Text rather than whichever optical size a naive
+/// truncation happens to leave valid. `Segoe UI Variable Text` / `Small` /
+/// `Display` were all confirmed present and exact.
+///
+/// Optical size is why Body and Caption differ at all: Segoe UI Variable
+/// ships Small for caption sizes, Text for body and headings up to ~30 px,
+/// Display above that. 20 px is Text territory, not Display's.
+unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
+    let base = message_logfont(dpi);
+    Fonts {
+        subtitle: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Text Semibold",
+            20,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
+        body: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Text",
+            14,
+            FW_NORMAL.0 as i32,
+            dpi,
+        ),
+        caption: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Small",
+            12,
+            FW_NORMAL.0 as i32,
+            dpi,
+        ),
+    }
 }
 
 unsafe fn child(
@@ -543,7 +784,7 @@ unsafe fn child(
     text: &str,
     style: WINDOW_STYLE,
     id: i32,
-    font: HFONT,
+    fonts: &Fonts,
 ) -> HWND {
     let h = CreateWindowExW(
         WINDOW_EX_STYLE(0),
@@ -560,6 +801,12 @@ unsafe fn child(
         None,
     )
     .unwrap_or_default();
+    // The role comes from the id, through the SAME `role_of` the
+    // `WM_DPICHANGED` rebroadcast consults. One mapping, two call sites --
+    // if creation and that broadcast each carried their own idea of which
+    // control gets which font, a walk across monitors would silently
+    // re-role half the window.
+    let font = fonts.for_id(id);
     SendMessageW(
         h,
         WM_SETFONT,
@@ -576,9 +823,14 @@ unsafe fn child(
 /// created last: the one pair that answers an urgent event — the file moved
 /// under us — sat at the end of the Tab order, behind everything it
 /// interrupts.
+///
+/// Every control leaves here already carrying its role's font, which is why
+/// `WM_CREATE` can call `layout` immediately afterwards: comctl32 derives
+/// the ListView row height from the control's font, and `layout` QUERIES
+/// that height rather than assuming it.
 unsafe fn build_children(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let font = ui_font(dpi);
+    let fonts = build_fonts(hwnd, dpi);
 
     // -- Band 1: the external-change banner. Hidden until `apply_state`
     // says the file moved; `layout` gives it no height at all while it is
@@ -589,7 +841,7 @@ unsafe fn build_children(hwnd: HWND) {
         "This file changed on disk.",
         SS_CENTERIMAGE_STYLE,
         IDC_BANNER,
-        font,
+        &fonts,
     );
     let reload = child(
         hwnd,
@@ -597,7 +849,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Reload",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_RELOAD,
-        font,
+        &fonts,
     );
     let keep = child(
         hwnd,
@@ -605,7 +857,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Keep mine",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_KEEPMINE,
-        font,
+        &fonts,
     );
     show(banner, false);
     show(reload, false);
@@ -624,7 +876,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Shortcuts",
         SS_CENTERIMAGE_STYLE,
         IDC_LBL_SECTION,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -632,7 +884,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Remove",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_REMOVE,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -640,7 +892,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Add",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_ADD,
-        font,
+        &fonts,
     );
 
     // -- Band 3: the list.
@@ -652,7 +904,7 @@ unsafe fn build_children(hwnd: HWND) {
             | WS_BORDER
             | WS_TABSTOP,
         IDC_LIST,
-        font,
+        &fonts,
     );
     // LVS_EX_CHECKBOXES rides in column 0's state image, beside its text --
     // it is not a column, so deleting the status column later is compatible.
@@ -695,7 +947,7 @@ unsafe fn build_children(hwnd: HWND) {
         "App",
         SS_CENTERIMAGE_STYLE,
         IDC_LBL_APP,
-        font,
+        &fonts,
     );
     // CBS_DROPDOWN, not CBS_DROPDOWNLIST: beckon deliberately supports apps
     // with no Start Menu entry, so free typing must stay possible even once
@@ -706,7 +958,7 @@ unsafe fn build_children(hwnd: HWND) {
         "",
         WINDOW_STYLE((CBS_DROPDOWN | CBS_AUTOHSCROLL | CBS_SORT) as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_APP,
-        font,
+        &fonts,
     );
     // Under comctl32 v6 the `cy` passed to SetWindowPos no longer decides
     // how tall the drop-down is; this does. Without it the list opens at
@@ -718,7 +970,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Shortcut",
         SS_CENTERIMAGE_STYLE,
         IDC_LBL_SHORTCUT,
-        font,
+        &fonts,
     );
     let combo = child(
         hwnd,
@@ -726,11 +978,11 @@ unsafe fn build_children(hwnd: HWND) {
         "",
         WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
         IDC_COMBO,
-        font,
+        &fonts,
     );
     // On its own line directly beneath the strip, which is where B.1's
     // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE.
-    let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, font);
+    let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, &fonts);
 
     // -- Band 5: the suggestion row. Nothing is created for it and it
     // contributes zero height. A placeholder would be a control to keep in
@@ -745,7 +997,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Keyboard",
         WINDOW_STYLE(BS_GROUPBOX as u32),
         IDC_GRP_KEYBOARD,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -753,7 +1005,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Use Caps Lock as the beckon key",
         WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
         IDC_CAPS,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -761,7 +1013,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Tapping Caps alone: Caps Lock",
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_GROUP | WS_TABSTOP,
         IDC_TAP_CAPSLOCK,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -769,7 +1021,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Esc",
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
         IDC_TAP_ESCAPE,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -777,7 +1029,7 @@ unsafe fn build_children(hwnd: HWND) {
         "nothing",
         WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
         IDC_TAP_NONE,
-        font,
+        &fonts,
     );
 
     // -- Band 7: the command bar. `Open config file` far left, then Close
@@ -796,7 +1048,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Open config file",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_GROUP | WS_TABSTOP,
         IDC_OPENFILE,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -804,7 +1056,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Close",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_CLOSE,
-        font,
+        &fonts,
     );
     child(
         hwnd,
@@ -812,7 +1064,7 @@ unsafe fn build_children(hwnd: HWND) {
         "Apply",
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         IDC_APPLY,
-        font,
+        &fonts,
     );
 
     UI.with(|u| {
@@ -825,7 +1077,7 @@ unsafe fn build_children(hwnd: HWND) {
             banner,
             reload,
             keep,
-            font,
+            fonts,
             suppress: false,
             external_change: false,
             items: Vec::new(),
@@ -842,8 +1094,10 @@ unsafe fn build_children(hwnd: HWND) {
 /// Widths are measured, never tabulated, so a button is never narrower
 /// than its own caption and a label never overlaps the field beside it —
 /// the defects B.2 records, all of which come from constants that were
-/// right for one font at one DPI. The next landing changes the fonts
-/// (B.3), and nothing here has to change with them.
+/// right for one font at one DPI. B.3 has since given the window three
+/// fonts, and this needed no change to survive it — but the CALLER now has
+/// to pass the font of the role it is measuring FOR, not whichever handle
+/// is nearest to hand, or a caption gets a box sized for a different face.
 ///
 /// The estimate on the failure path is deliberately generous: too wide
 /// costs a gap, too narrow clips.
@@ -994,7 +1248,13 @@ unsafe fn layout(hwnd: HWND) {
     let cx = pad;
     let cw = clamp(w - pad * 2);
 
-    let tw = |t: &str| text_size(hwnd, ui.font, dpi, t).0;
+    // Body, and only Body: every string measured in this function labels or
+    // captions a Body control -- the three command-bar buttons, Add /
+    // Remove / Reload / Keep mine, the two field labels, the three radios,
+    // and the "Ag" that sizes the EDIT. The `Shortcuts` heading is the one
+    // Subtitle in the window and its width is never measured; it takes
+    // whatever Add and Remove leave it.
+    let tw = |t: &str| text_size(hwnd, ui.fonts.get(Role::Body), dpi, t).0;
     let btn = |t: &str| s(tok::BTN).max(tw(t) + s(24));
 
     let place = |id: i32, x: i32, y: i32, cxx: i32, cy: i32| {
@@ -1103,7 +1363,7 @@ unsafe fn layout(hwnd: HWND) {
     // two text fields therefore take a height the font justifies and are
     // centred within the line; the buttons, which do honour `cy` and look
     // right at 32, take the token directly.
-    let field_h = (text_size(hwnd, ui.font, dpi, "Ag").1 + s(10)).min(ctl);
+    let field_h = (text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1 + s(10)).min(ctl);
     let fy = y + clamp(ctl - field_h) / 2;
     // A hair of slack past the measured width: a STATIC clips to its rect,
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
@@ -1310,11 +1570,18 @@ fn cells(it: &ListItem) -> Vec<String> {
 /// that text. It is produced inside the `cells` funnel so the rebuild path
 /// and the diff path cannot disagree about it.
 ///
-/// ASCII, like `mark_glyph`: the window inherits the shell font, where a
-/// missing glyph shows as a box that reads like a rendering bug rather than
-/// a status. A healthy row still says nothing at all -- `flag` is `None`
-/// and the name stands alone, which is the whole point of deleting the
-/// status column that used to say `OK` on every row.
+/// **The flag takes the list's Body font, and cannot take Caption.** B.3
+/// puts flags at Caption size, but this text is part of the App CELL, and a
+/// ListView draws a cell in the control's one font -- there is no
+/// per-run font in a report view. Giving the flag its own would mean
+/// `NM_CUSTOMDRAW`, which B.5 explicitly defers to a later pass. So this is
+/// a deferral, not an oversight: it lands with the Fluent glyphs or not at
+/// all.
+///
+/// ASCII, like `mark_glyph`, and for the same reason: the face here is a
+/// text font, not a symbol one. A healthy row still says nothing at all --
+/// `flag` is `None` and the name stands alone, which is the whole point of
+/// deleting the status column that used to say `OK` on every row.
 fn app_cell(it: &ListItem) -> String {
     match &it.flag {
         Some(f) => format!("{}   {}", it.app, f),
@@ -1571,6 +1838,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     unsafe {
         match msg {
             WM_CREATE => {
+                // Font BEFORE geometry, and the order is load-bearing:
+                // `build_children` leaves every control carrying its role's
+                // font, and `layout` asks comctl32 for the ListView's row
+                // height -- which comctl32 derives from that font. Placing
+                // first would size the list against whatever the control
+                // was born with.
                 build_children(hwnd);
                 layout(hwnd);
                 LRESULT(0)
@@ -1595,31 +1868,50 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // the window the wrong size on the new monitor, and no
                 // second message arrives to correct it.
                 let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
-                let font = ui_font(dpi);
+                let fonts = build_fonts(hwnd, dpi);
+                // The borrow is taken and dropped on these lines. Nothing
+                // below may hold one: `WM_SETFONT` re-enters this wndproc,
+                // and a second `RefCell` borrow across an `extern "system"`
+                // boundary ABORTS the process rather than unwinding.
                 let old = UI.with(|u| {
                     u.borrow_mut().as_mut().map(|ui| {
-                        let prev = ui.font;
-                        ui.font = font;
+                        let prev = ui.fonts;
+                        ui.fonts = fonts;
                         prev
                     })
                 });
                 // Every child must be told, including ones `layout` places
-                // through GetDlgItem rather than a stored handle.
+                // through GetDlgItem rather than a stored handle -- and
+                // each must be told about ITS OWN role, read back from the
+                // same `role_of` the creation path used. A single font
+                // broadcast here would flatten the ramp on the first walk
+                // between monitors.
                 let mut child = GetWindow(hwnd, GW_CHILD).unwrap_or_default();
                 while !child.is_invalid() {
+                    let f = fonts.for_id(GetDlgCtrlID(child));
                     SendMessageW(
                         child,
                         WM_SETFONT,
-                        Some(WPARAM(font.0 as usize)),
+                        Some(WPARAM(f.0 as usize)),
                         Some(LPARAM(1)),
                     );
                     child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
                 }
-                // If `UI` is somehow absent, `font` was never stored above,
-                // so free it here instead of leaking it -- practically
+                // AFTER the broadcast, never before: the old handles were
+                // selected into those controls until the loop above replaced
+                // them, and deleting a font that is still selected is
+                // undefined.
+                //
+                // If `UI` is somehow absent, `fonts` was never stored above,
+                // so free THAT instead of leaking three -- practically
                 // unreachable (`UI` is populated in WM_CREATE before any
                 // other message can arrive), but cheap to close.
-                let _ = DeleteObject(HGDIOBJ(old.unwrap_or(font).0));
+                old.unwrap_or(fonts).delete();
+                // Font before geometry: the controls already carry the new
+                // fonts by the time `SetWindowPos` (which raises WM_SIZE)
+                // and the explicit `layout` below run, so the ListView's
+                // row height is queried at the size it will actually draw.
+                //
                 // No column-width loop here any more. Widths used to be
                 // fixed per-DPI constants that only this arm refreshed;
                 // they are now a proportion of the live list width and
@@ -1702,11 +1994,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_DESTROY => {
-                UI.with(|u| {
-                    if let Some(ui) = u.borrow_mut().take() {
-                        let _ = DeleteObject(HGDIOBJ(ui.font.0));
-                    }
-                });
+                // Taken out of the `RefCell` first, so all three
+                // `DeleteObject` calls run with no borrow alive -- and so
+                // all three run at all. One `HFONT` per window open was
+                // already a leak Landing 1 had to close; three roles make
+                // it three.
+                let ui = UI.with(|u| u.borrow_mut().take());
+                if let Some(ui) = ui {
+                    ui.fonts.delete();
+                }
                 CB.with(|c| *c.borrow_mut() = None);
                 LRESULT(0)
             }
