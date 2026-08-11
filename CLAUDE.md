@@ -849,7 +849,24 @@ OS metadata on every call.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
 
-The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Default expiry 90 days — renewal procedure documented in the tap repo's README.
+The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Renewal procedure is documented in the tap repo's README. **Rotated 2026-08-11; expires 2027-08-12.**
+
+**Re-running the bump does not test the token.** Both packager repos are
+public, so `git clone` with a dead token still succeeds, and both push
+steps in `bump-packagers.yml` `exit 0` before reaching `git push` whenever
+the rendered manifest is unchanged — so a backfill of an already-published
+tag is green whether the token works or not. To actually check it, ask
+GitHub what the token may do:
+
+```yaml
+env: { GH_TOKEN: "${{ secrets.PACKAGER_TOKEN }}" }
+run: gh api repos/xom11/homebrew-tap --jq .permissions.push   # must be true
+```
+
+A fine-grained PAT cannot even read a repo it was not granted, so a 404
+there means the repo is missing from the token's list. `gh api rate_limit
+--include` also returns a `github-authentication-token-expiration` header,
+which is where the expiry above came from.
 
 User's nix integration (flake-input pattern, no hand-rolled overlay):
 
