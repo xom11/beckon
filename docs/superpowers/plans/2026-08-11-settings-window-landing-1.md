@@ -1627,3 +1627,78 @@ a clean result cannot look the same."
 **Two facts checked after the first draft, both of which changed a task:**
 1. `parse_keyboard` is a `match k.as_str()` whose catch-all message enumerates the valid settings (`"expected \`caps\` or \`caps_tap\`"`). Adding a key without updating that string leaves the error lying to the next person who typos one. Task 2 Step 3 now says so.
 2. `caps_hook.rs` keeps its settings in `thread_local! { static CONFIG: RefCell<Config> }` with `Config { bound, tap }` at `:35`, `:60` and `:147`. Task 3 Step 3 now names all three sites instead of saying "store it in the config".
+
+---
+
+# Landing 1 outcome — 2026-08-11
+
+Tasks 1–9 implemented, each reviewed and fix-looped to clean. **Task 10 was
+not run**: it is the a14 hardware pass and needs a Windows 11 ARM64 machine
+in session 1 with a person present. Nothing in Tasks 1–9 is blocked on it,
+but see *What only hardware can settle* below — it is not polish.
+
+## What review caught that the plan got wrong
+
+Three times the defect was in **this plan**, not in the code written from it.
+Recorded because the pattern matters more than the individual errors: every
+one was found by a reviewer running an experiment, and none by reading.
+
+1. **Task 2** said `#[derive(Default)]` "no longer produces the right
+   `caps_hold`", so the impl was hand-written and needed an `#[allow]` to
+   pass clippy. False — a derived `Default` calls each field type's own
+   `default()`, and `Chord`'s is an ordinary impl. Proven by substitution.
+2. **Task 5** said dropping the `if !st.held` guard was safe because a
+   repeated Caps-down "is either auto-repeat, where re-stamping every field
+   is harmless, or a Caps-up that was lost". The first half is false:
+   ordinary auto-repeat then wiped `used`/`injected`, so `Caps+key` held
+   past the keyboard repeat delay ended in a **fabricated keystroke** into
+   the focused application and skipped the defensive modifier release.
+   Escalated; the ruling was to keep the guard. See the revised Task 5.
+3. **Task 8** claimed the old code "leaked one HFONT per window open".
+   False — `WM_DESTROY` already deleted it. The leak the task had to avoid
+   was the new one it introduced.
+
+`KBDLLHOOKSTRUCT` carries no repeat count, so auto-repeat and a lost Caps-up
+are indistinguishable from the event stream. Task 5 is therefore a choice
+between two failures, not a bug with a fix, and the plan now says so.
+
+## Parked, with rulings
+
+- **README framing.** The new `caps_hold` paragraph says "rather than through
+  Settings", which invites the inference that the settings window exposes the
+  key. It does not — `caps_hold` is config-file-only in Landing 1. No
+  data-loss bug: Settings preserves a non-default value, pinned by
+  `resetting_caps_hold_to_default_removes_the_stale_line`. One-line wording
+  fix, not a blocker.
+- **`CLAUDE.md`'s two "hazards removed by construction" bullets** still say
+  `ctrl+win+alt`. Both hazards are removed for *every* chord, so the design
+  claim holds; only the illustration is now the default rather than the rule.
+  They also write `win` where the config token is `super`, which predates
+  this branch. Generalise next time that section is touched.
+- **Nothing enforces MSRV 1.75.** It is declared in `Cargo.toml` and checked
+  by no CI job — both use `dtolnay/rust-toolchain@stable`. Pre-existing.
+
+## What only hardware can settle
+
+The evidence on this branch is asymmetric, and in the right direction: the
+Caps half carries the real behavioural risk and is covered by 43 tests on all
+three CI jobs, including an auto-repeat regression a reviewer proved by
+experiment. The manifest half has one CI gate and a lot of prose — because
+`build.rs` embeds the manifest for `-msvc` only, so the `x86_64-pc-windows-gnu`
+cross-check is **structurally incapable** of exercising the per-monitor-v2
+premise the DPI work rests on. Nothing on this branch has ever been *linked*
+for Windows.
+
+So Task 10 is not a polish pass. It is the only evidence the DPI work will
+ever get, and Landing 2's spacing tokens are guesses until it runs.
+
+Severity, stated honestly:
+
+- **Could brick something: nothing.** A wedged Caps hook still leaves the
+  typed chord working — `RegisterHotKey` is not on the hook path. No registry
+  or Run-key changes. `apply_settings` is still temp-then-rename.
+- **Could fail to work:** `SystemParametersInfoForDpi` returning success on a
+  non-per-monitor process would mean `ui_font`'s fallback never fires and the
+  font is wrong on a secondary monitor.
+- **Will look wrong:** grandchild controls' fonts after a DPI change, column
+  widths resetting on a DPI change, and the tray icon at 150 %.
