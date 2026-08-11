@@ -1,7 +1,16 @@
-//! The settings window: a list of shortcuts on the left, a detail panel on
-//! the right, and the keyboard group below. Win32 only — every decision it
-//! draws comes from `beckon_core::settings::ControlState`, and every edit
-//! it collects goes back out through `Callbacks`. This file holds no policy.
+//! The settings window: horizontal bands stacked top to bottom — an
+//! external-change banner, a section head, the shortcut list, an editor
+//! strip, the keyboard group, and a command bar. Win32 only — every
+//! decision it draws comes from `beckon_core::settings::ControlState`, and
+//! every edit it collects goes back out through `Callbacks`. This file
+//! holds no policy.
+//!
+//! **Bands, not a split pane.** The 45/55 column split this replaced put
+//! three fixed-width columns (34 + 190 + 150 = 561 px at 150 %) inside a
+//! list pane 482 px wide, so beckon shipped a horizontal scroll bar and a
+//! clipped App column. Widths are now a proportion of the live list width,
+//! computed in `layout`, so that cannot recur — see the comment on
+//! `LIST_COLUMNS`.
 //!
 //! **Modeless, and created on the `serve` thread.** Hotkeys must keep
 //! firing while it is open, so it cannot be a dialog box with its own modal
@@ -19,18 +28,27 @@ use beckon_core::settings::{ControlState, ListItem, Mark};
 use beckon_core::shortcuts::CapsTap;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{
-    GetDpiForMonitor, GetDpiForWindow, SystemParametersInfoForDpi, MDT_EFFECTIVE_DPI,
+    GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi,
+    MDT_EFFECTIVE_DPI,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 /// `SS_LEFT` is 0 and `windows` 0.61 does not export it as a constant.
 const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
+
+/// `SS_CENTERIMAGE` (0x0200), which `windows` 0.61 does not export either.
+/// On a STATIC holding text it centres that text vertically in the control
+/// rect and clips it to one line — which is what lets a label share a band
+/// line with controls taller than its own text instead of floating against
+/// the top edge of it. Never on `IDC_NOTES`, which is deliberately several
+/// lines tall.
+const SS_CENTERIMAGE_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0200);
 
 /// Posted by the catalog worker thread with the scanned app names.
 pub const WM_CATALOG: u32 = WM_APP + 2;
@@ -57,11 +75,61 @@ const IDC_KEEPMINE: i32 = 1016;
 const IDC_LBL_SHORTCUT: i32 = 1017;
 const IDC_LBL_APP: i32 = 1018;
 const IDC_GRP_KEYBOARD: i32 = 1019;
+/// The `Shortcuts` heading in band 2. New ids go ABOVE the existing range:
+/// 1001-1007 and the class name are hard-coded in
+/// `examples/settings_probe.rs` and are fixed points.
+const IDC_LBL_SECTION: i32 = 1020;
 
-/// ListView header (title, width-at-96-DPI) pairs. Shared between creation
-/// (`LVM_INSERTCOLUMNW`, in `build_children`) and `WM_DPICHANGED`
-/// (`LVM_SETCOLUMNWIDTH`), so the two widths cannot drift apart.
-const LIST_COLUMNS: [(&str, i32); 3] = [("", 34), ("Shortcut", 190), ("App", 150)];
+/// Layout tokens, at 96 DPI. Every one of them goes through `scale`.
+///
+/// Two need their reasoning, because they look like they contradict the
+/// a14 measurements (`docs/superpowers/measurements/2026-08-11-landing-1-a14.md`)
+/// and do not:
+///
+/// - **`CTL` is 32, not the measured 22.** `BCM_GETIDEALSIZE` returns the
+///   smallest box the theme can draw a caption in — a floor, not a layout
+///   recommendation. The measurement's job was to prove 32 does not clip,
+///   and it does not.
+/// - **There is no list-row token.** 29 px measured at 144 DPI is 19.33 at
+///   96, and a non-integer is the tell that comctl32 derives the row
+///   height from the font at the live DPI. A 96-DPI token pushed through
+///   `scale` would be wrong at every non-integer scale and would break
+///   again the moment the font changes, so `list_row_height` asks the
+///   control instead.
+mod tok {
+    /// Surface padding — the margin between the client rect and content.
+    pub const PAD: i32 = 16;
+    /// Between two bands.
+    pub const BAND: i32 = 14;
+    /// Between two controls inside one band.
+    pub const GAP: i32 = 8;
+    /// A label and the control it names.
+    pub const LABEL: i32 = 12;
+    /// Height of one band line, and of every button on it.
+    pub const CTL: i32 = 32;
+    /// A button is never narrower than this, nor than its own caption.
+    pub const BTN: i32 = 88;
+    /// The right-aligned `Shortcut` column, and the editor field under it.
+    pub const SHORTCUT_COL: i32 = 200;
+    /// List rows visible without scrolling.
+    pub const ROWS: i32 = 8;
+}
+
+/// ListView columns, in order: title and text alignment.
+///
+/// **Widths are deliberately absent.** They are a proportion of the live
+/// list width, computed once per `layout` from the control's own client
+/// rect minus a scroll bar — which is what makes the §A.3 overflow
+/// (561 px of columns inside a 482 px list) structurally impossible rather
+/// than merely unlikely. Putting a width back here would reintroduce it.
+///
+/// `App` is column 0 and must stay left-aligned: comctl32 forces
+/// `LVCFMT_LEFT` on subitem 0 of a report view whatever is asked for, so
+/// only a later column can carry `LVCFMT_RIGHT`. Column 0 is also where
+/// `LVS_EX_CHECKBOXES` puts the tick, which is a state image and not a
+/// column — it survived the status column's deletion untouched.
+const LIST_COLUMNS: [(&str, LVCOLUMNW_FORMAT); 2] =
+    [("App", LVCFMT_LEFT), ("Shortcut", LVCFMT_RIGHT)];
 
 /// A row's tick, as `LVIS_STATEIMAGEMASK` bits: the one-based index of the
 /// state image, shifted up by 12. Image 1 is the empty box and image 2 the
@@ -157,6 +225,44 @@ struct Ui {
     items: Vec<ListItem>,
 }
 
+/// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
+/// dropped before a single `SendMessageW` or `SetWindowPos` runs.
+///
+/// This is not tidiness. A second `RefCell` borrow taken across an
+/// `extern "system"` boundary — and every one of those calls can re-enter
+/// this window's wndproc — ABORTS the process rather than unwinding, so it
+/// shows up as neither a panic nor a test failure nor anything a
+/// cross-compile can catch. Copying the handles out first makes it
+/// unrepresentable.
+#[derive(Clone, Copy)]
+struct LayoutHandles {
+    list: HWND,
+    combo: HWND,
+    app: HWND,
+    notes: HWND,
+    banner: HWND,
+    reload: HWND,
+    keep: HWND,
+    font: HFONT,
+    external_change: bool,
+}
+
+impl LayoutHandles {
+    fn of(ui: &Ui) -> Self {
+        Self {
+            list: ui.list,
+            combo: ui.combo,
+            app: ui.app,
+            notes: ui.notes,
+            banner: ui.banner,
+            reload: ui.reload,
+            keep: ui.keep,
+            font: ui.font,
+            external_change: ui.external_change,
+        }
+    }
+}
+
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
     static CB: RefCell<Option<Callbacks>> = const { RefCell::new(None) };
@@ -237,11 +343,14 @@ fn show(h: HWND, on: bool) {
     }
 }
 
+/// The severity prefix on a line of the notes STATIC. Not the list: rows
+/// carry `ListItem::flag` beside the app name now (see `app_cell`), and a
+/// healthy row says nothing at all rather than `OK`.
 fn mark_glyph(m: Mark) -> &'static str {
     // ASCII on purpose: this window inherits the shell font, and a missing
     // glyph shows as a box that reads like a rendering bug rather than a
-    // status. All four are two columns wide so the notes below the list line
-    // up -- the trailing space on `Warn` is load-bearing, not a typo.
+    // status. All four are two columns wide so the note lines line up --
+    // the trailing space on `Warn` is load-bearing, not a typo.
     match m {
         Mark::Ok => "OK",
         Mark::Warn => "! ",
@@ -454,10 +563,81 @@ unsafe fn child(
     h
 }
 
+/// Create every child, **in the order it is drawn**.
+///
+/// Creation order is Tab order, and that is the whole reason this function
+/// reads top-to-bottom. The banner's `Reload` / `Keep mine` used to be
+/// created last: the one pair that answers an urgent event — the file moved
+/// under us — sat at the end of the Tab order, behind everything it
+/// interrupts.
 unsafe fn build_children(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let font = ui_font(dpi);
 
+    // -- Band 1: the external-change banner. Hidden until `apply_state`
+    // says the file moved; `layout` gives it no height at all while it is
+    // hidden, so the bands below close up rather than leaving a gap.
+    let banner = child(
+        hwnd,
+        w!("STATIC"),
+        "This file changed on disk.",
+        SS_CENTERIMAGE_STYLE,
+        IDC_BANNER,
+        font,
+    );
+    let reload = child(
+        hwnd,
+        w!("BUTTON"),
+        "Reload",
+        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        IDC_RELOAD,
+        font,
+    );
+    let keep = child(
+        hwnd,
+        w!("BUTTON"),
+        "Keep mine",
+        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        IDC_KEEPMINE,
+        font,
+    );
+    show(banner, false);
+    show(reload, false);
+    show(keep, false);
+
+    // -- Band 2: the section head.
+    //
+    // **No filter control, and no placeholder for one.** `on_select(i)` and
+    // `on_mark(i)` index `m.rows` DIRECTLY, so the moment the list shows a
+    // filtered subset those callbacks address the wrong row -- ticking one
+    // binding and deleting another. It lands together with the
+    // view-index-to-model-index mapping that makes it safe, not before.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "Shortcuts",
+        SS_CENTERIMAGE_STYLE,
+        IDC_LBL_SECTION,
+        font,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        "Remove",
+        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        IDC_REMOVE,
+        font,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        "Add",
+        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        IDC_ADD,
+        font,
+    );
+
+    // -- Band 3: the list.
     let list = child(
         hwnd,
         w!("SysListView32"),
@@ -482,12 +662,13 @@ unsafe fn build_children(hwnd: HWND) {
             (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES) as isize,
         )),
     );
-    let sx = |v: i32| scale(v, dpi);
-    for (i, (title, cx)) in LIST_COLUMNS.iter().enumerate() {
+    // No LVCF_WIDTH: `layout` owns every column width, so there is exactly
+    // one place a column can be made too wide for its list.
+    for (i, (title, fmt)) in LIST_COLUMNS.iter().enumerate() {
         let mut t = wide(title);
         let col = LVCOLUMNW {
-            mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
-            cx: sx(*cx),
+            mask: LVCF_TEXT | LVCF_FMT | LVCF_SUBITEM,
+            fmt: *fmt,
             pszText: windows::core::PWSTR(t.as_mut_ptr()),
             iSubItem: i as i32,
             ..Default::default()
@@ -500,23 +681,16 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
+    // -- Band 4: the editor strip. App first, then the shortcut, mirroring
+    // the row above it (B.1: "laid out to mirror a row").
     child(
         hwnd,
         w!("STATIC"),
-        "Shortcut",
-        SS_LEFT_STYLE,
-        IDC_LBL_SHORTCUT,
+        "App",
+        SS_CENTERIMAGE_STYLE,
+        IDC_LBL_APP,
         font,
     );
-    let combo = child(
-        hwnd,
-        w!("EDIT"),
-        "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
-        IDC_COMBO,
-        font,
-    );
-    child(hwnd, w!("STATIC"), "App", SS_LEFT_STYLE, IDC_LBL_APP, font);
     // CBS_DROPDOWN, not CBS_DROPDOWNLIST: beckon deliberately supports apps
     // with no Start Menu entry, so free typing must stay possible even once
     // the catalog has loaded.
@@ -532,33 +706,33 @@ unsafe fn build_children(hwnd: HWND) {
     // how tall the drop-down is; this does. Without it the list opens at
     // the default 30 items regardless of the height layout computes.
     SendMessageW(app, CB_SETMINVISIBLE, Some(WPARAM(8)), Some(LPARAM(0)));
+    child(
+        hwnd,
+        w!("STATIC"),
+        "Shortcut",
+        SS_CENTERIMAGE_STYLE,
+        IDC_LBL_SHORTCUT,
+        font,
+    );
+    let combo = child(
+        hwnd,
+        w!("EDIT"),
+        "",
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
+        IDC_COMBO,
+        font,
+    );
+    // On its own line directly beneath the strip, which is where B.1's
+    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE.
     let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, font);
 
-    child(
-        hwnd,
-        w!("BUTTON"),
-        "Add",
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
-        IDC_ADD,
-        font,
-    );
-    child(
-        hwnd,
-        w!("BUTTON"),
-        "Remove",
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
-        IDC_REMOVE,
-        font,
-    );
-    child(
-        hwnd,
-        w!("BUTTON"),
-        "Apply",
-        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
-        IDC_APPLY,
-        font,
-    );
+    // -- Band 5: the suggestion row. Nothing is created for it and it
+    // contributes zero height. A placeholder would be a control to keep in
+    // sync with a feature that does not exist yet.
 
+    // -- Band 6: the keyboard group, directly above the command bar. F.8
+    // replaces this with a one-line Caps row at the TOP of the window, but
+    // that is the next landing and it is gated on measurements not taken.
     child(
         hwnd,
         w!("BUTTON"),
@@ -600,39 +774,21 @@ unsafe fn build_children(hwnd: HWND) {
         font,
     );
 
-    let banner = child(
-        hwnd,
-        w!("STATIC"),
-        "This file changed on disk.",
-        SS_LEFT_STYLE,
-        IDC_BANNER,
-        font,
-    );
-    let reload = child(
-        hwnd,
-        w!("BUTTON"),
-        "Reload",
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
-        IDC_RELOAD,
-        font,
-    );
-    let keep = child(
-        hwnd,
-        w!("BUTTON"),
-        "Keep mine",
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
-        IDC_KEEPMINE,
-        font,
-    );
-    show(banner, false);
-    show(reload, false);
-    show(keep, false);
-
+    // -- Band 7: the command bar. `Open config file` far left, then Close
+    // and Apply on the right.
+    //
+    // WS_GROUP terminates the radio group above it. IDC_TAP_CAPSLOCK opens
+    // a group and nothing closed it, so Right/Down from `nothing` used to
+    // walk focus straight out of the group and into whatever was created
+    // next -- which, before this reordering, was the hidden banner.
+    //
+    // Captions are unchanged on purpose: renaming Apply to Save, the
+    // mnemonics and the accelerator table are the next task.
     child(
         hwnd,
         w!("BUTTON"),
         "Open config file",
-        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
+        WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_GROUP | WS_TABSTOP,
         IDC_OPENFILE,
         font,
     );
@@ -642,6 +798,14 @@ unsafe fn build_children(hwnd: HWND) {
         "Close",
         WINDOW_STYLE(BS_PUSHBUTTON as u32) | WS_TABSTOP,
         IDC_CLOSE,
+        font,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        "Apply",
+        WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
+        IDC_APPLY,
         font,
     );
 
@@ -667,9 +831,127 @@ unsafe fn build_children(hwnd: HWND) {
 // Layout
 // ---------------------------------------------------------------------------
 
+/// The size of `s` rendered in `font`, in physical pixels.
+///
+/// Widths are measured, never tabulated, so a button is never narrower
+/// than its own caption and a label never overlaps the field beside it —
+/// the defects B.2 records, all of which come from constants that were
+/// right for one font at one DPI. The next landing changes the fonts
+/// (B.3), and nothing here has to change with them.
+///
+/// The estimate on the failure path is deliberately generous: too wide
+/// costs a gap, too narrow clips.
+unsafe fn text_size(hwnd: HWND, font: HFONT, dpi: u32, s: &str) -> (i32, i32) {
+    let est = (
+        scale(8, dpi) * s.chars().count() as i32,
+        scale(16, dpi).max(1),
+    );
+    let dc = GetDC(Some(hwnd));
+    if dc.is_invalid() {
+        return est;
+    }
+    let prev = SelectObject(dc, HGDIOBJ(font.0));
+    let text = wide(s);
+    let mut sz = SIZE::default();
+    // `wide` appends a NUL and this API takes a length, so the NUL would
+    // be measured as a character.
+    let ok = GetTextExtentPoint32W(dc, &text[..text.len() - 1], &mut sz).as_bool();
+    if !prev.is_invalid() {
+        SelectObject(dc, prev);
+    }
+    ReleaseDC(Some(hwnd), dc);
+    if ok && sz.cy > 0 {
+        (sz.cx, sz.cy)
+    } else {
+        est
+    }
+}
+
+/// One ListView row, in physical pixels at the live DPI.
+///
+/// **Queried, never scaled from a token.** 29 px measured on a14 at 144 DPI
+/// is 19.33 at 96, and a non-integer is the tell that comctl32 derives the
+/// row height from the font rather than from a design constant — a 96-DPI
+/// token pushed through `scale` would be wrong at every non-integer scale
+/// and would go wrong again the moment B.3 changes the font.
+///
+/// `LVM_GETITEMRECT` needs a row to measure. When the list is empty there
+/// is none, and the fallback barely matters: an empty list has no rows to
+/// show, and `apply_state` calls `layout` again the instant it puts one in.
+unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
+    let count = SendMessageW(list, LVM_GETITEMCOUNT, Some(WPARAM(0)), Some(LPARAM(0))).0;
+    if count > 0 {
+        // `left` is the input: which of the item's rectangles is wanted.
+        let mut rc = RECT {
+            left: LVIR_BOUNDS as i32,
+            ..Default::default()
+        };
+        let got = SendMessageW(
+            list,
+            LVM_GETITEMRECT,
+            Some(WPARAM(0)),
+            Some(LPARAM(&mut rc as *mut RECT as isize)),
+        )
+        .0 != 0;
+        let h = rc.bottom - rc.top;
+        if got && h > 0 {
+            return h;
+        }
+    }
+    scale(20, dpi)
+}
+
+/// The ListView's header, in physical pixels at the live DPI. Measured 31
+/// at 144 DPI, which is 20.67 at 96 — a non-integer for the same reason a
+/// row is, so it is asked for rather than tabulated.
+unsafe fn list_header_height(list: HWND, dpi: u32) -> i32 {
+    let hdr = HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _);
+    if !hdr.is_invalid() {
+        let mut rc = RECT::default();
+        if GetWindowRect(hdr, &mut rc).is_ok() {
+            let h = rc.bottom - rc.top;
+            if h > 0 {
+                return h;
+            }
+        }
+    }
+    scale(21, dpi)
+}
+
+/// Set a column's width, but only when it is not already right.
+///
+/// `apply_state` calls `layout`, and `apply_state` runs on every keystroke,
+/// so this write happens per keystroke — and a width write invalidates the
+/// header whether or not the number changed. Reading first is the same
+/// guard, for the same reason, as the one on `set_item_state`.
+unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
+    let cur = SendMessageW(list, LVM_GETCOLUMNWIDTH, Some(WPARAM(col)), Some(LPARAM(0))).0;
+    if cur == cx as isize {
+        return;
+    }
+    SendMessageW(
+        list,
+        LVM_SETCOLUMNWIDTH,
+        Some(WPARAM(col)),
+        Some(LPARAM(cx as isize)),
+    );
+}
+
+/// Seven horizontal bands, top to bottom: the external-change banner (no
+/// height when hidden), the section head, the list, the editor strip, the
+/// suggestion row (no control, no height, in this landing), the keyboard
+/// group and the command bar.
+///
 /// Everything is placed from the client rect at the current DPI, so a
 /// 150 % display is not an afterthought — `GetDpiForWindow` scales the
-/// constants rather than the constants assuming 96.
+/// tokens rather than the tokens assuming 96.
+///
+/// **Vertical shape.** The command bar is anchored to the bottom and the
+/// keyboard group sits directly above it; the top bands stack downward.
+/// The one thing that flexes is the notes STATIC between them, so a resize
+/// lands there. The list wants `header + 8 rows` and gives that up rather
+/// than let anything overlap when the window is short — a shrunk list
+/// scrolls, an overlapped control is unreachable.
 unsafe fn layout(hwnd: HWND) {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
@@ -680,112 +962,200 @@ unsafe fn layout(hwnd: HWND) {
     // Independent of WM_GETMINMAXINFO: the floor is about the frame, and a
     // clamp is about the arithmetic. Either alone leaves a negative cy
     // reachable -- SetWindowPos with one produces a control the user can
-    // never see or focus again.
+    // never see or focus again. Widths need it as much as heights: WM_SIZE
+    // fires with a 0x0 client rect on minimize (ptMinTrackSize only
+    // constrains dragging, not that), so `w` is 0 here on every minimize,
+    // on every machine, and every subtraction below goes negative without
+    // it.
     let clamp = |v: i32| v.max(0);
 
-    let pad = s(10);
-    let row = s(24);
+    // ONE borrow of UI, taken here and dropped on this line. Nothing below
+    // may hold one: every SetWindowPos and SendMessageW that follows can
+    // re-enter this window's wndproc, and a second borrow across an
+    // `extern "system"` boundary aborts the process instead of unwinding.
+    let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
+        return;
+    };
+
+    let pad = s(tok::PAD);
+    let band = s(tok::BAND);
+    let gap = s(tok::GAP);
+    let lblgap = s(tok::LABEL);
+    let ctl = s(tok::CTL);
+
     let w = rc.right - rc.left;
     let h = rc.bottom - rc.top;
+    let cx = pad;
+    let cw = clamp(w - pad * 2);
 
-    let kb_h = s(72);
-    let btn_h = s(26);
-    let bottom_h = btn_h + pad;
-    let banner_h = if UI.with(|u| {
-        u.borrow()
-            .as_ref()
-            .map(|x| x.external_change)
-            .unwrap_or(false)
-    }) {
-        row + pad
+    let tw = |t: &str| text_size(hwnd, ui.font, dpi, t).0;
+    let btn = |t: &str| s(tok::BTN).max(tw(t) + s(24));
+
+    let place = |id: i32, x: i32, y: i32, cxx: i32, cy: i32| {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = SetWindowPos(c, None, x, y, cxx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    };
+    let place_h = |h_: HWND, x: i32, y: i32, cxx: i32, cy: i32| {
+        let _ = SetWindowPos(h_, None, x, y, cxx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+
+    // The two bottom bands are anchored, not stacked, so the window's
+    // bottom edge is where they stay however tall the content above is.
+    let bar_y = clamp(h - pad - ctl);
+    // Caption inset, then two control lines with a gap, then a bottom
+    // inset the same size as the gap.
+    let kb_h = s(24) + ctl * 2 + gap * 2;
+    let kb_y = clamp(bar_y - band - kb_h);
+
+    let mut y = pad;
+
+    // -- Band 1: the banner. Contributes NO height when hidden.
+    if ui.external_change {
+        let bw_reload = btn("Reload");
+        let bw_keep = btn("Keep mine");
+        let buttons = bw_reload + gap + bw_keep;
+        place_h(ui.banner, cx, y, clamp(cw - buttons - gap), ctl);
+        place_h(ui.reload, cx + clamp(cw - buttons), y, bw_reload, ctl);
+        place_h(ui.keep, cx + clamp(cw - bw_keep), y, bw_keep, ctl);
+        y += ctl + band;
+    }
+
+    // -- Band 2: the section head. `Shortcuts` leading, Remove and Add
+    // right-aligned. No filter control -- see `build_children`.
+    let bw_add = btn("Add");
+    let bw_remove = btn("Remove");
+    place(IDC_ADD, cx + clamp(cw - bw_add), y, bw_add, ctl);
+    place(
+        IDC_REMOVE,
+        cx + clamp(cw - bw_add - gap - bw_remove),
+        y,
+        bw_remove,
+        ctl,
+    );
+    place(
+        IDC_LBL_SECTION,
+        cx,
+        y,
+        clamp(cw - bw_add - gap - bw_remove - gap),
+        ctl,
+    );
+    // A control gap, not a band gap: the head labels the list directly
+    // below it, so the two read as one group.
+    y += ctl + gap;
+
+    // -- Band 3: the list.
+    let row_h = list_row_height(ui.list, dpi);
+    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS;
+    // The editor strip below needs its own line plus at least one line of
+    // notes; the list yields its fixed height before anything overlaps.
+    let editor_min = ctl + gap + ctl;
+    let room = clamp(kb_y - band - y);
+    let list_h = clamp(want.min(clamp(room - band - editor_min)));
+    place_h(ui.list, cx, y, cw, list_h);
+
+    // Columns, sized from the list's OWN client width now that it has one,
+    // minus a vertical scroll bar's width whether or not one is showing.
+    // That subtraction is what makes overflow structurally impossible: a
+    // scroll bar appearing later steals client width the columns have
+    // already been told not to use. Measured before this change: 561 px of
+    // columns inside a 482 px list, i.e. a horizontal scroll bar shipped.
+    let mut lrc = RECT::default();
+    let inner = if GetClientRect(ui.list, &mut lrc).is_ok() {
+        clamp(lrc.right - lrc.left - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi))
     } else {
         0
     };
+    // `Shortcut` never takes more than half, so `App` -- which leads, and
+    // carries the tick and the flag -- can never be squeezed out.
+    let col_shortcut = s(tok::SHORTCUT_COL).min(inner / 2);
+    let col_app = clamp(inner - col_shortcut);
+    set_column_width(ui.list, 0, col_app);
+    set_column_width(ui.list, 1, col_shortcut);
+    y += list_h + band;
 
-    let top = pad + banner_h;
-    let mid_h = clamp(h - top - kb_h - bottom_h - pad * 2);
-    // Widths need the same guard as heights: WM_SIZE fires with a 0x0
-    // client rect on minimize (ptMinTrackSize only constrains dragging,
-    // not that), so w == 0 here on every minimize, on every machine, and
-    // every subtraction below goes negative without this.
-    let list_w = clamp((w - pad * 3) * 45 / 100);
+    // -- Band 4: the editor strip, one line, then the notes beneath it.
+    //
+    // A single-line EDIT draws its text at the TOP of its client rect --
+    // Win32 gives it no vertical centring at all -- so stretching one to
+    // the 32 px band line would park the text against the top edge. The
+    // two text fields therefore take a height the font justifies and are
+    // centred within the line; the buttons, which do honour `cy` and look
+    // right at 32, take the token directly.
+    let field_h = (text_size(hwnd, ui.font, dpi, "Ag").1 + s(10)).min(ctl);
+    let fy = y + clamp(ctl - field_h) / 2;
+    // A hair of slack past the measured width: a STATIC clips to its rect,
+    // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
+    let lw_app = tw("App") + s(4);
+    let lw_short = tw("Shortcut") + s(4);
+    // The shortcut field sits under the Shortcut column so the strip
+    // mirrors a row. A third of the width is its ceiling on a narrow one.
+    let field_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
+    let edit_x = cx + clamp(cw - field_w);
+    let lbl_short_x = (edit_x - lblgap - lw_short).max(cx);
+    let app_x = cx + lw_app + lblgap;
+    let app_w = clamp(lbl_short_x - gap - app_x);
 
-    let place = |id: i32, x: i32, y: i32, cx: i32, cy: i32| {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            let _ = SetWindowPos(c, None, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    place(IDC_LBL_APP, cx, y, lw_app, ctl);
+    // A COMBOBOX's `cy` is the height of its DROPPED-DOWN list, not of the
+    // closed control -- and under comctl32 v6 even that is capped by
+    // `build_children`'s CB_SETMINVISIBLE(8). The closed height is the
+    // system's to choose from the font, so ask what it took and centre THAT
+    // in the line, rather than guessing a chrome delta the next font change
+    // would invalidate.
+    place_h(ui.app, app_x, fy, app_w, field_h * 9);
+    let mut arc = RECT::default();
+    if GetWindowRect(ui.app, &mut arc).is_ok() {
+        let ah = arc.bottom - arc.top;
+        if ah > 0 && ah < ctl {
+            place_h(ui.app, app_x, y + (ctl - ah) / 2, app_w, field_h * 9);
         }
-    };
-    let place_h = |h_: HWND, x: i32, y: i32, cx: i32, cy: i32| {
-        let _ = SetWindowPos(h_, None, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-    };
-
-    let (banner, reload, keep, list, combo, app, notes) = match UI.with(|u| {
-        u.borrow()
-            .as_ref()
-            .map(|x| (x.banner, x.reload, x.keep, x.list, x.combo, x.app, x.notes))
-    }) {
-        Some(t) => t,
-        None => return,
-    };
-
-    if banner_h > 0 {
-        let bw = clamp(w - pad * 2 - s(180));
-        place_h(banner, pad, pad + s(4), bw, row);
-        place_h(reload, pad + bw + s(4), pad, s(84), row);
-        place_h(keep, pad + bw + s(92), pad, s(84), row);
     }
+    place(IDC_LBL_SHORTCUT, lbl_short_x, y, lw_short, ctl);
+    place_h(ui.combo, edit_x, fy, field_w, field_h);
+    y += ctl + gap;
+    place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
 
-    place_h(list, pad, top, list_w, clamp(mid_h - btn_h - s(6)));
-    place(IDC_ADD, pad, top + mid_h - btn_h, s(70), btn_h);
-    place(IDC_REMOVE, pad + s(76), top + mid_h - btn_h, s(80), btn_h);
+    // -- Band 5: the suggestion row. No control, no height.
 
-    let rx = pad * 2 + list_w;
-    let rw = clamp(w - rx - pad);
-    let mut y = top;
-    place(IDC_LBL_SHORTCUT, rx, y, rw, row);
-    y += row - s(6);
-    place_h(combo, rx, y, rw, row);
-    y += row + s(10);
-    place(IDC_LBL_APP, rx, y, rw, row);
-    y += row - s(6);
-    // A combo box's height is the height of its dropped-down list, not of
-    // the closed control; the closed control is sized by the system. That
-    // was the whole story under comctl32 v5, but not v6: there, `cy` here
-    // is capped by the minimum-visible-items count, and `build_children`'s
-    // CB_SETMINVISIBLE(app, 8) is what actually governs the drop-down
-    // height now. Changing `row * 8` alone, without touching that call,
-    // does nothing on a v6 box.
-    place_h(app, rx, y, rw, row * 8);
-    y += row + s(10);
-    place_h(notes, rx, y, rw, clamp(mid_h - (y - top) - btn_h - s(6)));
+    // -- Band 6: the keyboard group.
+    place(IDC_GRP_KEYBOARD, cx, kb_y, cw, kb_h);
+    let inner_x = cx + gap;
+    let caps_y = kb_y + s(24);
+    place(IDC_CAPS, inner_x, caps_y, clamp(cw - gap * 2), ctl);
+    // Radio widths come from the captions. The s(190)/s(70)/s(90) these
+    // replace were sized for one font at one DPI and clipped the moment
+    // either changed.
+    let ry = caps_y + ctl + gap;
+    let rx = inner_x + gap;
+    // The radio's own circle, plus the gap it leaves before its caption.
+    let glyph = s(24);
+    let w_caps = tw("Tapping Caps alone: Caps Lock") + glyph;
+    let w_esc = tw("Esc") + glyph;
+    let w_none = tw("nothing") + glyph;
+    place(IDC_TAP_CAPSLOCK, rx, ry, w_caps, ctl);
+    place(IDC_TAP_ESCAPE, rx + w_caps + gap, ry, w_esc, ctl);
     place(
-        IDC_APPLY,
-        rx + rw - s(84),
-        top + mid_h - btn_h,
-        s(84),
-        btn_h,
+        IDC_TAP_NONE,
+        rx + w_caps + gap + w_esc + gap,
+        ry,
+        w_none,
+        ctl,
     );
 
-    let ky = top + mid_h + pad;
-    // Not named in the review that asked for this guard, but the same
-    // formula minus one term (w - pad * 2, vs. IDC_CAPS's w - pad * 2 -
-    // s(24) right below) -- same 0x0-on-minimize hazard, same fix.
-    place(IDC_GRP_KEYBOARD, pad, ky, clamp(w - pad * 2), kb_h);
+    // -- Band 7: the command bar.
+    let bw_open = btn("Open config file");
+    let bw_apply = btn("Apply");
+    let bw_close = btn("Close");
+    place(IDC_OPENFILE, cx, bar_y, bw_open, ctl);
+    place(IDC_APPLY, cx + clamp(cw - bw_apply), bar_y, bw_apply, ctl);
     place(
-        IDC_CAPS,
-        pad + s(12),
-        ky + row,
-        clamp(w - pad * 2 - s(24)),
-        row,
+        IDC_CLOSE,
+        cx + clamp(cw - bw_apply - gap - bw_close),
+        bar_y,
+        bw_close,
+        ctl,
     );
-    let tx = pad + s(24);
-    place(IDC_TAP_CAPSLOCK, tx, ky + row * 2, s(190), row);
-    place(IDC_TAP_ESCAPE, tx + s(196), ky + row * 2, s(70), row);
-    place(IDC_TAP_NONE, tx + s(270), ky + row * 2, s(90), row);
-
-    let by = h - btn_h - pad;
-    place(IDC_OPENFILE, w - pad - s(190), by, s(120), btn_h);
-    place(IDC_CLOSE, w - pad - s(64), by, s(64), btn_h);
 }
 
 // ---------------------------------------------------------------------------
@@ -906,11 +1276,29 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
 /// about what a cell says -- and the column set is one edit, in one place,
 /// when it changes.
 fn cells(it: &ListItem) -> Vec<String> {
-    vec![
-        mark_glyph(it.mark).to_string(),
-        it.combo.clone(),
-        it.app.clone(),
-    ]
+    vec![app_cell(it), it.combo.clone()]
+}
+
+/// The App column's text: the app name, and the row's flag beside it when
+/// it has one.
+///
+/// **Appended to the cell, not a third column and not `NM_CUSTOMDRAW`.**
+/// B.1 draws the flag inline beside the app name, B.2 names exactly two
+/// columns, and B.5 is explicit that the Fluent glyphs come later "via
+/// `NM_CUSTOMDRAW` as decoration over text that already works". This is
+/// that text. It is produced inside the `cells` funnel so the rebuild path
+/// and the diff path cannot disagree about it.
+///
+/// ASCII, like `mark_glyph`: the window inherits the shell font, where a
+/// missing glyph shows as a box that reads like a rendering bug rather than
+/// a status. A healthy row still says nothing at all -- `flag` is `None`
+/// and the name stands alone, which is the whole point of deleting the
+/// status column that used to say `OK` on every row.
+fn app_cell(it: &ListItem) -> String {
+    match &it.flag {
+        Some(f) => format!("{}   {}", it.app, f),
+        None => it.app.clone(),
+    }
 }
 
 /// Push `st.items` into the ListView, rebuilding only when it has to.
@@ -1211,21 +1599,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // unreachable (`UI` is populated in WM_CREATE before any
                 // other message can arrive), but cheap to close.
                 let _ = DeleteObject(HGDIOBJ(old.unwrap_or(font).0));
-                // The ListView column widths are set once at creation
-                // (LVM_INSERTCOLUMNW) and never touched again otherwise --
-                // without this the headers stay at the old DPI's physical
-                // width forever, clipping as soon as the font grows.
-                let list = UI.with(|u| u.borrow().as_ref().map(|ui| ui.list));
-                if let Some(list) = list {
-                    for (i, (_, cx)) in LIST_COLUMNS.iter().enumerate() {
-                        SendMessageW(
-                            list,
-                            LVM_SETCOLUMNWIDTH,
-                            Some(WPARAM(i)),
-                            Some(LPARAM(scale(*cx, dpi) as isize)),
-                        );
-                    }
-                }
+                // No column-width loop here any more. Widths used to be
+                // fixed per-DPI constants that only this arm refreshed;
+                // they are now a proportion of the live list width and
+                // `layout`, called at the bottom of this arm, is the one
+                // place that sets them.
                 let rc = &*(lp.0 as *const RECT);
                 let _ = SetWindowPos(
                     hwnd,
