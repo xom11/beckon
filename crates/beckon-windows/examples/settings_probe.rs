@@ -94,13 +94,21 @@ mod win {
         String::from_utf16_lossy(&buf[..n.max(0) as usize])
     }
 
+    /// `GetWindowRect` failing (window destroyed mid-probe, access denied)
+    /// must not look like a valid zero-size control -- printing `(0,0,0,0)`
+    /// silently was exactly that failure mode, since a genuine zero-size
+    /// control also prints `(0,0,0,0)`. Every field carries this
+    /// out-of-range sentinel so a caller can test one field and know the
+    /// read failed rather than mistake it for real geometry.
+    const RECT_FAIL: i32 = i32::MIN;
+
     /// A child's on-screen box, expressed in the settings window's own client
     /// coordinates -- which is the frame the layout code works in, so the
     /// numbers can be compared against the tokens directly.
     fn box_in_client(parent: HWND, child: HWND) -> (i32, i32, i32, i32) {
         let mut rc = RECT::default();
         if unsafe { GetWindowRect(child, &mut rc) }.is_err() {
-            return (0, 0, 0, 0);
+            return (RECT_FAIL, RECT_FAIL, RECT_FAIL, RECT_FAIL);
         }
         let mut pts = [
             POINT {
@@ -115,6 +123,25 @@ mod win {
         // `None` for the source is HWND_DESKTOP, i.e. screen coordinates.
         unsafe { MapWindowPoints(None, Some(parent), &mut pts) };
         (pts[0].x, pts[0].y, pts[1].x - pts[0].x, pts[1].y - pts[0].y)
+    }
+
+    /// Render a `box_in_client` result, printing an unmistakable marker
+    /// instead of a coordinate when the read failed.
+    fn fmt_box(x: i32, y: i32, w: i32, h: i32) -> String {
+        if w == RECT_FAIL {
+            "RECTFAIL".to_string()
+        } else {
+            format!("{w}x{h} at ({x},{y})")
+        }
+    }
+
+    /// Same marker, for call sites that only print width/height.
+    fn fmt_wh(w: i32, h: i32) -> String {
+        if w == RECT_FAIL {
+            "RECTFAIL".to_string()
+        } else {
+            format!("{w}x{h}")
+        }
     }
 
     unsafe extern "system" fn on_child(h: HWND, l: LPARAM) -> BOOL {
@@ -249,7 +276,10 @@ mod win {
             return;
         };
         let (x, y, w, h) = box_in_client(parent, list);
-        println!("    SysListView32 IDC_LIST ({when}): {w}x{h} at ({x},{y})");
+        println!(
+            "    SysListView32 IDC_LIST ({when}): {}",
+            fmt_box(x, y, w, h)
+        );
 
         let count = send(list, LVM_GETITEMCOUNT, 0, 0);
         let per_page = send(list, LVM_GETCOUNTPERPAGE, 0, 0);
@@ -290,7 +320,11 @@ mod win {
             println!("      header:               MISSING -- LVM_GETHEADER returned null");
         } else {
             let (_, _, hw, hh) = box_in_client(parent, hdr);
-            println!("      header SysHeader32:   {hw}x{hh}  => HEADER HEIGHT {hh}");
+            if hh == RECT_FAIL {
+                println!("      header SysHeader32:   RECTFAIL  => HEADER HEIGHT RECTFAIL");
+            } else {
+                println!("      header SysHeader32:   {hw}x{hh}  => HEADER HEIGHT {hh}");
+            }
         }
     }
 
@@ -324,6 +358,7 @@ mod win {
                 continue;
             };
             let (_, _, w, h) = box_in_client(parent, ctl);
+            let wh = fmt_wh(w, h);
             let ideal = Remote::open(ctl).and_then(|r| {
                 let zero = SIZE { cx: 0, cy: 0 };
                 if !r.put(&zero) || send(ctl, BCM_GETIDEALSIZE, 0, r.addr as isize) == 0 {
@@ -332,14 +367,14 @@ mod win {
                 r.get::<SIZE>()
             });
             match ideal {
-                Some(s) => println!("    {label}: {w}x{h}   BCM_GETIDEALSIZE {}x{}", s.cx, s.cy),
-                None => println!("    {label}: {w}x{h}   BCM_GETIDEALSIZE unavailable"),
+                Some(s) => println!("    {label}: {wh}   BCM_GETIDEALSIZE {}x{}", s.cx, s.cy),
+                None => println!("    {label}: {wh}   BCM_GETIDEALSIZE unavailable"),
             }
         }
 
         if let Some(ctl) = dlg_item(parent, IDC_COMBO) {
             let (_, _, w, h) = box_in_client(parent, ctl);
-            println!("    EDIT     IDC_COMBO:   {w}x{h}");
+            println!("    EDIT     IDC_COMBO:   {}", fmt_wh(w, h));
         } else {
             println!("    EDIT     IDC_COMBO:   MISSING");
         }
@@ -349,7 +384,10 @@ mod win {
             // so the control's own rect IS the closed height.
             let (_, _, w, h) = box_in_client(parent, ctl);
             let item = send(ctl, CB_GETITEMHEIGHT, usize::MAX, 0);
-            println!("    COMBOBOX IDC_APP:     {w}x{h} closed   CB_GETITEMHEIGHT(-1) {item}");
+            println!(
+                "    COMBOBOX IDC_APP:     {} closed   CB_GETITEMHEIGHT(-1) {item}",
+                fmt_wh(w, h)
+            );
         } else {
             println!("    COMBOBOX IDC_APP:     MISSING");
         }
@@ -511,6 +549,14 @@ mod win {
             unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         let ctx = unsafe { GetThreadDpiAwarenessContext() };
         let awareness = unsafe { GetAwarenessFromDpiAwarenessContext(ctx) };
+        // Don't guess why the call failed: "already set by a manifest" is
+        // only what ERROR_ACCESS_DENIED implies, and it's one of several
+        // ways `SetProcessDpiAwarenessContext` can fail. Print the real
+        // error and let it speak for itself.
+        let set_result = match &set {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("FAILED: {e}"),
+        };
         println!(
             "probe DPI awareness: {} (SetProcessDpiAwarenessContext: {})",
             match awareness.0 {
@@ -519,11 +565,7 @@ mod win {
                 2 => "PER_MONITOR_AWARE (v2 requested)",
                 _ => "INVALID",
             },
-            if set.is_ok() {
-                "ok"
-            } else {
-                "already set by a manifest"
-            }
+            set_result
         );
         println!("GetDpiForSystem: {}", unsafe { GetDpiForSystem() });
     }
@@ -590,15 +632,12 @@ mod win {
             println!("  {} child controls:", kids.len());
             for kid in kids.iter() {
                 println!(
-                    "    {:<18} vis={} {:?}  id={} {}x{} at ({},{})",
+                    "    {:<18} vis={} {:?}  id={} {}",
                     kid.cls,
                     if kid.vis { "y" } else { "n" },
                     kid.txt,
                     kid.id,
-                    kid.w,
-                    kid.h,
-                    kid.x,
-                    kid.y
+                    fmt_box(kid.x, kid.y, kid.w, kid.h)
                 );
             }
         });
