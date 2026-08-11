@@ -151,8 +151,14 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
 /// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
 /// on the un-scaled size or the correction would resize to the wrong target.
-const WINDOW_WIDTH: i32 = 760;
-const WINDOW_HEIGHT: i32 = 560;
+// 860 is spec B.2's stated width. 640 is the height raised from 560 so the
+// notes band (the flex band -- see `layout`) fits four lines at 96 DPI: the
+// band gets `kb_y`'s leftover directly, so every pixel added here becomes a
+// pixel of notes room. Worked through in the task-6 report, section on
+// fix 2: at the default size the notes band comes out to ~173 px against a
+// ~19-21 px line height, i.e. 8+ lines against a 4-line requirement.
+const WINDOW_WIDTH: i32 = 860;
+const WINDOW_HEIGHT: i32 = 640;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO`. Smaller
 /// than `WINDOW_WIDTH`/`WINDOW_HEIGHT` so the window can be shrunk, but not
@@ -1046,7 +1052,13 @@ unsafe fn layout(hwnd: HWND) {
 
     // -- Band 3: the list.
     let row_h = list_row_height(ui.list, dpi);
-    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS;
+    // `want` is a WINDOW height (it feeds SetWindowPos below), but the list
+    // carries WS_BORDER, so its client height -- where header_height + 8
+    // rows actually get drawn -- is 2*SM_CYBORDER less than that. Without
+    // this the 8th row was clipped by the border and comctl32 drew a sliver
+    // of a 9th.
+    let border = 2 * GetSystemMetricsForDpi(SM_CYBORDER, dpi);
+    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS + border;
     // The editor strip below needs its own line plus at least one line of
     // notes; the list yields its fixed height before anything overlaps.
     let editor_min = ctl + gap + ctl;
@@ -1073,6 +1085,15 @@ unsafe fn layout(hwnd: HWND) {
     set_column_width(ui.list, 0, col_app);
     set_column_width(ui.list, 1, col_shortcut);
     y += list_h + band;
+    // `list_h` clamps to 0 when `room` itself clamped negative -- reachable
+    // only by an intermediate resize below MIN_HEIGHT that WM_DPICHANGED's
+    // suggested rect can hand us without asking WM_GETMINMAXINFO (dragging
+    // can't reach it; a 0x0 client rect clamps everything to 0 and is fine).
+    // In that state `y` here can still land past `kb_y`, and unlike the
+    // list and the notes STATIC below, the strip's height is the fixed
+    // `ctl`, not something `clamp` already shrinks -- so without this it
+    // draws over the keyboard group box.
+    y = y.min(kb_y);
 
     // -- Band 4: the editor strip, one line, then the notes beneath it.
     //
