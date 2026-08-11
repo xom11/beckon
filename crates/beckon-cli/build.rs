@@ -13,6 +13,7 @@ fn main() {
     // for the next reader.
     println!("cargo:rerun-if-changed=../../assets/beckon.ico");
     println!("cargo:rerun-if-changed=beckon.rc");
+    println!("cargo:rerun-if-changed=beckon.exe.manifest");
 
     embed_icon();
 }
