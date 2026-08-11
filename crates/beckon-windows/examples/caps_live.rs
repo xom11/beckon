@@ -147,8 +147,67 @@ mod win {
             }
         );
 
-        // Caps Lock may have been left on by the chord if the hook is not
-        // running; report the final state so a dirty exit is visible.
+        // --- Did the sequence leave anything held? ---
+        //
+        // Two failure modes look identical from the keyboard but need
+        // opposite fixes, so name them apart here:
+        //   (a) the injected modifier key-ups were lost, so the system still
+        //       believes ctrl+win+alt are down; or
+        //   (b) the hook's own `held` flag is stuck, so it keeps treating
+        //       every key as if Caps were down.
+        std::thread::sleep(Duration::from_millis(500));
+        let stuck = modifiers_down();
+        println!(
+            "STUCK MODIFIERS: {}",
+            if stuck.is_empty() {
+                "none".to_string()
+            } else {
+                stuck.join(", ")
+            }
+        );
+
+        // Now press the chord key ALONE. If it still beckons, the hook
+        // thinks Caps is held (b). If nothing happens and no modifier is
+        // stuck, the sequence was clean.
+        let base = foreground_exe();
+        if base.eq_ignore_ascii_case(&want) {
+            println!("BARE KEY: skipped, {want} is already in front");
+        } else {
+            send(&[stroke(vk, false), stroke(vk, true)]);
+            let mut seen = base.clone();
+            for _ in 0..12 {
+                std::thread::sleep(Duration::from_millis(300));
+                seen = foreground_exe();
+                if seen.eq_ignore_ascii_case(&want) {
+                    break;
+                }
+            }
+            println!(
+                "BARE KEY (no Caps): foreground {base} -> {seen} ({})",
+                if seen.eq_ignore_ascii_case(&want) {
+                    "BUG REPRODUCED - a bare key still beckons"
+                } else {
+                    "clean - a bare key does nothing"
+                }
+            );
+        }
+
         println!("caps lock at exit: {}", caps_state());
+    }
+
+    /// Which modifiers the system currently believes are held.
+    fn modifiers_down() -> Vec<String> {
+        [
+            (VK_CONTROL.0, "ctrl"),
+            (VK_LCONTROL.0, "lctrl"),
+            (VK_MENU.0, "alt"),
+            (VK_LMENU.0, "lalt"),
+            (VK_LWIN.0, "lwin"),
+            (VK_SHIFT.0, "shift"),
+        ]
+        .iter()
+        .filter(|(vk, _)| (unsafe { GetAsyncKeyState(*vk as i32) } as u16 & 0x8000) != 0)
+        .map(|(_, n)| n.to_string())
+        .collect()
     }
 }
