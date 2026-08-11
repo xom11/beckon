@@ -105,6 +105,14 @@ struct ServeState {
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
     last_phrase: String,
+    /// Canonical combo -> last registration outcome. Read by the settings
+    /// window so each row can show whether its key actually took. Cleared
+    /// when paused, because nothing is registered then and a stale tick
+    /// would claim otherwise. Set on every platform (`register_all` is
+    /// shared) but only read by the Windows-only window, so non-Windows
+    /// builds see it as write-only.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    registered: std::collections::HashMap<String, Result<(), String>>,
     /// See `AutostartCapability`.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     autostart: Option<AutostartCapability>,
@@ -159,6 +167,7 @@ pub fn cmd_serve_app(
         paused: false,
         log,
         last_phrase: String::new(),
+        registered: Default::default(),
         autostart,
     }));
 
@@ -196,6 +205,7 @@ pub fn cmd_serve_app(
 
     let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
     state.borrow_mut().last_phrase = phrase.clone();
+    state.borrow_mut().registered = outcome.by_canonical();
     eprintln!("beckon serve: {} from {}", phrase, config.display());
     set_tray_status(&format!("beckon - {phrase}"));
     if let Some(toast) = failure_toast(&outcome.failed) {
@@ -234,6 +244,16 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id
 struct RegisterOutcome {
     ok: usize,
     failed: Vec<String>, // canonical combos, in registration order
+    /// Every attempted combo by its canonical spelling, with what happened.
+    /// Canonical rather than as-written because the settings window joins
+    /// on this key and the file may spell the same combo differently.
+    results: Vec<(String, Result<(), String>)>,
+}
+
+impl RegisterOutcome {
+    fn by_canonical(&self) -> std::collections::HashMap<String, Result<(), String>> {
+        self.results.iter().cloned().collect()
+    }
 }
 
 /// "shortcut" for 1, "shortcuts" otherwise. The only pluralization this
@@ -291,21 +311,31 @@ fn failure_toast(failed: &[String]) -> Option<String> {
 fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) -> RegisterOutcome {
     let mut ok = 0;
     let mut failed = Vec::new();
+    let mut results = Vec::with_capacity(shortcuts.len());
     for (i, sc) in shortcuts.iter().enumerate() {
         let c = &sc.combo;
+        let canon = c.canonical();
         match mgr.register(i as u32, c.ctrl, c.super_, c.alt, c.shift, c.key) {
-            Ok(()) => ok += 1,
+            Ok(()) => {
+                ok += 1;
+                results.push((canon, Ok(())));
+            }
             Err(e) => {
                 // One broken key loses one key, never the whole table.
                 // Per-key eprintln kept for the detailed log; the toast is
                 // collapsed into a single summary by the caller instead of
                 // firing here (see `failure_toast`).
-                eprintln!("beckon serve: cannot register `{}`: {e}", c.canonical());
-                failed.push(c.canonical());
+                eprintln!("beckon serve: cannot register `{}`: {e}", canon);
+                failed.push(canon.clone());
+                results.push((canon, Err(e)));
             }
         }
     }
-    RegisterOutcome { ok, failed }
+    RegisterOutcome {
+        ok,
+        failed,
+        results,
+    }
 }
 
 /// Does any changed path refer to our config file (by file name)? We watch
@@ -379,6 +409,9 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
                 // updated so resuming picks up the edit; nothing registers.
                 let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
                 state.borrow_mut().last_phrase = phrase.clone();
+                // unregister_all() above means nothing is registered; a
+                // leftover map would show ticks for keys that are not live.
+                state.borrow_mut().registered.clear();
                 eprintln!("beckon serve: reloaded while paused - {phrase}");
                 set_tray_status(&format!("beckon - paused ({phrase})"));
                 return;
@@ -386,6 +419,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             let outcome = register_all(&mut m, &state.borrow().shortcuts);
             let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
             state.borrow_mut().last_phrase = phrase.clone();
+            state.borrow_mut().registered = outcome.by_canonical();
             eprintln!("beckon serve: reloaded - {phrase}");
             set_tray_status(&format!("beckon - {phrase}"));
             if let Some(toast) = failure_toast(&outcome.failed) {
@@ -597,6 +631,7 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         // `last_phrase` to it so the menu head (`build_entries`) agrees.
         let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
+        state.borrow_mut().registered.clear();
         eprintln!("beckon serve: paused - {phrase}");
         hotkey::set_status(&format!("beckon - paused ({phrase})"));
     } else {
@@ -604,6 +639,7 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         let outcome = register_all(&mut m, &state.borrow().shortcuts);
         let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
+        state.borrow_mut().registered = outcome.by_canonical();
         eprintln!("beckon serve: resumed - {phrase}");
         hotkey::set_status(&format!("beckon - {phrase}"));
     }
@@ -830,6 +866,34 @@ mod tests {
                 row.label
             );
         }
+    }
+
+    #[test]
+    fn a_register_outcome_reports_every_combo_by_its_canonical_name() {
+        let o = RegisterOutcome {
+            ok: 1,
+            failed: vec!["ctrl+alt+e".to_string()],
+            results: vec![
+                ("ctrl+alt+t".to_string(), Ok(())),
+                ("ctrl+alt+e".to_string(), Err("taken".to_string())),
+            ],
+        };
+        let map = o.by_canonical();
+        assert!(map.get("ctrl+alt+t").unwrap().is_ok());
+        assert!(map.get("ctrl+alt+e").unwrap().is_err());
+        assert_eq!(map.len(), 2);
+    }
+
+    /// `register_all` is what actually fills `results`, and the settings
+    /// window joins on the canonical spelling -- not on how the file wrote
+    /// it. Pin that the key really is canonicalized.
+    #[test]
+    fn results_are_keyed_by_canonical_spelling_not_by_how_the_file_wrote_it() {
+        let shortcuts = beckon_core::shortcuts::parse_shortcuts(
+            "\"alt+ctrl+t\" = \"Terminal\"\n",
+        )
+        .unwrap();
+        assert_eq!(shortcuts[0].combo.canonical(), "ctrl+alt+t");
     }
 
     #[cfg(target_os = "windows")]
