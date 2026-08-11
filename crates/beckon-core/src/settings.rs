@@ -16,6 +16,10 @@ pub struct Row {
     pub orig_key: Option<String>,
     pub combo: String,
     pub app: String,
+    /// Checked for multi-row delete. UI state only -- never written to
+    /// disk (`RowWrite` has no such field) and never makes the model
+    /// dirty (see `Model::set_marked`).
+    pub marked: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +87,9 @@ pub struct ListItem {
     /// The short word beside the app name; `None` on a healthy row, which
     /// is the point -- a row that is fine says nothing at all.
     pub flag: Option<String>,
+    /// Mirrors `Row::marked` -- the ListView sets this row's check state
+    /// from it.
+    pub marked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +114,9 @@ pub struct ControlState {
     pub caps_tap: CapsTap,
     pub apply_enabled: bool,
     pub remove_enabled: bool,
+    /// How many rows are ticked. The window uses this to caption the
+    /// remove button `Remove N`.
+    pub marked_count: usize,
 }
 
 impl Model {
@@ -132,6 +142,7 @@ impl Model {
                     orig_key: raw.clone(),
                     combo: raw.unwrap_or(canon),
                     app: s.app.clone(),
+                    marked: false,
                 }
             })
             .collect();
@@ -173,6 +184,7 @@ impl Model {
             orig_key: None,
             combo: String::new(),
             app: String::new(),
+            marked: false,
         });
         self.selected = Some(self.rows.len() - 1);
         self.dirty = true;
@@ -184,6 +196,57 @@ impl Model {
             None
         } else {
             Some(i.min(self.rows.len() - 1))
+        };
+        self.dirty = true;
+    }
+
+    /// Toggle the checkbox for row `i`. Deliberately does NOT set `dirty`:
+    /// a tick changes nothing on disk, and `apply_enabled` is
+    /// `dirty && valid` -- marking would light up Save for an otherwise
+    /// untouched model and rewrite the file byte-identical.
+    pub fn set_marked(&mut self, i: usize, on: bool) {
+        self.rows[i].marked = on;
+    }
+
+    /// How many rows are currently ticked. Feeds `ControlState::marked_count`
+    /// so the window can caption its remove button `Remove N`.
+    pub fn marked_count(&self) -> usize {
+        self.rows.iter().filter(|r| r.marked).count()
+    }
+
+    /// Remove every ticked row in one go.
+    ///
+    /// Walks the marked indices in reverse: removing row 0 first would
+    /// shift every later row down by one, so the next removal by index
+    /// would take the wrong row. Reverse order removes the highest index
+    /// first, which never disturbs the position of any index still queued.
+    ///
+    /// `selected` is recomputed from how many marked rows sat ahead of it
+    /// -- that count is exactly how far its slot shifts down, whether the
+    /// selected row itself survives (it keeps pointing at the same row) or
+    /// was removed alongside the others (it lands where that row's slot
+    /// now falls, then gets clamped like `remove_row` already does).
+    pub fn remove_marked(&mut self) {
+        let marked_indices: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.marked.then_some(i))
+            .collect();
+        if marked_indices.is_empty() {
+            return;
+        }
+        self.selected = self.selected.map(|sel| {
+            let before = marked_indices.iter().filter(|&&m| m < sel).count();
+            sel - before
+        });
+        for &i in marked_indices.iter().rev() {
+            self.rows.remove(i);
+        }
+        self.selected = if self.rows.is_empty() {
+            None
+        } else {
+            self.selected.map(|sel| sel.min(self.rows.len() - 1))
         };
         self.dirty = true;
     }
@@ -504,6 +567,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
             app: r.app.clone(),
             mark,
             flag,
+            marked: r.marked,
         });
         // Same call, same answer: the editor cannot say something the list
         // does not.
@@ -523,6 +587,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         caps_tap: m.keyboard.caps_tap,
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         remove_enabled: m.selected.is_some(),
+        marked_count: m.marked_count(),
     }
 }
 
@@ -996,5 +1061,68 @@ mod tests {
         assert_eq!(m.rows.len(), 1);
         assert_eq!(m.rows[0].app, "Terminal");
         assert!(m.keyboard.caps);
+    }
+
+    // ---------- marking rows for multi-delete ----------
+
+    #[test]
+    fn marking_a_row_is_not_a_file_change() {
+        let mut m = model();
+        m.set_marked(0, true);
+        assert!(
+            !m.dirty(),
+            "a tick changes nothing on disk; making it dirty would enable Save \
+             for an empty edit and rewrite the file unchanged"
+        );
+        assert!(!control_state(&m, &status_all_ok()).apply_enabled);
+    }
+
+    #[test]
+    fn removing_marked_rows_removes_all_of_them() {
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\"=\"A\"\n\"ctrl+alt+b\"=\"B\"\n\"ctrl+alt+c\"=\"C\"\n")
+                .unwrap();
+        m.set_marked(0, true);
+        m.set_marked(2, true);
+        assert_eq!(m.marked_count(), 2);
+        m.remove_marked();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
+        assert_eq!(
+            apps,
+            vec!["B"],
+            "index shifting must not drop the wrong row"
+        );
+        assert!(m.dirty());
+    }
+
+    #[test]
+    fn an_external_reload_drops_the_marks() {
+        let mut m = model();
+        m.set_marked(0, true);
+        let reloaded = Model::from_text(&m.render().unwrap_or_else(|_| FILE.into())).unwrap();
+        assert!(
+            !reloaded.rows[0].marked,
+            "marks are UI state, never file state"
+        );
+    }
+
+    /// The row that survives a multi-delete must still point at the SAME
+    /// row after the marked ones are gone -- its index shifts down by
+    /// however many marked rows sat ahead of it, it does not silently jump
+    /// to whatever now occupies its old slot.
+    #[test]
+    fn a_surviving_selection_follows_its_own_row_through_a_multi_delete() {
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\"=\"A\"\n\"ctrl+alt+b\"=\"B\"\n\"ctrl+alt+c\"=\"C\"\n")
+                .unwrap();
+        m.selected = Some(1); // B: not marked, must survive selected
+        m.set_marked(0, true); // A: ahead of B, will be removed
+        m.remove_marked();
+        assert_eq!(
+            m.selected,
+            Some(0),
+            "B shifted down by the one removed row ahead of it"
+        );
+        assert_eq!(m.rows[m.selected.unwrap()].app, "B");
     }
 }
