@@ -960,7 +960,9 @@ unsafe fn rebuild_list(list: HWND, st: &ControlState) {
         // looks exactly like the user clicking a tick off.
         //
         // LVIS_FOCUSED is deliberately absent. Setting it scrolls the item
-        // into view, which would fight the scroll restore below.
+        // into view, which would fight the scroll restore below. Consequence:
+        // after any Add / Remove / reload, the first arrow key press jumps
+        // to row 0 instead of continuing from the current selection.
         let item = LVITEMW {
             mask: LVIF_TEXT | LVIF_STATE,
             iItem: i as i32,
@@ -1003,7 +1005,25 @@ unsafe fn rebuild_list(list: HWND, st: &ControlState) {
         ensure_visible(list, top);
     }
 
-    let _ = InvalidateRect(Some(list), None, true);
+    // The pair above restores the pre-rebuild scroll position, which is
+    // right for a reload (`Model::from_text` leaves `st.selected` as
+    // `None`, so this block does nothing there) but wrong for
+    // `Model::add_row`, which always selects the newly appended last row:
+    // on a list longer than one page, "restore the old top" leaves that
+    // new, selected, empty row off-screen while the editor strip below is
+    // already showing it -- and when the old top was 0 the pair above
+    // skips entirely, so the row stays off-screen with nothing to fix it.
+    // `LVM_ENSUREVISIBLE` is a no-op when the row is already fully on
+    // screen, so this only moves the view when the restore above left the
+    // selection outside it -- it never fights the restore for the reload
+    // case.
+    if let Some(sel) = st.selected {
+        if (sel as isize) < count {
+            ensure_visible(list, sel as isize);
+        }
+    }
+
+    let _ = InvalidateRect(Some(list), None, false);
 }
 
 unsafe fn ensure_visible(list: HWND, i: isize) {
