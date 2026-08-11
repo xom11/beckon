@@ -478,3 +478,11 @@ smarter template plus `beckon check`.
 The coupling is already solved either way: `serve` watches the config file,
 so a settings app only ever needs to **write the TOML**. No IPC, no named
 pipe, no protocol.
+
+**Built 2026-08-11** — see
+`docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`.
+The measurement demanded above was never needed, and the reason is the one
+this section already identified: chord capture is the expensive part, so the
+window does not have it. Combos are typed as text and validated by the same
+parser `serve` uses. The coupling prediction held exactly — the window
+writes the TOML and the existing watcher does the rest.

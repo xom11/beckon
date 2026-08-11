@@ -238,12 +238,53 @@ Menu — that launches `beckon-serve.exe`, a tray app with no console window at
 any point (it's a separate GUI-subsystem binary, not `beckon.exe serve`
 wearing a different hat). First launch with no config writes a starter
 `apps.toml` and opens it in your editor. Right-click the tray icon to reload,
-pause, open the log, or open the config; tick **Start with Windows** to add
+pause, open the log, or open **Settings**; tick **Start with Windows** to add
 it to `HKCU\...\Run`. `beckon.exe serve <CONFIG>` still works for scripting
 or the advanced path below — same flags, same output — and now raises the
 same tray menu too, minus **Start with Windows**: a Run value pointing at
 `beckon.exe` has no `serve` verb or config path to invoke, so it would exit
 at the next logon while the checkbox stayed ticked forever.
+
+### The settings window (Windows)
+
+**Settings...** in the tray menu — or double-clicking the icon — opens a
+window listing every binding with whether it actually registered and whether
+its app name resolves. Both columns are editable, and **Apply** writes the
+same `apps.toml` you would edit by hand: comments, key order and spelling
+survive, so the two routes stay interchangeable. Edit the file in Notepad
+while the window is open and it follows along; if you had unsaved changes it
+asks rather than choosing for you.
+
+Combos are typed, not captured by pressing them. That is deliberate: the
+stock Windows control for chord capture cannot see the Windows key, and
+Explorer eats `Win+T` and its siblings before a normal window ever gets
+them, so a capture field would quietly fail on exactly the chords beckon
+recommends.
+
+### Caps Lock as the beckon key (Windows, opt-in)
+
+`ctrl+super+alt+<key>` is a lot of fingers. Tick **Use Caps Lock as the
+beckon key** in Settings — or write `keyboard.caps = true` in the config,
+which is the same setting — and holding Caps stands in for that chord:
+`Caps+T` does what `ctrl+super+alt+T` does. Your bindings do not change, so
+the same file still works on a machine where the box is not ticked.
+
+Tapping Caps on its own still toggles Caps Lock by default.
+`keyboard.caps_tap = "escape"` makes it Esc instead, and `"none"` makes it
+do nothing.
+
+Three things to know before ticking it:
+
+- **It does nothing while an elevated window has focus.** beckon runs at
+  normal integrity and Windows does not deliver keys from an elevated window
+  to it. Typing `ctrl+super+alt+T` by hand still works there — that path
+  does not go through the hook — so this is a gap, not a dead end.
+- **It conflicts with other remappers.** If kanata, PowerToys Keyboard
+  Manager or an AutoHotkey script already claims Caps Lock, beckon never
+  sees the key. Use one of them, not both.
+- **It installs a low-level keyboard hook,** which is the same mechanism
+  every remapper uses and the same one antivirus software associates with
+  keyloggers. beckon does not install it unless you turn this on.
 
 Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
 is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named

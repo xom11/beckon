@@ -694,6 +694,51 @@ Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary w
   absent from the registry on a plain `kwin_wayland`, so a Wayland-protocol
   client cannot enumerate windows even though the protocol exists on paper.
 
+### Caps Lock as the beckon key (Windows) — the LLHOOK exception
+
+`keyboard.caps = true` installs a `WH_KEYBOARD_LL` hook. That **reverses**
+the decision recorded under *Open questions → 1* that beckon uses
+"RegisterEventHotKey / RegisterHotKey: no event tap, no LLHOOK". The reversal
+is deliberate and narrow: one opt-in feature, off by default, on one OS.
+
+Caps is an **alias for `ctrl+super+alt`**, not a fifth modifier. The hook
+injects the chord `RegisterHotKey` already listens for, so `Combo`,
+`parse_shortcuts` and `register_all` are untouched and the config file is
+identical on a machine with the tick and one without. Decisions live in
+`beckon_core::caps::decide` (pure, tested on all three CI jobs);
+`beckon-windows/src/caps_hook.rs` only translates `KBDLLHOOKSTRUCT` to
+`SendInput`.
+
+Two hazards are removed by construction, not guarded against, and both are
+easy to reintroduce by "simplifying":
+
+- **The chord is injected as one burst.** Holding `ctrl+win+alt` down across
+  real time would make a bare Caps tap press and release Win alone — the
+  gesture that opens the Start menu.
+- **Only keys bound to the chord are injected for.** Otherwise
+  `Caps+<anything>` becomes a genuine `ctrl+win+alt` chord the shell may act
+  on.
+
+**The hook must never call `backend.beckon()`.** A callback that outruns
+`LowLevelHooksTimeout` (300 ms default) is silently unhooked by Windows with
+no error anywhere, and `backend.beckon()` measured ~57 ms typical / ~945 ms
+on the miss path. The alias design keeps the callback at a hash lookup plus
+one `SendInput`; the real work happens later on the ordinary `WM_HOTKEY`
+path.
+
+Known gaps, documented in the README rather than hidden:
+
+- **UIPI.** beckon runs at normal integrity, so the hook never sees keys
+  while an elevated window has focus; Caps silently does nothing there. The
+  typed `ctrl+super+alt+t` chord still works, because `RegisterHotKey` is
+  not subject to UIPI — there is always a fallback.
+- **Other remappers.** kanata / PowerToys / AHK claiming Caps means beckon
+  never sees it. Detection is unreliable; documented, not guessed.
+- **EDR.** A low-level keyboard hook is the classic keylogger signature.
+
+`set_paused(true)` must unhook. Leaving it installed while paused would
+swallow Caps while nothing works — the worst available state.
+
 ### macOS Accessibility permission
 Required to focus arbitrary apps. Permission is bound to the codesigned binary identity — rebuilding the binary may invalidate it and require re-granting in System Settings.
 
@@ -805,12 +850,15 @@ zbus       = "4"      # session bus client for the GNOME Shell extension bridge
 # freedesktop-desktop-entry = "0.7"    # currently we parse .desktop ourselves
 
 # resident mode (check / serve, since 2026-08)
-toml   = "0.8"    # beckon-core: parse the shortcuts file
-notify = "6"      # beckon-cli:  watch it for live reload
-fs4    = "0.8"    # beckon-cli:  flock, one serve per config path
+toml      = "0.8"    # beckon-core: parse the shortcuts file
+toml_edit = "0.22"   # beckon-core: WRITE it back, keeping comments. Already
+                     #   a transitive dep of toml 0.8, so it costs nothing.
+notify    = "6"      # beckon-cli:  watch it for live reload
+fs4       = "0.8"    # beckon-cli:  flock, one serve per config path
 ```
 
-The **only** file beckon reads is the `serve` shortcuts TOML. There is still
+The **only** file beckon reads is the `serve` shortcuts TOML — and since the
+settings window, the only file it writes. There is still
 no config for `beckon <id>` itself and no resolve cache — ids resolve against
 OS metadata on every call.
 
@@ -818,17 +866,24 @@ OS metadata on every call.
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
 - **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `serve` registers via RegisterEventHotKey / RegisterHotKey.
-- **GUI / TUI** — CLI only, with one exception: `beckon-serve.exe`'s tray
-  context menu (Windows). That menu is `serve`'s control surface — reload,
-  pause, open the config, open the log, toggle autostart, quit — not a
-  launcher UI; it never lists or picks an app. A settings window that lets
-  you *assign* a shortcut by pressing it is deliberately still deferred: the
-  stock `msctls_hotkey32` control cannot capture the Windows key, and
-  `Win+T` and its siblings are shell hotkeys that Explorer consumes before a
-  normal window ever sees them — so whether a chord like `ctrl+win+alt+t`
-  can be captured in a plain window at all has to be measured on real
-  hardware before any toolkit gets chosen. See *Deferred: the settings
-  window* in `docs/superpowers/specs/2026-08-10-windows-serve-app-design.md`.
+- **GUI / TUI** — CLI only, with one exception, which is Windows-only and is
+  `serve`'s control surface rather than a launcher: `beckon-serve.exe`'s
+  tray context menu (reload, pause, open the log, toggle autostart, quit)
+  and the settings window it opens.
+
+  The window shows the shortcut table with per-row registration state,
+  edits it, and writes the same TOML back through `toml_edit` so hand
+  edits and window edits stay interchangeable. It lists installed apps
+  only to fill in a Name while authoring a binding — the job `beckon
+  search` already has — and never focuses or launches anything. Design:
+  `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`.
+
+  **Chord capture stays out.** Combos are typed as text. `msctls_hotkey32`
+  cannot capture the Windows key, and `Win+T` and its siblings are shell
+  hotkeys Explorer consumes before a normal window sees them — so a capture
+  field would fail on precisely the chords beckon recommends. This is what
+  let the window ship without the hardware measurement the 2026-08-10 spec
+  demanded: the feature that needed it was not built.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `search` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.
 - **PWA install helper** — user installs PWAs manually via Brave/Chrome's "Install this site as an app". beckon does not wrap this.
