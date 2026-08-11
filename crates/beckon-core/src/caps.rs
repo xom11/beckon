@@ -1,14 +1,15 @@
 //! Caps Lock as the beckon key: the decision half.
 //!
-//! Caps is an ALIAS for `ctrl+super+alt`, not a fifth modifier. The hook
-//! injects the chord `RegisterHotKey` is already listening for, so `Combo`,
-//! `parse_shortcuts` and `register_all` are untouched — and, critically,
-//! the hook never calls `backend.beckon()`. A `WH_KEYBOARD_LL` callback
-//! that outruns `LowLevelHooksTimeout` (300 ms by default) is silently
-//! unhooked by Windows with no error anywhere, and `backend.beckon()` was
-//! measured at ~57 ms typical and ~945 ms on the miss path. Here the
-//! callback does a hash lookup and at most one `SendInput`; the real work
-//! happens later on the ordinary `WM_HOTKEY` path.
+//! Caps is an ALIAS for the configured chord -- `ctrl+super+alt` by default
+//! -- not a fifth modifier. The hook injects the chord `RegisterHotKey` is
+//! already listening for, so `Combo`, `parse_shortcuts` and `register_all`
+//! are untouched — and, critically, the hook never calls `backend.beckon()`.
+//! A `WH_KEYBOARD_LL` callback that outruns `LowLevelHooksTimeout` (300 ms
+//! by default) is silently unhooked by Windows with no error anywhere, and
+//! `backend.beckon()` was measured at ~57 ms typical and ~945 ms on the
+//! miss path. Here the callback does a hash lookup and at most one
+//! `SendInput`; the real work happens later on the ordinary `WM_HOTKEY`
+//! path.
 //!
 //! Windows-only in effect, but it lives in `beckon-core` because CI passes
 //! `--exclude beckon-windows` on the Linux and macOS jobs. A keyboard state
@@ -137,8 +138,8 @@ fn modifier_vks(hold: Chord) -> Vec<u32> {
 /// release the Windows key with nothing in between, which is exactly the
 /// gesture that opens the Start menu; and with the modifiers physically
 /// held, `Caps+<any key>` becomes a genuine ctrl+win+alt chord the shell
-/// may act on. Here Win always has a real key between its down and its up,
-/// and only bound keys are ever injected for.
+/// may act on. Here every modifier in the burst has a real key between its
+/// own down and its own up, and only bound keys are ever injected for.
 fn chord(hold: Chord, vk: u32) -> Vec<Stroke> {
     let mods = modifier_vks(hold);
     let mut out = Vec::with_capacity(mods.len() * 2 + 2);
@@ -172,12 +173,13 @@ fn tap(vk: u32) -> Vec<Stroke> {
     ]
 }
 
-/// Release the three modifiers the chord presses, unconditionally.
+/// Release the modifiers that chord presses, unconditionally.
 ///
 /// Emitted when Caps is released after at least one chord. Releasing a key
 /// that is already up is a no-op, so the cost is one extra `SendInput`; the
 /// cost of NOT doing it is a keyboard where every subsequent key is silently
-/// a `ctrl+win+alt` chord, which is unrecoverable without killing beckon.
+/// held down by whichever modifiers that chord presses, which is
+/// unrecoverable without killing beckon.
 ///
 /// This exists because the chord's own key-ups are not guaranteed to land.
 /// `SendInput` can insert fewer events than asked for -- UIPI blocks it
@@ -187,12 +189,18 @@ fn tap(vk: u32) -> Vec<Stroke> {
 /// on the miss path) and pumps the message queue while it does. Anything in
 /// that window can reorder or drop what follows.
 ///
-/// The burst OPENS WITH A FILLER KEY, and that is load-bearing. The
-/// invariant `chord()` satisfies -- every modifier has a non-modifier key
-/// between its own down and its own up -- spans both bursts, because the
-/// down happened in the chord and the up happens here. In the exact case
-/// this function exists for (the chord was truncated after `Win` down), a
-/// bare `Win` up is the Start-menu gesture. `VK_NONAME` breaks the pair.
+/// The burst OPENS WITH A FILLER KEY, and that is load-bearing regardless of
+/// how many modifiers this chord has. The invariant `chord()` satisfies --
+/// every modifier has a non-modifier key between its own down and its own
+/// up -- spans both bursts, because the down happened in the chord and the
+/// up happens here. The hazard is specific to Win: when the chord includes
+/// `super_` and its down landed but its own up did not, a bare `Win` up
+/// here -- with nothing between it and the down that came before, across
+/// two separate `SendInput` calls -- is the Start-menu gesture. `VK_NONAME`
+/// breaks that pair. A chord without `super_` never hits this case, but the
+/// filler stays unconditional so this function does not need to know which
+/// modifier is dangerous -- one extra harmless `SendInput` is cheaper than
+/// that knowledge going stale the next time the hazard changes.
 fn release_modifiers(hold: Chord) -> Vec<Stroke> {
     let mut out = vec![
         Stroke {
@@ -251,7 +259,8 @@ pub fn decide(
             if used {
                 // See `release_modifiers`: the chord's own key-ups are not
                 // guaranteed to have landed, and the failure mode is a
-                // keyboard where every key is silently a ctrl+win+alt chord.
+                // keyboard where every key is silently held down by
+                // whichever modifiers that chord presses.
                 // Only worth doing when a chord was actually injected, and
                 // then only for the chord that was ACTUALLY injected -- the
                 // file watcher can reload `hold` between Caps-down and
