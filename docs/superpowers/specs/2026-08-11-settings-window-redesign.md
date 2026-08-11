@@ -175,10 +175,9 @@ change with it:
 
 ```
 ┌ beckon — shortcuts.toml ──────────────────────────── ─ □ ✕ ┐
-│ ☑ Beckon key  [Ctrl] [Win] [Alt] [Shift]                    │  1  settings
-│ ☑ Caps Lock can be the beckon key too — hold it with        │     about the
-│   another key to run a shortcut, tap alone to send [Caps ▾]  │     list below
-├─────────────────────────────────────────────────────────────┤
+│ Beckon key [Ctrl][Win][Alt][Shift] │ ☐ Use Caps Lock instead │  1  a setting
+├─────────────────────────────────────────────────────────────┤     about the
+                                                                    list below
 │  [banner: file changed on disk    (Reload) (Keep mine)]     │     only when needed
 │  Shortcuts              [🔍 Filter] [Remove 2] [+ Add]      │  2
 │ ┌─────────────────────────────────────────────────────────┐ │
@@ -1078,30 +1077,50 @@ It is a setting *about* the shortcuts below it, not one of them, so it is
 separated above the list with its own background and a rule beneath — not
 parked at the bottom next to the command bar, where it read as an afterthought.
 
+It is **one row with two states**, not two rows. There is a single checkbox,
+and it is `keyboard.caps` — because if Caps Lock *is* the beckon key, then
+"turn the beckon key on" and "use Caps Lock" are the same act, and two
+checkboxes for one decision is what made the first draft three lines tall.
+
+**Off — the default:**
+
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ ☑ Beckon key   [Ctrl] [Win] [Alt] [Shift]                          │
-│ ☑ Caps Lock can be the beckon key too — hold it with another key   │
-│   to run a shortcut, tap it alone to send [ Caps Lock ▾ ]          │
-├────────────────────────────────────────────────────────────────────┤
-│  Shortcuts                        [🔍 Filter] [Remove 2] [+ Add]   │
-│  …                                                                 │
+│ Beckon key  [Ctrl] [Win] [Alt] [Shift]   │  ☐ Use Caps Lock instead - one key instead of three │
 ```
 
-### The enable tick, and what "off" means
+**On:**
 
-The band leads with a checkbox, **ticked by default**. Unticked, the beckon
-key stops existing as a concept: new rows are not prefilled with it, the list
-stops dimming a shared prefix, and **Caps Lock becomes unavailable**, because
-Caps is an alias for the beckon key and an alias for nothing is nothing. Every
-existing shortcut keeps working exactly as written — turning the beckon key
-off changes no binding, only the authoring help.
+```
+│ ☑ Beckon key  [Caps Lock]  tap alone sends [Caps Lock ▾]  │  same as [Ctrl][Win][Alt][Shift]   │
+│ ⓘ Turning this on installs a keyboard hook while beckon runs. Untick it and beckon never       │
+│   installs one.                                                                                │
+```
 
-In the file this is `keyboard.beckon_key = ""`. An empty string is off;
-`KeyboardConfig.beckon_key` becomes `Option<Chord>`. This costs no new key,
-keeps the write-only-when-non-default rule from §C.2 intact for everyone who
-never touches it, and makes `caps = true` with no beckon key a hard error with
-a message that names the cause.
+Off, the beckon key *is* the chord and the chips are what you edit. On, Caps
+becomes the key you press and the chord demotes to `same as` — still present,
+because the file stores chords, `RegisterHotKey` registers chords, and typing
+the chord by hand is the only path that survives an elevated window having
+focus.
+
+**`Caps Lock` is a static label, not a control.** It is the only key the alias
+can be: the whole feature is that the key under your left little finger is
+otherwise wasted.
+
+### Default off, and the invitation is the label
+
+`keyboard.caps` stays `false` by default, unchanged. A default of `true` would
+mean every fresh install calls `SetWindowsHookExW` — and today a default
+install **never** does, which is the load-bearing half of the EDR argument for
+a publicly distributed binary. That decision stands.
+
+What changes is that the option stops being hidden. In the off state the
+checkbox's own label is the pitch — *"Use Caps Lock instead — one key instead
+of three"* — sitting on the first row of the window rather than in a group box
+below the fold. The sentence next to it in the on state states the cost in
+plain language, because a user is entitled to know what ticking it installs.
+
+This is deliberately **not** a first-run prompt: that is a second modal moment
+on a path this spec already refuses one for (§E.2).
 
 ### The Caps line says what Caps actually does
 
