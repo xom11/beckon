@@ -10,6 +10,42 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`
 
+## Status — 2026-08-11, branch `settings-window-and-caps`
+
+| Task | State |
+|---|---|
+| 1 `parse_config` | **done**, tested on the host |
+| 2 `config_write` | **done**, tested on the host |
+| 3 `caps::decide` | **done**, tested on the host |
+| 4 `settings::Model` | **done**, tested on the host |
+| 5 per-shortcut results | **done**, tested on the host |
+| 6 measurement on a14 | **probe written and typechecked; NOT RUN** |
+| 7 Caps hook | **BLOCKED on Task 6** |
+| 8 window frame | **done**, typechecked via `WINCHECK`; never executed |
+| 9 window wiring | **done**, typechecked via `WINCHECK`; never executed |
+| 10 starter template | **done**, tested on the host |
+| 11 documentation | **done** (probe deletion deferred until Task 6 runs) |
+
+159 tests pass on the macOS host; both `WINCHECK` commands are clean. Nothing
+in tasks 8 and 9 has ever been executed — `cargo check` does not run a
+message loop.
+
+**Do not merge this branch yet.** Tasks 1–5 and 8–10 are real, but the
+settings window's **Use Caps Lock** tick box currently writes
+`keyboard.caps = true` into the config and nothing reads it, because the
+hook that would act on it is Task 7. Shipping that would be a control that
+visibly does nothing. Either land Task 7 first, or disable the Keyboard
+group until it lands.
+
+Two deviations from the plan as written, both recorded in commits:
+
+1. **`caps` and `settings` moved to `beckon-core`**, not `beckon-cli`
+   (commit `9d28f5a`). Both depend only on `beckon-core`, and
+   `beckon-windows` may not depend on `beckon-cli` — so leaving them where
+   the plan put them would have forced a full mirror of `ControlState` and
+   `Action` inside `beckon-windows`. CI coverage is identical.
+2. **The probe is not deleted** in Task 11, because Task 6 has not run.
+
 ## Global Constraints
 
 - **MSRV is 1.75** (`workspace.package.rust-version`). No API newer than that.
