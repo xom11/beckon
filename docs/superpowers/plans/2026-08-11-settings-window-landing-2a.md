@@ -536,6 +536,8 @@ Keep `CBS_DROPDOWN`, not `DROPDOWNLIST` — beckon deliberately supports apps wi
 | §B.7 read-only mode, App combo fix | 10 |
 | Measurement that 2a's tokens depend on | 2 |
 
+**Shipped narrower than the table reads, on purpose (recorded 2026-08-12, after the branch review):** band 2 above says `Shortcuts`, a filter `EDIT`, `Remove N`, `+ Add`. **Neither the filter `EDIT` nor the `Remove N` caption shipped.** The filter was split out and the branch is coherent without it — an eight-row list over a config of that size does not need one. The count in the caption was dropped because `layout` sizes every button from `text_size` of its own caption, so a caption that grows with the tick count becomes another `layout` input, and honouring it on a data push means `SetWindowPos` on the populated App combo — the measured data-loss path `Ui::shown_external` exists to close. The multi-delete itself did ship: `Model::remove_pressed`, ticks over selection.
+
 **Not here, by design:** capture, the availability probe, and the Caps `Hold`/`Tap` row — Landing 2b. Suggestions — Landing 3.
 
 **The one thing this plan cannot fix:** Task 2 may come back saying the display is still at 100 %, in which case the tokens are correct at their base DPI and the 150 % behaviour stays owed. Do not let that block the landing; record it and move on.
