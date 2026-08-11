@@ -832,24 +832,68 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 ///
 /// 1. **Focus.** `ShowWindow(SW_HIDE)` does not move focus off the child it
 ///    hides, so clicking `Reload` leaves focus on a button that has vanished
-///    -- where Space would press it again. Focus goes to the window itself:
-///    always visible, always enabled, and `IsDialogMessageW` tabs out of it
-///    into the control table. Only for a HIDDEN button; a *disabled* one
-///    already raises `BN_KILLFOCUS`, which the existing arm handles.
+///    -- where Space would press it again. Focus goes to `IDC_CLOSE`,
+///    looked up with `GetDlgItem` -- **not to the window itself.** An
+///    earlier version of this fix parked focus on `hwnd` on the theory that
+///    `IsDialogMessageW` would then tab out of it into the control table;
+///    that is true for a real dialog, where `DefDlgProc`'s `WM_SETFOCUS`
+///    forwards focus to the first tabstop, but this window is a custom
+///    class driven by plain `DefWindowProc`, which has no such arm. Without
+///    it, `IsDialogMessageW`'s Tab branch resolves through
+///    `GetNextDlgTabItem(h, msg.hwnd, ...)`, which returns NULL unless
+///    `msg.hwnd` is `IsChild` of `h` -- and a window is never its own child
+///    -- so Tab went dead until the user clicked a control. Caught in
+///    review, not measured on a14; see the hardware-fixes report for the
+///    corrected probe. `IDC_CLOSE` is always present, always enabled (even
+///    in the read-only state -- see `ControlState::editable`), and it is
+///    never the button being hidden out from under focus here, so this
+///    cannot recurse into needing its own repair. Only for a HIDDEN button;
+///    a *disabled* one already raises `BN_KILLFOCUS`, which the existing arm
+///    handles.
 /// 2. **The ring**, read AFTER the focus move so it sees the
-///    `BN_KILLFOCUS` that move just raised.
+///    `BN_SETFOCUS`/`BN_KILLFOCUS` pair that move just raised. Because
+///    `IDC_CLOSE` is itself a push button, the ring follows focus onto it
+///    (the same "ring follows focus" rule `handle_command` applies to every
+///    other Tab step, e.g. onto `Remove`) rather than resting on `HOME`.
+///    That is intentional, not a leftover of the old `hwnd` target: Close is
+///    always a safe place for Enter or Space to land, because both route
+///    through `on_close_request` -- the same gate Esc and the title-bar [X]
+///    already use -- so a stray press asks before it discards anything; it
+///    does not silently reload like the button this repair is fleeing.
 ///
 /// **Borrows.** `SetFocus` re-enters this wndproc and `set_default_id` sends
 /// `BM_SETSTYLE`; a second `UI` borrow across either would abort the process.
-/// No borrow is held here across anything: `GetFocus`/`GetDlgCtrlID` take
-/// none, the `defid` read is taken and dropped inside its own `UI.with`, and
-/// `set_default_id` takes and drops its own before it sends.
+/// No borrow is held here across anything: `GetFocus`/`GetDlgCtrlID`/
+/// `GetDlgItem` take none, the `defid` read is taken and dropped inside its
+/// own `UI.with`, and `set_default_id` takes and drops its own before it
+/// sends.
 unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: bool) {
     let focus = GetFocus();
     if !focus.is_invalid() {
         let fid = GetDlgCtrlID(focus);
         if is_push_button(fid) && !default_button_of(fid).visible(external_change) {
-            let _ = SetFocus(Some(hwnd));
+            match GetDlgItem(Some(hwnd), IDC_CLOSE) {
+                Ok(close) => {
+                    let _ = SetFocus(Some(close));
+                }
+                Err(_) => {
+                    // Unreached in practice: `IDC_CLOSE` is created
+                    // unconditionally in `build_children`, long before this
+                    // function can ever run. But a hidden button holding
+                    // focus is the Space hazard this function exists to
+                    // close, so fall back to the window itself rather than
+                    // leave focus stranded on a vanished control -- a dead
+                    // Tab key is a smaller defect than Space reaching a
+                    // hidden button.
+                    if beckon_core::verbose() {
+                        eprintln!(
+                            "verbose: settings window: GetDlgItem(IDC_CLOSE) \
+                             failed while moving focus off a hidden button"
+                        );
+                    }
+                    let _ = SetFocus(Some(hwnd));
+                }
+            }
         }
     }
     let cur = UI

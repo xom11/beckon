@@ -1798,6 +1798,29 @@ mod tests {
         );
     }
 
+    /// `pressable`'s `Save` arm is never reached THROUGH `default_button`:
+    /// the `current == HOME` early return intercepts it first (that is what
+    /// the test above pins), so `default_button` never calls
+    /// `Save.pressable(...)`. And the one place that arm does run today --
+    /// `the_default_is_never_left_on_a_hidden_button`'s
+    /// `got.pressable(st, external) || got == DefaultButton::HOME` -- does
+    /// not depend on its answer, because the `|| got == HOME` half already
+    /// makes the assertion pass whenever `got` is `Save`. `pressable` is
+    /// `pub` and its own doc comment promises every arm reads the same
+    /// `ControlState` field the window's `enable` call does; nothing today
+    /// calls it directly with `Save` to hold that promise to account, so
+    /// this test does.
+    #[test]
+    fn pressable_save_mirrors_apply_enabled() {
+        let rest = rest_state();
+        assert!(!rest.apply_enabled, "precondition: nothing to save");
+        assert!(!DefaultButton::Save.pressable(&rest, false));
+
+        let busy = busy_state();
+        assert!(busy.apply_enabled, "precondition: a live edit exists");
+        assert!(DefaultButton::Save.pressable(&busy, false));
+    }
+
     #[test]
     fn the_read_only_state_leaves_the_default_on_save_or_an_escape() {
         // A file that did not parse: everything that mutates is off, and the

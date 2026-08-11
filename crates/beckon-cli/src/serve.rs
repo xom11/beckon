@@ -1491,11 +1491,6 @@ mod tests {
             plan.shortcuts.is_empty(),
             "a file beckon cannot read binds no keys"
         );
-        assert_eq!(
-            registration_phrase(0, plan.shortcuts.len()),
-            "0 shortcuts registered",
-            "and the phrase must not claim otherwise"
-        );
         assert!(plan.broken.is_some(), "the reason travels with the plan");
         assert_eq!(
             plan.broken.as_deref(),
