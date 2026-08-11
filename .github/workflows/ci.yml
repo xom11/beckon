@@ -42,5 +42,26 @@ jobs:
         run: cargo build --workspace ${{ matrix.exclude_flags }} --all-targets
       - name: Test
         run: cargo test --workspace ${{ matrix.exclude_flags }}
+      - name: manifest reached the binary
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          # embed-resource swallows resource-compilation failures silently, so
+          # the only trustworthy check is reading the artefact back. The
+          # manifest is stored as raw UTF-8 XML in the resource section, so a
+          # byte search for its most distinctive literal is sufficient --
+          # nothing else in beckon contains this string. It cannot tell
+          # RT_MANIFEST from an incidental copy, which is a limit worth
+          # accepting for two lines of CI.
+          $exe = "target/debug/beckon-serve.exe"
+          if (-not (Test-Path $exe)) { throw "not built: $exe" }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $text  = [Text.Encoding]::UTF8.GetString($bytes)
+          foreach ($needle in @("Microsoft.Windows.Common-Controls", "PerMonitorV2")) {
+            if ($text -notmatch [regex]::Escape($needle)) {
+              throw "manifest missing from $exe (no '$needle'). embed-resource fails silently; check beckon.rc and beckon.exe.manifest."
+            }
+          }
+          Write-Host "manifest present"
       - name: Clippy
         run: cargo clippy --workspace ${{ matrix.exclude_flags }} --all-targets -- -D warnings
