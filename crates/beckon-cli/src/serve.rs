@@ -1195,9 +1195,10 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 {
                     let mut s = st.borrow_mut();
                     if let Some(m) = s.settings.as_mut() {
-                        if let Some(i) = m.selected {
-                            m.remove_row(i);
-                        }
+                        // Ticks first, selection as the fallback -- the whole
+                        // decision is `Model::remove_pressed`, in beckon-core
+                        // where all three CI jobs test it.
+                        m.remove_pressed();
                     }
                 }
                 refresh_settings(&st);

@@ -128,8 +128,19 @@ pub struct ControlState {
     pub dirty: bool,
     pub apply_enabled: bool,
     pub remove_enabled: bool,
-    /// How many rows are ticked. The window uses this to caption the
-    /// remove button `Remove N`.
+    /// How many rows are ticked.
+    ///
+    /// **The button's caption stays the constant `Remove`**, and this field
+    /// does not feed it. The plan asked for `Remove N`, but `layout` sizes
+    /// every button from `text_size` of its own caption, so a caption that
+    /// grows with the tick count is one more input to `layout` -- and the
+    /// only way to honour it on a data push is to call `layout`, which
+    /// `SetWindowPos`es the populated App combo and throws away what the user
+    /// typed. That is the measured data-loss bug `Ui::shown_external` exists
+    /// to prevent; a live count is not worth reopening it.
+    ///
+    /// What the count IS for: `remove_enabled`, so a window whose selection
+    /// sits elsewhere still offers Remove for the ticked rows.
     pub marked_count: usize,
     /// May the user change the file through this window at all?
     ///
@@ -278,6 +289,26 @@ impl Model {
             self.selected.map(|sel| sel.min(self.rows.len() - 1))
         };
         self.dirty = true;
+    }
+
+    /// What the Remove button does -- the WHOLE of what it does.
+    ///
+    /// **Ticks win over the selection.** Clicking a tick box also moves the
+    /// highlight onto that row, so after ticking rows 1 and 3 the selection
+    /// is 3, and a selection-only Remove would delete row 3, leave row 1
+    /// ticked, and clamp the highlight onto a row the user never touched --
+    /// so the NEXT press deletes that one. A tick box that a destructive
+    /// button with no confirm and no undo ignores is worse than no tick box.
+    ///
+    /// It lives here, not in the wndproc's `on_remove` closure, for the same
+    /// reason `default_button_of` does: `beckon-windows` compiles on one of
+    /// the three CI jobs, and this decision is worth a test on all three.
+    pub fn remove_pressed(&mut self) {
+        if self.marked_count() > 0 {
+            self.remove_marked();
+        } else if let Some(i) = self.selected {
+            self.remove_row(i);
+        }
     }
 
     pub fn set_caps(&mut self, on: bool) {
@@ -617,7 +648,11 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         caps_tap: m.keyboard.caps_tap,
         dirty: m.dirty(),
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
-        remove_enabled: m.selected.is_some(),
+        // Either gesture arms the button, because either gesture is one
+        // `remove_pressed` acts on. Selection-only left Remove greyed out on
+        // a window whose only ticks were made without ever landing the
+        // highlight on one of them.
+        remove_enabled: m.selected.is_some() || m.marked_count() > 0,
         marked_count: m.marked_count(),
         // There is a `Model`, therefore the file parsed, therefore it can be
         // edited. The only `false` in the program is `unreadable_state`.
@@ -1498,6 +1533,70 @@ mod tests {
             "B shifted down by the one removed row ahead of it"
         );
         assert_eq!(m.rows[m.selected.unwrap()].app, "B");
+    }
+
+    /// The whole point of the tick boxes, and the test that fails loudly if
+    /// the button is ever rewired back to the selection alone.
+    ///
+    /// Discriminating by construction: the marks and the selection name
+    /// DIFFERENT rows, and the two readings disagree about every row. Marks
+    /// win -> `A` and `C` go, `B` stays. Selection wins -> `B` goes, `A` and
+    /// `C` stay, still ticked. Nothing about this passes both ways.
+    #[test]
+    fn remove_takes_the_ticked_rows_not_the_selected_one() {
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\"=\"A\"\n\"ctrl+alt+b\"=\"B\"\n\"ctrl+alt+c\"=\"C\"\n")
+                .unwrap();
+        m.set_marked(0, true); // A
+        m.set_marked(2, true); // C
+        m.selected = Some(1); // B -- ticked by nobody
+        m.remove_pressed();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
+        assert_eq!(
+            apps,
+            vec!["B"],
+            "Remove must take every ticked row; taking the selected row instead \
+             leaves a tick box that lies on a button with no undo"
+        );
+    }
+
+    /// The other half: no ticks at all, and Remove still has to work.
+    #[test]
+    fn remove_falls_back_to_the_selection_when_nothing_is_ticked() {
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\"=\"A\"\n\"ctrl+alt+b\"=\"B\"\n\"ctrl+alt+c\"=\"C\"\n")
+                .unwrap();
+        m.selected = Some(1);
+        m.remove_pressed();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
+        assert_eq!(apps, vec!["A", "C"]);
+    }
+
+    /// And with neither, it is a no-op rather than a panic -- `on_remove`
+    /// reaches this from a wndproc, where an unwind is undefined behaviour.
+    #[test]
+    fn remove_with_no_ticks_and_no_selection_does_nothing() {
+        let mut m = model();
+        let before = m.rows.len();
+        m.selected = None;
+        m.remove_pressed();
+        assert_eq!(m.rows.len(), before);
+        assert!(!m.dirty(), "a no-op must not arm Save");
+    }
+
+    /// Ticks alone arm the button. Before this, a user who ticked rows and
+    /// then clicked into the empty space below the list -- or opened a
+    /// window whose selection was never set -- found Remove greyed out with
+    /// three rows visibly ticked.
+    #[test]
+    fn ticks_alone_enable_remove() {
+        let mut m = model();
+        m.selected = None;
+        assert!(!control_state(&m, &status_all_ok()).remove_enabled);
+        m.set_marked(0, true);
+        let cs = control_state(&m, &status_all_ok());
+        assert!(cs.remove_enabled);
+        assert_eq!(cs.marked_count, 1);
     }
 
     // ---------- the file did not parse ----------
