@@ -100,7 +100,11 @@ impl Model {
                 let canon = s.combo.canonical();
                 let raw = order
                     .iter()
-                    .find(|k| Combo::parse(k).map(|c| c.canonical() == canon).unwrap_or(false))
+                    .find(|k| {
+                        Combo::parse(k)
+                            .map(|c| c.canonical() == canon)
+                            .unwrap_or(false)
+                    })
                     .cloned();
                 Row {
                     orig_key: raw.clone(),

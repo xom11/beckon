@@ -105,7 +105,10 @@ mod tests {
         let rows = vec![row("alt+ctrl+t", "Terminal"), row("ctrl+alt+e", "Files")];
         let out = render(original, &rows, &KeyboardConfig::default()).unwrap();
         assert!(out.contains("# my keys"), "header comment lost:\n{out}");
-        assert!(out.contains("# the good one"), "trailing comment lost:\n{out}");
+        assert!(
+            out.contains("# the good one"),
+            "trailing comment lost:\n{out}"
+        );
         assert!(
             out.contains("\"alt+ctrl+t\""),
             "an untouched row was re-spelled:\n{out}"

@@ -331,7 +331,10 @@ unsafe fn build_children(hwnd: HWND) {
             (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize,
         )),
     );
-    for (i, (title, cx)) in [("", 34), ("Shortcut", 190), ("App", 150)].iter().enumerate() {
+    for (i, (title, cx)) in [("", 34), ("Shortcut", 190), ("App", 150)]
+        .iter()
+        .enumerate()
+    {
         let mut t = wide(title);
         let col = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
@@ -364,14 +367,7 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_COMBO,
         font,
     );
-    child(
-        hwnd,
-        w!("STATIC"),
-        "App",
-        SS_LEFT_STYLE,
-        IDC_LBL_APP,
-        font,
-    );
+    child(hwnd, w!("STATIC"), "App", SS_LEFT_STYLE, IDC_LBL_APP, font);
     // CBS_DROPDOWN, not CBS_DROPDOWNLIST: beckon deliberately supports apps
     // with no Start Menu entry, so free typing must stay possible even once
     // the catalog has loaded.
@@ -383,14 +379,7 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_APP,
         font,
     );
-    let notes = child(
-        hwnd,
-        w!("STATIC"),
-        "",
-        SS_LEFT_STYLE,
-        IDC_NOTES,
-        font,
-    );
+    let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, font);
 
     child(
         hwnd,
@@ -543,7 +532,12 @@ unsafe fn layout(hwnd: HWND) {
     let kb_h = s(72);
     let btn_h = s(26);
     let bottom_h = btn_h + pad;
-    let banner_h = if UI.with(|u| u.borrow().as_ref().map(|x| x.external_change).unwrap_or(false)) {
+    let banner_h = if UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .map(|x| x.external_change)
+            .unwrap_or(false)
+    }) {
         row + pad
     } else {
         0
@@ -596,7 +590,13 @@ unsafe fn layout(hwnd: HWND) {
     place_h(app, rx, y, rw, row * 8);
     y += row + s(10);
     place_h(notes, rx, y, rw, mid_h - (y - top) - btn_h - s(6));
-    place(IDC_APPLY, rx + rw - s(84), top + mid_h - btn_h, s(84), btn_h);
+    place(
+        IDC_APPLY,
+        rx + rw - s(84),
+        top + mid_h - btn_h,
+        s(84),
+        btn_h,
+    );
 
     let ky = top + mid_h + pad;
     place(IDC_GRP_KEYBOARD, pad, ky, w - pad * 2, kb_h);
@@ -619,9 +619,11 @@ unsafe fn layout(hwnd: HWND) {
 /// screen; the window never reads the model.
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
     let Some((hwnd, list, combo, app, notes, banner, reload, keep)) = UI.with(|u| {
-        u.borrow()
-            .as_ref()
-            .map(|x| (x.hwnd, x.list, x.combo, x.app, x.notes, x.banner, x.reload, x.keep))
+        u.borrow().as_ref().map(|x| {
+            (
+                x.hwnd, x.list, x.combo, x.app, x.notes, x.banner, x.reload, x.keep,
+            )
+        })
     }) else {
         return;
     };
@@ -742,7 +744,9 @@ unsafe fn check(parent: HWND, id: i32, on: bool) {
         SendMessageW(
             h,
             BM_SETCHECK,
-            Some(WPARAM(if on { BST_CHECKED.0 } else { BST_UNCHECKED.0 } as usize)),
+            Some(WPARAM(
+                if on { BST_CHECKED.0 } else { BST_UNCHECKED.0 } as usize
+            )),
             Some(LPARAM(0)),
         );
     }
@@ -756,8 +760,14 @@ unsafe fn check(parent: HWND, id: i32, on: bool) {
 /// nothing but the scan.
 pub fn post_catalog(target: WindowHandle, names: Vec<String>) {
     let boxed = Box::into_raw(Box::new(names));
-    let posted =
-        unsafe { PostMessageW(Some(target.0), WM_CATALOG, WPARAM(0), LPARAM(boxed as isize)) };
+    let posted = unsafe {
+        PostMessageW(
+            Some(target.0),
+            WM_CATALOG,
+            WPARAM(0),
+            LPARAM(boxed as isize),
+        )
+    };
     if posted.is_err() {
         drop(unsafe { Box::from_raw(boxed) });
     }
@@ -813,7 +823,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let nm = &*(lp.0 as *const NMHDR);
                 if nm.idFrom == IDC_LIST as usize && nm.code == LVN_ITEMCHANGED {
                     let lv = &*(lp.0 as *const NMLISTVIEW);
-                    if (lv.uNewState & LVIS_SELECTED.0) != 0 && (lv.uOldState & LVIS_SELECTED.0) == 0
+                    if (lv.uNewState & LVIS_SELECTED.0) != 0
+                        && (lv.uOldState & LVIS_SELECTED.0) == 0
                     {
                         let i = lv.iItem as usize;
                         with_cb(|cb| (cb.on_select)(i));
@@ -946,7 +957,13 @@ fn selected_combo_text(app: HWND) -> Option<String> {
         if i < 0 {
             return None;
         }
-        let len = SendMessageW(app, CB_GETLBTEXTLEN, Some(WPARAM(i as usize)), Some(LPARAM(0))).0;
+        let len = SendMessageW(
+            app,
+            CB_GETLBTEXTLEN,
+            Some(WPARAM(i as usize)),
+            Some(LPARAM(0)),
+        )
+        .0;
         if len <= 0 {
             return None;
         }

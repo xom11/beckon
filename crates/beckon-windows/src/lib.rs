@@ -20,9 +20,9 @@ pub mod apps;
 #[cfg(target_os = "windows")]
 pub mod autostart;
 #[cfg(target_os = "windows")]
-pub mod caps_hook;
-#[cfg(target_os = "windows")]
 mod backend;
+#[cfg(target_os = "windows")]
+pub mod caps_hook;
 #[cfg(target_os = "windows")]
 pub mod hotkey;
 #[cfg(target_os = "windows")]

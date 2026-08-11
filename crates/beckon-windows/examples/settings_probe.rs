@@ -125,8 +125,11 @@ mod win {
             for ch in s.encode_utf16() {
                 SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
                 std::thread::sleep(Duration::from_millis(60));
-                println!("      typed {:?} -> control now {:?}", 
-                    char::from_u32(ch as u32).unwrap_or('?'), ctl_text(h));
+                println!(
+                    "      typed {:?} -> control now {:?}",
+                    char::from_u32(ch as u32).unwrap_or('?'),
+                    ctl_text(h)
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(300));
@@ -141,12 +144,8 @@ mod win {
                 if !dlg.0.is_null() {
                     println!("    modal dialog present: {:?}", text_of(dlg));
                     unsafe {
-                        let _ = PostMessageW(
-                            Some(dlg),
-                            WM_COMMAND,
-                            WPARAM(button as usize),
-                            LPARAM(0),
-                        );
+                        let _ =
+                            PostMessageW(Some(dlg), WM_COMMAND, WPARAM(button as usize), LPARAM(0));
                     }
                     return true;
                 }
@@ -186,7 +185,10 @@ mod win {
             .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
             .unwrap_or(false);
         println!("    [{label}] apply={apply} shortcut={shortcut:?} app={appfld:?}");
-        println!("      notes: {}", notes.replace('\r', "").replace('\n', " | "));
+        println!(
+            "      notes: {}",
+            notes.replace('\r', "").replace('\n', " | ")
+        );
     }
 
     fn drive_an_edit(h: HWND) {

@@ -43,6 +43,34 @@ commands clean.
   `settings saved` → `reloaded - 3 shortcuts registered`.
 - **Hook lifecycle**: `keyboard.caps = false` produced `caps hook removed`.
 
+### Found by a person, after the automated tests were green
+
+A hands-on session on a14 found what neither the unit tests nor the probes
+could. Recorded because each is a class of bug, not a one-off.
+
+4. **The keyboard stuck after `Caps+N`.** Every subsequent key behaved as
+   `ctrl+win+alt+<key>` — a bare `n` kept beckoning Notepad, everything else
+   stopped working, and the only recovery was killing `beckon-serve`. The
+   chord's modifier key-ups are not guaranteed to land: `SendInput` can
+   insert fewer events than asked for and reports it **only through a return
+   value this code was discarding**, and the `n↓` in the middle of the burst
+   fires `WM_HOTKEY`, whose handler runs `backend.beckon()` and pumps the
+   message queue while it does. Caps-up after a chord now releases all three
+   unconditionally. **A synthetic-input probe could not reproduce this** —
+   slow and fast timings were both clean — which is why the fix ships with
+   `BECKON_CAPS_DEBUG` tracing rather than another guess.
+5. **`Caps` + an unbound key toggled Caps Lock on release**, because only
+   *bound* keys marked Caps as used. Any key marks it now.
+6. **Resting on Caps and letting go emitted the tap action**, however long it
+   was held. Compared against the kanata config these users actually run
+   (`~/.nix/configs/kanata`, `caps` = `tap-hold 200 200 esc @cap_alias`): a
+   hold is decided on a clock. beckon now uses the same 200 ms.
+
+That comparison also validated the design: kanata's own README documents the
+*same* Windows-only failure — `(multi lmet lctl lalt)` held across time drops
+the modifier from the second key onward — and its fix is a layer emitting
+`(multi lmet lctl lalt $k)` per key, which is structurally beckon's burst.
+
 ### Three real defects the live tests found
 
 None were visible to 159 green unit tests or to either `WINCHECK` command.

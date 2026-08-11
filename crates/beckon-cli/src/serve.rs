@@ -756,10 +756,7 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let wrote = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = wrote {
         let _ = std::fs::remove_file(&tmp);
-        beckon_windows::settings_window::error(&format!(
-            "Cannot write {}:\n\n{e}",
-            path.display()
-        ));
+        beckon_windows::settings_window::error(&format!("Cannot write {}:\n\n{e}", path.display()));
         return;
     }
     // The model is now what is on disk, so re-seed it from the text we just
@@ -799,7 +796,10 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
             s.external_change = false;
         }
         Err(e) => {
-            beckon_windows::settings_window::error(&format!("{} is not valid:\n\n{e}", path.display()));
+            beckon_windows::settings_window::error(&format!(
+                "{} is not valid:\n\n{e}",
+                path.display()
+            ));
             return;
         }
     }
@@ -918,10 +918,8 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
             state,
             |m: &mut beckon_core::settings::Model, on: bool| m.set_caps(on)
         )),
-        on_caps_tap: Box::new(edit!(
-            state,
-            |m: &mut beckon_core::settings::Model, t| m.set_caps_tap(t)
-        )),
+        on_caps_tap: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, t| m
+            .set_caps_tap(t))),
         on_add: Box::new({
             let st = Rc::clone(state);
             move || {
@@ -1321,10 +1319,8 @@ mod tests {
     /// it. Pin that the key really is canonicalized.
     #[test]
     fn results_are_keyed_by_canonical_spelling_not_by_how_the_file_wrote_it() {
-        let shortcuts = beckon_core::shortcuts::parse_shortcuts(
-            "\"alt+ctrl+t\" = \"Terminal\"\n",
-        )
-        .unwrap();
+        let shortcuts =
+            beckon_core::shortcuts::parse_shortcuts("\"alt+ctrl+t\" = \"Terminal\"\n").unwrap();
         assert_eq!(shortcuts[0].combo.canonical(), "ctrl+alt+t");
     }
 

@@ -385,7 +385,10 @@ mod tests {
     #[test]
     fn the_starter_template_documents_the_caps_option_without_enabling_it() {
         let t = starter_template();
-        assert!(t.contains("keyboard.caps"), "the option must be discoverable");
+        assert!(
+            t.contains("keyboard.caps"),
+            "the option must be discoverable"
+        );
         let parsed = beckon_core::shortcuts::parse_config(t)
             .expect("the very first file a new user sees must not fail validation");
         assert!(!parsed.keyboard.caps, "it must be commented out, not on");

@@ -542,8 +542,7 @@ mod tests {
         };
         for vk in [VK_LCONTROL, VK_LWIN, VK_LMENU] {
             assert!(
-                s.iter()
-                    .any(|k| k.vk == vk && k.edge == Edge::Up),
+                s.iter().any(|k| k.vk == vk && k.edge == Edge::Up),
                 "modifier 0x{vk:02X} was not released: {s:?}"
             );
         }
@@ -668,7 +667,12 @@ mod tests {
     fn holding_caps_past_the_timeout_is_never_a_tap() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(at(VK_CAPITAL, Edge::Down, 1_000), &mut st, &b, CapsTap::CapsLock);
+        decide(
+            at(VK_CAPITAL, Edge::Down, 1_000),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
         let a = decide(
             at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS),
             &mut st,
@@ -682,7 +686,12 @@ mod tests {
     fn a_quick_tap_is_still_a_tap() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(at(VK_CAPITAL, Edge::Down, 1_000), &mut st, &b, CapsTap::CapsLock);
+        decide(
+            at(VK_CAPITAL, Edge::Down, 1_000),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
         let a = decide(
             at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS - 1),
             &mut st,
@@ -701,7 +710,12 @@ mod tests {
     fn the_millisecond_counter_may_wrap() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(at(VK_CAPITAL, Edge::Down, u32::MAX - 5), &mut st, &b, CapsTap::CapsLock);
+        decide(
+            at(VK_CAPITAL, Edge::Down, u32::MAX - 5),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
         let a = decide(at(VK_CAPITAL, Edge::Up, 10), &mut st, &b, CapsTap::CapsLock);
         assert!(
             matches!(a, Action::SwallowAndInject(_)),
@@ -715,9 +729,19 @@ mod tests {
     fn a_timed_out_hold_does_not_release_modifiers() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(at(VK_CAPITAL, Edge::Down, 0), &mut st, &b, CapsTap::CapsLock);
+        decide(
+            at(VK_CAPITAL, Edge::Down, 0),
+            &mut st,
+            &b,
+            CapsTap::CapsLock,
+        );
         assert_eq!(
-            decide(at(VK_CAPITAL, Edge::Up, 5_000), &mut st, &b, CapsTap::CapsLock),
+            decide(
+                at(VK_CAPITAL, Edge::Up, 5_000),
+                &mut st,
+                &b,
+                CapsTap::CapsLock
+            ),
             Action::Swallow
         );
     }
