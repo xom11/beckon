@@ -296,4 +296,29 @@ mod tests {
         assert!(out.contains("ctrl+alt"), "{out}");
         parse_config(&out).expect("the writer must emit what the reader accepts");
     }
+
+    /// Mirrors `caps_off_is_still_written_so_unticking_persists`, but for
+    /// `caps_hold`: the file on disk already carries a non-default line, and
+    /// resetting to the default in the model must remove it, not just skip
+    /// writing a fresh one over it. Both new writer tests above start from
+    /// an *empty* document, where `kb.remove("caps_hold")` is a no-op and
+    /// so cannot catch a deleted removal call -- this one starts from a
+    /// document that already has the key.
+    #[test]
+    fn resetting_caps_hold_to_default_removes_the_stale_line() {
+        let original = "keyboard.caps_hold = \"ctrl+alt\"\n\"ctrl+alt+t\" = \"Terminal\"\n";
+        let out = render(
+            original,
+            &[row("ctrl+alt+t", "Terminal")],
+            &KeyboardConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            !out.contains("caps_hold"),
+            "resetting to the default left the stale line behind, which an \
+             older beckon rejects as an unknown key under `keyboard`:\n{out}"
+        );
+        let c = parse_config(&out).unwrap();
+        assert_eq!(c.keyboard.caps_hold, crate::shortcuts::Chord::default());
+    }
 }

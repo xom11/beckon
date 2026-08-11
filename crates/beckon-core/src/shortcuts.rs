@@ -339,28 +339,18 @@ impl CapsTap {
 /// The `keyboard` block. Read only by Windows `serve`, parsed everywhere:
 /// one config file is meant to travel between machines, so a Windows-only
 /// setting must not fail `beckon check` on macOS or Linux.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `#[derive(Default)]` calls each field type's own `Default::default()`,
+/// so this produces the same `caps_hold` as `Chord::default()`
+/// (ctrl+super+alt) regardless of whether `Chord`'s impl is derived or
+/// hand-written -- no manual impl is needed here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct KeyboardConfig {
     pub caps: bool,
     pub caps_tap: CapsTap,
     /// What holding Caps Lock stands for. Meaningful only when `caps` is
     /// true; parsed everywhere so one config file travels between machines.
     pub caps_hold: Chord,
-}
-
-// clippy sees this as derivable today only because `Chord::default()`
-// happens to match what a field-by-field derive would call; written by
-// hand anyway per the settings-window design (task 2 brief) so it stays
-// correct even if that stops holding.
-#[allow(clippy::derivable_impls)]
-impl Default for KeyboardConfig {
-    fn default() -> Self {
-        KeyboardConfig {
-            caps: false,
-            caps_tap: CapsTap::default(),
-            caps_hold: Chord::default(),
-        }
-    }
 }
 
 /// A whole shortcuts file.
@@ -481,7 +471,9 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Chord, Combo};
+    use super::{
+        all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Chord, Combo, KeyboardConfig,
+    };
 
     #[test]
     fn key_table_covers_spec_names() {
@@ -686,6 +678,15 @@ mod tests {
         assert_eq!(c.shortcuts.len(), 1);
         assert!(!c.keyboard.caps, "caps must be off unless asked for");
         assert_eq!(c.keyboard.caps_tap, CapsTap::CapsLock);
+        assert_eq!(c.keyboard.caps_hold, Chord::default());
+    }
+
+    /// Pinned directly (not just through `parse_config`) so a future change
+    /// to how `KeyboardConfig` derives/implements `Default` cannot silently
+    /// change what "no `keyboard.caps_hold` in the file" means.
+    #[test]
+    fn keyboard_config_default_pins_caps_hold_to_the_default_chord() {
+        assert_eq!(KeyboardConfig::default().caps_hold, Chord::default());
     }
 
     #[test]
