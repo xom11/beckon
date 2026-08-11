@@ -849,6 +849,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     }
 }
 
+/// Push whatever the two edit fields currently show into the model.
+///
+/// Separate from the per-keystroke notifications on purpose: those tell us
+/// *that* something changed, but a control is free to rewrite its own text
+/// afterwards without saying so, and a combo box with a populated list does
+/// exactly that. This reads the final state.
+fn commit_fields() {
+    if suppressed() {
+        return;
+    }
+    let Some((combo, app)) = UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.app))) else {
+        return;
+    };
+    let c = text_of(combo);
+    let a = text_of(app);
+    with_cb(|cb| (cb.on_edit_combo)(c));
+    with_cb(|cb| (cb.on_edit_app)(a));
+}
+
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
     let (combo, app) = match UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.app))) {
         Some(t) => t,
@@ -873,9 +892,28 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 with_cb(|cb| (cb.on_edit_app)(t));
             }
         }
+        // Tabbing or clicking away commits what is in the field, so a value
+        // the control rewrote without notifying is not silently lost.
+        (IDC_COMBO, c) if c == EN_KILLFOCUS => commit_fields(),
+        (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
-        (IDC_APPLY, _) => with_cb(|cb| (cb.on_apply)()),
+        (IDC_APPLY, _) => {
+            // The fields are the source of truth at the moment Apply is
+            // pressed.
+            //
+            // Measured on a14: a COMBOBOX whose list is populated jumps to
+            // the matching entry as you type -- 'N' leaves "Narrator" in
+            // the field, 'o' leaves "Obsidian" -- and the CBN_EDITCHANGE
+            // that reaches us carries the text from BEFORE that rewrite,
+            // i.e. the single character just typed. Trusting the
+            // incremental notifications alone therefore wrote "d" to the
+            // file while the screen said "Debuggable Package Manager".
+            // Incremental notifications still drive the enabled state; this
+            // is what decides the content.
+            commit_fields();
+            with_cb(|cb| (cb.on_apply)())
+        }
         (IDC_CAPS, _) => {
             let on = unsafe {
                 GetDlgItem(Some(hwnd), IDC_CAPS)
