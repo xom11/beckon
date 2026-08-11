@@ -23,7 +23,7 @@
 //! kanata's `tap-hold-press` behaviour and needs no 200 ms wait before the
 //! first chord works.
 
-use crate::shortcuts::{CapsTap, Shortcut};
+use crate::shortcuts::{CapsTap, Chord, Shortcut};
 use std::collections::HashSet;
 
 /// How long Caps may be held before a release stops counting as a tap.
@@ -90,10 +90,12 @@ pub struct CapsState {
     /// modifier and getting nothing; it must not also toggle Caps Lock on
     /// release.
     used: bool,
-    /// Set only when a chord was actually injected, which is the only case
-    /// that leaves modifiers to clean up. Distinct from `used`: `Caps+F5`
-    /// with F5 unbound counts as using Caps but pressed no modifier.
-    injected: bool,
+    /// The chord that was actually injected, if any -- not merely whether
+    /// one was. `reload()` can swap the configured chord between Caps-down
+    /// and Caps-up, and releasing a different set than was pressed leaves a
+    /// modifier stuck down, which the user cannot recover from without
+    /// killing beckon.
+    injected: Option<Chord>,
     consumed: HashSet<u32>,
     down_at: u32,
 }
@@ -113,6 +115,21 @@ pub fn bound_keys(shortcuts: &[Shortcut]) -> HashSet<u32> {
         .collect()
 }
 
+/// The modifier VKs a chord presses, in a fixed order.
+fn modifier_vks(hold: Chord) -> Vec<u32> {
+    let mut v = Vec::with_capacity(3);
+    if hold.ctrl {
+        v.push(VK_LCONTROL);
+    }
+    if hold.super_ {
+        v.push(VK_LWIN);
+    }
+    if hold.alt {
+        v.push(VK_LMENU);
+    }
+    v
+}
+
 /// The whole chord as one burst.
 ///
 /// Deliberately not "hold the modifiers down while Caps is held": that
@@ -122,38 +139,27 @@ pub fn bound_keys(shortcuts: &[Shortcut]) -> HashSet<u32> {
 /// held, `Caps+<any key>` becomes a genuine ctrl+win+alt chord the shell
 /// may act on. Here Win always has a real key between its down and its up,
 /// and only bound keys are ever injected for.
-fn chord(vk: u32) -> Vec<Stroke> {
-    vec![
-        Stroke {
-            vk: VK_LCONTROL,
+fn chord(hold: Chord, vk: u32) -> Vec<Stroke> {
+    let mods = modifier_vks(hold);
+    let mut out = Vec::with_capacity(mods.len() * 2 + 2);
+    for &m in &mods {
+        out.push(Stroke {
+            vk: m,
             edge: Edge::Down,
-        },
-        Stroke {
-            vk: VK_LWIN,
-            edge: Edge::Down,
-        },
-        Stroke {
-            vk: VK_LMENU,
-            edge: Edge::Down,
-        },
-        Stroke {
-            vk,
-            edge: Edge::Down,
-        },
-        Stroke { vk, edge: Edge::Up },
-        Stroke {
-            vk: VK_LMENU,
+        });
+    }
+    out.push(Stroke {
+        vk,
+        edge: Edge::Down,
+    });
+    out.push(Stroke { vk, edge: Edge::Up });
+    for &m in mods.iter().rev() {
+        out.push(Stroke {
+            vk: m,
             edge: Edge::Up,
-        },
-        Stroke {
-            vk: VK_LWIN,
-            edge: Edge::Up,
-        },
-        Stroke {
-            vk: VK_LCONTROL,
-            edge: Edge::Up,
-        },
-    ]
+        });
+    }
+    out
 }
 
 fn tap(vk: u32) -> Vec<Stroke> {
@@ -187,8 +193,8 @@ fn tap(vk: u32) -> Vec<Stroke> {
 /// down happened in the chord and the up happens here. In the exact case
 /// this function exists for (the chord was truncated after `Win` down), a
 /// bare `Win` up is the Start-menu gesture. `VK_NONAME` breaks the pair.
-fn release_modifiers() -> Vec<Stroke> {
-    vec![
+fn release_modifiers(hold: Chord) -> Vec<Stroke> {
+    let mut out = vec![
         Stroke {
             vk: VK_NONAME,
             edge: Edge::Down,
@@ -197,23 +203,24 @@ fn release_modifiers() -> Vec<Stroke> {
             vk: VK_NONAME,
             edge: Edge::Up,
         },
-        Stroke {
-            vk: VK_LMENU,
+    ];
+    for m in modifier_vks(hold).into_iter().rev() {
+        out.push(Stroke {
+            vk: m,
             edge: Edge::Up,
-        },
-        Stroke {
-            vk: VK_LWIN,
-            edge: Edge::Up,
-        },
-        Stroke {
-            vk: VK_LCONTROL,
-            edge: Edge::Up,
-        },
-    ]
+        });
+    }
+    out
 }
 
 /// Decide what to do with one key transition. Pure apart from `st`.
-pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: CapsTap) -> Action {
+pub fn decide(
+    ev: KeyEvent,
+    st: &mut CapsState,
+    bound: &HashSet<u32>,
+    hold: Chord,
+    caps_tap: CapsTap,
+) -> Action {
     if ev.injected_by_us {
         return Action::PassThrough;
     }
@@ -222,7 +229,7 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
             if !st.held {
                 st.held = true;
                 st.used = false;
-                st.injected = false;
+                st.injected = None;
                 st.consumed.clear();
                 st.down_at = ev.time_ms;
             }
@@ -234,10 +241,9 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
             // `HOLD_TIMEOUT_MS`.
             let held_ms = ev.time_ms.wrapping_sub(st.down_at);
             let used = st.used || held_ms >= HOLD_TIMEOUT_MS;
-            let injected = st.injected;
+            let injected = st.injected.take();
             st.held = false;
             st.used = false;
-            st.injected = false;
             // `consumed` is deliberately NOT cleared here: a key released
             // after Caps must still have its physical key-up swallowed, or
             // the application receives an up with no matching down. The
@@ -246,12 +252,16 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
                 // See `release_modifiers`: the chord's own key-ups are not
                 // guaranteed to have landed, and the failure mode is a
                 // keyboard where every key is silently a ctrl+win+alt chord.
-                // Only worth doing when a chord was actually injected. A
-                // timed-out hold, or Caps plus an unbound key, pressed no
-                // modifier -- releasing one there would desync a modifier
-                // the user is genuinely holding.
-                if injected {
-                    Action::SwallowAndInject(release_modifiers())
+                // Only worth doing when a chord was actually injected, and
+                // then only for the chord that was ACTUALLY injected -- the
+                // file watcher can reload `hold` between Caps-down and
+                // Caps-up, and releasing a different set than was pressed
+                // leaves a modifier stuck down. A timed-out hold, or Caps
+                // plus an unbound key, pressed no modifier -- releasing one
+                // there would desync a modifier the user is genuinely
+                // holding.
+                if let Some(pressed) = injected {
+                    Action::SwallowAndInject(release_modifiers(pressed))
                 } else {
                     Action::Swallow
                 }
@@ -276,8 +286,8 @@ pub fn decide(ev: KeyEvent, st: &mut CapsState, bound: &HashSet<u32>, caps_tap: 
                 return Action::Swallow; // auto-repeat
             }
             st.consumed.insert(vk);
-            st.injected = true;
-            Action::SwallowAndInject(chord(vk))
+            st.injected = Some(hold);
+            Action::SwallowAndInject(chord(hold, vk))
         }
         (vk, Edge::Up) if st.consumed.contains(&vk) => {
             st.consumed.remove(&vk);
@@ -348,10 +358,10 @@ mod tests {
         let mut st = CapsState::default();
         let b = bound_t();
         assert_eq!(
-            decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
+            decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::Swallow
         );
-        let a = decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
         let Action::SwallowAndInject(strokes) = a else {
             panic!("expected an injection, got {a:?}");
         };
@@ -398,8 +408,9 @@ mod tests {
     fn the_windows_key_is_never_pressed_without_a_key_between_down_and_up() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        let Action::SwallowAndInject(s) = decide(down(VK_T), &mut st, &b, CapsTap::CapsLock) else {
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        let Action::SwallowAndInject(s) = decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock)
+        else {
             panic!("expected an injection");
         };
         let win_down = s
@@ -420,14 +431,14 @@ mod tests {
     fn an_unbound_key_passes_through_untouched_while_caps_is_held() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(down(VK_F5), &mut st, &b, CapsTap::CapsLock),
+            decide(down(VK_F5), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough,
             "Caps+F5 must still be F5, not a stray ctrl+win+alt chord"
         );
         assert_eq!(
-            decide(up(VK_F5), &mut st, &b, CapsTap::CapsLock),
+            decide(up(VK_F5), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough
         );
     }
@@ -436,14 +447,14 @@ mod tests {
     fn auto_repeat_injects_once_not_thirty_times_a_second() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert!(matches!(
-            decide(down(VK_T), &mut st, &b, CapsTap::CapsLock),
+            decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::SwallowAndInject(_)
         ));
         for _ in 0..5 {
             assert_eq!(
-                decide(down(VK_T), &mut st, &b, CapsTap::CapsLock),
+                decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
                 Action::Swallow,
                 "auto-repeat must not re-fire the hotkey"
             );
@@ -454,10 +465,10 @@ mod tests {
     fn the_physical_key_up_is_swallowed_too() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(up(VK_T), &mut st, &b, CapsTap::CapsLock),
+            decide(up(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::Swallow,
             "we already injected T-up; a second one would reach the app unmatched"
         );
@@ -467,11 +478,11 @@ mod tests {
     fn a_key_up_after_caps_was_released_is_still_swallowed() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
-        decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(up(VK_T), &mut st, &b, CapsTap::CapsLock),
+            decide(up(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::Swallow,
             "releasing Caps first must not leak a stray T-up into the app"
         );
@@ -483,9 +494,9 @@ mod tests {
     fn a_bare_tap_restores_caps_lock_by_default() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
+            decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::SwallowAndInject(vec![
                 Stroke {
                     vk: VK_CAPITAL,
@@ -519,9 +530,9 @@ mod tests {
         ] {
             let mut st = CapsState::default();
             let b = bound_t();
-            decide(down(VK_CAPITAL), &mut st, &b, tap_mode);
+            decide(down(VK_CAPITAL), &mut st, &b, HOLD, tap_mode);
             assert_eq!(
-                decide(up(VK_CAPITAL), &mut st, &b, tap_mode),
+                decide(up(VK_CAPITAL), &mut st, &b, HOLD, tap_mode),
                 expect,
                 "{tap_mode:?}"
             );
@@ -532,10 +543,10 @@ mod tests {
     fn caps_used_as_a_modifier_does_not_also_fire_the_tap_action() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
-        decide(up(VK_T), &mut st, &b, CapsTap::CapsLock);
-        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(up(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         let Action::SwallowAndInject(s) = a else {
             panic!("expected the defensive modifier release, got {a:?}");
         };
@@ -553,9 +564,9 @@ mod tests {
     fn releasing_caps_after_a_chord_releases_every_modifier_it_pressed() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
-        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         let Action::SwallowAndInject(s) = a else {
             panic!("expected an injection, got {a:?}");
         };
@@ -583,8 +594,8 @@ mod tests {
     fn a_bare_tap_does_not_release_modifiers() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         let Action::SwallowAndInject(s) = a else {
             panic!("expected the tap action, got {a:?}");
         };
@@ -598,12 +609,12 @@ mod tests {
     fn a_second_tap_after_a_chord_still_taps() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_T), &mut st, &b, CapsTap::CapsLock);
-        decide(up(VK_T), &mut st, &b, CapsTap::CapsLock);
-        decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        let a = decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(up(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        let a = decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         let Action::SwallowAndInject(s) = a else {
             panic!("state leaked from the previous press: {a:?}");
         };
@@ -619,7 +630,7 @@ mod tests {
     fn our_own_injected_events_are_never_reprocessed() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         let mine = KeyEvent {
             vk: VK_LWIN,
             edge: Edge::Down,
@@ -627,7 +638,7 @@ mod tests {
             time_ms: 0,
         };
         assert_eq!(
-            decide(mine, &mut st, &b, CapsTap::CapsLock),
+            decide(mine, &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough
         );
         let mine_caps = KeyEvent {
@@ -637,7 +648,7 @@ mod tests {
             time_ms: 0,
         };
         assert_eq!(
-            decide(mine_caps, &mut st, &b, CapsTap::CapsLock),
+            decide(mine_caps, &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough,
             "the caps_tap injection must not re-enter the state machine"
         );
@@ -649,9 +660,9 @@ mod tests {
     fn nothing_is_touched_when_no_key_is_bound_to_the_chord() {
         let mut st = CapsState::default();
         let b: HashSet<u32> = HashSet::new();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(down(VK_T), &mut st, &b, CapsTap::CapsLock),
+            decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough
         );
     }
@@ -660,9 +671,9 @@ mod tests {
     fn modifiers_the_user_holds_themselves_pass_through() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(down(VK_SHIFT), &mut st, &b, CapsTap::CapsLock),
+            decide(down(VK_SHIFT), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::PassThrough,
             "Shift must stay physically down so Caps+Shift+T reaches a shift binding"
         );
@@ -676,11 +687,11 @@ mod tests {
     fn an_unbound_key_still_counts_as_using_caps() {
         let mut st = CapsState::default();
         let b = bound_t();
-        decide(down(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock);
-        decide(down(VK_F5), &mut st, &b, CapsTap::CapsLock);
-        decide(up(VK_F5), &mut st, &b, CapsTap::CapsLock);
+        decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(down(VK_F5), &mut st, &b, HOLD, CapsTap::CapsLock);
+        decide(up(VK_F5), &mut st, &b, HOLD, CapsTap::CapsLock);
         assert_eq!(
-            decide(up(VK_CAPITAL), &mut st, &b, CapsTap::CapsLock),
+            decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock),
             Action::Swallow,
             "Caps+F5 must not toggle Caps Lock on release"
         );
@@ -696,12 +707,14 @@ mod tests {
             at(VK_CAPITAL, Edge::Down, 1_000),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
         let a = decide(
             at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
         assert_eq!(a, Action::Swallow, "a long hold emitted something: {a:?}");
@@ -715,12 +728,14 @@ mod tests {
             at(VK_CAPITAL, Edge::Down, 1_000),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
         let a = decide(
             at(VK_CAPITAL, Edge::Up, 1_000 + HOLD_TIMEOUT_MS - 1),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
         assert!(
@@ -739,9 +754,16 @@ mod tests {
             at(VK_CAPITAL, Edge::Down, u32::MAX - 5),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
-        let a = decide(at(VK_CAPITAL, Edge::Up, 10), &mut st, &b, CapsTap::CapsLock);
+        let a = decide(
+            at(VK_CAPITAL, Edge::Up, 10),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
         assert!(
             matches!(a, Action::SwallowAndInject(_)),
             "a 15 ms tap across the rollover read as a hold: {a:?}"
@@ -758,6 +780,7 @@ mod tests {
             at(VK_CAPITAL, Edge::Down, 0),
             &mut st,
             &b,
+            HOLD,
             CapsTap::CapsLock,
         );
         assert_eq!(
@@ -765,6 +788,7 @@ mod tests {
                 at(VK_CAPITAL, Edge::Up, 5_000),
                 &mut st,
                 &b,
+                HOLD,
                 CapsTap::CapsLock
             ),
             Action::Swallow
@@ -778,7 +802,7 @@ mod tests {
     /// that opens the Start menu.
     #[test]
     fn release_modifiers_never_starts_with_a_bare_modifier_up() {
-        let out = release_modifiers();
+        let out = release_modifiers(HOLD);
         let first = out.first().expect("release burst must not be empty");
         assert_eq!(
             (first.vk, first.edge),
@@ -797,5 +821,92 @@ mod tests {
                 "still must release {vk:#x}: {out:?}"
             );
         }
+    }
+
+    // ---------- the chord as a parameter ----------
+
+    const HOLD: Chord = Chord {
+        ctrl: true,
+        super_: true,
+        alt: true,
+    };
+
+    /// The burst contains exactly the chord's modifiers and no others.
+    #[test]
+    fn a_two_modifier_chord_injects_two_modifiers() {
+        let hold = Chord::parse("ctrl+alt").unwrap();
+        let out = chord(hold, 0x4E);
+        assert!(
+            !out.iter().any(|s| s.vk == VK_LWIN),
+            "no Win asked for: {out:?}"
+        );
+        assert!(out.iter().any(|s| s.vk == VK_LCONTROL));
+        assert!(out.iter().any(|s| s.vk == VK_LMENU));
+    }
+
+    /// The property, tested structurally rather than against a fixed vector, so
+    /// it holds for every chord shape and not just the default.
+    #[test]
+    fn every_modifier_in_a_burst_has_a_real_key_between_its_down_and_its_up() {
+        for spec in ["ctrl", "ctrl+alt", "super+alt", "ctrl+super+alt"] {
+            let hold = Chord::parse(spec).unwrap();
+            let out = chord(hold, 0x4E);
+            for m in [VK_LCONTROL, VK_LWIN, VK_LMENU] {
+                let down = out.iter().position(|s| s.vk == m && s.edge == Edge::Down);
+                let up = out.iter().position(|s| s.vk == m && s.edge == Edge::Up);
+                let (Some(down), Some(up)) = (down, up) else {
+                    continue;
+                };
+                assert!(
+                    out[down..up]
+                        .iter()
+                        .any(|s| !matches!(s.vk, VK_LCONTROL | VK_LWIN | VK_LMENU)),
+                    "{spec}: modifier {m:#x} has no real key between its down and up: {out:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn release_names_exactly_the_modifiers_the_chord_pressed() {
+        let hold = Chord::parse("ctrl+alt").unwrap();
+        let rel = release_modifiers(hold);
+        assert!(rel
+            .iter()
+            .any(|s| s.vk == VK_LCONTROL && s.edge == Edge::Up));
+        assert!(rel.iter().any(|s| s.vk == VK_LMENU && s.edge == Edge::Up));
+        assert!(
+            !rel.iter().any(|s| s.vk == VK_LWIN),
+            "releasing a modifier the chord never pressed desyncs one the user \
+             may be genuinely holding: {rel:?}"
+        );
+    }
+
+    /// The reason `injected` is an Option<Chord> and not a bool: the file
+    /// watcher can reload between Caps-down and Caps-up.
+    #[test]
+    fn changing_the_chord_mid_hold_releases_what_was_actually_pressed() {
+        let old = Chord::parse("ctrl+super+alt").unwrap();
+        let new = Chord::parse("ctrl+alt").unwrap();
+        let mut st = CapsState::default();
+        let b: HashSet<u32> = [0x4E].into_iter().collect();
+
+        decide(down(VK_CAPITAL), &mut st, &b, old, CapsTap::CapsLock);
+        decide(down(0x4E), &mut st, &b, old, CapsTap::CapsLock);
+        // reload() lands here and swaps the chord.
+        let act = decide(
+            at(VK_CAPITAL, Edge::Up, 10),
+            &mut st,
+            &b,
+            new,
+            CapsTap::CapsLock,
+        );
+        let Action::SwallowAndInject(rel) = act else {
+            panic!("a chord was injected, so the modifiers must be released: {act:?}");
+        };
+        assert!(
+            rel.iter().any(|s| s.vk == VK_LWIN && s.edge == Edge::Up),
+            "Win was pressed by the OLD chord and must still be released: {rel:?}"
+        );
     }
 }

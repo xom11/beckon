@@ -12,7 +12,7 @@
 //! chord, and the real work happens later on the ordinary `WM_HOTKEY` path.
 
 use beckon_core::caps::{decide, Action, CapsState, Edge, KeyEvent};
-use beckon_core::shortcuts::CapsTap;
+use beckon_core::shortcuts::{CapsTap, Chord};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -26,6 +26,7 @@ pub const MARK: usize = 0xBECC0DE;
 
 struct Config {
     bound: HashSet<u32>,
+    hold: Chord,
     tap: CapsTap,
 }
 
@@ -34,6 +35,7 @@ thread_local! {
     static STATE: RefCell<CapsState> = RefCell::new(CapsState::default());
     static CONFIG: RefCell<Config> = RefCell::new(Config {
         bound: HashSet::new(),
+        hold: Chord::default(),
         tap: CapsTap::CapsLock,
     });
 }
@@ -59,7 +61,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         };
         let action = CONFIG.with(|c| {
             let c = c.borrow();
-            STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.tap))
+            STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.hold, c.tap))
         });
         // Trace only what beckon acted on, plus Caps itself. A trace of
         // every event that merely passed through would be a log of
@@ -141,10 +143,10 @@ fn debug() -> bool {
     })
 }
 
-/// Replace the key set and tap behaviour without touching the hook itself.
-/// Called on every reload; installing is a separate decision.
-pub fn set_bindings(bound: HashSet<u32>, tap: CapsTap) {
-    CONFIG.with(|c| *c.borrow_mut() = Config { bound, tap });
+/// Replace the key set, chord and tap behaviour without touching the hook
+/// itself. Called on every reload; installing is a separate decision.
+pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
+    CONFIG.with(|c| *c.borrow_mut() = Config { bound, hold, tap });
 }
 
 /// Install the hook on the CURRENT thread, which must have a message loop.

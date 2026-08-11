@@ -661,11 +661,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
 fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     use beckon_windows::caps_hook;
 
-    let (want, tap, bound) = {
+    let (want, tap, hold, bound) = {
         let s = state.borrow();
         (
             s.keyboard.caps && !s.paused,
             s.keyboard.caps_tap,
+            s.keyboard.caps_hold,
             beckon_core::caps::bound_keys(&s.shortcuts),
         )
     };
@@ -679,7 +680,7 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     }
 
     let keys = bound.len();
-    caps_hook::set_bindings(bound, tap);
+    caps_hook::set_bindings(bound, hold, tap);
     if caps_hook::is_installed() {
         return;
     }
