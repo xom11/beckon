@@ -1859,6 +1859,47 @@ fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.suppress).unwrap_or(true))
 }
 
+/// Shared tail for `WM_SYSCOLORCHANGE`, `WM_THEMECHANGED`, and
+/// `WM_SETTINGCHANGE`(`SPI_SETHIGHCONTRAST`): forward the message verbatim
+/// to every child, then invalidate and relayout.
+///
+/// The system delivers all three to TOP-LEVEL windows only. A themed common
+/// control (the ListView, the group box) needs `WM_THEMECHANGED` itself to
+/// reopen its theme handle, and none of them see it unless we pass it on --
+/// so without this forwarding every control keeps rendering from stale
+/// theme data after a theme switch or a high-contrast toggle, which is
+/// exactly the path this window uses as its dark mode.
+///
+/// Same enumeration `WM_DPICHANGED` uses to rebroadcast `WM_SETFONT` -- one
+/// funnel for "walk every child", not a second one invented here. Only
+/// direct children: every control in this window is a sibling of `hwnd`,
+/// same as the font rebroadcast relies on. Never sent to `hwnd` itself --
+/// that would recurse into this wndproc.
+///
+/// No `UI` borrow is held across any of these sends: `GetWindow` /
+/// `SendMessageW` / `InvalidateRect` don't touch the struct, and `layout`
+/// takes and drops its own borrow before any of ITS sends (see the comment
+/// at its top) -- the same discipline `WM_DPICHANGED` follows.
+unsafe fn broadcast_theme_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
+    let mut child = GetWindow(hwnd, GW_CHILD).unwrap_or_default();
+    while !child.is_invalid() {
+        SendMessageW(child, msg, Some(wp), Some(lp));
+        child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
+    }
+    let _ = InvalidateRect(Some(hwnd), None, true);
+    // Relayout, not just repaint: high contrast and theme switches can
+    // change the system metrics `layout` reads live -- ListView row height
+    // (`list_row_height`, the same value WM_DPICHANGED's font swap already
+    // invalidates), SM_CXVSCROLL / SM_CYBORDER, and control heights read
+    // back through GetWindowRect. Those are exactly the metrics that move
+    // when a user enters or leaves high contrast, and layout already
+    // queries them at call time instead of assuming a constant -- staying
+    // stale here would reintroduce the clipping bug that query was added to
+    // fix. Rare, user-initiated events; a handful of extra SetWindowPos
+    // calls is not a cost worth avoiding for it.
+    layout(hwnd);
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -1954,6 +1995,42 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 );
                 layout(hwnd);
                 LRESULT(0)
+            }
+            WM_SYSCOLORCHANGE => {
+                // System palette changed (e.g. entering/leaving high
+                // contrast). Every control on this window already reads
+                // colours through GetSysColor / DefWindowProcW's own
+                // COLOR_BTNFACE brush -- see the module-level colour audit
+                // -- so there is no cached colour of ours to re-read here;
+                // the forward+invalidate is what makes the CHILDREN's own
+                // cached colours (edit control backgrounds, ListView text/
+                // back colour) catch up.
+                broadcast_theme_change(hwnd, msg, wp, lp);
+                LRESULT(0)
+            }
+            WM_THEMECHANGED => {
+                // Visual style changed. Themed common controls (the
+                // ListView) open their theme handle once and keep it until
+                // told otherwise; WM_THEMECHANGED is that notice, and it
+                // only reaches top-level windows, hence the forward.
+                broadcast_theme_change(hwnd, msg, wp, lp);
+                LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                // WM_SETTINGCHANGE fires for dozens of unrelated SPI_
+                // actions (wallpaper, mouse trails, ...) -- wParam carries
+                // the SPI_ action code when SystemParametersInfo was called
+                // with SPIF_SENDCHANGE, which is how Windows reports a
+                // high-contrast toggle. Only that one is this window's
+                // concern; everything else must fall through to
+                // DefWindowProcW untouched rather than relayout on every
+                // unrelated settings change.
+                if wp.0 == SPI_SETHIGHCONTRAST.0 as usize {
+                    broadcast_theme_change(hwnd, msg, wp, lp);
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
             }
             WM_CATALOG => {
                 // Reclaims what `post_catalog` leaked into the message.
