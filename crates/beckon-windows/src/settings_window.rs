@@ -18,10 +18,29 @@
 //! calls `filter_dialog_message` first so Ctrl+S, Tab, Enter, Esc, the
 //! arrows and the Alt-mnemonics work inside it.
 //!
-//! **The App field's text is read from the message loop, one keystroke
-//! behind the notification that reported it** — see `WM_APP_EDITED`, which
-//! is what stops a combo box that rewrites its own text from writing single
-//! characters into the config. It has one accepted cost, and it is not a
+//! **The App field's typing defect was `layout`, not the combo box.** This
+//! header used to claim that a populated `CBS_DROPDOWN` rewrites its own edit
+//! text *as you type*, and that `WM_APP_EDITED` is what stops it writing
+//! single characters into the config. Both halves are false, and the first is
+//! what sent a fix attempt down the wrong path for a day. Measured on a14
+//! (`examples/combo_probe.rs`, comctl32 6.16, 121 items, session 1, real
+//! `SendInput` keystrokes): typing rewrites nothing — `CB_GETCURSEL` stays
+//! -1 and the child EDIT is sent nothing but `WM_KEYDOWN`/`WM_CHAR`. What the
+//! control *does* do is re-synchronise its edit field to the closest matching
+//! item, and select the whole string, when it is **resized** — and
+//! `apply_state` used to end with an unconditional `layout(hwnd)`, which
+//! `SetWindowPos`es every control on every keystroke. Typing `Notepad` left
+//! `d` in the model and "Debuggable Package Manager" on screen. The fix is
+//! `Ui::shown_external` plus `Ui::shown_empty`, which make that layout
+//! conditional; see `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
+//! sections 24-26.
+//!
+//! **The App field's text is still read from the message loop, one keystroke
+//! behind the notification that reported it** — see `WM_APP_EDITED`. It is
+//! deferred debt rather than settled design: with the layout defect fixed the
+//! deferral is belt-and-braces, and it stays only because collapsing it would
+//! have to re-establish the `CBN_CLOSEUP` ordering `05db60b` settled. It has
+//! one accepted cost, and it is not a
 //! bug: an unrelated state push dispatched between the post and the read —
 //! a `WM_CATALOG` arriving, or a file-change tick — runs `apply_state`
 //! against a model that has not seen the keystroke yet, rewrites the App
@@ -147,10 +166,16 @@ pub const WM_CATALOG: u32 = WM_APP + 2;
 /// `ModelLoopWithLayout` scenario, which reproduces the whole defect by
 /// adding that one call to a loop that otherwise agrees.
 ///
-/// So this message is now belt-and-braces rather than load-bearing. It could
-/// be collapsed back into a synchronous read; that is a separate change, and
-/// it would have to re-establish the `CBN_CLOSEUP` ordering that `05db60b`
-/// fixed, so it is not worth doing without a reason.
+/// **So this message, `Ui::app_epoch` and the deferred read are DEFERRED DEBT,
+/// not settled design.** They were built for a mechanism that does not exist,
+/// their original justification is gone, and what remains is belt-and-braces:
+/// they cost one posted message per keystroke and buy a re-read that the
+/// synchronous path would have got right. They are kept, rather than removed
+/// in the same change that fixed the real defect, because collapsing them
+/// means re-establishing the `CBN_CLOSEUP` ordering that `05db60b` fixed --
+/// see the asymmetry comment in `handle_command` -- and that is a separate
+/// change with its own hardware run. Do not read their survival as evidence
+/// they are needed.
 ///
 /// Private, unlike `WM_CATALOG`: nothing outside this file may post it, and
 /// a stamp forged from outside would defeat the staleness check.
@@ -569,12 +594,32 @@ struct Ui {
     /// itself. See `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
     /// section 24 for the bisect that pinned it to this one call.
     ///
-    /// `layout`'s output depends on exactly three things -- the client rect,
-    /// the DPI, and whether the banner is showing. The first two arrive as
-    /// `WM_SIZE` / `WM_DPICHANGED`, which call `layout` directly and still
-    /// do. Only the third can change on a data push, and only through
-    /// `external_change`.
+    /// `layout`'s output depends on exactly four things -- the client rect,
+    /// the DPI, whether the banner is showing, and whether the list has any
+    /// rows in it. The first two arrive as `WM_SIZE` / `WM_DPICHANGED`, which
+    /// call `layout` directly and still do. The other two can change on a data
+    /// push, so a push watches both: this field and `shown_empty`.
     shown_external: Option<bool>,
+    /// Whether the list was EMPTY when the current layout was computed, for
+    /// the same reason `shown_external` exists: it is the fourth input to
+    /// `layout`, and skipping a layout that one of them has invalidated leaves
+    /// stale geometry on screen.
+    ///
+    /// The path runs through `list_row_height`, which cannot measure a row
+    /// that is not there and returns `scale(20, dpi)` when the list is empty
+    /// -- 30 px at a14's 144 DPI, against 29 measured. So a window opened on a
+    /// config with no shortcuts lays out with the fallback, and without this
+    /// field the first Add would keep it: `external_change` does not move, the
+    /// layout is skipped, and the list stays ~8 px taller than the eight rows
+    /// it is sized for, with the notes strip absorbing the difference until
+    /// the next resize. Small on screen; the reason it is guarded rather than
+    /// tolerated is that `list_row_height`'s own comment used to justify the
+    /// fallback by saying `apply_state` re-lays-out the instant a row appears,
+    /// which `shown_external` made false.
+    ///
+    /// Empty-vs-not is the whole condition: every non-empty list measures the
+    /// same row, so no other transition changes the answer.
+    shown_empty: Option<bool>,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -1709,6 +1754,7 @@ unsafe fn build_children(hwnd: HWND) {
             tip_text,
             shown_dirty: None,
             shown_external: None,
+            shown_empty: None,
             suppress: false,
             external_change: false,
             items: Vec::new(),
@@ -1867,9 +1913,17 @@ unsafe fn text_size(hwnd: HWND, font: HFONT, dpi: u32, s: &str) -> (i32, i32) {
 /// token pushed through `scale` would be wrong at every non-integer scale
 /// and would go wrong again the moment B.3 changes the font.
 ///
-/// `LVM_GETITEMRECT` needs a row to measure. When the list is empty there
-/// is none, and the fallback barely matters: an empty list has no rows to
-/// show, and `apply_state` calls `layout` again the instant it puts one in.
+/// `LVM_GETITEMRECT` needs a row to measure. When the list is empty there is
+/// none, so this falls back to a scaled token -- 30 px at 144 DPI, against the
+/// 29 a real row measures.
+///
+/// **The list's item count is therefore an input to `layout`, and
+/// `apply_state` has to treat it as one.** This comment used to say the
+/// fallback barely mattered because `apply_state` re-lays-out "the instant it
+/// puts a row in"; `Ui::shown_external` made that false by laying out only
+/// when the banner's visibility moves. `Ui::shown_empty` is the other half of
+/// that guard -- do not remove it without putting an unconditional `layout`
+/// back, and do not restore the old claim.
 unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
     let count = SendMessageW(list, LVM_GETITEMCOUNT, Some(WPARAM(0)), Some(LPARAM(0))).0;
     if count > 0 {
@@ -2337,11 +2391,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // and put a catalogue entry on screen instead. See
         // `Ui::shown_external`. `WM_SIZE` and `WM_DPICHANGED` still call
         // `layout` directly; this is the data path, where nothing moves
-        // unless the banner appears or disappears.
+        // unless the banner appears or disappears -- or the list gains its
+        // first row or loses its last, which changes the row height `layout`
+        // measures. See `Ui::shown_empty`. `sync_list` has already run, so
+        // `st.items` is what the control holds.
+        let list_empty = st.items.is_empty();
         let relayout = UI.with(|u| {
             u.borrow()
                 .as_ref()
-                .map(|x| x.shown_external != Some(external_change))
+                .map(|x| {
+                    x.shown_external != Some(external_change) || x.shown_empty != Some(list_empty)
+                })
                 .unwrap_or(true)
         });
         if relayout {
@@ -2365,6 +2425,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             // Recorded after the layout above, for the same reason
             // `shown_dirty` is recorded after the caption write.
             ui.shown_external = Some(external_change);
+            ui.shown_empty = Some(st.items.is_empty());
             // Any read of the App field posted before this push is now about
             // text WE wrote, not text the user typed. See `Ui::app_epoch`.
             if wrote_app {
@@ -3044,8 +3105,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 ///
 /// Separate from the per-keystroke notifications on purpose: those tell us
 /// *that* something changed, but a control is free to rewrite its own text
-/// afterwards without saying so, and a combo box with a populated list does
-/// exactly that. This reads the final state.
+/// afterwards without saying so. This reads the final state.
+///
+/// It used to say the App combo box "does exactly that" as you type. It does
+/// not -- that claim was falsified by `examples/combo_probe.rs` (see
+/// `WM_APP_EDITED`), and the rewrite it named was `layout` resizing the
+/// control, not the control autocompleting. This is a general backstop for a
+/// notification that never arrives, not a workaround for a known offender.
 fn commit_fields() {
     if suppressed() {
         return;
@@ -3132,12 +3198,15 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // `apply_state` puts it in the field, so the `CBN_CLOSEUP` backstop
         // commits the same value again.
         //
-        // The list selection is not subject to the edit-rewrite defect at
-        // all, and the a14 measurement says so: typing "Notepad" recorded
-        // `d`, the last CHARACTER, which is only reachable if the type-ahead
-        // that rewrote the field raised no `CBN_SELCHANGE` at all -- a
-        // notification documented for a user changing the selection in the
-        // list box, not for comctl32 syncing it to typed text. `text_of` is
+        // Reading the LIST here is safe: whatever rewrites the edit field
+        // does not move the list selection. This used to be argued from a
+        // "type-ahead" that turned out not to exist -- the rewrite is the
+        // resize (`Ui::shown_external`), not typing -- but the conclusion
+        // survives its premise, and on measurement rather than inference:
+        // `CB_GETCURSEL` read -1 at every keystroke (`combo_probe`) AND in the
+        // sample taken while the field said "Narrator" and the model said "N"
+        // -- i.e. during the rewrite itself (`settings_probe`, a14). The
+        // selection never moved. `text_of` is
         // the fallback for a combo with nothing selected (free-typed names
         // that are in no catalog, which beckon deliberately supports).
         (IDC_APP, c) if c == CBN_EDITCHANGE => {
@@ -3156,7 +3225,10 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             }
         }
         // Tabbing or clicking away commits what is in the field, so a value
-        // the control rewrote without notifying is not silently lost.
+        // that reached the control without a notification we acted on is not
+        // silently lost. Generic, not aimed at a known offender: the combo
+        // box does not rewrite its own text as you type (see
+        // `WM_APP_EDITED`).
         //
         // `CBN_CLOSEUP` is safe to handle synchronously only BECAUSE
         // `CBN_SELCHANGE` above is: the pick is already in the model, so
@@ -3181,14 +3253,18 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             // The fields are the source of truth at the moment Save is
             // pressed.
             //
-            // This used to be the ONLY thing standing between a COMBOBOX
-            // that rewrites its own text and a config file full of single
-            // characters (measured on a14: typing "Notepad" wrote "d"). It
-            // is now a backstop rather than the fix -- `WM_APP_EDITED` reads
-            // the field after every change, so the model already agrees with
-            // the screen -- and it stays because a notification that never
-            // arrives at all still has to be caught somewhere, and this
-            // costs one `WM_GETTEXT` per Save.
+            // This used to be described as the ONLY thing standing between a
+            // COMBOBOX "that rewrites its own text" and a config file full of
+            // single characters (measured on a14: typing "Notepad" wrote
+            // "d"). The symptom was real; the cause named was not. The combo
+            // box does not rewrite anything while you type -- `apply_state`
+            // was resizing it on every keystroke, and a resize is what makes
+            // it re-synchronise its edit to the catalogue. See
+            // `WM_APP_EDITED` and `Ui::shown_external`.
+            //
+            // So this is a backstop, and always was one: it stays because a
+            // notification that never arrives at all still has to be caught
+            // somewhere, and it costs one `WM_GETTEXT` per Save.
             commit_fields();
             with_cb(|cb| (cb.on_apply)())
         }
