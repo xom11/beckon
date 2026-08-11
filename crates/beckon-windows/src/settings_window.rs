@@ -1029,6 +1029,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_NOTIFY => {
+                // Every WM_COMMAND arm asks this; this one did not, and that
+                // becomes fatal the moment `apply_state` writes item state.
+                // `LVM_SETITEMSTATE` makes comctl32 fire LVN_ITEMCHANGED
+                // SYNCHRONOUSLY, inside `apply_state` -- so the chain
+                // apply_state -> on_select -> refresh_settings -> apply_state
+                // recurses without bound across an `extern "system"`
+                // boundary, where a second RefCell borrow ABORTS the process
+                // instead of unwinding. Landing 2a writes item state for the
+                // first time, so this guard has to exist before any of it.
+                if suppressed() {
+                    return LRESULT(0);
+                }
                 let nm = &*(lp.0 as *const NMHDR);
                 if nm.idFrom == IDC_LIST as usize && nm.code == LVN_ITEMCHANGED {
                     let lv = &*(lp.0 as *const NMLISTVIEW);
