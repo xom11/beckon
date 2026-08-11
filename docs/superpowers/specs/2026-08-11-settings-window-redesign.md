@@ -1,4 +1,4 @@
-# beckon-serve settings window: foundation, redesign, beckon key, suggestions
+# beckon-serve settings window: foundation, redesign, Caps Lock, suggestions
 
 Date: 2026-08-11
 Status: design approved, not built
@@ -34,8 +34,8 @@ non-developer — needs and does not have:
 | Dark mode | Light only, `GetSysColor` throughout; high-contrast themes are the supported dark path | uxtheme ordinals; IAT-patched scrollbars (§7.2) |
 | UI language | English | Vietnamese; an i18n layer |
 | Config format | **Unchanged.** Combos stay spelled out in full | A `beckon+t` shorthand token (§7.3) |
-| New config keys | Exactly one: `keyboard.beckon_key` | Per-OS overrides; a `[keyboard]` header |
-| Beckon key scope | Configurable, including for the Caps hook; `shift` refused while Caps is on | Freezing the hook's chord (§7.4); allowing shift unconditionally |
+| New config keys | Exactly one: `keyboard.caps_hold` | Per-OS overrides; a `[keyboard]` header |
+| Caps Hold chord | Configurable; `shift` refused because the hook must press and release it | Freezing the hook's chord (§7.4); allowing shift unconditionally |
 | Shortcut editing | Full combo. Modifier checkboxes + a `CBS_DROPDOWNLIST` of the 81 keys as the primary path, **plus chord capture** via the shared LLHOOK as an accelerator (Part F) | A single-key field; a dropdown-only field with no capture; a capture-only field with no typed path |
 | Capture mechanism | The existing `WH_KEYBOARD_LL`, one hook with two mutually exclusive modes | `msctls_hotkey32`; a second hook; message-queue capture |
 | Chord validation | Live: F12 guard → own-table check → a real `RegisterHotKey` probe | A static table of reserved chords |
@@ -50,7 +50,7 @@ Three landings, and the order is load-bearing rather than a preference.
 | Landing | Contents | Why here |
 |---|---|---|
 | **1** | Part A entire, plus Part D | The manifest changes what every constant in Part B *means*, so tuning spacing or fonts before it is on hardware is tuning against metrics the shipped binary will never use. Part D rides along because §D.1 is a live defect and its measurement runs on the same a14 pass. |
-| **2a** | Part B, plus Part C, plus §F.7 (the list) | The window redesign and the beckon key touch the same `layout` and the same `ControlState`; splitting them means writing the layout twice. §F.7's one-line `suppressed()` fix lands **first within 2a**, before any code writes list item state — it is abort-class. |
+| **2a** | Part B, plus Part C, plus §F.7 (the list) | The window redesign and the Caps row touch the same `layout` and the same `ControlState`; splitting them means writing the layout twice. §F.7's one-line `suppressed()` fix lands **first within 2a**, before any code writes list item state — it is abort-class. |
 | **2b** | §F.1–F.6, F.8 (capture, the probe, the beckon-key row) | Capture needs the `caps_hook` lifecycle refcount, whose only consumer is here. Gated on a14 measurements 1, 2 and 4 (§F.5, §F.6) — this is the hardware measurement the 2026-08-10 spec demanded and that the window shipped without, because the feature needing it was not built. It is being built now, so the debt is due. |
 | **3** | Part E | Suggestions depend on nothing above and are the easiest thing to cut. |
 
@@ -175,7 +175,7 @@ change with it:
 
 ```
 ┌ beckon — shortcuts.toml ──────────────────────────── ─ □ ✕ ┐
-│ Beckon key [Ctrl][Win][Alt][Shift] │ ☐ Use Caps Lock instead │  1  a setting
+│ ☐ Caps Lock  Hold [Ctrl][Win][Alt][Shift]  Tap [Caps Lock ▾] │  1  a setting
 ├─────────────────────────────────────────────────────────────┤     about the
                                                                     list below
 │  [banner: file changed on disk    (Reload) (Keep mine)]     │     only when needed
@@ -309,7 +309,7 @@ that says beckon is paused at all.
 | `..` | `checking…` | The catalog scan is still running |
 | `..` | `paused` | beckon is paused from the tray |
 | `..` | *(nothing)* | A new row with nothing picked yet |
-| — | `custom` | A chord other than the beckon key |
+| — | `custom` | A chord other than what holding Caps sends |
 
 A screen reader currently announces `!!` verbatim. Words are the payload;
 Fluent glyphs (`Segoe Fluent Icons`, falling back to `Segoe MDL2 Assets` —
@@ -330,7 +330,7 @@ test.
 pub enum Severity { Error, Warning }
 
 pub struct Problem {
-    pub row: Option<usize>,   // None = file-scope (beckon key, caps)
+    pub row: Option<usize>,   // None = file-scope (the Caps row)
     pub severity: Severity,
     pub message: String,
 }
@@ -340,7 +340,7 @@ pub struct Problem {
 
 Two consequences that are the point of the change:
 
-- A warning (a single-modifier beckon key; a zero-modifier row) no longer
+- A warning (a single-modifier Caps Hold chord; a zero-modifier row) no longer
   blocks Save.
 - **An unfinished row no longer blocks the rest of the file.** Today `Add`
   appends a blank row that immediately produces two errors and disables Save
@@ -389,7 +389,7 @@ Two consequences that are the point of the change:
 
 ---
 
-# Part C — the beckon key
+# Part C — what holding Caps stands for
 
 ## C.1 The config file does not change
 
@@ -399,7 +399,7 @@ example and every hand-edit keeps working, and there is no migration.
 ```toml
 # Written ONLY when it differs from the default, so an untouched file stays
 # readable by every older beckon binary.
-keyboard.beckon_key = "ctrl+super+alt"   # default
+keyboard.caps_hold = "ctrl+super+alt"   # default
 keyboard.caps = true                      # Windows only
 keyboard.caps_tap = "capslock"            # capslock | escape | none
 
@@ -409,7 +409,7 @@ keyboard.caps_tap = "capslock"            # capslock | escape | none
 ```
 
 **The short form is derived, never stored.** A row is displayed and edited as
-a single key whenever its *resolved* combo equals beckon key + one key. The
+a single key whenever its *resolved* combo equals the Caps Hold chord + one key. The
 test runs against the parsed `Combo`, not against how the line is spelled, so
 an existing 18-binding file displays in the new short form with not one byte
 changed. Rows on any other chord keep their full keycaps and a `custom` flag —
@@ -433,7 +433,7 @@ impl Chord {
 pub struct KeyboardConfig {
     pub caps: bool,
     pub caps_tap: CapsTap,
-    pub beckon_key: Chord,   // new
+    pub caps_hold: Chord,   // new; meaningful only when `caps` is true
 }
 ```
 
@@ -453,16 +453,16 @@ untouched file readable by every shipped version. One `if`.
 
 | Condition | Message |
 |---|---|
-| no modifiers | `` `keyboard.beckon_key` needs at least one modifier `` |
+| no modifiers | `` `keyboard.caps_hold` needs at least one modifier `` |
 | unknown token | reuse `Combo::parse`'s message verbatim, via the shared `parse_modifiers` |
 | duplicate modifier | likewise |
-| `caps = true` **and** `beckon_key` contains `shift` | `` `keyboard.caps = true` cannot be combined with `shift` in `keyboard.beckon_key` — beckon has to press Shift for you, and releasing it would drop a Shift you are holding `` |
+| `caps = true` **and** `caps_hold` contains `shift` | `` `keyboard.caps = true` cannot be combined with `shift` in `keyboard.caps_hold` — beckon has to press Shift for you, and releasing it would drop a Shift you are holding `` |
 
 **Warnings** (printed by `check`, shown in the window, do not block):
 
 | Condition | Message |
 |---|---|
-| exactly one modifier | ``beckon key `ctrl` alone takes Ctrl+T from every application`` |
+| exactly one modifier | ``holding Caps as `ctrl` alone takes Ctrl+T from every application`` |
 | a row with zero modifiers | ``` `t` takes the T key in every application ``` |
 
 In the window, the `Shift` chip is shown struck through with the reason
@@ -480,7 +480,7 @@ sentence is preserved here so a later session does not re-derive the
 dropdown-only design as the safe option and quietly reverse the reversal.
 
 The editor line carries the full combo, not a single key, because a binding
-may legitimately not use the beckon key at all — `Win+X` is a case the user
+may legitimately not use the Caps chord at all — `Win+X` is a case the user
 named, and the README already documents
 `"ctrl+super+alt+shift+t" = "Telegram Web"`.
 
@@ -596,10 +596,10 @@ behaviour changes:
 
 - **A row that failed to register is no longer in the Caps set.** Today it is,
   and pressing `Caps+<that key>` injects a chord nobody is listening for.
-- **A `custom` row whose chord happens to equal the beckon key is included**,
+- **A `custom` row whose chord happens to equal the Caps Hold chord is included**,
   because the test is on the resolved modifier set, not on how the line was
-  spelled. That is the correct reading: Caps stands in for the beckon key, and
-  that binding uses the beckon key.
+  spelled. That is the correct reading: Caps stands in for that chord, and
+  that binding uses it.
 
 ## D.4 Caps-down reinitialises unconditionally
 
@@ -1071,81 +1071,86 @@ destroyed by `LVM_DELETEALLITEMS` on every refresh and never restored — the
 reinsert loop sets `mask: LVIF_TEXT` only. Typing one character into the App
 field loses the highlight while `Model.selected` still says otherwise.
 
-## F.8 The beckon key moves to its own band at the top
+## F.8 The Caps Lock row: Hold and Tap
 
-It is a setting *about* the shortcuts below it, not one of them, so it is
-separated above the list with its own background and a rule beneath — not
-parked at the bottom next to the command bar, where it read as an afterthought.
-
-It is **one row with two states**, not two rows. There is a single checkbox,
-and it is `keyboard.caps` — because if Caps Lock *is* the beckon key, then
-"turn the beckon key on" and "use Caps Lock" are the same act, and two
-checkboxes for one decision is what made the first draft three lines tall.
-
-**Off — the default:**
+**The phrase "beckon key" leaves the window entirely.** It was internal
+vocabulary — a name for the chord that Caps stands in for — and it made the
+row explain itself in prose. Naming the two things a key can do says the same
+thing in two words:
 
 ```
-│ Beckon key  [Ctrl] [Win] [Alt] [Shift]   │  ☐ Use Caps Lock instead - one key instead of three │
+☐ Caps Lock    Hold  [Ctrl] [Win] [Alt] [Shift]    Tap  [ Caps Lock ▾ ]
 ```
 
-**On:**
+That reads as a definition of the key, needs no sentence under it, and fits on
+one line. Everything after the checkbox is greyed while it is unticked,
+exactly as the tap radios are greyed today.
 
-```
-│ ☑ Beckon key  [Caps Lock]  tap alone sends [Caps Lock ▾]  │  same as [Ctrl][Win][Alt][Shift]   │
-│ ⓘ Turning this on installs a keyboard hook while beckon runs. Untick it and beckon never       │
-│   installs one.                                                                                │
-```
+The three `IDC_TAP_*` radios are deleted; `Tap` becomes a three-value
+`CBS_DROPDOWNLIST` — `Caps Lock`, `Esc`, `Nothing` — read with `CB_GETCURSEL`
+on `CBN_SELCHANGE`, never by reading its text, because even a `DROPDOWNLIST`
+has typeahead that moves the selection.
 
-Off, the beckon key *is* the chord and the chips are what you edit. On, Caps
-becomes the key you press and the chord demotes to `same as` — still present,
-because the file stores chords, `RegisterHotKey` registers chords, and typing
-the chord by hand is the only path that survives an elevated window having
-focus.
+Defaults when ticked: **Hold** = `Ctrl + Win + Alt`, **Tap** = `Caps Lock`,
+so ticking the box costs nothing that was there before — the key still does
+what it always did when tapped.
 
-**`Caps Lock` is a static label, not a control.** It is the only key the alias
-can be: the whole feature is that the key under your left little finger is
+`Caps Lock` is a static label, not a control. It is the only key the alias can
+be; the whole feature is that the key under the left little finger is
 otherwise wasted.
 
-### Default off, and the invitation is the label
+### The config keys follow the labels
 
-`keyboard.caps` stays `false` by default, unchanged. A default of `true` would
-mean every fresh install calls `SetWindowsHookExW` — and today a default
-install **never** does, which is the load-bearing half of the EDR argument for
-a publicly distributed binary. That decision stands.
+Renamed to match, since the UI no longer has a "beckon key" to name:
 
-What changes is that the option stops being hidden. In the off state the
-checkbox's own label is the pitch — *"Use Caps Lock instead — one key instead
-of three"* — sitting on the first row of the window rather than in a group box
-below the fold. The sentence next to it in the on state states the cost in
-plain language, because a user is entitled to know what ticking it installs.
+```toml
+keyboard.caps = true
+keyboard.caps_hold = "ctrl+super+alt"   # default; what holding Caps stands for
+keyboard.caps_tap = "capslock"          # capslock | escape | none
+```
 
-This is deliberately **not** a first-run prompt: that is a second modal moment
-on a path this spec already refuses one for (§E.2).
+`caps_hold` replaces `beckon_key` from §C.2. It is a strict improvement:
+symmetric with `caps_tap`, self-documenting beside it, and honest about scope
+— it is meaningful **only** when `caps = true`, which is exactly how the UI
+greys it. `caps` and `caps_tap` are unchanged, so the only new key is
+`caps_hold`, still written only when it differs from the default.
 
-### The Caps line says what Caps actually does
+### What the window loses with "beckon key", and why that is fine
 
-The three `IDC_TAP_*` radios are deleted. The tap choice becomes a three-value
-`CBS_DROPDOWNLIST` — `Caps Lock`, `Esc`, `Nothing` — sitting **inside the
-sentence** that explains the feature, so a reader learns both behaviours in
-one pass: hold it with another key and you get a shortcut; tap it alone and
-you get this. Today the window states neither; it says "Use Caps Lock as the
-beckon key" and leaves the tap behaviour to a separate radio group with no
-explanation of why it exists.
+Two jobs went with the name, and neither needed it:
 
-Read it with `CB_GETCURSEL` on `CBN_SELCHANGE`, never by reading its text —
-even a `DROPDOWNLIST` has typeahead that moves the selection. Grey it when the
-Caps box is unticked, exactly as the radios are today.
+- **Prefilling a new row.** With Caps on, `Add` prefills `caps_hold`. With
+  Caps off, the row starts empty and the user presses `Record` or ticks the
+  modifier boxes. That is one keystroke's difference in the rarer case.
+- **Dimming a shared prefix in the list.** The rule no longer consults any
+  setting: **the last keycap is the main key and is highlighted; every
+  modifier before it is dimmed.** Purely structural, true for every row
+  including `custom` ones, and it removes a coupling between the list's
+  appearance and a keyboard setting three sections away.
 
-No new plumbing: `keyboard.caps_tap` is already parsed, validated, written and
-modelled.
+### Default off, and the invitation is the checkbox itself
+
+`keyboard.caps` stays `false` by default. A default of `true` would mean every
+fresh install calls `SetWindowsHookExW`, and today a default install **never**
+does — that is the load-bearing half of the EDR argument for a binary shipped
+through Scoop and GitHub releases. That decision stands.
+
+What changes is that the option stops hiding: it is the first row of the
+window instead of a group box below the fold, and when ticked a single line
+states the cost in plain words — *"Turning this on installs a keyboard hook
+while beckon runs. Untick it and beckon never installs one."* A user is
+entitled to know what they just installed.
+
+Deliberately **not** a first-run prompt; that is a second modal moment on a
+path this spec already refuses one for (§E.2).
 
 Deleting the radios changes which control must close the keyboard group with
 `WS_GROUP` — fix it in the same pass as §B.7.
 
-**The beckon-key chips must not become a capture field.** A `Chord` is
-*modifiers with no main key*, which a capture field cannot express — and
-releasing modifiers with nothing between them is exactly the gesture §D.1
-exists to prevent.
+**The Hold chips must not become a capture field.** A `Chord` is *modifiers
+with no main key*, which a capture field cannot express — and releasing
+modifiers with nothing between them is exactly the gesture §D.1 exists to
+prevent.
 
 ---
 
@@ -1154,9 +1159,9 @@ exists to prevent.
 | Failure | Response |
 |---|---|
 | Manifest fails to compile into the binary | Release gate fails the build (§A.1.1). Never silent. |
-| `keyboard.beckon_key` invalid | `parse_config` error; `check` exits non-zero; `reload` keeps the running keys and posts one throttled toast — the existing path |
-| `caps = true` with `shift` in the beckon key | Hard error at parse; the window disables the Shift chip with the reason inline, so the state is unreachable through the UI |
-| Beckon key with a single modifier | Warning, does not block. Save is allowed |
+| `keyboard.caps_hold` invalid | `parse_config` error; `check` exits non-zero; `reload` keeps the running keys and posts one throttled toast — the existing path |
+| `caps = true` with `shift` in `caps_hold` | Hard error at parse; the window disables the Shift chip with the reason inline, so the state is unreachable through the UI |
+| A single-modifier Caps Hold chord | Warning, does not block. Save is allowed |
 | A row's app Name is empty, or the key is unset | The row is neutral, not an error. Save proceeds for the rest of the file |
 | Two rows resolve to the same combo | Both flagged, naming the shared canonical form — unchanged |
 | Config file does not parse | Window opens **read-only** with the parse error and the offending line, plus `Open config file` |
@@ -1176,11 +1181,11 @@ exists to prevent.
   modifier; the shared `parse_modifiers` produces byte-identical messages to
   `Combo::parse`.
 - `is_default` gates the write: rendering a default `Chord` must not emit
-  `keyboard.beckon_key`; a non-default one must.
+  `keyboard.caps_hold`; a non-default one must.
 - Round trip, extended: every valid `Model` → TOML → `parse_config` → the
-  same `Model`, now including `beckon_key`.
+  same `Model`, now including `caps_hold`.
 - The short-form predicate: a row spelled `ctrl+super+alt+t` and a row spelled
-  `alt+ctrl+super+t` both resolve to short form under the default beckon key;
+  `alt+ctrl+super+t` both resolve to short form under the default Caps Hold chord;
   `ctrl+super+alt+shift+t` does not.
 - `Severity` — a warning leaves `apply_enabled` true, an error does not; an
   unfinished row does not block a valid sibling.
@@ -1238,7 +1243,7 @@ confidently wrong results:
     before it.
   - *Out of scope → GUI/TUI*: the window now also shows suggestions, which
     are not a launcher — it still never focuses or launches anything.
-- **README**: the beckon key is configurable; the settings window screenshot;
+- **README**: what holding Caps sends is configurable; the settings window screenshot;
   the suggestion source boundary stated plainly, because a user is entitled
   to know what beckon reads.
 - **`2026-08-11-windows-settings-window-and-caps-design.md`**: a pointer at
@@ -1263,7 +1268,7 @@ confidently wrong results:
 - **No `beckon+t` shorthand in the config file.** See §7.3.
 - **No config-file migration**, automatic or offered. The short form is
   derived from the resolved combo, so no file needs changing.
-- **No per-OS `beckon_key` override.** One file, one beckon key. `parse_keyboard`
+- **No per-OS `caps_hold` override.** One file, one Caps chord. `parse_keyboard`
   is structured so that shape stays open if it is ever genuinely needed.
 - **No seeded starter file and no first-run wizard.** See §E.2.
 - **No macOS equivalent** of the window or the suggestions.
