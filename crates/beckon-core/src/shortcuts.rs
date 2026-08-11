@@ -205,15 +205,74 @@ pub struct Shortcut {
     pub app: String,
 }
 
-/// Parse a flat shortcuts TOML file: every top-level key is a combo, every
-/// value is one app-name string. First error wins. Iteration order follows
-/// `toml::Table` (BTreeMap, sorted by key) — registration order is
-/// irrelevant to hotkey behavior.
-pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
+/// What a bare Caps Lock tap does when `keyboard.caps` is on. The hook must
+/// swallow the physical Caps key to use it as a modifier, so the original
+/// behavior only exists if beckon puts it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CapsTap {
+    /// Toggle Caps Lock, as if nothing had been remapped. The default,
+    /// because someone ticking a box should not silently lose a key.
+    #[default]
+    CapsLock,
+    Escape,
+    None,
+}
+
+impl CapsTap {
+    pub fn parse(s: &str) -> Result<CapsTap, String> {
+        match s {
+            "capslock" => Ok(CapsTap::CapsLock),
+            "escape" => Ok(CapsTap::Escape),
+            "none" => Ok(CapsTap::None),
+            other => Err(format!(
+                "unknown `keyboard.caps_tap` value `{other}` \
+                 (expected \"capslock\", \"escape\" or \"none\")"
+            )),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapsTap::CapsLock => "capslock",
+            CapsTap::Escape => "escape",
+            CapsTap::None => "none",
+        }
+    }
+}
+
+/// The `keyboard` block. Read only by Windows `serve`, parsed everywhere:
+/// one config file is meant to travel between machines, so a Windows-only
+/// setting must not fail `beckon check` on macOS or Linux.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyboardConfig {
+    pub caps: bool,
+    pub caps_tap: CapsTap,
+}
+
+/// A whole shortcuts file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Config {
+    pub shortcuts: Vec<Shortcut>,
+    pub keyboard: KeyboardConfig,
+}
+
+/// The one top-level key that is a settings block rather than a combo.
+pub const KEYBOARD_KEY: &str = "keyboard";
+
+/// Parse a shortcuts TOML file: every top-level key is a combo bound to one
+/// app-name string, except `keyboard`, which is the settings block. First
+/// error wins. Iteration order follows `toml::Table` (BTreeMap, sorted by
+/// key) — registration order is irrelevant to hotkey behavior.
+pub fn parse_config(text: &str) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(table.len());
+    let mut keyboard = KeyboardConfig::default();
     for (raw_key, value) in &table {
+        if raw_key == KEYBOARD_KEY {
+            keyboard = parse_keyboard(value)?;
+            continue;
+        }
         let combo = Combo::parse(raw_key)?;
         let canon = combo.canonical();
         if let Some(prev) = seen.get(&canon) {
@@ -240,12 +299,65 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
         };
         out.push(Shortcut { combo, app });
     }
-    Ok(out)
+    Ok(Config {
+        shortcuts: out,
+        keyboard,
+    })
+}
+
+fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
+    let t = value.as_table().ok_or_else(|| {
+        format!(
+            "`keyboard` must be a table of settings, got {}",
+            value.type_str()
+        )
+    })?;
+    let mut kb = KeyboardConfig::default();
+    for (k, v) in t {
+        match k.as_str() {
+            "caps" => {
+                kb.caps = v.as_bool().ok_or_else(|| {
+                    format!(
+                        "`keyboard.caps` must be true or false, got {}",
+                        v.type_str()
+                    )
+                })?
+            }
+            "caps_tap" => {
+                let s = v.as_str().ok_or_else(|| {
+                    format!("`keyboard.caps_tap` must be a string, got {}", v.type_str())
+                })?;
+                kb.caps_tap = CapsTap::parse(s)?;
+            }
+            other => {
+                // TOML puts every bare key-value pair written after a
+                // `[keyboard]` header INSIDE that table. A shortcut appended
+                // to the bottom of such a file is silently nested here and
+                // never registers, with no error anywhere. Say so.
+                if Combo::parse(other).is_ok() {
+                    return Err(format!(
+                        "`{other}` is a shortcut but it is nested under `[keyboard]`. \
+                         Move it above the `[keyboard]` header, or write the settings \
+                         as `keyboard.caps = ...` instead of a `[keyboard]` section."
+                    ));
+                }
+                return Err(format!(
+                    "unknown setting `keyboard.{other}` (expected `caps` or `caps_tap`)"
+                ));
+            }
+        }
+    }
+    Ok(kb)
+}
+
+/// Shortcuts only. Kept because `check` and `serve` want exactly this.
+pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
+    parse_config(text).map(|c| c.shortcuts)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{all_keys, lookup_key, parse_shortcuts, Combo};
+    use super::{all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Combo};
 
     #[test]
     fn key_table_covers_spec_names() {
@@ -440,5 +552,93 @@ mod tests {
     fn parse_shortcuts_propagates_combo_errors() {
         let e = parse_shortcuts("\"ctrl+banana\" = \"X\"\n").unwrap_err();
         assert!(e.contains("unknown key `banana`"), "{e}");
+    }
+
+    // ---------- keyboard settings ----------
+
+    #[test]
+    fn a_file_without_keyboard_settings_gets_the_defaults() {
+        let c = parse_config(r#""ctrl+alt+t" = "Terminal""#).unwrap();
+        assert_eq!(c.shortcuts.len(), 1);
+        assert!(!c.keyboard.caps, "caps must be off unless asked for");
+        assert_eq!(c.keyboard.caps_tap, CapsTap::CapsLock);
+    }
+
+    #[test]
+    fn dotted_keys_set_the_keyboard_block() {
+        let c = parse_config(
+            "keyboard.caps = true\nkeyboard.caps_tap = \"escape\"\n\"ctrl+alt+t\" = \"Terminal\"\n",
+        )
+        .unwrap();
+        assert!(c.keyboard.caps);
+        assert_eq!(c.keyboard.caps_tap, CapsTap::Escape);
+        assert_eq!(c.shortcuts.len(), 1, "the shortcut must survive alongside");
+    }
+
+    #[test]
+    fn a_hand_written_keyboard_header_works_too() {
+        let c = parse_config("\"ctrl+alt+t\" = \"Terminal\"\n\n[keyboard]\ncaps = true\n").unwrap();
+        assert!(c.keyboard.caps);
+        assert_eq!(c.shortcuts.len(), 1);
+    }
+
+    /// The footgun the dotted-key spelling exists to avoid: a shortcut
+    /// appended below a `[keyboard]` header is silently nested inside it and
+    /// never registers.
+    #[test]
+    fn a_shortcut_nested_under_keyboard_is_a_named_error() {
+        let err =
+            parse_config("[keyboard]\ncaps = true\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap_err();
+        assert!(
+            err.contains("ctrl+alt+t"),
+            "must name the offending key: {err}"
+        );
+        // Not just "unknown setting `keyboard.ctrl+alt+t`" -- that message
+        // contains the key and the word `keyboard` too, so asserting on
+        // those alone would pass without the guard existing at all. The
+        // point of the guard is telling the user what to DO.
+        assert!(
+            err.contains("Move it above"),
+            "must say how to fix it, not just that it is unknown: {err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_keyboard_setting_is_rejected_not_ignored() {
+        let err = parse_config("keyboard.caps_tab = \"escape\"\n").unwrap_err();
+        assert!(
+            err.contains("caps_tab"),
+            "a typo must be named, not ignored: {err}"
+        );
+    }
+
+    #[test]
+    fn caps_tap_takes_exactly_three_values() {
+        for v in ["capslock", "escape", "none"] {
+            parse_config(&format!("keyboard.caps_tap = \"{v}\"")).unwrap();
+        }
+        let err = parse_config("keyboard.caps_tap = \"esc\"").unwrap_err();
+        assert!(err.contains("esc"), "{err}");
+    }
+
+    #[test]
+    fn caps_must_be_a_boolean() {
+        let err = parse_config("keyboard.caps = \"yes\"").unwrap_err();
+        assert!(err.contains("caps"), "{err}");
+    }
+
+    #[test]
+    fn keyboard_must_be_a_table() {
+        let err = parse_config("keyboard = \"on\"").unwrap_err();
+        assert!(err.contains("keyboard"), "{err}");
+    }
+
+    /// `parse_shortcuts` is the pre-existing API; every current caller and
+    /// every current test must keep working through it.
+    #[test]
+    fn parse_shortcuts_still_ignores_the_keyboard_block() {
+        let s = parse_shortcuts("keyboard.caps = true\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].app, "Terminal");
     }
 }
