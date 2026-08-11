@@ -62,6 +62,8 @@ pub struct Callbacks {
     pub on_caps: Box<dyn FnMut(bool)>,
     pub on_caps_tap: Box<dyn FnMut(CapsTap)>,
     pub on_open_file: Box<dyn FnMut()>,
+    /// The installed-app catalog finished scanning.
+    pub on_catalog: Box<dyn FnMut(Vec<String>)>,
     /// Reload the model from disk, discarding in-memory edits.
     pub on_reload_from_disk: Box<dyn FnMut()>,
     /// Keep the in-memory edits and dismiss the external-change banner.
@@ -98,6 +100,28 @@ thread_local! {
 /// The window's handle, or `None` when it is closed.
 pub fn hwnd() -> Option<HWND> {
     UI.with(|u| u.borrow().as_ref().map(|ui| ui.hwnd))
+}
+
+/// An `HWND` a worker thread may carry.
+///
+/// `HWND` is a raw pointer and therefore not `Send`, but a window handle is
+/// a kernel-side id, not a pointer into this thread's memory, and
+/// `PostMessageW` is explicitly documented as callable from any thread —
+/// posting to another thread's queue is the whole point of it. The only
+/// thing this wrapper must never be used for is calling a window API that
+/// requires the owning thread; the catalog worker calls exactly one
+/// function, and it is `PostMessageW`.
+#[derive(Clone, Copy)]
+pub struct WindowHandle(pub HWND);
+unsafe impl Send for WindowHandle {}
+
+/// Raise the window that is already open. Cheaper than `open` when the
+/// caller has already established there is one.
+pub fn open_existing() -> bool {
+    match hwnd() {
+        Some(h) => unsafe { SetForegroundWindow(h) }.as_bool(),
+        None => false,
+    }
 }
 
 /// Give the settings window first refusal on a message so Tab, Esc and
@@ -714,17 +738,18 @@ unsafe fn check(parent: HWND, id: i32, on: bool) {
     }
 }
 
-/// Hand the scanned catalog to the window. Called from the worker thread's
-/// `PostMessage` handler, on the UI thread.
-pub fn post_catalog(hwnd: HWND, names: Vec<String>) {
+/// Hand the scanned catalog to the window, from the worker thread.
+///
+/// The `Vec` is leaked into the message and reclaimed by the `WM_CATALOG`
+/// arm of `wndproc`. If the post fails — the window closed while the scan
+/// was running — this reclaims it here instead, so the failure costs
+/// nothing but the scan.
+pub fn post_catalog(target: WindowHandle, names: Vec<String>) {
     let boxed = Box::into_raw(Box::new(names));
-    unsafe {
-        let _ = PostMessageW(
-            Some(hwnd),
-            WM_CATALOG,
-            WPARAM(0),
-            LPARAM(boxed as isize),
-        );
+    let posted =
+        unsafe { PostMessageW(Some(target.0), WM_CATALOG, WPARAM(0), LPARAM(boxed as isize)) };
+    if posted.is_err() {
+        drop(unsafe { Box::from_raw(boxed) });
     }
 }
 
@@ -766,21 +791,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CATALOG => {
+                // Reclaims what `post_catalog` leaked into the message.
                 let names = *Box::from_raw(lp.0 as *mut Vec<String>);
-                let app = UI.with(|u| u.borrow().as_ref().map(|x| x.app));
-                if let Some(app) = app {
-                    SendMessageW(app, CB_RESETCONTENT, Some(WPARAM(0)), Some(LPARAM(0)));
-                    for n in &names {
-                        let t = wide(n);
-                        SendMessageW(
-                            app,
-                            CB_ADDSTRING,
-                            Some(WPARAM(0)),
-                            Some(LPARAM(t.as_ptr() as isize)),
-                        );
-                    }
-                }
-                with_cb(|cb| (cb.on_keep_mine)()); // triggers a repaint with the catalog set
+                // The caller stores it and calls back into `apply_state`,
+                // which is what actually fills the combo box -- one path
+                // for putting things on screen, not two.
+                with_cb(|cb| (cb.on_catalog)(names));
                 LRESULT(0)
             }
             WM_NOTIFY => {

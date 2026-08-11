@@ -116,6 +116,20 @@ struct ServeState {
     /// See `AutostartCapability`.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     autostart: Option<AutostartCapability>,
+    /// The settings window's model, present only while it is open. The
+    /// window itself is stateless about content — it draws whatever
+    /// `control_state` projects out of this.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    settings: Option<beckon_core::settings::Model>,
+    /// Installed app names for the window's combo box. `None` until the
+    /// worker thread reports, which is NOT the same as "nothing installed"
+    /// — `control_state` renders the two differently on purpose.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    catalog: Option<Vec<String>>,
+    /// The file changed underneath an unsaved window. Shows the banner; the
+    /// user chooses, beckon does not.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    external_change: bool,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -169,6 +183,9 @@ pub fn cmd_serve_app(
         last_phrase: String::new(),
         registered: Default::default(),
         autostart,
+        settings: None,
+        catalog: None,
+        external_change: false,
     }));
 
     let mgr = {
@@ -425,6 +442,11 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             if let Some(toast) = failure_toast(&outcome.failed) {
                 crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
+            // The file on disk just changed. A clean settings window follows
+            // it silently; a dirty one raises a banner and lets the user
+            // choose. No-op when the window is closed.
+            #[cfg(target_os = "windows")]
+            settings_saw_external_change(state);
         }
     }
 }
@@ -483,7 +505,7 @@ fn build_entries(m: &MenuModel) -> Vec<hotkey::MenuEntry> {
         MenuEntry::separator(),
         MenuEntry {
             id: MENU_EDIT,
-            label: "Edit shortcuts...".into(),
+            label: "Settings...".into(),
             checked: None,
             enabled: true,
         },
@@ -551,12 +573,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // ShellExecuteW pumps this thread's queue, so the path is cloned
             // out and every borrow is dropped BEFORE the call -- the same
             // rule the module doc states for backend.beckon().
-            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => {
-                let path = st.borrow().config.clone();
-                if let Err(e) = beckon_windows::shell::open_path(&path) {
-                    eprintln!("beckon serve: {e}");
-                }
-            }
+            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_settings(&st),
             MENU_LOG => {
                 let path = st.borrow().log.clone();
                 if let Some(path) = path {
@@ -608,6 +625,341 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     });
 
     hotkey::set_menu(build, on_click);
+}
+
+// ---------------------------------------------------------------------------
+// Settings window (Windows only)
+// ---------------------------------------------------------------------------
+
+/// Recompute what the window should show and push it. Every callback ends
+/// here; nothing else touches the controls.
+#[cfg(target_os = "windows")]
+fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
+    let s = state.borrow();
+    let Some(model) = s.settings.as_ref() else {
+        return;
+    };
+    let rt = beckon_core::settings::RuntimeStatus {
+        registered: s.registered.clone(),
+        catalog: s.catalog.clone(),
+    };
+    let cs = beckon_core::settings::control_state(model, &rt);
+    let external = s.external_change;
+    let catalog = s.catalog.clone();
+    drop(s);
+    beckon_windows::settings_window::apply_state(&cs, external, catalog.as_deref());
+}
+
+/// Write the model to disk, atomically.
+///
+/// Deliberately no direct `reload()` call afterwards: `watch_config` fires
+/// on the rename and the 1 Hz tick reloads within a second. A shortcut path
+/// here would buy under a second at the cost of a second code path, and the
+/// watcher would run anyway.
+#[cfg(target_os = "windows")]
+fn apply_settings(state: &Rc<RefCell<ServeState>>) {
+    let rendered = {
+        let s = state.borrow();
+        let Some(model) = s.settings.as_ref() else {
+            return;
+        };
+        model.render().map(|t| (t, s.config.clone()))
+    };
+    let (text, path) = match rendered {
+        Ok(v) => v,
+        Err(e) => {
+            beckon_windows::settings_window::error(&format!("Cannot save:\n\n{e}"));
+            return;
+        }
+    };
+    // Temp-then-rename: a crash or a full disk must not destroy a working
+    // config, and a rename is the write shape `watch_config` was built for
+    // -- it watches the parent directory by file name precisely because
+    // editors replace files that way.
+    let tmp = path.with_extension("toml.beckon-tmp");
+    let wrote = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = wrote {
+        let _ = std::fs::remove_file(&tmp);
+        beckon_windows::settings_window::error(&format!(
+            "Cannot write {}:\n\n{e}",
+            path.display()
+        ));
+        return;
+    }
+    // The model is now what is on disk, so re-seed it from the text we just
+    // wrote: that clears `dirty` and gives every row a fresh `orig_key`.
+    let mut s = state.borrow_mut();
+    if let Ok(m) = beckon_core::settings::Model::from_text(&text) {
+        let selected = s.settings.as_ref().and_then(|old| old.selected);
+        s.settings = Some(m);
+        if let Some(m) = s.settings.as_mut() {
+            m.selected = selected.filter(|i| *i < m.rows.len());
+        }
+    }
+    s.external_change = false;
+    drop(s);
+    refresh_settings(state);
+    eprintln!("beckon serve: settings saved");
+}
+
+/// Load the model from disk into the window, discarding in-memory edits.
+#[cfg(target_os = "windows")]
+fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
+    let path = state.borrow().config.clone();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            beckon_windows::settings_window::error(&format!(
+                "Cannot read {}:\n\n{e}",
+                path.display()
+            ));
+            return;
+        }
+    };
+    match beckon_core::settings::Model::from_text(&text) {
+        Ok(m) => {
+            let mut s = state.borrow_mut();
+            s.settings = Some(m);
+            s.external_change = false;
+        }
+        Err(e) => {
+            beckon_windows::settings_window::error(&format!("{} is not valid:\n\n{e}", path.display()));
+            return;
+        }
+    }
+    refresh_settings(state);
+}
+
+/// Called from `reload()` after the file changed on disk. A clean window
+/// follows the file silently; a dirty one raises the banner and lets the
+/// user choose. beckon never picks for them.
+#[cfg(target_os = "windows")]
+fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
+    let dirty = match state.borrow().settings.as_ref() {
+        Some(m) => m.dirty(),
+        None => return,
+    };
+    if dirty {
+        state.borrow_mut().external_change = true;
+        refresh_settings(state);
+    } else {
+        reload_settings_from_disk(state);
+    }
+}
+
+/// Scan the installed-app catalog off the UI thread.
+///
+/// `scan_installed_apps` was measured at ~370-500 ms and `run_forever`'s
+/// message loop is the same thread that dispatches `WM_HOTKEY`; scanning
+/// inline would stall every hotkey for half a second each time the window
+/// opens. The worker gets its own STA -- an MTA worker would be handed a
+/// marshalling proxy back to the host apartment and serialise anyway.
+#[cfg(target_os = "windows")]
+fn spawn_catalog_scan(target: beckon_windows::settings_window::WindowHandle) {
+    std::thread::spawn(move || {
+        let names: Vec<String> = beckon_windows::apps::scan_installed_apps()
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
+        beckon_windows::settings_window::post_catalog(target, names);
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn open_settings(state: &Rc<RefCell<ServeState>>) {
+    use beckon_windows::settings_window as win;
+
+    // Already open: raise it, do not build a second model.
+    if win::hwnd().is_some() {
+        let _ = win::open_existing();
+        return;
+    }
+
+    let path = state.borrow().config.clone();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            win::error(&format!("Cannot read {}:\n\n{e}", path.display()));
+            return;
+        }
+    };
+    let model = match beckon_core::settings::Model::from_text(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            win::error(&format!(
+                "{} is not valid, so it cannot be edited here:\n\n{e}\n\n\
+                 Fix it in a text editor first.",
+                path.display()
+            ));
+            return;
+        }
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.settings = Some(model);
+        s.external_change = false;
+    }
+
+    // One helper per callback so the borrow discipline is written once:
+    // mutate under a short borrow_mut, drop it, then refresh.
+    macro_rules! edit {
+        ($st:expr, $body:expr) => {{
+            let st = Rc::clone($st);
+            move |arg| {
+                {
+                    let mut s = st.borrow_mut();
+                    if let Some(m) = s.settings.as_mut() {
+                        #[allow(clippy::redundant_closure_call)]
+                        ($body)(m, arg);
+                    }
+                }
+                refresh_settings(&st);
+            }
+        }};
+    }
+
+    let cb = win::Callbacks {
+        on_select: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, i| {
+            m.selected = Some(i);
+        })),
+        on_edit_combo: Box::new(edit!(
+            state,
+            |m: &mut beckon_core::settings::Model, t: String| {
+                if let Some(i) = m.selected {
+                    m.set_combo(i, &t);
+                }
+            }
+        )),
+        on_edit_app: Box::new(edit!(
+            state,
+            |m: &mut beckon_core::settings::Model, t: String| {
+                if let Some(i) = m.selected {
+                    m.set_app(i, &t);
+                }
+            }
+        )),
+        on_caps: Box::new(edit!(
+            state,
+            |m: &mut beckon_core::settings::Model, on: bool| m.set_caps(on)
+        )),
+        on_caps_tap: Box::new(edit!(
+            state,
+            |m: &mut beckon_core::settings::Model, t| m.set_caps_tap(t)
+        )),
+        on_add: Box::new({
+            let st = Rc::clone(state);
+            move || {
+                {
+                    let mut s = st.borrow_mut();
+                    if let Some(m) = s.settings.as_mut() {
+                        m.add_row();
+                    }
+                }
+                refresh_settings(&st);
+            }
+        }),
+        on_remove: Box::new({
+            let st = Rc::clone(state);
+            move || {
+                {
+                    let mut s = st.borrow_mut();
+                    if let Some(m) = s.settings.as_mut() {
+                        if let Some(i) = m.selected {
+                            m.remove_row(i);
+                        }
+                    }
+                }
+                refresh_settings(&st);
+            }
+        }),
+        on_apply: Box::new({
+            let st = Rc::clone(state);
+            move || apply_settings(&st)
+        }),
+        on_catalog: Box::new({
+            let st = Rc::clone(state);
+            move |names: Vec<String>| {
+                st.borrow_mut().catalog = Some(names);
+                refresh_settings(&st);
+            }
+        }),
+        on_open_file: Box::new({
+            let st = Rc::clone(state);
+            move || {
+                // ShellExecuteW pumps this thread's queue, so the path is
+                // cloned out and the borrow dropped BEFORE the call -- the
+                // rule this module's doc states for backend.beckon().
+                let p = st.borrow().config.clone();
+                if let Err(e) = beckon_windows::shell::open_path(&p) {
+                    eprintln!("beckon serve: {e}");
+                }
+            }
+        }),
+        on_reload_from_disk: Box::new({
+            let st = Rc::clone(state);
+            move || reload_settings_from_disk(&st)
+        }),
+        on_keep_mine: Box::new({
+            let st = Rc::clone(state);
+            move || {
+                st.borrow_mut().external_change = false;
+                refresh_settings(&st);
+            }
+        }),
+        on_close_request: Box::new({
+            let st = Rc::clone(state);
+            move || {
+                let dirty = st
+                    .borrow()
+                    .settings
+                    .as_ref()
+                    .map(|m| m.dirty())
+                    .unwrap_or(false);
+                if !dirty {
+                    st.borrow_mut().settings = None;
+                    return true;
+                }
+                match beckon_windows::shell::ask_save(
+                    "beckon",
+                    "Save your changes to the shortcuts file?",
+                ) {
+                    beckon_windows::shell::SaveChoice::Save => {
+                        apply_settings(&st);
+                        // Only leave if the write actually succeeded --
+                        // apply_settings clears `dirty` by reseeding the
+                        // model, so a still-dirty model means it failed and
+                        // the user's edits are only in memory.
+                        let still_dirty = st
+                            .borrow()
+                            .settings
+                            .as_ref()
+                            .map(|m| m.dirty())
+                            .unwrap_or(false);
+                        if !still_dirty {
+                            st.borrow_mut().settings = None;
+                        }
+                        !still_dirty
+                    }
+                    beckon_windows::shell::SaveChoice::Discard => {
+                        st.borrow_mut().settings = None;
+                        true
+                    }
+                    beckon_windows::shell::SaveChoice::Cancel => false,
+                }
+            }
+        }),
+    };
+
+    if let Err(e) = win::open(cb) {
+        eprintln!("beckon serve: cannot open settings: {e}");
+        beckon_windows::settings_window::error(&format!("Cannot open settings:\n\n{e}"));
+        state.borrow_mut().settings = None;
+        return;
+    }
+    if let Some(h) = win::hwnd() {
+        spawn_catalog_scan(win::WindowHandle(h));
+    }
+    refresh_settings(state);
 }
 
 /// Unregister or re-register every hotkey, and say so in the tooltip.
@@ -894,6 +1246,23 @@ mod tests {
         )
         .unwrap();
         assert_eq!(shortcuts[0].combo.canonical(), "ctrl+alt+t");
+    }
+
+    /// The row used to open Notepad; it now opens the settings window, and
+    /// the label has to say so. Same id on purpose -- renaming the id would
+    /// have broken the double-click alias that shares it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_first_action_row_opens_settings_not_notepad() {
+        let m = MenuModel {
+            phrase: "2 shortcuts registered".into(),
+            paused: false,
+            autostart: Some(false),
+            has_log: true,
+        };
+        let rows = build_entries(&m);
+        let edit = rows.iter().find(|r| r.id == MENU_EDIT).unwrap();
+        assert_eq!(edit.label, "Settings...");
     }
 
     #[cfg(target_os = "windows")]

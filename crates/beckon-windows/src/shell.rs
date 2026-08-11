@@ -6,7 +6,8 @@ use std::path::Path;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, SW_SHOWNORMAL,
+    MessageBoxW, IDNO, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MB_YESNOCANCEL, SW_SHOWNORMAL,
 };
 
 /// Open `path` with whatever the user has registered for it — the editor for
@@ -51,6 +52,38 @@ pub fn error_dialog(title: &str, body: &str) {
             MB_OK | MB_ICONERROR,
         )
     };
+}
+
+/// What the user chose when asked whether to save before closing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+/// Ask before throwing away unsaved edits.
+///
+/// Three buttons rather than two on purpose: "don't close after all" and
+/// "close and lose my edits" are different answers, and collapsing them
+/// makes the safe one unreachable. An unrecognised return (the title-bar X,
+/// Esc) is `Cancel` -- the choice that changes nothing.
+pub fn ask_save(title: &str, body: &str) -> SaveChoice {
+    let title = HSTRING::from(title);
+    let body = HSTRING::from(body);
+    let r = unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_YESNOCANCEL | MB_ICONWARNING,
+        )
+    };
+    match r {
+        IDYES => SaveChoice::Save,
+        IDNO => SaveChoice::Discard,
+        _ => SaveChoice::Cancel,
+    }
 }
 
 /// A modal informational box: same shape as `error_dialog`, without the red
