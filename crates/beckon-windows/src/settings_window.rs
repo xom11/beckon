@@ -49,6 +49,12 @@ const IDC_CLOSE: i32 = 1013;
 const IDC_BANNER: i32 = 1014;
 const IDC_RELOAD: i32 = 1015;
 const IDC_KEEPMINE: i32 = 1016;
+// Labels and the group box need real ids, not -1: `layout` positions
+// controls through `GetDlgItem`, and every -1 resolves to the same first
+// match, so sharing one id left all but the first stacked at the origin.
+const IDC_LBL_SHORTCUT: i32 = 1017;
+const IDC_LBL_APP: i32 = 1018;
+const IDC_GRP_KEYBOARD: i32 = 1019;
 
 /// Everything the window reports back. The caller owns all policy: what an
 /// edit means, whether a close is allowed, what Apply writes.
@@ -347,7 +353,7 @@ unsafe fn build_children(hwnd: HWND) {
         w!("STATIC"),
         "Shortcut",
         SS_LEFT_STYLE,
-        -1,
+        IDC_LBL_SHORTCUT,
         font,
     );
     let combo = child(
@@ -363,7 +369,7 @@ unsafe fn build_children(hwnd: HWND) {
         w!("STATIC"),
         "App",
         SS_LEFT_STYLE,
-        -1,
+        IDC_LBL_APP,
         font,
     );
     // CBS_DROPDOWN, not CBS_DROPDOWNLIST: beckon deliberately supports apps
@@ -416,7 +422,7 @@ unsafe fn build_children(hwnd: HWND) {
         w!("BUTTON"),
         "Keyboard",
         WINDOW_STYLE(BS_GROUPBOX as u32),
-        -1,
+        IDC_GRP_KEYBOARD,
         font,
     );
     child(
@@ -579,17 +585,21 @@ unsafe fn layout(hwnd: HWND) {
     let rx = pad * 2 + list_w;
     let rw = w - rx - pad;
     let mut y = top;
-    place(-1, rx, y, rw, row); // labels are unnamed; skipped by GetDlgItem
+    place(IDC_LBL_SHORTCUT, rx, y, rw, row);
     y += row - s(6);
     place_h(combo, rx, y, rw, row);
     y += row + s(10);
-    place_h(app, rx, y, rw, row * 8); // combo box height includes its list
+    place(IDC_LBL_APP, rx, y, rw, row);
+    y += row - s(6);
+    // A combo box's height is the height of its dropped-down list, not of
+    // the closed control; the closed control is sized by the system.
+    place_h(app, rx, y, rw, row * 8);
     y += row + s(10);
     place_h(notes, rx, y, rw, mid_h - (y - top) - btn_h - s(6));
     place(IDC_APPLY, rx + rw - s(84), top + mid_h - btn_h, s(84), btn_h);
 
     let ky = top + mid_h + pad;
-    place(-1, pad, ky, w - pad * 2, kb_h);
+    place(IDC_GRP_KEYBOARD, pad, ky, w - pad * 2, kb_h);
     place(IDC_CAPS, pad + s(12), ky + row, w - pad * 2 - s(24), row);
     let tx = pad + s(24);
     place(IDC_TAP_CAPSLOCK, tx, ky + row * 2, s(190), row);

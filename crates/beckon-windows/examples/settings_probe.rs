@@ -120,15 +120,33 @@ mod win {
 
     /// Add a row, fill it in, and press Apply. Whether the file changed is
     /// checked by the caller — this only proves the events reach the model.
+    const IDC_NOTES: i32 = 1004;
+
+    /// The notes pane is rendered from the model, so its text is the
+    /// cheapest window into whether an event actually landed.
+    fn dump(h: HWND, label: &str) {
+        let notes = dlg_item(h, IDC_NOTES).map(text_of).unwrap_or_default();
+        let combo = dlg_item(h, IDC_COMBO).map(text_of).unwrap_or_default();
+        let app = dlg_item(h, IDC_APP).map(text_of).unwrap_or_default();
+        let apply = dlg_item(h, IDC_APPLY)
+            .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
+            .unwrap_or(false);
+        println!("    [{label}] combo={combo:?} app={app:?} apply={apply}");
+        println!("      notes: {}", notes.replace('\r', "").replace('\n', " | "));
+    }
+
     fn drive_an_edit(h: HWND) {
         println!("  -- driving an edit --");
+        dump(h, "start");
         click(h, IDC_ADD);
+        dump(h, "after Add");
 
         let Some(combo_edit) = dlg_item(h, IDC_COMBO) else {
             println!("    FAIL: no shortcut field");
             return;
         };
         set_text(combo_edit, "ctrl+super+alt+j");
+        dump(h, "after shortcut text");
 
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
         // only that child raises the change notification the window listens
@@ -138,6 +156,7 @@ mod win {
             Some(e) => set_text(e, "Notepad"),
             None => println!("    FAIL: combo box has no edit child"),
         }
+        dump(h, "after app text");
 
         let apply = dlg_item(h, IDC_APPLY);
         let enabled = apply.map(|a| unsafe { IsWindowEnabled(a) }.as_bool());
