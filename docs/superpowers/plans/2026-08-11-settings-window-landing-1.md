@@ -1282,7 +1282,11 @@ back is the only check that does not trust the build tool."
 
 - [ ] **Step 1: Rebuild the font per DPI, and stop leaking it**
 
-`ui_font` currently uses `SystemParametersInfoW(SPI_GETNONCLIENTMETRICS)`, which is the wrong API for a per-monitor process, and the `HFONT` it returns is created once in `build_children` and never recreated — one is leaked per window open. Replace with:
+`ui_font` currently uses `SystemParametersInfoW(SPI_GETNONCLIENTMETRICS)`, which answers for the *system* DPI — the wrong question for a per-monitor process on a secondary display — and the `HFONT` it returns is created once in `build_children` and never recreated.
+
+**Correction (2026-08-11, found by review):** an earlier draft of this line claimed "one is leaked per window open". That is false — `WM_DESTROY` already deletes `ui.font`, verified from `git show`. The leak this task must avoid is the *new* one it introduces: a DPI change replaces the font, so the old handle must be deleted, and only after every child has been told about the replacement.
+
+Keep `SystemParametersInfoW` as a middle fallback rung. The `ForDpi` variant is documented for per-monitor-aware processes and can fail otherwise, and `ui_font`'s only other fallback is the stock bitmap font its own doc comment exists to avoid — which `build.rs` makes reachable, since it embeds the manifest for `-msvc` only. Replace with:
 
 ```rust
 /// The shell's UI font at a specific DPI.
@@ -1424,7 +1428,7 @@ because a DPI-unaware process is told 96 whatever the display does. The
 manifest changes that and four sites had to change with it:
 WM_DPICHANGED was folded in with WM_SIZE and threw away the rectangle
 Windows puts in lParam; the font was built once with the system-DPI API
-and leaked one HFONT per window open; the creation size was in physical
+and could not follow a move between monitors; the creation size was in physical
 pixels, so a 192-DPI display got a half-size window and no message to
 correct it; and the ListView columns never went through s() at all."
 ```
