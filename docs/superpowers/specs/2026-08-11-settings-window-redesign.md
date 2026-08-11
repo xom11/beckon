@@ -265,10 +265,19 @@ Two measured facts constrain this:
   Windows 11.** Segoe UI Variable reaches the shell through DirectWrite and
   XAML, never through `NONCLIENTMETRICS`. A Win32 app must ask for it by
   name.
-- **`Segoe UI Variable` exposes nine GDI family names, not three**:
-  {Small, Text, Display} × {—, ` Light`, ` Semib`}, where "Semib" is
-  truncated to fit `lfFaceName`'s 32-wchar buffer. Code that enumerates
-  expecting three matches misses six.
+- **`Segoe UI Variable` exposes TWELVE GDI family names, not three and not
+  nine.** Measured on a14 2026-08-11, correcting an earlier draft of this
+  line that said nine: it is {Small, Text, Display} × {—, Light, Semibold,
+  Semilight} — the Semilight axis was missed entirely. And **the truncation
+  to 31 characters is not uniform**, which is the part that bites:
+  `Segoe UI Variable Text Semibold` survives in full while
+  `Segoe UI Variable Display Semib` and `Segoe UI Variable Small Semibol`
+  do not. Code keyed on the "Semib" spelling therefore finds Display and
+  misses Text — and asking GDI for `Segoe UI Variable Text Semib` returns
+  **Arial**, measured, against a `This Font Does Not Exist` control that
+  also returned Arial. This is exactly why the face must be confirmed with
+  a `SelectObject` → `GetTextFace` round trip: `CreateFontW` succeeded for
+  the wrong name and handed back Arial without complaint.
 
 **Faces must be verified, not requested.** GDI's font mapper never fails; it
 substitutes silently, so a successful `CreateFontW` proves nothing. Each
