@@ -974,11 +974,24 @@ OS metadata on every call.
   the app is what the user is looking for. The list is a **fixed eight
   rows** (`tok::ROWS`) at every DPI, measured rather than scaled from a
   token, so it does not grow with the config. Per-row `LVS_EX_CHECKBOXES`
-  ride in column 0's state image and make Remove a multi-delete;
+  ride in column 0's state image and make Remove a multi-delete: the whole
+  decision is `Model::remove_pressed` — **ticks win, the selection is the
+  fallback** — because clicking a tick also moves the highlight, so a
+  selection-only Remove would delete a row the user never ticked and leave
+  the ticked ones behind. `remove_enabled` is `selected.is_some() ||
+  marked_count() > 0`. The caption stays the constant `Remove` rather than
+  `Remove N`: `layout` sizes buttons from `text_size` of their caption, so a
+  live count would be a further `layout` input, and honouring it on a data
+  push means `SetWindowPos` on the App combo — the measured data-loss path.
   `Save` (was `Apply`; the id is still `IDC_APPLY`, because
-  `examples/settings_probe.rs` hard-codes 1002-1007) is
-  `BS_DEFPUSHBUTTON`, so Enter and `Ctrl+S` do the same thing from anywhere
-  in the window.
+  `examples/settings_probe.rs` hard-codes 1002-1007) is `BS_DEFPUSHBUTTON`
+  and is where the default ring RESTS — **not where it stays**.
+  `default_button_of` migrates the ring onto whichever push button has
+  focus, so Enter saves from the fields, the list and the check boxes, but
+  Enter on a tabbed-to `Close` closes and on `Reload` reloads. That is the
+  point of two earlier fixes: Enter on a focused `Reload` used to save and
+  overwrite the external change the banner existed to protect. **Only
+  `Ctrl+S` is unconditional.**
 
   **The status vocabulary is four words, and a healthy row says nothing.**
   `paused` > `key in use` > `not installed` > `custom`, and that order IS

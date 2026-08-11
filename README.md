@@ -267,8 +267,12 @@ The window is bands stacked top to bottom, not panes side by side:
 - an editor strip — **App** as a combo box you can type into or pick from,
   **Shortcut** as plain text — plus a notes line explaining the selected row;
 - a command bar: **Open config file** on the left, then **Close** and
-  **Save**. **Save** is the default button, so Enter saves from anywhere in
-  the window, and `Ctrl+S` does the same.
+  **Save**. **Save** is where the default button ring rests, so Enter saves
+  from any of the text fields, the list or the check boxes. Tab onto a push
+  button and the ring follows your focus — Enter then presses *that* button,
+  which is deliberate: Enter on a focused **Reload** used to save instead,
+  overwriting the very external change the banner exists to warn you about.
+  **`Ctrl+S` saves unconditionally**, wherever focus is.
 
 Rows say nothing when they are fine. When they are not, the App cell carries
 one word, and the notes line under the editor says the rest:
