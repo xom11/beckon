@@ -1533,7 +1533,7 @@ Nothing in Landing 2 can be tuned until this has run. Every number in Part B of 
 
 **Interfaces:**
 - Consumes: everything above.
-- Produces: the font face and size, the real DPI, themed control heights under v6, and a verdict on the `VK_NONAME` filler. Landing 2's spacing tokens are derived from these.
+- Produces: the font face and size, the real DPI, themed control heights under v6, a verdict on the `VK_NONAME` filler, a before/after timing for `beckon <id>` against the 50 ms budget, a verified-or-still-documented verdict on the `dpiAware`/`dpiAwareness` ordering claim, and a screenshot of the tray icon at 150 % scaling. Landing 2's spacing tokens are derived from these.
 
 **How to run anything on a14:** SSH lands in **session 0**, which has no desktop and no keyboard, so every UI result there is a confident false negative. Go through a scheduled task in session 1, registered with `New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries` — `schtasks`' defaults refuse to start on battery and leave the task `Queued` forever on a laptop. Use `-EncodedCommand` for PowerShell, and a `.bat` for anything with a redirect. Build with `cargo build --all-targets`; `--examples` does not build `[[bin]]` targets and you will measure a stale `beckon-serve.exe`.
 
@@ -1560,7 +1560,25 @@ Extend `caps_probe` with a case that deliberately truncates a chord burst — se
 
 The control is a bare Win tap already proven to open Start; it must be in the same run. A result of "Start did not open" from a probe that cannot detect Start opening at all looks identical to success.
 
-- [ ] **Step 5: Write the results down and commit**
+- [ ] **Step 5: Re-measure the hot path (`beckon <id>`)**
+
+`beckon.rc` (Task 6) compiles into *every* binary in the package, not just the settings window's. `beckon.exe` — the one-shot `beckon <id>` path with the documented 443→57 ms optimisation history and a 50 ms budget — now resolves a comctl32 v6 activation context at process start and runs per-monitor-v2, and neither cost has been measured against that budget.
+
+Time `beckon <id>` against a running app (the focus path, not the launch path) at the Step 1 checkout (pre-manifest, the existing control) and again at `HEAD` (post-manifest), same machine, same app, several runs each, median reported the way the 443→57 ms figures already in `CLAUDE.md` were. If the manifest measurably eats into the budget, say so in the results file rather than folding it into the existing number silently — this is a different cost with a different cause than the catalog-scan history it would otherwise get confused with.
+
+- [ ] **Step 6: The `dpiAware`/`dpiAwareness` ordering claim**
+
+`beckon.exe.manifest` asserts, from Microsoft's documentation and not from a Windows 10 machine, that swapping `dpiAware` and `dpiAwareness` silently loses per-monitor-v2 there. Nobody in this chain has verified it.
+
+If a Windows 10 machine is reachable: build once with the elements in their current order and once with them swapped, and compare `GetDpiForWindow` / actual scaling behavior on a secondary monitor at a different DPI, with the current (unswapped) order run as the control in the same pass. If only Windows 11 hardware (a14) is reachable, record that plainly — Windows 11 accepting either order proves nothing about Windows 10 — and leave the manifest comment as "documented, not measured" rather than upgrading it on partial evidence.
+
+- [ ] **Step 7: The tray icon at scaled DPI**
+
+`hotkey.rs:382` asks `GetSystemMetrics(SM_CXSMICON)` for the tray icon size. That call returned a flat 16 the whole time the process was DPI-unaware; post-manifest it tracks the real system DPI, so at 150 % scaling it now asks for 24 and `LoadImageW` downscales from the nearest larger source in `beckon.ico` (which ships 16/32/48/256) — a 32→24 shrink, not a native 24px asset. This is `beckon-serve.exe`'s most visible pixel and the one part of Landing 1 that is purely cosmetic risk, not a functional one.
+
+One screenshot of the tray icon at 150 % system scaling, next to the same icon at 100 % for comparison. Flag it, don't necessarily fix it here — a blurry downscaled tray icon is a Landing 2 asset problem (ship a 24px source), not a manifest bug.
+
+- [ ] **Step 8: Write the results down and commit**
 
 Record every number in `docs/superpowers/measurements/2026-08-XX-landing-1-a14.md`, including anything that came out differently from what this plan predicted. Then update the spec's Part B token table (`§B.2`) with the real row and control heights, replacing the guesses.
 
