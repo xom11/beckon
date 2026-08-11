@@ -7,6 +7,12 @@ use anyhow::{anyhow, Context, Result};
 use beckon_core::Backend;
 use clap::{CommandFactory, Parser, Subcommand};
 
+// Decision half of the Caps hook. Windows-only in effect, but it lives
+// here so all three CI jobs test it -- `--exclude beckon-windows` on the
+// Linux and macOS jobs would otherwise leave a keyboard state machine
+// covered by one job in three. Wired up by `serve` in a later task.
+#[allow(dead_code)]
+mod caps;
 mod lockfile;
 mod notify;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
