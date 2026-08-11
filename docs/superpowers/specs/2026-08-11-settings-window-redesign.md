@@ -36,7 +36,10 @@ non-developer — needs and does not have:
 | Config format | **Unchanged.** Combos stay spelled out in full | A `beckon+t` shorthand token (§7.3) |
 | New config keys | Exactly one: `keyboard.beckon_key` | Per-OS overrides; a `[keyboard]` header |
 | Beckon key scope | Configurable, including for the Caps hook; `shift` refused while Caps is on | Freezing the hook's chord (§7.4); allowing shift unconditionally |
-| Shortcut editing | Key picked from a `CBS_DROPDOWNLIST` of the 81 canonical keys | Chord capture; single-key capture (§3.4) |
+| Shortcut editing | Full combo. Modifier checkboxes + a `CBS_DROPDOWNLIST` of the 81 keys as the primary path, **plus chord capture** via the shared LLHOOK as an accelerator (Part F) | A single-key field; a dropdown-only field with no capture; a capture-only field with no typed path |
+| Capture mechanism | The existing `WH_KEYBOARD_LL`, one hook with two mutually exclusive modes | `msctls_hotkey32`; a second hook; message-queue capture |
+| Chord validation | Live: F12 guard → own-table check → a real `RegisterHotKey` probe | A static table of reserved chords |
+| Shortcut list | Fixed height, internal scroll, per-row checkboxes for multi-delete | Growing with the row count; multi-select instead of checkboxes |
 | Layout | Five horizontal bands, app-name first, in-line editor | List + detail pane; a scrolling card column; an editable grid |
 | Suggestions | A chip row in the window, from taskbar pins + open windows | Seeding the starter file; a first-run wizard; UserAssist (§5) |
 
@@ -47,7 +50,8 @@ Three landings, and the order is load-bearing rather than a preference.
 | Landing | Contents | Why here |
 |---|---|---|
 | **1** | Part A entire, plus Part D | The manifest changes what every constant in Part B *means*, so tuning spacing or fonts before it is on hardware is tuning against metrics the shipped binary will never use. Part D rides along because §D.1 is a live defect and its measurement runs on the same a14 pass. |
-| **2** | Part B, plus Part C | The window redesign and the beckon key touch the same `layout` and the same `ControlState`; splitting them means writing the layout twice. |
+| **2a** | Part B, plus Part C, plus §F.7 (the list) | The window redesign and the beckon key touch the same `layout` and the same `ControlState`; splitting them means writing the layout twice. §F.7's one-line `suppressed()` fix lands **first within 2a**, before any code writes list item state — it is abort-class. |
+| **2b** | §F.1–F.6, F.8 (capture, the probe, the beckon-key row) | Capture needs the `caps_hook` lifecycle refcount, whose only consumer is here. Gated on a14 measurements 1, 2 and 4 (§F.5, §F.6) — this is the hardware measurement the 2026-08-10 spec demanded and that the window shipped without, because the feature needing it was not built. It is being built now, so the debt is due. |
 | **3** | Part E | Suggestions depend on nothing above and are the easiest thing to cut. |
 
 **§B.7's App-combo-box fix belongs in landing 2, ahead of Part E**, and the
@@ -461,26 +465,58 @@ untouched file readable by every shipped version. One `if`.
 In the window, the `Shift` chip is shown struck through with the reason
 stated inline when Caps is ticked, rather than silently refusing the click.
 
-## C.4 The key is picked from a closed list
+## C.4 Two ways to set a shortcut, and they are two views of one value
 
-The shortcut field becomes a `CBS_DROPDOWNLIST` of the 81 canonical key
-names. An invalid combo becomes *unrepresentable*, which deletes a class of
-errors instead of reporting them better.
+**Superseded note, kept deliberately.** An earlier draft of this section made
+the shortcut field a single `CBS_DROPDOWNLIST` of the 81 key names and
+refused capture outright, because "`msctls_hotkey32` cannot capture the
+Windows key, and Explorer consumes `Win+T` before a normal window sees them".
+Both halves are true and both describe **a normal window receiving
+`WM_KEYDOWN`** — which is not the layer beckon has to use. See Part F. The
+sentence is preserved here so a later session does not re-derive the
+dropdown-only design as the safe option and quietly reverse the reversal.
 
-`DROPDOWNLIST` rather than `DROPDOWN` is deliberate and is the opposite of
-the App field, which must stay `DROPDOWN` because beckon supports apps with
-no Start Menu entry. A `DROPDOWNLIST` has **no edit control**, so the
-`CBN_EDITCHANGE` defect in §B.7 is structurally impossible in this field, and
-its built-in typeahead already gives the gesture people want: press `t`, it
-selects `t`.
+The editor line carries the full combo, not a single key, because a binding
+may legitimately not use the beckon key at all — `Win+X` is a case the user
+named, and the README already documents
+`"ctrl+super+alt+shift+t" = "Telegram Web"`.
 
-**Chord capture stays refused**, and the reason is unchanged:
-`msctls_hotkey32` cannot capture the Windows key, and Explorer consumes
-`Win+T` and its siblings before a normal window sees them — exactly the
-chords beckon recommends. Note that single-*key* capture is now technically
-possible, since a bare `T` has none of those problems; it is still not taken,
-because `DROPDOWNLIST` typeahead delivers the same gesture with no new
-failure mode.
+```
+[ Claude            ▾ ]  +  [ Ctrl  Win  Alt   T ]  [Record] [Reset]   [Remove] [+ Add]
+                            └── keycaps: what is set ──┘
+     ☐ Ctrl  ☑ Win  ☑ Alt  ☐ Shift    Key [ t ▾ ]
+     └────────── the same value, editable without pressing anything ──────────┘
+```
+
+**The typed path is primary; capture is an accelerator.** Four modifier
+checkboxes plus a `CBS_DROPDOWNLIST` of the 81 key names are always present,
+always Tab-navigable, and always readable by a screen reader. They make an
+invalid combo *unrepresentable*, and they are the only path that works for
+someone who cannot physically produce the chord — an on-screen keyboard, a
+switch device, a keyboard that cannot reach `Win+Alt+F13`. A capture-only
+control has no answer for that person, and `Open config file` is not one: it
+leaves the application and gives up in-place validation.
+
+This is also what PowerToys Keyboard Manager does — the dropdown is the
+default, the capture button is the shortcut — and its own bug list
+(#6837, #5624, #7088) is evidence that capture is hard *even when* a
+non-capture path exists.
+
+`DROPDOWNLIST` rather than `DROPDOWN` remains deliberate, and is the opposite
+of the App field, which must stay `DROPDOWN` because beckon supports apps
+with no Start Menu entry. A `DROPDOWNLIST` has **no edit control**, so the
+`CBN_EDITCHANGE` defect in §B.7 is structurally impossible here, and its
+typeahead gives the fast gesture: press `t`, it selects `t`.
+
+**The two views must never both write at once.** Two writers on one value is
+exactly what produced the `CBN_EDITCHANGE` defect. While a capture is armed,
+the checkboxes and the dropdown are `EnableWindow(false)`; on commit or
+cancel they are restored from the model and re-enabled.
+
+Keys capture can never see — bare `escape`, bare `tab`, and anything the
+shell swallows — remain selectable from the dropdown. That is the JetBrains
+"special keys" picker, which beckon gets for free because the closed key list
+already exists.
 
 ---
 
@@ -729,6 +765,333 @@ Hot-path cost: zero. First-run cost: zero.
 
 ---
 
+# Part F — capture, the availability probe, and the list
+
+## F.1 Capture is possible, and the old reason was about the wrong layer
+
+`msctls_hotkey32` has no bit for the Windows key — `HOTKEYF_*` covers only
+ALT / CONTROL / SHIFT / EXT — and a normal window's message queue never sees
+`Win+T` because Explorer consumes it first. Both facts are true. Both are
+about **a window receiving `WM_KEYDOWN`**.
+
+A `WH_KEYBOARD_LL` callback runs before the keystroke reaches any queue and
+before shell hotkey processing, sees `VK_LWIN` as an ordinary `vkCode`, and
+suppresses the key by returning `1`. beckon already owns that hook for the
+Caps feature. Suppression is not incidental — without it, capturing
+`ctrl+super+alt+t` would focus Windows Terminal while you were binding it.
+
+**This widens the LLHOOK exception from one feature to two**, because capture
+arms the hook on machines where the user deliberately left
+`keyboard.caps = false`. That is a real cost and it is stated in the UI and in
+`CLAUDE.md`, not buried.
+
+## F.2 One hook, two mutually exclusive modes
+
+**Do not install a second hook.** `WH_KEYBOARD_LL` hooks chain, so a separate
+capture hook runs alongside the Caps one and two things break:
+
+- Pressing `Caps+T` to *bind* it is swallowed by the Caps arm of
+  `caps::decide` and injected as `ctrl+super+alt+t`, so the field records the
+  **alias instead of the key the user pressed**.
+- The capture hook swallows and does not call `CallNextHookEx`, so the Caps
+  arm sees Caps-down and never sees Caps-up, leaving `CapsState.held` stuck
+  `true` after capture ends.
+
+Instead, `hook_proc` checks a capture mode **first**, before `caps::decide` is
+consulted:
+
+```rust
+if capture::armed() && GetForegroundWindow() == settings_window::hwnd() {
+    let act = beckon_core::capture::step(ev, &mut CAP_STATE.borrow_mut());
+    if act.post { PostMessageW(Some(hwnd), WM_CAPTURE, w, l); }
+    return LRESULT(1);          // swallow everything: down, up, modifier or not
+}
+```
+
+The decision logic is `beckon_core::capture::step` — pure, beside
+`caps::decide`, for the reason `caps.rs:14-15` already gives: *"a keyboard
+state machine is the last thing that should be tested by one job in three"*.
+The callback does three things only: read `vkCode`, update a fixed-size held
+array, `PostMessage`. No allocation, no string formatting, no
+`CallNextHookEx`. Everything visible is built on the UI thread when
+`WM_CAPTURE` arrives.
+
+**The install lifecycle needs a two-reason refcount.** Today `sync_caps_hook`
+is the sole owner, `install()` early-returns when already installed and
+`uninstall()` unhooks unconditionally. Capture wants the hook transiently
+while Caps may want it resident. Calling `uninstall()` during capture is
+wrong twice: it resets `CapsState`, and a config reload mid-capture calls
+`sync_caps_hook` and reinstalls the hook underneath the capture.
+
+**`is_installed()` can lie.** Past `LowLevelHooksTimeout` — 300 ms by
+default, raised to a 1000 ms ceiling since Windows 10 1709 — Windows removes
+the hook silently and there is no API to ask. For capture the watchdog covers
+it; for Caps this is a known latent issue, recorded not fixed.
+
+**The invariant is broader than "the callback must be short."** The callback
+is dispatched by the message loop of the thread that installed the hook, and
+that is the thread hosting the settings window and `WM_HOTKEY`. So *nothing
+on the hook's thread may block* — a modal loop or a synchronous scan starves
+the callback just as effectively as a slow callback does.
+
+## F.3 The capture state machine
+
+Displayed strings are verbatim and ASCII, for the reason `mark_glyph` is
+ASCII: the window inherits the shell font and a missing glyph reads as a
+rendering bug.
+
+**Idle** — checkboxes and key dropdown enabled and showing the current combo.
+`Record` and `Reset` available. `Reset` clears the combo and leaves the row
+without a shortcut.
+
+**Armed** — entered by pressing `Record`. Checkboxes and dropdown
+`EnableWindow(false)`; button reads `Stop`; hint reads
+`Press the shortcut. Esc stops recording.` Hook armed.
+
+- A non-modifier pressed with **no** modifier held → stay Armed,
+  `MessageBeep(MB_ICONWARNING)`, hint becomes
+  `A alone is not a shortcut - hold Ctrl, Win or Alt as well. Press Record and try again.`
+  **The pressed key is still shown as a keycap.** Showing what beckon heard
+  and then explaining why it is not acceptable is the whole point; silently
+  refusing to record reads as a broken keyboard.
+- A key with no name in the 81-key table (numpad, media, IME,
+  `VK_PROCESSKEY`) → stay Armed, beep, hint
+  `beckon has no name for that key. Pick one from the Key list.`
+- Bare `VK_ESCAPE` → **Cancelled**. Because the hook swallows it, it never
+  becomes a `MSG`, so `IsDialogMessageW` never turns it into `IDCANCEL` and
+  the window does not close.
+
+**Holding** — at least one modifier down, no main key yet. The field shows the
+partial combo live, in canonical order, exactly as it will be written to the
+TOML: `ctrl+super+alt+...`. Releasing every modifier returns to Armed and is
+**not an error** — a double-tap of Ctrl shows `ctrl+...` and returns to the
+prompt.
+
+**Committed** — on the **first non-modifier key-down while at least one
+modifier is held**. Not on key-up (release order is not press order), no
+timer, no hold-to-confirm, and no Enter key to confirm because `return` is
+itself a bindable key. The row becomes dirty; the probe runs; the checkboxes
+and dropdown are set from the captured combo and re-enabled.
+
+**Draining** — after Committed or Cancelled, the hook keeps swallowing until
+every held key is released, then disarms. This is what makes `Alt+Tab` safe:
+the `alt` down was swallowed, so the `alt` up is swallowed too, and the system
+never sees a bare Alt-up — the same class of gesture §D.1 exists to prevent.
+`WM_DESTROY` skips draining and unhooks immediately; there is no window left
+to protect and holding the hook one beat longer leaves a swallowed keyboard.
+
+**If `SetWindowsHookExW` fails**, do not enter Armed and do not silently fall
+back to message-queue capture — that path cannot see the Windows key, so it
+fails on precisely the chords beckon recommends. Hint:
+`Cannot record here. Use the modifier boxes and the Key list instead.`
+
+## F.4 Edge cases, decided
+
+| Case | Decision |
+|---|---|
+| **Esc** | Armed: stops recording, window stays open. Not armed: unchanged, closes the window. `escape` is still bindable from the dropdown. An Esc injected by `caps_tap = "escape"` carries beckon's own `dwExtraInfo` marker and is ignored by capture. |
+| **Tab** | Armed: swallowed like any key, so `alt+tab` and `ctrl+tab` are recordable. Bare `tab` comes from the dropdown. Not armed: `filter_dialog_message` keeps Tab navigation. |
+| **Modifier-only** | Not an error, no beep, nothing recorded. Holding while held, Armed on release. |
+| **Auto-repeat** | `KBDLLHOOKSTRUCT` carries no repeat count. The held-set is the filter: a key-down for a vk already held is swallowed and changes nothing. |
+| **Sticky Keys** | At commit the modifier set is the held-set **unioned** with `GetAsyncKeyState` for the five modifier VKs. A latched modifier may have sent its key-up before the main key went down; the union recovers it without needing to know Sticky Keys is on. Needs measuring. |
+| **Losing focus** | Three independent layers, all → Cancelled: `WM_KILLFOCUS`, `WM_ACTIVATE`/`WM_ACTIVATEAPP` with `WA_INACTIVE`, and the per-event `GetForegroundWindow()` gate inside the hook — which is the only one that fires when a UAC prompt or an elevated window steals foreground without sending either message. |
+| **Window close** | `WM_CLOSE` disarms **before** the save prompt; `WM_DESTROY` disarms skipping the drain. There is no path where the window dies with the hook armed. |
+| **Process killed mid-capture** | Not defensible, and not claimed. The hook lives in the killing process's address space and win32k is expected to clean it up, but MSDN does not promise it — so this is a measurement, not a README sentence. The real mitigation is the 10 s watchdog bounding the armed window. |
+| **Left/right modifiers** | Normalised. The TOML cannot express the distinction. |
+
+## F.5 What cannot be captured
+
+| | Why | What the user sees |
+|---|---|---|
+| `Ctrl+Alt+Del`, `Win+L` | The SAS is monitored by winlogon below the hook chain, and Microsoft documents `Win+L` as OS-reserved alongside it. The mechanism is desktop scoping: `SetWindowsHookEx` binds a hook to the threads of the **calling thread's desktop**, and these run on the Winlogon secure desktop where beckon's hook does not exist | Nothing is recorded; the static help line under the field says so up front |
+| Anything typed while a secure desktop is up (UAC, lock screen) | Same mechanism. The hook sees **nothing, including key-ups** | The state machine must **re-seed** from `GetAsyncKeyState` on regaining foreground, never resume |
+| `Fn` | Handled in keyboard firmware; emits no scan code | Pressing it does nothing |
+| `Num Lock`, `Caps Lock`, `Scroll Lock` as part of a combo | The lock state toggles **before** the hook runs, so swallowing does not undo the light | Excluded from the capturable set rather than replayed |
+| `Win+G` | Game Bar opens even when reassigned | Same shape as the lock keys |
+| Office key, Copilot key | The physical key emits a whole chord — Office is `Win+Ctrl+Alt+Shift`, Copilot is `Win+C` or `LShift+Win+F23` | Capture records what the keyboard actually sent, which is the honest answer; one explanatory line, not a bug |
+| Anything, while an elevated window has focus | UIPI. Measured on a14 2026-08-11 | The watchdog fires |
+| Anything another remapper claimed first | kanata / PowerToys / AHK started after beckon sits ahead of it in the chain | The field silently records the **wrong** chord. This is the existing "other remappers" gap in a new guise |
+
+`Win+T`, `Win+X`, `Win+D`, `Win+E`, `Win+R`, `Win+Tab`, `Alt+Tab` and
+`Ctrl+Shift+Esc` are **not** on this list. The strongest available
+documentary evidence is that PowerToys Keyboard Manager is a plain
+`WH_KEYBOARD_LL` returning 1 plus `SendInput`, and it remaps Windows-key
+shortcuts globally. **This table is not shipped until it is measured on a14.**
+
+## F.6 The availability probe
+
+Order is load-bearing:
+
+1. **F12 guard, before anything.** MSDN reserves `VK_F12` for debuggers *"at
+   all times… even when you are not debugging"*, so a successful registration
+   proves nothing. One line, and it prevents the worst outcome: a green
+   `Available` on a key documented never to arrive.
+2. **Compare against the in-memory shortcut table** for a self-conflict.
+   **Do not consult `ServeState.registered`** — `set_paused` and `reload`
+   *clear* that map, so probing while paused would report beckon's own bound
+   chord as free. `registered` explains why a row is red; it never decides
+   whether a chord is free.
+3. **Only if there is no self-match**, run the live probe.
+
+The probe registers on the **settings window's HWND** with a fixed id, while
+the live table registers on `tray_hwnd`. A hotkey is identified by the
+`(hWnd, id)` pair, so a different HWND makes collision impossible by
+construction — whereas picking "an id high enough" on `tray_hwnd` is a bet on
+config size, and the live ids are row indices. Getting the pair wrong is
+worse than it sounds: *"If a hot key already exists with the same hWnd and id
+parameters, it is maintained along with the new hot key"* — so the probe
+would create a second registration under the same id and its
+`UnregisterHotKey` would remove an unspecified one of the two. That is a
+silently dead hotkey, the same class as the "20 shortcuts registered" incident.
+
+The probe runs on the thread owning the window (`RegisterHotKey` is
+thread-affine) and **never inside a hook callback**. It unregisters on every
+exit path; a cancelled capture must not leave a global hotkey claimed.
+
+**The verdict travels through `RuntimeStatus`, not `problems()`.**
+`Model::problems()` is pure and that is what keeps `apply_enabled` testable on
+the Linux and macOS CI jobs. `RuntimeStatus` already exists for exactly this
+class of runtime fact, and the probe field is `Option` for the same reason
+`catalog` is: not-yet-probed is not the same as free.
+
+### Strings, verbatim
+
+| Outcome | Mark | String |
+|---|---|---|
+| Free | OK | `Available. Nothing else on this PC is using it.` |
+| Free, contains the Windows key | OK | `Available right now. Windows reserves Windows-key shortcuts and can take this one back after an update, so press it once after saving to be sure.` |
+| Unchanged | OK | `Unchanged - this row already uses it.` |
+| Duplicate within this file | !! | `Already used by "{app}" in this file. A shortcut can only mean one thing.` |
+| Taken by another process | !! | `Another program already has this shortcut. Windows does not tell beckon which one, so beckon cannot name it. Saved as-is, it will not fire.` |
+| F12 in the chord | !! | `F12 is reserved for debugging tools and never reaches beckon. Pick a different key.` |
+| Capture saw nothing | .. | `Windows handled that shortcut itself, so beckon never saw it. A few shortcuts, like Win+L, cannot be reassigned by any program.` |
+| Probed while paused | .. | appended: `beckon is paused, so this shows what will happen when you resume.` |
+| Ctrl+Alt with no Win | .. | `On international layouts this is Alt Gr, so typing an accented character will fire it.` |
+
+No string contains `RegisterHotKey`, `UIPI`, or an error code except the
+catch-all, where the code is the only information Windows gives.
+
+### What the probe may not promise
+
+**A successful registration must never be reported as "this shortcut
+works."** The strongest claim it licenses is *nothing else is holding it*,
+which is what the strings say. Three independent reasons a registered chord
+still may not fire: F12 (guarded); a chord eaten by a hook or the shell's
+input path above hotkey dispatch, where **nobody registered it** so the probe
+succeeds; and TOCTOU, since another process may claim it between the probe and
+Apply.
+
+Because of TOCTOU, **the probe label is replaced by the real registration
+result after Apply**, not left standing. `register_all` is the authority and
+the window already receives it through `registered`.
+
+**UIPI is not a probe caveat.** Measured on a14 2026-08-11 with Task Manager
+elevated and focused: the typed chord still fired while `Caps+N` did nothing,
+against a normal-window control run. The elevation gap belongs to the Caps
+hook, not to a registered chord — and the window must say so, because a user
+who read the Caps caveat will assume it applies here.
+
+Only a real keypress after Apply may say `Working. beckon received {combo}.`
+
+## F.7 The list: checkboxes, fixed height, and one abort-class bug
+
+**Internal scrolling costs nothing.** A report-mode ListView already scrolls
+internally, and `layout()` already derives the list height from
+`GetClientRect`. The requirement's real content is that the list band must not
+take its height from the row count, and that the rebuild must stop destroying
+state.
+
+**Checkboxes** are `LVS_EX_CHECKBOXES`, one more bit in the existing
+`LVM_SETEXTENDEDLISTVIEWSTYLE` call. **Keep `LVS_SINGLESEL`**: check state is
+independent of selection, so multi-delete works without multi-select and the
+editor strip keeps having exactly one "current row". **Never set
+`LVS_EX_AUTOCHECKSELECT`** — it ties checking to selection, which is the
+ambiguity being avoided. The checkbox is column 0's state image, not a new
+column, so deleting the 34 px status column is compatible.
+
+**Do not port `ListView_GetCheckState`.** It is `(state >> 12) - 1` on an
+unsigned value, so an item that was never given a state image returns
+`0xFFFFFFFF`, not `0`.
+
+Check and selection changes both arrive as `LVN_ITEMCHANGED` with
+`LVIF_STATE` and cannot be told apart by `uChanged`. Distinguish by bit:
+`(uOldState ^ uNewState) & LVIS_STATEIMAGEMASK` for a check,
+`& LVIS_SELECTED` for a selection. They are independent and can arrive in one
+message — test each, never `else if`.
+
+### The bug this exposes, which must land first
+
+**The `WM_NOTIFY` arm does not consult `suppressed()`**, unlike every
+`WM_COMMAND` arm. Once `apply_state` writes selection or check state with
+`LVM_SETITEMSTATE`, comctl32 fires `LVN_ITEMCHANGED` **synchronously inside
+`apply_state`** → `on_select` → `refresh_settings` → `apply_state`: unbounded
+recursion across an `extern "system"` boundary, where a `RefCell`
+double-borrow **aborts the process** rather than unwinding. One line —
+`if suppressed() { return LRESULT(0); }` at the top of the arm — and it must
+land before either of the other two changes.
+
+### Ticks live in the Model
+
+`Row` gains `marked: bool`. `apply_state` stays a pure push, and "ticks lost
+on rebuild" becomes unrepresentable rather than compensated for. This is not
+a preference: the file's own header says *"every decision it draws comes from
+`ControlState`… This file holds no policy"*, and a tick set living only in a
+control's state-image bit would be the one piece of window state that is not a
+projection.
+
+`set_marked` **must not set `dirty`** — a tick changes nothing on disk, and
+`apply_enabled = dirty && …`, so marking would enable Save for an empty edit
+and rewrite an unchanged file. `RowWrite` does not gain a field; marks are UI
+state, and `Model::from_text` defaults them to `false`, so an external reload
+drops them, which is correct.
+
+### Stop rebuilding on every keystroke
+
+Cache the last-pushed `Vec<ListItem>`. When the item count is unchanged —
+which is every text edit — send `LVM_SETITEMTEXTW` only for cells whose text
+actually differs, and never `LVM_DELETEALLITEMS`. Scroll position and check
+state are then never disturbed because nothing is destroyed. Count is the
+discriminator that keeps this trivial: no keyed reconciliation, no ids in
+`LVITEM.lParam`.
+
+Only Add, Remove and reload change the count, and only they rebuild. For that
+path, restore scroll with a **pair** of `LVM_ENSUREVISIBLE` — read
+`LVM_GETTOPINDEX` and `LVM_GETCOUNTPERPAGE` first, then ensure
+`min(top + per - 1, count - 1)` and then `top`. A single
+`ENSUREVISIBLE(top)` is a no-op because after a rebuild `top` is already on
+screen. Wrap the rebuild in `WM_SETREDRAW`.
+
+**A pre-existing defect this pass must also fix:** the selection highlight is
+destroyed by `LVM_DELETEALLITEMS` on every refresh and never restored — the
+reinsert loop sets `mask: LVIF_TEXT` only. Typing one character into the App
+field loses the highlight while `Model.selected` still says otherwise.
+
+## F.8 The beckon key row absorbs the tap setting
+
+```
+Beckon key  [Ctrl][Win][Alt][Shift]  |  ☐ Caps Lock too, tap sends [ Caps Lock ▾ ]
+```
+
+The three `IDC_TAP_*` radios are deleted and replaced by a three-value
+`CBS_DROPDOWNLIST` — `Caps Lock`, `Esc`, `Nothing` — read with `CB_GETCURSEL`
+on `CBN_SELCHANGE`, never by reading its text, because even a `DROPDOWNLIST`
+has typeahead that moves the selection. It is greyed when the checkbox is
+off, exactly as the radios are today.
+
+Phrasing the label as one sentence keeps the choice from reading as a second
+settings group. No new plumbing: `keyboard.caps_tap` is already parsed,
+validated, written and modelled.
+
+Deleting the radios changes which control must close the keyboard group with
+`WS_GROUP` — fix it in the same pass as §B.7.
+
+**The beckon-key chips must not become a capture field.** A `Chord` is
+*modifiers with no main key*, which a capture field cannot express — and
+releasing modifiers with nothing between them is exactly the gesture §D.1
+exists to prevent.
+
+---
+
 # Error handling
 
 | Failure | Response |
@@ -830,7 +1193,16 @@ confidently wrong results:
 
 - **No dark mode.** Light only, with `GetSysColor` throughout so high-contrast
   themes work. See §7.2.
-- **No chord capture, and no single-key capture either.**
+- **No capture-only shortcut field.** Capture is an accelerator; the modifier
+  checkboxes and the key dropdown remain the primary, accessible path (§C.4).
+- **No two-stroke chord sequences** in the VS Code sense. beckon's grammar is
+  modifiers plus one key, and the TOML cannot express anything else.
+- **No modal capture dialog.** The window is modeless on purpose, and a modal
+  loop on the hook's thread starves the hook callback (§F.2).
+- **No delivery of non-registerable combos through the LLHOOK.** Capture makes
+  it easy to author a chord `RegisterHotKey` refuses; beckon reports that and
+  stops. Delivering it via the hook instead would turn an opt-in feature into
+  a mandatory always-on one and reopen every EDR, UIPI and timeout trade-off.
 - **No `beckon+t` shorthand in the config file.** See §7.3.
 - **No config-file migration**, automatic or offered. The short form is
   derived from the resolved combo, so no file needs changing.
@@ -875,11 +1247,31 @@ Keeping literal combos means there is nothing to resolve at parse time.
 safety property holds structurally for any modifier set (§D.2). Shift is the
 dangerous element and is refused specifically.
 
-**7.5 "Borrow Raycast's Record Hotkey."** `msctls_hotkey32` cannot capture the
-Windows key and Explorer eats `Win+T` before a normal window sees it.
-Single-key capture *is* now possible, but `DROPDOWNLIST` typeahead gives the
-same gesture with no edit control and therefore no `CBN_EDITCHANGE` failure
-mode (§C.4).
+**7.5 — REVERSED 2026-08-11. "Chord capture cannot work, because
+`msctls_hotkey32` cannot capture the Windows key and Explorer eats `Win+T`."**
+Both halves are true and both are about **a normal window receiving
+`WM_KEYDOWN`**, which is not the layer beckon uses. A `WH_KEYBOARD_LL`
+callback — which beckon already owns — runs before any queue and before shell
+hotkey processing, and suppresses the key by returning 1. Capture is in; see
+Part F.
+
+~~"`DROPDOWNLIST` typeahead gives the same gesture with no edit control and
+therefore no `CBN_EDITCHANGE` failure mode."~~ Struck through deliberately:
+this is the sentence a later session would quote to reverse the reversal. The
+dropdown survives, but as the accessible primary path beside capture, not
+instead of it (§C.4).
+
+**7.5a "The `msctls_hotkey32` objection applies to a capture field."** It does
+not, and this entry exists so the refuted claim cannot be re-refuted. The
+objection is about a control and a message queue. Do not remove capture on
+that basis without re-testing it against the hook path.
+
+**7.5b "Capture can replace the typed path."** No. Four modifier checkboxes
+plus the key dropdown stay primary: they are the only path for someone who
+cannot physically produce the chord, and they are the only path that works
+when `SetWindowsHookExW` fails. PowerToys Keyboard Manager makes the dropdown
+the default and capture the shortcut, and its own bug list is evidence that
+capture is hard even with a typed path present.
 
 **7.6 "`SetWindowTheme(list, \"Explorer\")` is a one-line native-look win."**
 Wrong twice: without a manifest it is a no-op because the control is not
