@@ -779,8 +779,11 @@ Known gaps, documented in the README rather than hidden:
 
 - **UIPI.** beckon runs at normal integrity, so the hook never sees keys
   while an elevated window has focus; Caps silently does nothing there. The
-  typed `ctrl+super+alt+t` chord still works, because `RegisterHotKey` is
-  not subject to UIPI — there is always a fallback.
+  typed `ctrl+super+alt+t` chord **does** still work, because `RegisterHotKey`
+  is not subject to UIPI — there is always a fallback. Both halves measured
+  by hand on a14 2026-08-11 with Task Manager elevated and focused, against
+  a normal-window control run first. This was documentation-only for a day
+  and is now not.
 - **Other remappers.** kanata / PowerToys / AHK claiming Caps means beckon
   never sees it. Detection is unreliable; documented, not guessed.
 - **EDR.** A low-level keyboard hook is the classic keylogger signature.

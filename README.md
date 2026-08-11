@@ -276,9 +276,10 @@ do nothing.
 Three things to know before ticking it:
 
 - **It does nothing while an elevated window has focus.** beckon runs at
-  normal integrity and Windows does not deliver keys from an elevated window
-  to it. Typing `ctrl+super+alt+T` by hand still works there — that path
-  does not go through the hook — so this is a gap, not a dead end.
+  normal integrity and Windows does not deliver those keys to it. Typing
+  `ctrl+super+alt+T` by hand still works there — that path does not go
+  through the hook — so this is a gap, not a dead end. Both halves verified
+  against an elevated Task Manager.
 - **It conflicts with other remappers.** If kanata, PowerToys Keyboard
   Manager or an AutoHotkey script already claims Caps Lock, beckon never
   sees the key. Use one of them, not both.

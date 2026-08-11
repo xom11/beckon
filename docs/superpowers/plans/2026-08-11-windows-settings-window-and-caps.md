@@ -26,7 +26,7 @@ commands clean.
 | **2** | Does the one-burst chord open the Start menu? | **PASS** — it does not. Control fired: a bare Win tap *did* open it (`SearchHost.exe`), so the detector was demonstrably not blind |
 | **3** | Does swallowing physical Caps stop the Caps Lock toggle? | **PASS** — with the hook live and `caps_tap = "capslock"`, a tap still toggles, so the swallow-and-reinject works |
 | **4** | Does an injected `VK_CAPITAL` flip the toggle? | **PASS** |
-| **5** | UIPI behaviour with an elevated window focused | **not measured** — needs a UAC consent a scheduled task cannot give. Documented, not claimed |
+| **5** | UIPI behaviour with an elevated window focused | **PASS**, by hand — a scheduled task cannot give the UAC consent this needs. With Task Manager elevated and focused: `Caps+N` does nothing, the typed `ctrl+win+alt+N` still focuses Notepad. Run after a normal-window control, so "nothing happened" could not be a broken setup |
 | **6** | Injection cost against the 300 ms `LowLevelHooksTimeout` | 13 ms cold, 5.2 ms warm. **The plan said "microseconds"; that was wrong by ~1000x and is corrected here.** Still 2–4 % of budget |
 
 ### Live end-to-end results
