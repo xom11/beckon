@@ -120,13 +120,23 @@ mod win {
         }
 
         // --- Caps held, then the chord key ---
+        //
+        // `fast` releases Caps in the same breath as the key, which is what
+        // a person actually does. It matters because `backend.beckon()`
+        // takes 57 ms typically and up to 945 ms on the miss path, and it
+        // pumps this thread's message queue while it runs — so a quick
+        // release lands *inside* that window, where a leisurely synthetic
+        // one never does.
+        let fast = std::env::args().any(|a| a == "--fast");
+        let gap = if fast { 15 } else { 120 };
+        println!("chord timing: {}ms between strokes", gap);
         let base = foreground_exe();
         send(&[stroke(VK_CAPITAL.0, false)]);
-        std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(Duration::from_millis(gap));
         send(&[stroke(vk, false)]);
-        std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(Duration::from_millis(gap));
         send(&[stroke(vk, true)]);
-        std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(Duration::from_millis(gap));
         send(&[stroke(VK_CAPITAL.0, true)]);
 
         // Launching an app is slower than focusing one; give it room.
@@ -169,9 +179,21 @@ mod win {
         // Now press the chord key ALONE. If it still beckons, the hook
         // thinks Caps is held (b). If nothing happens and no modifier is
         // stuck, the sequence was clean.
+        //
+        // The target is in front after a successful chord, which would make
+        // "did the foreground become the target" unanswerable — so get it
+        // out of the way first. Minimising is enough and needs no rights
+        // over another process's focus.
+        if foreground_exe().eq_ignore_ascii_case(&want) {
+            unsafe {
+                let fg = GetForegroundWindow();
+                let _ = ShowWindow(fg, SW_MINIMIZE);
+            }
+            std::thread::sleep(Duration::from_millis(800));
+        }
         let base = foreground_exe();
         if base.eq_ignore_ascii_case(&want) {
-            println!("BARE KEY: skipped, {want} is already in front");
+            println!("BARE KEY: skipped, could not move {want} out of the way");
         } else {
             send(&[stroke(vk, false), stroke(vk, true)]);
             let mut seen = base.clone();
