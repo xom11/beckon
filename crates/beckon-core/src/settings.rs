@@ -5,7 +5,7 @@
 //! registry.
 
 use crate::config_write::{render, RowWrite};
-use crate::shortcuts::{parse_config, CapsTap, Combo, KeyboardConfig};
+use crate::shortcuts::{parse_config, CapsTap, Chord, Combo, KeyboardConfig};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,10 +27,21 @@ pub struct Model {
     dirty: bool,
 }
 
-/// One reason a row cannot be saved.
+/// How much a `Problem` costs. `Error` refuses the write; `Warning` is
+/// something the user should see but which must not hold the rest of the
+/// file hostage -- see `Model::render`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// One reason this model is not clean. `row` is `None` for a problem with
+/// the file as a whole rather than with any single row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
-    pub row: usize,
+    pub row: Option<usize>,
+    pub severity: Severity,
     pub message: String,
 }
 
@@ -47,11 +58,19 @@ pub struct RuntimeStatus {
     /// is NOT the same as "no apps installed", and the UI must not conflate
     /// the two.
     pub catalog: Option<Vec<String>>,
+    /// Hotkeys are deliberately unregistered from the tray menu. `serve`
+    /// CLEARS `registered` when it pauses, so without this flag every row
+    /// would read as "not registered yet" and the window would have nowhere
+    /// at all that says beckon is paused.
+    pub paused: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mark {
     Ok,
+    /// Worth saying, not worth stopping for: paused, or a chord Caps cannot
+    /// reach.
+    Warn,
     Bad,
     Unknown,
 }
@@ -61,6 +80,9 @@ pub struct ListItem {
     pub combo: String,
     pub app: String,
     pub mark: Mark,
+    /// The short word beside the app name; `None` on a healthy row, which
+    /// is the point -- a row that is fine says nothing at all.
+    pub flag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,30 +202,50 @@ impl Model {
         }
     }
 
-    /// Every reason this model cannot be written, one entry per offending
-    /// row. A row may appear more than once.
+    /// Every reason this model is not clean, one entry per offending row. A
+    /// row may appear more than once. Only `Severity::Error` entries stop a
+    /// write.
     pub fn problems(&self) -> Vec<Problem> {
         let mut out = Vec::new();
         let mut canon: Vec<Option<String>> = Vec::with_capacity(self.rows.len());
         for (i, r) in self.rows.iter().enumerate() {
+            // A row the user just added and has not finished is a half-typed
+            // edit, not a fault: `render` drops it instead of refusing. Its
+            // complaints are warnings so they cannot disable Save for edits
+            // made elsewhere in the file.
+            let severity = if is_unfinished_new_row(r) {
+                Severity::Warning
+            } else {
+                Severity::Error
+            };
             match Combo::parse(&r.combo) {
                 Ok(c) => canon.push(Some(c.canonical())),
                 Err(e) => {
                     canon.push(None);
-                    out.push(Problem { row: i, message: e });
+                    out.push(Problem {
+                        row: Some(i),
+                        severity,
+                        message: e,
+                    });
                 }
             }
             if r.app.trim().is_empty() {
                 out.push(Problem {
-                    row: i,
+                    row: Some(i),
+                    severity,
                     message: "app name is empty".to_string(),
                 });
             }
         }
         // Duplicates: flag EVERY row in a colliding group, not just the
         // later ones -- the user needs to see both ends of the collision.
+        // Unfinished new rows are skipped: `render` drops them, so they
+        // cannot collide with anything in the file that gets written.
         let mut groups: HashMap<&str, Vec<usize>> = HashMap::new();
         for (i, c) in canon.iter().enumerate() {
+            if is_unfinished_new_row(&self.rows[i]) {
+                continue;
+            }
             if let Some(c) = c {
                 groups.entry(c.as_str()).or_default().push(i);
             }
@@ -214,7 +256,8 @@ impl Model {
         for (c, rows) in dups {
             for i in rows {
                 out.push(Problem {
-                    row: i,
+                    row: Some(i),
+                    severity: Severity::Error,
                     message: format!("duplicate shortcut: another row also means `{c}`"),
                 });
             }
@@ -225,13 +268,32 @@ impl Model {
 
     /// The file text this model would write. `Err` if the model is invalid
     /// or the writer refuses. Never touches the filesystem.
+    ///
+    /// Refuses on `Severity::Error` only. A row the user just added and has
+    /// not finished is dropped from the write instead of blocking it --
+    /// otherwise clicking "Add" would disable Save until the new row was
+    /// filled in, which is exactly the state a user is in while typing.
+    ///
+    /// The asymmetry with a row that came FROM the file and has been emptied
+    /// out is deliberate: dropping that one would mean clearing an App field
+    /// and pressing Save silently DELETES the binding. `orig_key` already
+    /// tells the two apart, so distinguishing them costs nothing. Do not
+    /// "simplify" the two rules into one.
     pub fn render(&self) -> Result<String, String> {
-        if let Some(p) = self.problems().first() {
-            return Err(format!("row {}: {}", p.row + 1, p.message));
+        if let Some(p) = self
+            .problems()
+            .iter()
+            .find(|p| p.severity == Severity::Error)
+        {
+            return Err(match p.row {
+                Some(i) => format!("row {}: {}", i + 1, p.message),
+                None => p.message.clone(),
+            });
         }
         let writes: Vec<RowWrite> = self
             .rows
             .iter()
+            .filter(|r| !is_unfinished_new_row(r))
             .map(|r| RowWrite {
                 orig_key: r.orig_key.clone(),
                 combo: r.combo.clone(),
@@ -279,96 +341,182 @@ fn top_level_keys(text: &str) -> Vec<String> {
     out
 }
 
-pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
-    let problems = m.problems();
-    let bad_rows: std::collections::HashSet<usize> = problems.iter().map(|p| p.row).collect();
+/// A row the user added and has not finished filling in. `orig_key` is what
+/// tells it apart from a row that came from the file and has been emptied
+/// out -- see `Model::render` for why the two must not be treated alike.
+fn is_unfinished_new_row(r: &Row) -> bool {
+    r.orig_key.is_none() && (r.combo.trim().is_empty() || r.app.trim().is_empty())
+}
 
-    let items = m
-        .rows
-        .iter()
-        .enumerate()
-        .map(|(i, r)| ListItem {
-            combo: r.combo.clone(),
-            app: r.app.clone(),
-            mark: if bad_rows.contains(&i) {
-                Mark::Bad
-            } else {
-                match Combo::parse(&r.combo)
-                    .ok()
-                    .and_then(|c| rt.registered.get(&c.canonical()))
-                {
-                    Some(Ok(())) => Mark::Ok,
-                    Some(Err(_)) => Mark::Bad,
-                    None => Mark::Unknown,
-                }
-            },
-        })
-        .collect();
+/// Whether holding Caps Lock can reach this combo: same modifiers as
+/// `keyboard.caps_hold`, and no `shift` on top (the hook injects the chord
+/// and nothing else).
+fn combo_is_caps_chord(c: &Combo, hold: &Chord) -> bool {
+    c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt && !c.shift
+}
 
-    let detail = m.selected.and_then(|i| {
-        m.rows.get(i).map(|r| {
-            let mut notes = Vec::new();
-            match Combo::parse(&r.combo) {
-                Ok(c) => match rt.registered.get(&c.canonical()) {
-                    Some(Ok(())) => notes.push(Note {
-                        mark: Mark::Ok,
-                        text: "registered".into(),
-                    }),
-                    Some(Err(e)) => notes.push(Note {
-                        mark: Mark::Bad,
-                        text: format!("not registered: {e}"),
-                    }),
-                    None => notes.push(Note {
-                        mark: Mark::Unknown,
-                        text: "not registered yet".into(),
-                    }),
-                },
-                Err(e) => notes.push(Note {
-                    mark: Mark::Bad,
-                    text: e,
-                }),
-            }
-            notes.push(match &rt.catalog {
-                // A scan that has not run cannot prove absence.
-                None => Note {
-                    mark: Mark::Unknown,
-                    text: "checking installed apps...".into(),
-                },
-                Some(names) => {
-                    let want = r.app.trim().to_lowercase();
-                    if !want.is_empty() && names.iter().any(|n| n.to_lowercase() == want) {
-                        Note {
-                            mark: Mark::Ok,
-                            text: "found in installed apps".into(),
-                        }
-                    } else {
-                        Note {
-                            mark: Mark::Bad,
-                            text: "no installed app has this name".into(),
-                        }
-                    }
-                }
-            });
-            for p in problems.iter().filter(|p| p.row == i) {
+/// The one place a row's condition is decided. Both the list flag and the
+/// editor's notes are derived from it, so they cannot contradict each other
+/// -- which they could when `items` read only the registration map and
+/// `detail` read the catalog as well.
+///
+/// A row can be several things at once while `flag` is a single word, so the
+/// order in which `flag` is claimed below IS the precedence:
+/// `paused` > `key in use` > `not installed` > `custom` > none. `paused`
+/// sits above the registration map deliberately: `serve` CLEARS that map
+/// when it pauses, so consulting the map first would render every row as
+/// "not registered yet" and never say why.
+///
+/// `mark` is derived from the notes at the end rather than assigned along
+/// the way, which is what makes "the list and the editor cannot disagree"
+/// true by construction instead of by discipline.
+fn row_condition(
+    m: &Model,
+    i: usize,
+    rt: &RuntimeStatus,
+    problems: &[Problem],
+) -> (Mark, Option<String>, Vec<Note>) {
+    let r = &m.rows[i];
+
+    // Nothing below has anything to say about a row the user has not
+    // finished: there is no combo to register and no app to look up. That
+    // includes `paused`, which describes a shortcut that exists.
+    if is_unfinished_new_row(r) {
+        return (
+            Mark::Unknown,
+            None,
+            vec![Note {
+                mark: Mark::Unknown,
+                text: "Pick a key and an app.".into(),
+            }],
+        );
+    }
+
+    let mut notes: Vec<Note> = Vec::new();
+    let mut flag: Option<String> = None;
+    let combo = Combo::parse(&r.combo);
+
+    // 1. The key.
+    if rt.paused {
+        flag = Some("paused".into());
+        notes.push(Note {
+            mark: Mark::Warn,
+            text: "beckon is paused, so no shortcut is active.".into(),
+        });
+    } else if let Ok(c) = &combo {
+        match rt.registered.get(&c.canonical()) {
+            Some(Ok(())) => notes.push(Note {
+                mark: Mark::Ok,
+                text: "Registered and working.".into(),
+            }),
+            Some(Err(_)) => {
+                flag = Some("key in use".into());
                 notes.push(Note {
                     mark: Mark::Bad,
-                    text: p.message.clone(),
+                    text: "Another program already has this shortcut.".into(),
                 });
             }
-            Detail {
+            // In the file but not in the last registration pass -- an edit
+            // that has not been saved and reloaded yet. Honest, not a fault.
+            None => notes.push(Note {
+                mark: Mark::Unknown,
+                text: "Not registered yet.".into(),
+            }),
+        }
+    }
+    // A combo that does not parse says so through its `Problem` below;
+    // repeating it here would put the same sentence on screen twice.
+
+    // 2. The app. Silent on success -- a healthy row says nothing.
+    match &rt.catalog {
+        // A scan that has not finished cannot prove absence.
+        None => notes.push(Note {
+            mark: Mark::Unknown,
+            text: "Checking installed apps...".into(),
+        }),
+        Some(names) => {
+            let want = r.app.trim().to_lowercase();
+            // An empty app name is reported as a `Problem`, not as a
+            // catalog miss -- "no installed app has this name" is a strange
+            // thing to say about no name at all.
+            if !want.is_empty() && !names.iter().any(|n| n.to_lowercase() == want) {
+                flag.get_or_insert_with(|| "not installed".into());
+                notes.push(Note {
+                    mark: Mark::Bad,
+                    text: "No installed app has this name.".into(),
+                });
+            }
+        }
+    }
+
+    // 3. Reachable by holding Caps? Only a question when Caps is on: with
+    //    `keyboard.caps` off there is no chord to deviate from, and an
+    //    ordinary `ctrl+alt+t` binding is not a deviation from anything.
+    if m.keyboard.caps {
+        if let Ok(c) = &combo {
+            if !combo_is_caps_chord(c, &m.keyboard.caps_hold) {
+                flag.get_or_insert_with(|| "custom".into());
+                notes.push(Note {
+                    mark: Mark::Warn,
+                    text: "Uses a different chord.".into(),
+                });
+            }
+        }
+    }
+
+    // 4. Whatever stops the file being written, verbatim from the validator.
+    for p in problems.iter().filter(|p| p.row == Some(i)) {
+        notes.push(Note {
+            mark: match p.severity {
+                Severity::Error => Mark::Bad,
+                Severity::Warning => Mark::Warn,
+            },
+            text: p.message.clone(),
+        });
+    }
+
+    let mark = if notes.iter().any(|n| n.mark == Mark::Bad) {
+        Mark::Bad
+    } else if notes.iter().any(|n| n.mark == Mark::Warn) {
+        Mark::Warn
+    } else if notes.iter().any(|n| n.mark == Mark::Unknown) {
+        Mark::Unknown
+    } else {
+        Mark::Ok
+    };
+    (mark, flag, notes)
+}
+
+pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
+    let problems = m.problems();
+
+    let mut items = Vec::with_capacity(m.rows.len());
+    let mut detail = None;
+    for (i, r) in m.rows.iter().enumerate() {
+        let (mark, flag, notes) = row_condition(m, i, rt, &problems);
+        items.push(ListItem {
+            combo: r.combo.clone(),
+            app: r.app.clone(),
+            mark,
+            flag,
+        });
+        // Same call, same answer: the editor cannot say something the list
+        // does not.
+        if m.selected == Some(i) {
+            detail = Some(Detail {
                 combo: r.combo.clone(),
                 app: r.app.clone(),
                 notes,
-            }
-        })
-    });
+            });
+        }
+    }
 
     ControlState {
         items,
         detail,
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
-        apply_enabled: m.dirty() && problems.is_empty(),
+        apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         remove_enabled: m.selected.is_some(),
     }
 }
@@ -376,6 +524,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shortcuts::Chord;
 
     const FILE: &str =
         "# mine\n\"ctrl+super+alt+t\" = \"Terminal\"\n\"ctrl+super+alt+e\" = \"File Explorer\"\n";
@@ -442,7 +591,8 @@ mod tests {
         m.set_combo(0, "ctrl+super+alt+T");
         let p = m.problems();
         assert_eq!(p.len(), 1);
-        assert_eq!(p[0].row, 0);
+        assert_eq!(p[0].row, Some(0));
+        assert_eq!(p[0].severity, Severity::Error);
         assert!(p[0].message.contains("uppercase"), "{}", p[0].message);
     }
 
@@ -452,7 +602,7 @@ mod tests {
         m.set_app(1, "   ");
         let p = m.problems();
         assert_eq!(p.len(), 1);
-        assert_eq!(p[0].row, 1);
+        assert_eq!(p[0].row, Some(1));
     }
 
     #[test]
@@ -461,8 +611,8 @@ mod tests {
         m.set_combo(1, "alt+ctrl+super+t");
         let p = m.problems();
         assert_eq!(p.len(), 2, "both rows must be flagged, not just the second");
-        assert!(p.iter().any(|x| x.row == 0));
-        assert!(p.iter().any(|x| x.row == 1));
+        assert!(p.iter().any(|x| x.row == Some(0)));
+        assert!(p.iter().any(|x| x.row == Some(1)));
         assert!(
             p[0].message.contains("ctrl+super+alt+t"),
             "{}",
@@ -510,6 +660,7 @@ mod tests {
         RuntimeStatus {
             registered: r,
             catalog: Some(vec!["Terminal".into(), "File Explorer".into()]),
+            paused: false,
         }
     }
 
@@ -539,6 +690,7 @@ mod tests {
         let st = RuntimeStatus {
             registered: status_all_ok().registered,
             catalog: None,
+            paused: false,
         };
         let mut m = model();
         m.selected = Some(0);
@@ -575,14 +727,12 @@ mod tests {
         m.set_app(0, "terminal");
         m.selected = Some(0);
         let cs = control_state(&m, &status_all_ok());
-        let note = cs
-            .detail
-            .unwrap()
-            .notes
-            .into_iter()
-            .find(|n| n.text.contains("installed"))
-            .unwrap();
-        assert_eq!(note.mark, Mark::Ok);
+        assert_eq!(cs.items[0].flag, None, "a case difference is not a miss");
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            !notes.iter().any(|n| n.text.contains("No installed app")),
+            "{notes:?}"
+        );
     }
 
     #[test]
@@ -614,6 +764,216 @@ mod tests {
         let cs = control_state(&m, &status_all_ok());
         assert!(cs.caps_checked);
         assert_eq!(cs.caps_tap, CapsTap::None);
+    }
+
+    // ---------- the status vocabulary ----------
+
+    #[test]
+    fn a_healthy_row_carries_no_flag_at_all() {
+        let cs = control_state(&model(), &status_all_ok());
+        assert_eq!(cs.items[0].flag, None, "healthy rows must be silent");
+    }
+
+    #[test]
+    fn a_healthy_row_says_registered_and_working_and_nothing_about_the_catalog() {
+        let mut m = model();
+        m.selected = Some(0);
+        let notes = control_state(&m, &status_all_ok()).detail.unwrap().notes;
+        assert_eq!(notes.len(), 1, "one sentence, not a report: {notes:?}");
+        assert_eq!(notes[0].text, "Registered and working.");
+        assert_eq!(notes[0].mark, Mark::Ok);
+    }
+
+    #[test]
+    fn a_warning_does_not_block_saving_the_rest_of_the_file() {
+        let mut m = model();
+        m.set_app(0, "Windows Terminal");
+        m.add_row(); // neutral, not an error
+        let cs = control_state(&m, &status_all_ok());
+        assert!(
+            cs.apply_enabled,
+            "an unfinished new row must not disable Save for edits made elsewhere"
+        );
+    }
+
+    #[test]
+    fn an_error_still_blocks_saving() {
+        let mut m = model();
+        m.set_combo(0, "bad+++");
+        assert!(!control_state(&m, &status_all_ok()).apply_enabled);
+    }
+
+    #[test]
+    fn paused_is_its_own_word_and_not_unknown() {
+        let st = RuntimeStatus {
+            paused: true,
+            ..status_all_ok()
+        };
+        let cs = control_state(&model(), &st);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("paused"));
+    }
+
+    #[test]
+    fn a_scan_still_running_is_not_the_same_as_an_app_that_is_missing() {
+        let mut m = model();
+        m.selected = Some(0);
+        let scanning = RuntimeStatus {
+            catalog: None,
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &scanning);
+        assert_eq!(
+            cs.items[0].flag, None,
+            "a scan in progress is not a row problem"
+        );
+        let note = cs
+            .detail
+            .unwrap()
+            .notes
+            .into_iter()
+            .find(|n| n.text.contains("Checking"))
+            .expect("the editor says so instead");
+        assert_eq!(note.mark, Mark::Unknown);
+    }
+
+    /// The list mark and the editor note are computed by ONE function, so they
+    /// cannot contradict each other -- which they can today.
+    #[test]
+    fn the_list_and_the_editor_cannot_disagree_about_a_row() {
+        let mut m = model();
+        m.set_app(0, "Nonexistent App");
+        m.selected = Some(0);
+        let cs = control_state(&m, &status_all_ok());
+        assert!(cs.items[0].flag.is_some(), "the list must show the problem");
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes.iter().any(|n| n.mark == Mark::Bad),
+            "and the editor must agree it is one"
+        );
+    }
+
+    #[test]
+    fn a_taken_key_is_reported_in_words_a_non_developer_can_act_on() {
+        let mut st = status_all_ok();
+        st.registered
+            .insert("ctrl+super+alt+t".into(), Err("0x581".into()));
+        let mut m = model();
+        m.selected = Some(0);
+        let cs = control_state(&m, &st);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("key in use"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.text == "Another program already has this shortcut."),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_brand_new_row_asks_for_a_key_and_an_app_instead_of_shouting() {
+        let mut m = model();
+        m.add_row();
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items[2].flag, None);
+        assert_eq!(cs.items[2].mark, Mark::Unknown);
+        let notes = cs.detail.unwrap().notes;
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert_eq!(notes[0].text, "Pick a key and an app.");
+        assert_eq!(notes[0].mark, Mark::Unknown);
+    }
+
+    /// `flag` is a single word but a row can be several things at once.
+    /// Highest wins: paused, then key in use, then not installed, then
+    /// custom. `paused` sits above the registration map on purpose --
+    /// `serve` CLEARS that map when it pauses, so a paused row would
+    /// otherwise read as "not registered yet" and say nothing about why.
+    #[test]
+    fn the_flag_precedence_is_paused_then_key_in_use_then_not_installed_then_custom() {
+        let mut m = model();
+        m.set_caps(true); // `custom` only means anything with Caps on
+        m.set_combo(0, "ctrl+alt+t"); // not the caps_hold chord
+        m.set_app(0, "Nonexistent App"); // not in the catalog
+        let mut rt = status_all_ok();
+        rt.registered
+            .insert("ctrl+alt+t".into(), Err("already taken".into()));
+        rt.paused = true;
+
+        let flag = |m: &Model, rt: &RuntimeStatus| control_state(m, rt).items[0].flag.clone();
+        assert_eq!(flag(&m, &rt).as_deref(), Some("paused"));
+        rt.paused = false;
+        assert_eq!(flag(&m, &rt).as_deref(), Some("key in use"));
+        rt.registered.insert("ctrl+alt+t".into(), Ok(()));
+        assert_eq!(flag(&m, &rt).as_deref(), Some("not installed"));
+        m.set_app(0, "Terminal");
+        assert_eq!(flag(&m, &rt).as_deref(), Some("custom"));
+        m.set_combo(0, "ctrl+super+alt+t");
+        assert_eq!(flag(&m, &rt), None);
+    }
+
+    /// `custom` answers one question: "can I reach this by holding Caps?".
+    /// So it is measured against `keyboard.caps_hold`, and it is silent when
+    /// `keyboard.caps` is off -- with Caps off there is no chord to deviate
+    /// from, and an ordinary `ctrl+alt+t` binding is not a deviation.
+    #[test]
+    fn custom_follows_caps_hold_and_is_silent_when_caps_is_off() {
+        let mut m = model();
+        m.set_combo(0, "ctrl+alt+t");
+        let mut rt = status_all_ok();
+        rt.registered.insert("ctrl+alt+t".into(), Ok(()));
+        assert_eq!(
+            control_state(&m, &rt).items[0].flag,
+            None,
+            "Caps off: nothing is custom"
+        );
+
+        m.set_caps(true);
+        assert_eq!(
+            control_state(&m, &rt).items[0].flag.as_deref(),
+            Some("custom")
+        );
+
+        m.keyboard.caps_hold = Chord::parse("ctrl+alt").unwrap();
+        assert_eq!(
+            control_state(&m, &rt).items[0].flag,
+            None,
+            "the chord is configurable, so `custom` must follow it"
+        );
+    }
+
+    // ---------- unfinished rows: the asymmetry, and why it exists ----------
+
+    /// Dropping EVERY incomplete row would mean that clearing an existing
+    /// binding's App field and pressing Save silently DELETES that binding.
+    /// `orig_key` already tells the two cases apart -- `None` is a row the
+    /// user just added and has not finished, `Some` is a row that came from
+    /// the file -- so the asymmetry costs nothing. Do not "simplify" the two
+    /// rules into one; the pair of tests below is what that would break.
+    #[test]
+    fn an_unfinished_new_row_is_dropped_from_the_write() {
+        let mut m = model();
+        m.set_app(0, "Windows Terminal");
+        m.add_row();
+        let text = m
+            .render()
+            .expect("an unfinished new row must not block the write");
+        let parsed = parse_config(&text).unwrap();
+        assert_eq!(parsed.shortcuts.len(), 2, "the two real rows still write");
+        assert!(text.contains("Windows Terminal"), "{text}");
+    }
+
+    /// The other half of the asymmetry -- see the comment above.
+    #[test]
+    fn an_emptied_out_row_that_came_from_the_file_still_blocks_saving() {
+        let mut m = model();
+        assert!(m.rows[0].orig_key.is_some(), "this row came from the file");
+        m.set_app(0, "");
+        assert!(
+            m.render().is_err(),
+            "clearing an App field must not silently delete the binding"
+        );
+        assert!(!control_state(&m, &status_all_ok()).apply_enabled);
     }
 
     /// The keyboard block is not a shortcut and must never show up as a row.

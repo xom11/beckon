@@ -719,6 +719,9 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     let rt = beckon_core::settings::RuntimeStatus {
         registered: s.registered.clone(),
         catalog: s.catalog.clone(),
+        // Pausing CLEARS `registered`, so without this the window would show
+        // every row as "not registered yet" and never say why.
+        paused: s.paused,
     };
     let cs = beckon_core::settings::control_state(model, &rt);
     let external = s.external_change;

@@ -212,9 +212,11 @@ fn show(h: HWND, on: bool) {
 fn mark_glyph(m: Mark) -> &'static str {
     // ASCII on purpose: this window inherits the shell font, and a missing
     // glyph shows as a box that reads like a rendering bug rather than a
-    // status.
+    // status. All four are two columns wide so the notes below the list line
+    // up -- the trailing space on `Warn` is load-bearing, not a typo.
     match m {
         Mark::Ok => "OK",
+        Mark::Warn => "! ",
         Mark::Bad => "!!",
         Mark::Unknown => "..",
     }
