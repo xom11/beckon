@@ -43,7 +43,7 @@
 //! `on_hotkey`.
 
 use anyhow::{anyhow, Context, Result};
-use beckon_core::shortcuts::{parse_shortcuts, Shortcut};
+use beckon_core::shortcuts::{parse_config, KeyboardConfig, Shortcut};
 use beckon_core::Backend;
 #[cfg(target_os = "macos")]
 use beckon_macos::hotkey;
@@ -90,6 +90,11 @@ pub struct AutostartCapability {
 
 struct ServeState {
     shortcuts: Vec<Shortcut>,
+    /// The `keyboard` block. Only `caps`/`caps_tap` today, and only Windows
+    /// acts on them — but the file is parsed identically everywhere so one
+    /// config can travel between machines.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    keyboard: KeyboardConfig,
     config: PathBuf,
     /// Hotkeys deliberately unregistered from the tray menu. A reload while
     /// paused updates the table but must not re-register — a file save is
@@ -171,12 +176,14 @@ pub fn cmd_serve_app(
         .with_context(|| format!("cannot resolve `{}`", config.display()))?;
     let text = std::fs::read_to_string(&config)
         .with_context(|| format!("cannot read `{}`", config.display()))?;
-    let shortcuts = parse_shortcuts(&text).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
+    let parsed = parse_config(&text).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
+    let shortcuts = parsed.shortcuts;
     // Outside the RefCell on purpose — see module doc.
     let backend: Rc<Box<dyn Backend>> = Rc::new(crate::pick_backend()?);
 
     let state = Rc::new(RefCell::new(ServeState {
         shortcuts,
+        keyboard: parsed.keyboard,
         config: config.clone(),
         paused: false,
         log,
@@ -223,6 +230,7 @@ pub fn cmd_serve_app(
     let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
     state.borrow_mut().last_phrase = phrase.clone();
     state.borrow_mut().registered = outcome.by_canonical();
+    sync_caps_hook(&state);
     eprintln!("beckon serve: {} from {}", phrase, config.display());
     set_tray_status(&format!("beckon - {phrase}"));
     if let Some(toast) = failure_toast(&outcome.failed) {
@@ -405,7 +413,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let config = state.borrow().config.clone();
     let parsed = std::fs::read_to_string(&config)
         .map_err(|e| format!("cannot read `{}`: {e}", config.display()))
-        .and_then(|t| parse_shortcuts(&t).map_err(|e| format!("{}: {e}", config.display())));
+        .and_then(|t| parse_config(&t).map_err(|e| format!("{}: {e}", config.display())));
     match parsed {
         Err(e) => {
             // Bad edit must not cost the user their working keys.
@@ -419,7 +427,11 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
         Ok(new) => {
             let mut m = mgr.borrow_mut();
             m.unregister_all();
-            state.borrow_mut().shortcuts = new;
+            {
+                let mut s = state.borrow_mut();
+                s.shortcuts = new.shortcuts;
+                s.keyboard = new.keyboard;
+            }
             let paused = state.borrow().paused;
             if paused {
                 // A file save is not a request to un-pause. The table is
@@ -429,6 +441,10 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
                 // unregister_all() above means nothing is registered; a
                 // leftover map would show ticks for keys that are not live.
                 state.borrow_mut().registered.clear();
+                // Paused means paused: the hook stays off even though the
+                // edit may have turned `keyboard.caps` on. Resuming picks
+                // it up.
+                sync_caps_hook(state);
                 eprintln!("beckon serve: reloaded while paused - {phrase}");
                 set_tray_status(&format!("beckon - paused ({phrase})"));
                 return;
@@ -437,6 +453,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
             state.borrow_mut().last_phrase = phrase.clone();
             state.borrow_mut().registered = outcome.by_canonical();
+            sync_caps_hook(state);
             eprintln!("beckon serve: reloaded - {phrase}");
             set_tray_status(&format!("beckon - {phrase}"));
             if let Some(toast) = failure_toast(&outcome.failed) {
@@ -626,6 +643,65 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
 
     hotkey::set_menu(build, on_click);
 }
+
+// ---------------------------------------------------------------------------
+// Caps hook (Windows only)
+// ---------------------------------------------------------------------------
+
+/// Install, refresh or remove the Caps hook so it matches the current
+/// config. Called at startup, after every reload, and on both edges of
+/// pause.
+///
+/// Measured on a14 2026-08-11, which is what makes the alias design safe:
+/// an injected `ctrl+win+alt+<key>` burst does fire our own
+/// `RegisterHotKey`; the burst does not open the Start menu (verified
+/// against a control that proved a bare Win tap does); and the injection
+/// costs 5-13 ms against a 300 ms `LowLevelHooksTimeout`.
+#[cfg(target_os = "windows")]
+fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
+    use beckon_windows::caps_hook;
+
+    let (want, tap, bound) = {
+        let s = state.borrow();
+        (
+            s.keyboard.caps && !s.paused,
+            s.keyboard.caps_tap,
+            beckon_core::caps::bound_keys(&s.shortcuts),
+        )
+    };
+
+    if !want {
+        if caps_hook::is_installed() {
+            caps_hook::uninstall();
+            eprintln!("beckon serve: caps hook removed");
+        }
+        return;
+    }
+
+    let keys = bound.len();
+    caps_hook::set_bindings(bound, tap);
+    if caps_hook::is_installed() {
+        return;
+    }
+    match caps_hook::install() {
+        Ok(()) => eprintln!("beckon serve: caps hook active, {keys} keys reachable through Caps"),
+        Err(e) => {
+            eprintln!("beckon serve: {e}");
+            // The user just ticked this; tell them every time.
+            crate::notify::report(
+                &format!("could not enable Caps Lock: {e}"),
+                crate::notify::Cause::HumanAction,
+            );
+            // Do not leave the config claiming a feature that is not
+            // running. The file still says `caps = true`; this only stops
+            // the in-memory state from lying to the settings window.
+            state.borrow_mut().keyboard.caps = false;
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sync_caps_hook(_state: &Rc<RefCell<ServeState>>) {}
 
 // ---------------------------------------------------------------------------
 // Settings window (Windows only)
@@ -984,6 +1060,9 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
         state.borrow_mut().registered.clear();
+        // Pausing MUST unhook. Leaving it installed would keep swallowing
+        // Caps while nothing acts on it -- the worst available state.
+        sync_caps_hook(state);
         eprintln!("beckon serve: paused - {phrase}");
         hotkey::set_status(&format!("beckon - paused ({phrase})"));
     } else {
@@ -992,6 +1071,7 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
         state.borrow_mut().last_phrase = phrase.clone();
         state.borrow_mut().registered = outcome.by_canonical();
+        sync_caps_hook(state);
         eprintln!("beckon serve: resumed - {phrase}");
         hotkey::set_status(&format!("beckon - {phrase}"));
     }
