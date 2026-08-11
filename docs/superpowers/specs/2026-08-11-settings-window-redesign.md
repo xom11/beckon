@@ -175,18 +175,22 @@ change with it:
 
 ```
 ┌ beckon — shortcuts.toml ──────────────────────────── ─ □ ✕ ┐
-│  [banner: file changed on disk    (Reload) (Keep mine)]     │  only when needed
-│  [ 🔍 Filter                                            ]   │  1
+│ ☑ Beckon key  [Ctrl] [Win] [Alt] [Shift]                    │  1  settings
+│ ☑ Caps Lock can be the beckon key too — hold it with        │     about the
+│   another key to run a shortcut, tap alone to send [Caps ▾]  │     list below
+├─────────────────────────────────────────────────────────────┤
+│  [banner: file changed on disk    (Reload) (Keep mine)]     │     only when needed
+│  Shortcuts              [🔍 Filter] [Remove 2] [+ Add]      │  2
 │ ┌─────────────────────────────────────────────────────────┐ │
 │ │ App                                          Shortcut   │ │
-│ │ Windows Terminal                      Ctrl Win Alt  T   │ │  2
-│ │ File Explorer                         Ctrl Win Alt  E   │ │
-│ │ Claude          ⚠ not installed       Ctrl Win Alt  C   │ │
+│ │ ☐ Windows Terminal                    Ctrl Win Alt  T   │ │  3  fixed height,
+│ │ ☑ File Explorer                       Ctrl Win Alt  E   │ │     scrolls inside
+│ │ ☐ Claude        ⚠ not installed       Ctrl Win Alt  C   │ │
+│ │ ☐ Telegram Web  custom          Ctrl Win Alt Shift  T   │ │
 │ └─────────────────────────────────────────────────────────┘ │
-│  [ Claude              ▾ ] + [ C ▾ ]      [Remove] [+ Add]  │  3
+│ [Claude ▾] + ☑Ctrl ☑Win ☑Alt ☐Shift [c ▾] [●Record][Reset]  │  4
 │  ⚠ No installed app is named "Claude".                      │
-│  Suggested  [+ VS Code] [+ Brave] [+ Notion] [+ Spotify]    │  4
-│  Beckon key  [Ctrl][Win][Alt][Shift]  │  ☐ Caps Lock too    │  5
+│  Suggested  [+ VS Code] [+ Brave] [+ Notion] [+ Spotify]    │  5
 ├─────────────────────────────────────────────────────────────┤
 │  [Open config file]                        [Close]  [Save]  │
 └─────────────────────────────────────────────────────────────┘
@@ -481,11 +485,13 @@ may legitimately not use the beckon key at all — `Win+X` is a case the user
 named, and the README already documents
 `"ctrl+super+alt+shift+t" = "Telegram Web"`.
 
+Everything sits on **one row**. Remove and Add move up beside the list they
+act on, which frees the width; a second row for the typed controls was drawn
+and rejected as clutter.
+
 ```
-[ Claude            ▾ ]  +  [ Ctrl  Win  Alt   T ]  [Record] [Reset]   [Remove] [+ Add]
-                            └── keycaps: what is set ──┘
-     ☐ Ctrl  ☑ Win  ☑ Alt  ☐ Shift    Key [ t ▾ ]
-     └────────── the same value, editable without pressing anything ──────────┘
+[ Claude          ▾ ]  +  ☑Ctrl ☑Win ☑Alt ☐Shift  [ c ▾ ]  [● Record] [Reset]
+                          └───── the same value, set without pressing ─────┘
 ```
 
 **The typed path is primary; capture is an accelerator.** Four modifier
@@ -1066,21 +1072,53 @@ destroyed by `LVM_DELETEALLITEMS` on every refresh and never restored — the
 reinsert loop sets `mask: LVIF_TEXT` only. Typing one character into the App
 field loses the highlight while `Model.selected` still says otherwise.
 
-## F.8 The beckon key row absorbs the tap setting
+## F.8 The beckon key moves to its own band at the top
+
+It is a setting *about* the shortcuts below it, not one of them, so it is
+separated above the list with its own background and a rule beneath — not
+parked at the bottom next to the command bar, where it read as an afterthought.
 
 ```
-Beckon key  [Ctrl][Win][Alt][Shift]  |  ☐ Caps Lock too, tap sends [ Caps Lock ▾ ]
+┌────────────────────────────────────────────────────────────────────┐
+│ ☑ Beckon key   [Ctrl] [Win] [Alt] [Shift]                          │
+│ ☑ Caps Lock can be the beckon key too — hold it with another key   │
+│   to run a shortcut, tap it alone to send [ Caps Lock ▾ ]          │
+├────────────────────────────────────────────────────────────────────┤
+│  Shortcuts                        [🔍 Filter] [Remove 2] [+ Add]   │
+│  …                                                                 │
 ```
 
-The three `IDC_TAP_*` radios are deleted and replaced by a three-value
-`CBS_DROPDOWNLIST` — `Caps Lock`, `Esc`, `Nothing` — read with `CB_GETCURSEL`
-on `CBN_SELCHANGE`, never by reading its text, because even a `DROPDOWNLIST`
-has typeahead that moves the selection. It is greyed when the checkbox is
-off, exactly as the radios are today.
+### The enable tick, and what "off" means
 
-Phrasing the label as one sentence keeps the choice from reading as a second
-settings group. No new plumbing: `keyboard.caps_tap` is already parsed,
-validated, written and modelled.
+The band leads with a checkbox, **ticked by default**. Unticked, the beckon
+key stops existing as a concept: new rows are not prefilled with it, the list
+stops dimming a shared prefix, and **Caps Lock becomes unavailable**, because
+Caps is an alias for the beckon key and an alias for nothing is nothing. Every
+existing shortcut keeps working exactly as written — turning the beckon key
+off changes no binding, only the authoring help.
+
+In the file this is `keyboard.beckon_key = ""`. An empty string is off;
+`KeyboardConfig.beckon_key` becomes `Option<Chord>`. This costs no new key,
+keeps the write-only-when-non-default rule from §C.2 intact for everyone who
+never touches it, and makes `caps = true` with no beckon key a hard error with
+a message that names the cause.
+
+### The Caps line says what Caps actually does
+
+The three `IDC_TAP_*` radios are deleted. The tap choice becomes a three-value
+`CBS_DROPDOWNLIST` — `Caps Lock`, `Esc`, `Nothing` — sitting **inside the
+sentence** that explains the feature, so a reader learns both behaviours in
+one pass: hold it with another key and you get a shortcut; tap it alone and
+you get this. Today the window states neither; it says "Use Caps Lock as the
+beckon key" and leaves the tap behaviour to a separate radio group with no
+explanation of why it exists.
+
+Read it with `CB_GETCURSEL` on `CBN_SELCHANGE`, never by reading its text —
+even a `DROPDOWNLIST` has typeahead that moves the selection. Grey it when the
+Caps box is unticked, exactly as the radios are today.
+
+No new plumbing: `keyboard.caps_tap` is already parsed, validated, written and
+modelled.
 
 Deleting the radios changes which control must close the keyboard group with
 `WS_GROUP` — fix it in the same pass as §B.7.
