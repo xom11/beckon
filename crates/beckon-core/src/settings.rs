@@ -1492,17 +1492,79 @@ mod tests {
     /// This is a live check on `parse_config`'s messages too, not only on
     /// the wrapper's: two of them carried an em-dash until the read-only
     /// window made them something a STATIC has to draw.
+    ///
+    /// **One fixture per error site `parse_config` can reach**, not a
+    /// sample. Five of roughly twenty-one were covered when this was
+    /// written, so a new em-dash in `unknown key`, `empty app name`,
+    /// `duplicate modifier` or any of the `keyboard.*` messages would have
+    /// passed. `explain` calls `expect_err`, so a fixture that stops
+    /// producing an error fails here rather than quietly covering nothing.
     #[test]
     fn every_displayed_string_is_ascii() {
         for text in [
+            // --- toml itself
             "\"ctrl+alt+t\" = \"A\"\noops\n",
-            "\"ctrl+alt+t\" = \"A\"\n\"alt+ctrl+t\" = \"B\"\n",
-            "\"ctrl+alt+t\" = [\"A\", \"B\"]\n",
-            "\"ctrl+super+alt+T\" = \"A\"\n",
-            "[keyboard]\ncaps_hold = \"nope\"\n",
+            // --- Combo::parse, on a top-level key
+            "\"ctrl++t\" = \"A\"\n",          // empty token
+            "\"nope+t\" = \"A\"\n",           // expected a modifier
+            "\"ctrl+ctrl+t\" = \"A\"\n",      // duplicate modifier
+            "\"ctrl+super+alt+T\" = \"A\"\n", // uppercase key
+            "\"ctrl+alt+zzz\" = \"A\"\n",     // unknown key
+            "\"ctrl+alt\" = \"A\"\n",         // unknown key, with the hint
+            // --- parse_config's own
+            "\"ctrl+alt+t\" = \"A\"\n\"alt+ctrl+t\" = \"B\"\n", // duplicate combo
+            "\"ctrl+alt+t\" = \"   \"\n",                       // empty app name
+            "\"ctrl+alt+t\" = [\"A\", \"B\"]\n",                // an array
+            "\"ctrl+alt+t\" = 3\n",                             // any other type
+            // --- parse_keyboard
+            "keyboard = 3\n",                       // not a table
+            "[keyboard]\ncaps = \"yes\"\n",         // caps not a bool
+            "[keyboard]\ncaps_tap = 3\n",           // caps_tap not a string
+            "[keyboard]\ncaps_tap = \"nope\"\n",    // CapsTap::parse
+            "[keyboard]\ncaps_hold = 3\n",          // caps_hold not a string
+            "[keyboard]\nnope = 1\n",               // unknown setting
+            "[keyboard]\n\"ctrl+alt+t\" = \"A\"\n", // a shortcut nested under it
+            // --- Chord::parse, reached through caps_hold
+            "[keyboard]\ncaps_hold = \"ctrl+shift\"\n", // shift is refused
+            "[keyboard]\ncaps_hold = \"ctrl+\"\n",      // needs a modifier
+            "[keyboard]\ncaps_hold = \"nope\"\n",       // expected a modifier
+            "[keyboard]\ncaps_hold = \"ctrl+ctrl\"\n",  // duplicate modifier
         ] {
             let all = joined(&explain(text));
             assert!(all.is_ascii(), "non-ASCII reached the window:\n{all}");
+        }
+    }
+
+    /// The backstop for the fixture list above: a message no fixture reaches
+    /// is still a message this window may have to draw.
+    ///
+    /// Reads `shortcuts.rs` itself and requires every line of code outside
+    /// its test module to be ASCII, with `//` comments stripped first -- the
+    /// file's prose deliberately uses arrows and em-dashes, and prose is
+    /// never drawn. What is left after stripping is string and char
+    /// literals, which is exactly the set that can reach a STATIC.
+    ///
+    /// Cheap, total, and it does not care whether anyone remembered to add a
+    /// fixture for a new error.
+    #[test]
+    fn no_message_in_the_parser_can_carry_a_non_ascii_character() {
+        let src = include_str!("shortcuts.rs");
+        let code = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields one part");
+        assert!(
+            code.len() < src.len(),
+            "the test module marker moved; this scan would cover the whole file"
+        );
+        for (i, line) in code.lines().enumerate() {
+            let stripped = line.split("//").next().unwrap_or("");
+            assert!(
+                stripped.is_ascii(),
+                "shortcuts.rs:{} carries a non-ASCII character in code, which the \
+                 settings window may have to draw: {line}",
+                i + 1
+            );
         }
     }
 

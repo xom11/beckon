@@ -18,6 +18,20 @@
 //! calls `filter_dialog_message` first so Ctrl+S, Tab, Enter, Esc, the
 //! arrows and the Alt-mnemonics work inside it.
 //!
+//! **The App field's text is read from the message loop, one keystroke
+//! behind the notification that reported it** — see `WM_APP_EDITED`, which
+//! is what stops a combo box that rewrites its own text from writing single
+//! characters into the config. It has one accepted cost, and it is not a
+//! bug: an unrelated state push dispatched between the post and the read —
+//! a `WM_CATALOG` arriving, or a file-change tick — runs `apply_state`
+//! against a model that has not seen the keystroke yet, rewrites the App
+//! field over the typed character, and bumps `Ui::app_epoch`, which drops
+//! the pending read. That character is lost from the model until the next
+//! one is typed (or until `commit_fields` runs on focus loss or Save). The
+//! alternative — honouring the read anyway — reports text `apply_state`
+//! itself wrote as a user edit, which is worse and silent. Dropping the read
+//! is the deliberate side of that trade.
+//!
 //! **Read-only is a flag, not a mode.** A config file that does not parse
 //! opens here rather than being refused, with every mutating control off --
 //! but this file has no idea that state exists. `ControlState::editable`
@@ -103,8 +117,13 @@ const SS_CENTERIMAGE_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0200);
 pub const WM_CATALOG: u32 = WM_APP + 2;
 
 /// Posted to this window by `handle_command` when the App combo box reports
-/// that its text changed. Carries the `Ui::app_epoch` stamp current at the
-/// moment of posting.
+/// that the user TYPED into it (`CBN_EDITCHANGE`). Carries the
+/// `Ui::app_epoch` stamp current at the moment of posting.
+///
+/// A pick from the list (`CBN_SELCHANGE`) does NOT come this way -- it is
+/// read synchronously out of the list, which is not subject to the defect
+/// below and cannot be undone by the `CBN_CLOSEUP` backstop that follows it.
+/// See the two arms in `handle_command`.
 ///
 /// **The whole point is that it is POSTED, not sent.** A populated
 /// `CBS_DROPDOWN` rewrites its own edit text as you type -- measured on a14,
@@ -2457,6 +2476,17 @@ fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.suppress).unwrap_or(true))
 }
 
+/// The App combo box's handle, fetched under a borrow that returns a `Copy`
+/// value and drops with its closure.
+///
+/// One function rather than the same `UI.with` written out at each of the
+/// three sites that needs it: the handle is only ever wanted immediately
+/// before a send, and a borrow left alive across one of those aborts the
+/// process. Keeping the fetch in one place keeps that property checkable.
+fn app_handle() -> Option<HWND> {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.app))
+}
+
 /// Ask for the App combo box's text to be read from the message loop rather
 /// than from inside the notification that reported it changed. See
 /// `WM_APP_EDITED` for why, and `Ui::app_epoch` for what the stamp is for.
@@ -2725,7 +2755,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         .unwrap_or(false)
                 });
                 if fresh {
-                    if let Some(app) = UI.with(|u| u.borrow().as_ref().map(|x| x.app)) {
+                    if let Some(app) = app_handle() {
                         let t = text_of(app);
                         with_cb(|cb| (cb.on_edit_app)(t));
                     }
@@ -2849,9 +2879,12 @@ fn commit_fields() {
 }
 
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
-    // The shortcut EDIT only. The App COMBOBOX is deliberately absent: no
-    // arm below reads it synchronously any more -- see `WM_APP_EDITED` --
-    // and a handle in scope here is an invitation to start again.
+    // The shortcut EDIT only. The App COMBOBOX is deliberately absent: the
+    // one arm that still reads it synchronously reads its LIST, not its edit
+    // field, and fetches the handle itself through `app_handle()`. A handle
+    // in scope for every arm is an invitation to read the edit field from
+    // inside a notification again -- which is the defect `WM_APP_EDITED`
+    // exists to prevent.
     let combo = match UI.with(|u| u.borrow().as_ref().map(|x| x.combo)) {
         Some(t) => t,
         None => return,
@@ -2895,27 +2928,58 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 with_cb(|cb| (cb.on_edit_combo)(t));
             }
         }
-        // Both codes, deferred, and BOTH is the point.
+        // ONE of the two codes is deferred, and the asymmetry is the point.
         //
         // `CBN_EDITCHANGE` is the measured defect: the control rewrites its
         // own text as you type and this notification carries the text from
-        // before the rewrite. `CBN_SELCHANGE` used to be read synchronously
-        // out of the LIST -- correct for a mouse pick, where the edit field
-        // genuinely has not caught up yet -- but comctl32 also SELECTS the
-        // matching item while type-ahead is rewriting the field, so that
-        // path could report "Narrator" for a typed `N` on its own account.
-        // Worse, the push it triggered would rewrite the field and, with it,
-        // invalidate the pending read that was about to correct the record.
+        // BEFORE the rewrite, so it must be read later -- see
+        // `WM_APP_EDITED`.
         //
-        // Deferring both makes the edit control the single source of truth
-        // for what the App field says, which is also what the user sees.
-        (IDC_APP, c) if c == CBN_EDITCHANGE || c == CBN_SELCHANGE => {
+        // `CBN_SELCHANGE` is read synchronously out of the LIST, and
+        // deferring it was a regression. A mouse pick raises `CBN_SELCHANGE`
+        // and then, IN THE SAME BREATH, `CBN_CLOSEUP` -- whose arm calls
+        // `commit_fields` SYNCHRONOUSLY. A posted read is dispatched after
+        // both, so if the edit field is still stale when `CBN_CLOSEUP`
+        // arrives -- the exact uncertainty that made a list read necessary in
+        // the first place -- `commit_fields` commits the stale text,
+        // `apply_state` writes it back into the field (visibly undoing the
+        // pick) and bumps `app_epoch`, discarding the only read that still
+        // knew the right value. Reading the list here instead restores the
+        // self-correcting order: the model gets the picked value, so
+        // `apply_state` puts it in the field, so the `CBN_CLOSEUP` backstop
+        // commits the same value again.
+        //
+        // The list selection is not subject to the edit-rewrite defect at
+        // all, and the a14 measurement says so: typing "Notepad" recorded
+        // `d`, the last CHARACTER, which is only reachable if the type-ahead
+        // that rewrote the field raised no `CBN_SELCHANGE` at all -- a
+        // notification documented for a user changing the selection in the
+        // list box, not for comctl32 syncing it to typed text. `text_of` is
+        // the fallback for a combo with nothing selected (free-typed names
+        // that are in no catalog, which beckon deliberately supports).
+        (IDC_APP, c) if c == CBN_EDITCHANGE => {
             if !suppressed() {
                 post_app_read(hwnd);
             }
         }
+        (IDC_APP, c) if c == CBN_SELCHANGE => {
+            if !suppressed() {
+                // The borrow returns a `Copy` handle and drops with its
+                // closure; every send below runs with none held.
+                if let Some(app) = app_handle() {
+                    let t = selected_combo_text(app).unwrap_or_else(|| text_of(app));
+                    with_cb(|cb| (cb.on_edit_app)(t));
+                }
+            }
+        }
         // Tabbing or clicking away commits what is in the field, so a value
         // the control rewrote without notifying is not silently lost.
+        //
+        // `CBN_CLOSEUP` is safe to handle synchronously only BECAUSE
+        // `CBN_SELCHANGE` above is: the pick is already in the model, so
+        // `apply_state` has already put it in the field, so this reads the
+        // picked value rather than clobbering it with a stale one. Deferring
+        // `CBN_SELCHANGE` would make this line undo the pick.
         (IDC_COMBO, c) if c == EN_KILLFOCUS => commit_fields(),
         (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
@@ -2978,12 +3042,39 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
     }
 }
 
-// `selected_combo_text` lived here: it read the App combo's LIST selection
-// on `CBN_SELCHANGE`, because the edit field is documented not to have
-// caught up when that notification is sent. It is gone with the synchronous
-// read it served -- the deferred read of the edit control is dispatched
-// after the combo has finished updating itself, so the field is both correct
-// and, unlike the list selection, what the user is actually looking at.
+/// What the App combo box's LIST currently has selected, which on
+/// `CBN_SELCHANGE` is the value the user picked -- the edit field is
+/// documented not to have caught up when that notification is sent.
+///
+/// `None` when nothing is selected, which is the ordinary state for a name
+/// the user typed that is in no catalog. The caller falls back to the field.
+fn selected_combo_text(app: HWND) -> Option<String> {
+    unsafe {
+        let i = SendMessageW(app, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))).0;
+        if i < 0 {
+            return None;
+        }
+        let len = SendMessageW(
+            app,
+            CB_GETLBTEXTLEN,
+            Some(WPARAM(i as usize)),
+            Some(LPARAM(0)),
+        )
+        .0;
+        if len <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize + 1];
+        SendMessageW(
+            app,
+            CB_GETLBTEXT,
+            Some(WPARAM(i as usize)),
+            Some(LPARAM(buf.as_mut_ptr() as isize)),
+        );
+        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..n]))
+    }
+}
 
 /// Report a save failure. The window has somewhere to put this, unlike
 /// bare `serve`.

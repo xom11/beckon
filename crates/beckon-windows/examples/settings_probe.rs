@@ -509,15 +509,27 @@ mod win {
     ///
     /// `witness` is `(list, row, subitem)`: the list cell this field feeds.
     /// After every character the cell is read back and compared with the
-    /// field, and the count of disagreements is returned. **That comparison
-    /// is the only thing that can settle the App combo box defect.** The
-    /// control rewriting its own text is not itself a bug — comctl32 is
-    /// entitled to autocomplete — the bug is beckon recording something
-    /// other than what the field ends up showing. One number, per keystroke,
-    /// with both sides printed.
-    fn type_into(h: HWND, s: &str, witness: Option<(HWND, i32, i32)>) -> usize {
+    /// field. **That comparison is the only thing that can settle the App
+    /// combo box defect.** The control rewriting its own text is not itself
+    /// a bug — comctl32 is entitled to autocomplete — the bug is beckon
+    /// recording something other than what the field ends up showing. Both
+    /// sides are printed, per keystroke.
+    ///
+    /// Returns `(wrong, late)`: cells that never caught up, and cells that
+    /// caught up only on the re-read. **The split exists because the
+    /// control cannot catch a too-short wait on this path.** The Shortcut
+    /// field is a plain EDIT and its read is synchronous, so it passes at
+    /// any sleep — only the App half is timing-sensitive, and a sleep that
+    /// is simply too short therefore reads exactly like the defect. So every
+    /// disagreement is re-read once after a further 300 ms and BOTH readings
+    /// are printed: a cell that changes between them is the probe being
+    /// impatient, and one that does not is the defect. Without this the two
+    /// are indistinguishable in the output, which is how a broken detector
+    /// gets mistaken for a finding.
+    fn type_into(h: HWND, s: &str, witness: Option<(HWND, i32, i32)>) -> (usize, usize) {
         let mut empty: Vec<u16> = vec![0];
-        let mut disagreements = 0usize;
+        let mut wrong = 0usize;
+        let mut late = 0usize;
         unsafe {
             SendMessageW(
                 h,
@@ -537,8 +549,35 @@ mod win {
                     Some((list, row, sub)) => match list_cell(list, row, sub) {
                         Some(cell) if cell_agrees(&cell, &field) => format!("list {cell:?} MATCH"),
                         Some(cell) => {
-                            disagreements += 1;
-                            format!("list {cell:?} <<< DISAGREES with the field")
+                            // The one extra wait, and only where it can
+                            // change the reading.
+                            std::thread::sleep(Duration::from_millis(300));
+                            let field2 = ctl_text(h);
+                            match list_cell(list, row, sub) {
+                                Some(c2) if cell_agrees(&c2, &field2) => {
+                                    late += 1;
+                                    format!(
+                                        "list {cell:?} <<< disagreed, then {c2:?} AGREED \
+                                         after +300ms -- SLOW, not wrong: the 120ms wait \
+                                         is too short on this machine"
+                                    )
+                                }
+                                Some(c2) => {
+                                    wrong += 1;
+                                    format!(
+                                        "list {cell:?} <<< DISAGREES with the field, and \
+                                         still {c2:?} vs field {field2:?} after +300ms -- \
+                                         STILL WRONG, not slow"
+                                    )
+                                }
+                                None => {
+                                    wrong += 1;
+                                    format!(
+                                        "list {cell:?} <<< DISAGREES with the field; \
+                                         re-read UNREADABLE"
+                                    )
+                                }
+                            }
                         }
                         None => "list UNREADABLE".to_string(),
                     },
@@ -552,7 +591,86 @@ mod win {
             }
         }
         std::thread::sleep(Duration::from_millis(300));
-        disagreements
+        (wrong, late)
+    }
+
+    /// `VK_DOWN` / `VK_RETURN`, spelled as the numbers winuser.h gives them.
+    /// The `windows` crate types these as `VIRTUAL_KEY`, which is not what a
+    /// `WM_KEYDOWN` wParam is.
+    const VK_DOWN_CODE: usize = 0x28;
+    const VK_RETURN_CODE: usize = 0x0D;
+
+    /// Drive the App combo box's dropdown from the KEYBOARD and report what
+    /// the model recorded.
+    ///
+    /// **A different notification sequence from typing, which is why it is a
+    /// separate step.** An arrow key inside a dropped-down list raises
+    /// `CBN_SELCHANGE`; Enter then raises `CBN_SELENDOK` and `CBN_CLOSEUP`,
+    /// and the `CBN_CLOSEUP` arm commits the field SYNCHRONOUSLY. So this is
+    /// the path where a deferred `CBN_SELCHANGE` read gets discarded by its
+    /// own backstop, and no amount of typing exercises it.
+    ///
+    /// **It reports; it does not assert.** Driving a dropdown with posted
+    /// keys across a process boundary is not guaranteed to reach the list at
+    /// all, so the first thing printed is whether the field changed — a
+    /// probe that never drove the control and a control that behaved
+    /// correctly must not look the same, which is the trap this whole file
+    /// keeps falling into.
+    fn pick_from_dropdown(h: HWND, witness: Option<(HWND, i32, i32)>) {
+        println!("  -- picking from the dropdown with the keyboard --");
+        let Some(combo) = dlg_item(h, IDC_APP) else {
+            println!("    SKIP: no App combo box");
+            return;
+        };
+        let count = send(combo, CB_GETCOUNT, 0, 0);
+        if count <= 0 {
+            println!("    SKIP: the catalog is empty, so there is nothing to pick ({count} items)");
+            return;
+        }
+        let before = ctl_text(combo);
+        unsafe {
+            SendMessageW(combo, CB_SHOWDROPDOWN, Some(WPARAM(1)), Some(LPARAM(0)));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        // To the combo itself: comctl32 routes the list's key handling
+        // through the combo's own wndproc, and the probe cannot take focus
+        // in another process's thread without attaching to its input queue.
+        for _ in 0..2 {
+            send(combo, WM_KEYDOWN, VK_DOWN_CODE, 0);
+            send(combo, WM_KEYUP, VK_DOWN_CODE, 0);
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let after_arrows = ctl_text(combo);
+        send(combo, WM_KEYDOWN, VK_RETURN_CODE, 0);
+        send(combo, WM_KEYUP, VK_RETURN_CODE, 0);
+        // Generous: the CBN_CLOSEUP commit and the push it triggers are both
+        // synchronous, but the window still has to repaint the list.
+        std::thread::sleep(Duration::from_millis(500));
+        let after_enter = ctl_text(combo);
+        println!("    field: before {before:?} -> after arrows {after_arrows:?} -> after Enter {after_enter:?}");
+        if after_arrows == before && after_enter == before {
+            println!(
+                "    INCONCLUSIVE: the field never moved, so the posted keys did not \
+                 reach the list. This is a probe limitation, NOT a beckon result -- \
+                 a human must pick an entry by hand."
+            );
+            return;
+        }
+        match witness {
+            Some((list, row, sub)) => match list_cell(list, row, sub) {
+                Some(cell) if cell_agrees(&cell, &after_enter) => {
+                    println!("    PASS: list {cell:?} carries the picked value");
+                }
+                Some(cell) => {
+                    println!(
+                        "    FAIL: list {cell:?} but the field shows {after_enter:?} -- \
+                         the pick was recorded wrong, or CBN_CLOSEUP undid it"
+                    );
+                }
+                None => println!("    list UNREADABLE"),
+            },
+            None => println!("    (no witness row; the field reading above is all there is)"),
+        }
     }
 
     /// Dismiss a modal dialog by clicking one of its buttons.
@@ -700,24 +818,24 @@ mod win {
         // rewrite itself, so this half is the CONTROL for the App half: if
         // it disagrees too, the probe's own timing is wrong and neither
         // result means anything.
-        let combo_lies = type_into(combo_edit, "ctrl+super+alt+j", witness(1));
+        let (combo_lies, combo_late) = type_into(combo_edit, "ctrl+super+alt+j", witness(1));
         dump(h, "after shortcut text");
 
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
         // only that child raises the change notification the window listens
         // for. Setting the combo itself is silent.
         let app_edit = dlg_item(h, IDC_APP).and_then(|c| first_child_of_class(c, "Edit"));
-        let app_lies = match app_edit {
+        let (app_lies, app_late) = match app_edit {
             Some(e) => type_into(e, "Notepad", witness(0)),
             None => {
                 println!("    FAIL: combo box has no edit child");
-                usize::MAX
+                (usize::MAX, 0)
             }
         };
         dump(h, "after app text");
         println!(
-            "    per-keystroke agreement: Shortcut field {} ({combo_lies} disagreements), \
-             App field {} ({app_lies} disagreements)",
+            "    per-keystroke agreement: Shortcut field {} ({combo_lies} wrong, \
+             {combo_late} slow), App field {} ({app_lies} wrong, {app_late} slow)",
             if combo_lies == 0 { "PASS" } else { "FAIL" },
             if app_lies == 0 { "PASS" } else { "FAIL" },
         );
@@ -727,6 +845,20 @@ mod win {
                  timing before believing the App result"
             );
         }
+        if combo_late + app_late > 0 {
+            println!(
+                "      NOTE: {} cell(s) agreed only on the +300ms re-read. The model \
+                 did converge; the 120ms per-character wait is too short on this \
+                 machine. Raise it and re-run before reading anything else here.",
+                combo_late + app_late
+            );
+        }
+
+        // AFTER the typing half, because it needs a row to witness against
+        // and a populated catalog, and BEFORE Apply, because it changes what
+        // gets saved.
+        pick_from_dropdown(h, witness(0));
+        dump(h, "after dropdown pick");
 
         let apply = dlg_item(h, IDC_APPLY);
         let enabled = apply.map(|a| unsafe { IsWindowEnabled(a) }.as_bool());
