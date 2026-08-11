@@ -36,3 +36,14 @@ features = [
 
 [dev-dependencies]
 tempfile = "3"
+
+# `settings_probe` reads a comctl32 control that lives in ANOTHER process.
+# comctl32 messages are not marshalled across the process boundary the way
+# `WM_GETTEXT` is (only user32's own controls get that), so `LVM_GETITEMRECT`
+# with a local `RECT*` would have the target write through our pointer into
+# its own address space -- garbage back, and a live `beckon-serve` corrupted.
+# The buffer therefore has to be allocated inside the target. Dev-only: the
+# library itself must never need to poke another process's memory.
+[target.'cfg(target_os = "windows")'.dev-dependencies.windows]
+version = "0.61"
+features = ["Win32_System_Diagnostics_Debug", "Win32_System_Memory"]
