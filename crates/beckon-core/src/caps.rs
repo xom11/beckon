@@ -245,23 +245,33 @@ pub fn decide(
     }
     match (ev.vk, ev.edge) {
         (VK_CAPITAL, Edge::Down) => {
-            // Unconditional, deliberately. A second down with no up in
-            // between is either auto-repeat -- where re-stamping every field
-            // is harmless -- or a Caps-up that was lost, and losing one is
-            // real: this hook is bound to the desktop of the thread that
-            // installed it and sees nothing at all while the secure desktop
-            // is up (UAC, Ctrl+Alt+Del, the lock screen). Guarding on
-            // `!st.held` pins `down_at` to the first press, so the next
-            // release is judged a multi-second hold and the user's tap is
-            // silently eaten.
+            // Guarded on `!st.held`, deliberately, even though this pins
+            // `down_at` to the FIRST press when a Caps-up is lost (a
+            // secure-desktop excursion: UAC, Ctrl+Alt+Del, the lock screen),
+            // so the next release is judged a hold and the user's tap is
+            // swallowed with nothing injected.
             //
-            // `consumed` is the exception and must NOT be cleared: a key
-            // released after Caps must still have its physical key-up
-            // swallowed, or the application receives an up with no down.
-            st.held = true;
-            st.used = false;
-            st.injected = None;
-            st.down_at = ev.time_ms;
+            // The alternative -- reinitialising every field unconditionally
+            // on every Caps-down -- was tried and reverted. `KBDLLHOOKSTRUCT`
+            // carries no repeat count, so there is no way to tell ordinary OS
+            // auto-repeat of a held Caps key apart from a lost Caps-up in the
+            // event stream; reinitialising unconditionally means auto-repeat
+            // (Caps down, key down, Caps down again with no up between, ...)
+            // re-runs this arm mid-hold, which forges a Caps Lock keystroke
+            // into whatever has focus on any `Caps+key` hold past the
+            // keyboard's repeat delay -- ordinary typing -- and skips the
+            // defensive modifier release `release_modifiers` exists for.
+            //
+            // One swallowed tap after a rare secure-desktop excursion, which
+            // self-heals on the very next Caps press, is far cheaper than a
+            // fabricated keystroke on every long hold.
+            if !st.held {
+                st.held = true;
+                st.used = false;
+                st.injected = None;
+                st.consumed.clear();
+                st.down_at = ev.time_ms;
+            }
             Action::Swallow
         }
         (VK_CAPITAL, Edge::Up) => {
@@ -829,14 +839,28 @@ mod tests {
         );
     }
 
-    /// A second Caps-down with no up in between is either auto-repeat -- where
-    /// re-stamping is harmless -- or a Caps-up that was lost. Losing one is
-    /// real: the hook is bound to the desktop of the thread that installed it
-    /// and sees nothing while the secure desktop is up (UAC, Ctrl+Alt+Del, the
-    /// lock screen). Treating the second down as noise leaves `down_at` pinned
-    /// to the first, so the next release is judged a hold and the tap is eaten.
+    /// A lost Caps-up (secure-desktop excursion: UAC, Ctrl+Alt+Del, the lock
+    /// screen) is the accepted cost of the `!st.held` guard, not a bug to
+    /// chase: `KBDLLHOOKSTRUCT` carries no repeat count, so there is no way
+    /// to tell that apart from ordinary OS auto-repeat of a held Caps key
+    /// from the event stream alone. The guard was removed once already
+    /// (2026-08-11) on the theory that re-stamping on every Caps-down is
+    /// harmless; it is not -- auto-repeat re-runs the arm mid-hold and
+    /// forges a Caps Lock keystroke into whatever has focus on any
+    /// `Caps+key` hold past the keyboard's repeat delay. See
+    /// `auto_repeat_of_a_held_caps_key_does_not_forge_a_tap` for that
+    /// regression pinned directly.
+    ///
+    /// So the guard stays, and this test documents its one real cost: after
+    /// a lost Caps-up, `down_at` stays pinned to the first press, the next
+    /// release is judged a multi-second hold, and the tap the user just
+    /// pressed is swallowed with nothing injected. The second half of this
+    /// test is why that is tolerable -- the very next Caps press taps
+    /// normally, because Caps-up always clears `st.held` regardless of which
+    /// down set it. One eaten tap, self-healing on the next press, versus a
+    /// fabricated keystroke on ordinary typing.
     #[test]
-    fn a_second_caps_down_restamps_the_clock() {
+    fn a_lost_caps_up_eats_one_tap_and_then_self_heals() {
         let mut st = CapsState::default();
         let b: HashSet<u32> = HashSet::new();
         decide(
@@ -846,7 +870,9 @@ mod tests {
             HOLD,
             CapsTap::CapsLock,
         );
-        // The Caps-up here is lost to a secure-desktop excursion.
+        // The Caps-up here is lost to a secure-desktop excursion. Because
+        // the guard is in effect, this second down does NOT restamp
+        // `down_at` -- it stays pinned to 0.
         decide(
             at(VK_CAPITAL, Edge::Down, 5_000),
             &mut st,
@@ -854,16 +880,83 @@ mod tests {
             HOLD,
             CapsTap::CapsLock,
         );
-        let act = decide(
+        let lost = decide(
             at(VK_CAPITAL, Edge::Up, 5_050),
             &mut st,
             &b,
             HOLD,
             CapsTap::CapsLock,
         );
+        assert_eq!(
+            lost,
+            Action::Swallow,
+            "the accepted cost: 5050 ms after the FIRST press reads as a \
+             multi-second hold, so the tap the user actually intended is \
+             swallowed with nothing injected: {lost:?}"
+        );
+        // Self-heal: Caps-up unconditionally cleared `st.held`, so the next
+        // press starts a clean cycle and taps normally.
+        decide(
+            at(VK_CAPITAL, Edge::Down, 6_000),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
+        let healed = decide(
+            at(VK_CAPITAL, Edge::Up, 6_050),
+            &mut st,
+            &b,
+            HOLD,
+            CapsTap::CapsLock,
+        );
         assert!(
-            matches!(act, Action::SwallowAndInject(ref v) if v[0].vk == VK_CAPITAL),
-            "50 ms after the second press is a tap, not a 5-second hold: {act:?}"
+            matches!(healed, Action::SwallowAndInject(ref v) if v[0].vk == VK_CAPITAL),
+            "the very next press must tap normally -- the session must not \
+             stay wedged: {healed:?}"
+        );
+    }
+
+    /// The regression this fix guards against. Auto-repeat of a still-held
+    /// Caps key re-delivers Caps-down with no up in between -- the exact same
+    /// shape as a lost Caps-up, because `KBDLLHOOKSTRUCT` carries no repeat
+    /// count to tell them apart. Trace: Caps down, T down (bound -- injects
+    /// the chord, `used=true`, `injected=Some`), Caps down again (repeat, no
+    /// up between), T up, Caps up. If Caps-down reinitialised unconditionally
+    /// the repeat would wipe `used` and `injected`, so the final Caps-up
+    /// would read as an untouched Caps and inject a fabricated Caps Lock
+    /// keystroke -- on an ordinary long `Caps+T` hold, not a tap -- while
+    /// also skipping the defensive modifier release `release_modifiers`
+    /// exists for. With the guard restored, the repeated Caps-down is a
+    /// no-op and the final Caps-up must still see `used=true` and release
+    /// the chord's modifiers.
+    #[test]
+    fn auto_repeat_of_a_held_caps_key_does_not_forge_a_tap() {
+        let mut st = CapsState::default();
+        let b = bound_t();
+        assert_eq!(
+            decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock),
+            Action::Swallow
+        );
+        assert!(matches!(
+            decide(down(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
+            Action::SwallowAndInject(_)
+        ));
+        // OS auto-repeat of the still-held Caps key -- no up in between.
+        assert_eq!(
+            decide(down(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock),
+            Action::Swallow
+        );
+        assert_eq!(
+            decide(up(VK_T), &mut st, &b, HOLD, CapsTap::CapsLock),
+            Action::Swallow
+        );
+        let act = decide(up(VK_CAPITAL), &mut st, &b, HOLD, CapsTap::CapsLock);
+        assert_eq!(
+            act,
+            Action::SwallowAndInject(release_modifiers(HOLD)),
+            "auto-repeat of Caps must not forge a tap keystroke, and must \
+             still run the defensive modifier release: {act:?}"
         );
     }
 
