@@ -22,7 +22,6 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::WindowsProgramming::MulDiv;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, GetDpiForWindow, SystemParametersInfoForDpi, MDT_EFFECTIVE_DPI,
@@ -59,6 +58,21 @@ const IDC_LBL_SHORTCUT: i32 = 1017;
 const IDC_LBL_APP: i32 = 1018;
 const IDC_GRP_KEYBOARD: i32 = 1019;
 
+/// ListView header (title, width-at-96-DPI) pairs. Shared between creation
+/// (`LVM_INSERTCOLUMNW`, in `build_children`) and `WM_DPICHANGED`
+/// (`LVM_SETCOLUMNWIDTH`), so the two widths cannot drift apart.
+const LIST_COLUMNS: [(&str, i32); 3] = [("", 34), ("Shortcut", 190), ("App", 150)];
+
+/// Scales a 96-DPI value to `dpi`. The only scaling rule in this file --
+/// `MulDiv` (round-half-up) was tried for the creation size and the list
+/// columns and dropped, because it quietly disagrees with this truncating
+/// formula at in-between DPIs (at 125%: `10 * 120 / 96 == 12` here, but
+/// `MulDiv(10, 120, 96) == 13`). `layout`'s own `s` closure computes the
+/// same thing inline, for a value it already has in scope.
+fn scale(v: i32, dpi: u32) -> i32 {
+    v * dpi as i32 / 96
+}
+
 /// Everything the window reports back. The caller owns all policy: what an
 /// edit means, whether a close is allowed, what Apply writes.
 pub struct Callbacks {
@@ -91,7 +105,6 @@ struct Ui {
     reload: HWND,
     keep: HWND,
     font: HFONT,
-    dpi: u32,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -249,8 +262,8 @@ unsafe fn create() -> Result<(), String> {
         let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut x, &mut y);
         x.max(96)
     };
-    let w = MulDiv(760, dpi as i32, 96);
-    let h = MulDiv(560, dpi as i32, 96);
+    let w = scale(760, dpi);
+    let h = scale(560, dpi);
 
     let hwnd = CreateWindowExW(
         WINDOW_EX_STYLE(0),
@@ -268,6 +281,25 @@ unsafe fn create() -> Result<(), String> {
     )
     .map_err(|e| format!("CreateWindowExW: {e}"))?;
 
+    // Position was CW_USEDEFAULT, so Windows -- not the cursor position
+    // used above -- decided which monitor the window actually landed on.
+    // GetDpiForWindow(hwnd) is authoritative now that hwnd exists; correct
+    // the size once, before anything is shown, if the guess was wrong. No
+    // WM_DPICHANGED arrives to do this for us: the window was already born
+    // on its final monitor, so nothing "changed" from Windows' point of view.
+    let real_dpi = GetDpiForWindow(hwnd).max(96);
+    if real_dpi != dpi {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            scale(760, real_dpi),
+            scale(560, real_dpi),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
+        );
+    }
+
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
@@ -275,9 +307,18 @@ unsafe fn create() -> Result<(), String> {
 
 /// The shell's UI font at a specific DPI.
 ///
-/// `SystemParametersInfoForDpi` and not `SystemParametersInfoW`: the latter
-/// answers for the system DPI, which is the wrong number for a
-/// per-monitor-v2 process on a secondary display.
+/// `SystemParametersInfoForDpi` first: `SystemParametersInfoW` answers for
+/// the system DPI, which is the wrong number for a per-monitor-v2 process on
+/// a secondary display. But `SystemParametersInfoForDpi` is documented as
+/// valid only for a DPI-aware process, and can fail where the old call never
+/// did -- `build.rs` embeds the manifest from Task 6 only for `-msvc`, so a
+/// `-gnu` build, or `cargo install --git` on a host with no resource
+/// compiler, is still DPI-unaware. Falling back to `SystemParametersInfoW`
+/// there keeps the real shell font instead of dropping straight to the
+/// stock 1995 bitmap font this whole function exists to avoid. Whether
+/// `SystemParametersInfoForDpi` actually returns FALSE on a non-PM process,
+/// rather than silently answering for the system DPI, is not something a
+/// cross-compile can confirm -- unverified, flagged for the hardware pass.
 unsafe fn ui_font(dpi: u32) -> HFONT {
     let mut ncm = NONCLIENTMETRICSW {
         cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
@@ -290,7 +331,14 @@ unsafe fn ui_font(dpi: u32) -> HFONT {
         0,
         dpi,
     )
-    .is_ok();
+    .is_ok()
+        || SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            ncm.cbSize,
+            Some(&mut ncm as *mut _ as *mut _),
+            Default::default(),
+        )
+        .is_ok();
     if ok {
         let f = CreateFontIndirectW(&ncm.lfMessageFont);
         if !f.is_invalid() {
@@ -354,11 +402,8 @@ unsafe fn build_children(hwnd: HWND) {
             (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize,
         )),
     );
-    let sx = |v: i32| MulDiv(v, dpi as i32, 96);
-    for (i, (title, cx)) in [("", 34), ("Shortcut", 190), ("App", 150)]
-        .iter()
-        .enumerate()
-    {
+    let sx = |v: i32| scale(v, dpi);
+    for (i, (title, cx)) in LIST_COLUMNS.iter().enumerate() {
         let mut t = wide(title);
         let col = LVCOLUMNW {
             mask: LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
@@ -527,7 +572,6 @@ unsafe fn build_children(hwnd: HWND) {
             reload,
             keep,
             font,
-            dpi,
             suppress: false,
             external_change: false,
         })
@@ -846,7 +890,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     u.borrow_mut().as_mut().map(|ui| {
                         let prev = ui.font;
                         ui.font = font;
-                        ui.dpi = dpi;
                         prev
                     })
                 });
@@ -862,8 +905,25 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     );
                     child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
                 }
-                if let Some(prev) = old {
-                    let _ = DeleteObject(HGDIOBJ(prev.0));
+                // If `UI` is somehow absent, `font` was never stored above,
+                // so free it here instead of leaking it -- practically
+                // unreachable (`UI` is populated in WM_CREATE before any
+                // other message can arrive), but cheap to close.
+                let _ = DeleteObject(HGDIOBJ(old.unwrap_or(font).0));
+                // The ListView column widths are set once at creation
+                // (LVM_INSERTCOLUMNW) and never touched again otherwise --
+                // without this the headers stay at the old DPI's physical
+                // width forever, clipping as soon as the font grows.
+                let list = UI.with(|u| u.borrow().as_ref().map(|ui| ui.list));
+                if let Some(list) = list {
+                    for (i, (_, cx)) in LIST_COLUMNS.iter().enumerate() {
+                        SendMessageW(
+                            list,
+                            LVM_SETCOLUMNWIDTH,
+                            Some(WPARAM(i)),
+                            Some(LPARAM(scale(*cx, dpi) as isize)),
+                        );
+                    }
                 }
                 let rc = &*(lp.0 as *const RECT);
                 let _ = SetWindowPos(
