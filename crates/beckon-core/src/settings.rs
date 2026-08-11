@@ -109,6 +109,13 @@ pub struct Detail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlState {
     pub items: Vec<ListItem>,
+    /// Which row is current, as an index into `items`. `detail` already
+    /// says *whether* there is one, but the ListView needs to know *which*
+    /// to put `LVIS_SELECTED` back on after it rebuilds -- and it must not
+    /// reuse the highlight it had before, because `add_row` and
+    /// `remove_row` both move the selection without the window hearing
+    /// about it.
+    pub selected: Option<usize>,
     pub detail: Option<Detail>,
     pub caps_checked: bool,
     pub caps_tap: CapsTap,
@@ -582,6 +589,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
 
     ControlState {
         items,
+        selected: m.selected,
         detail,
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
@@ -824,6 +832,21 @@ mod tests {
         assert!(!control_state(&m, &status_all_ok()).remove_enabled);
         m.selected = Some(1);
         assert!(control_state(&m, &status_all_ok()).remove_enabled);
+    }
+
+    /// The window rebuilds the ListView whenever the row count changes,
+    /// which wipes `LVIS_SELECTED` off every item. It can only put the
+    /// highlight back if the snapshot says where it goes.
+    #[test]
+    fn the_snapshot_says_which_row_is_selected() {
+        let mut m = model();
+        assert_eq!(control_state(&m, &status_all_ok()).selected, None);
+        m.selected = Some(1);
+        assert_eq!(control_state(&m, &status_all_ok()).selected, Some(1));
+        // add_row moves the selection on its own, so a window that reused
+        // the highlight it had before would land on the wrong row.
+        m.add_row();
+        assert_eq!(control_state(&m, &status_all_ok()).selected, Some(2));
     }
 
     #[test]

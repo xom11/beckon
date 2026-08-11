@@ -902,6 +902,24 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         on_select: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, i| {
             m.selected = Some(i);
         })),
+        // Two arguments, so not `edit!` -- same discipline written out:
+        // mutate under a short borrow_mut, drop it, then refresh.
+        on_mark: Box::new({
+            let st = Rc::clone(state);
+            move |i: usize, on: bool| {
+                {
+                    let mut s = st.borrow_mut();
+                    if let Some(m) = s.settings.as_mut() {
+                        // `set_marked` indexes `rows` directly, and a panic
+                        // here would unwind out of a wndproc callback.
+                        if i < m.rows.len() {
+                            m.set_marked(i, on);
+                        }
+                    }
+                }
+                refresh_settings(&st);
+            }
+        }),
         on_edit_combo: Box::new(edit!(
             state,
             |m: &mut beckon_core::settings::Model, t: String| {

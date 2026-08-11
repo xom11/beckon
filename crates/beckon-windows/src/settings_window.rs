@@ -15,7 +15,7 @@
 //! uses.
 
 use crate::shell;
-use beckon_core::settings::{ControlState, Mark};
+use beckon_core::settings::{ControlState, ListItem, Mark};
 use beckon_core::shortcuts::CapsTap;
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
@@ -63,6 +63,21 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// (`LVM_SETCOLUMNWIDTH`), so the two widths cannot drift apart.
 const LIST_COLUMNS: [(&str, i32); 3] = [("", 34), ("Shortcut", 190), ("App", 150)];
 
+/// A row's tick, as `LVIS_STATEIMAGEMASK` bits: the one-based index of the
+/// state image, shifted up by 12. Image 1 is the empty box and image 2 the
+/// ticked one; **0 means "no state image at all"**, which is what an item
+/// inserted without `LVIF_STATE` gets -- and the `LVN_ITEMCHANGED` that
+/// comctl32 then fires as it paints the first box (0 -> 1) is
+/// indistinguishable from a user clicking a tick off.
+///
+/// This pair is also why `ListView_GetCheckState` is not ported: it is
+/// `(state >> 12) - 1` on an *unsigned* value, so an item that never got a
+/// state image reads back `0xFFFFFFFF` rather than `0`. Read
+/// `LVM_GETITEMSTATE` masked by `LVIS_STATEIMAGEMASK` and compare against
+/// these instead.
+const LVIS_UNCHECKED: u32 = 1 << 12; // 0x1000
+const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
+
 /// Window creation size, at 96 DPI. Shared between the initial
 /// `CreateWindowExW` and the post-creation `SetWindowPos` correction (the
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
@@ -91,6 +106,9 @@ fn scale(v: i32, dpi: u32) -> i32 {
 /// edit means, whether a close is allowed, what Apply writes.
 pub struct Callbacks {
     pub on_select: Box<dyn FnMut(usize)>,
+    /// A row's tick changed: `(index, ticked)`. Independent of `on_select`
+    /// -- one click can raise both, and neither implies the other.
+    pub on_mark: Box<dyn FnMut(usize, bool)>,
     pub on_edit_combo: Box<dyn FnMut(String)>,
     pub on_edit_app: Box<dyn FnMut(String)>,
     pub on_add: Box<dyn FnMut()>,
@@ -127,6 +145,16 @@ struct Ui {
     /// Last state pushed, so the banner's visibility can be recomputed
     /// without asking the caller again.
     external_change: bool,
+    /// The rows currently in the ListView, exactly as `apply_state` last
+    /// pushed them. `apply_state` diffs the next snapshot against this
+    /// instead of deleting and reinserting, which is what stops a
+    /// keystroke from wiping the ticks and scrolling back to the top.
+    ///
+    /// Never read while a message is in flight: every use takes it out of
+    /// the `RefCell` first (`mem::take`), so an empty vector means "the
+    /// control's contents are unknown" and the next push rebuilds -- which
+    /// is always correct, just slower.
+    items: Vec<ListItem>,
 }
 
 thread_local! {
@@ -440,12 +468,18 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LIST,
         font,
     );
+    // LVS_EX_CHECKBOXES rides in column 0's state image, beside its text --
+    // it is not a column, so deleting the status column later is compatible.
+    // The window style above deliberately keeps LVS_SINGLESEL: ticks are
+    // independent of the highlight, so several rows can be marked for
+    // deletion while the editor strip still has exactly one current row.
+    // LVS_EX_AUTOCHECKSELECT is the opposite of that and must never appear.
     SendMessageW(
         list,
         LVM_SETEXTENDEDLISTVIEWSTYLE,
         Some(WPARAM(0)),
         Some(LPARAM(
-            (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER) as isize,
+            (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES) as isize,
         )),
     );
     let sx = |v: i32| scale(v, dpi);
@@ -624,6 +658,7 @@ unsafe fn build_children(hwnd: HWND) {
             font,
             suppress: false,
             external_change: false,
+            items: Vec::new(),
         })
     });
 }
@@ -769,9 +804,22 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     }) else {
         return;
     };
+    // Taken, not cloned, and taken HERE: every `SendMessageW` below can
+    // re-enter this window's wndproc, `suppressed()` takes a fresh
+    // `UI.borrow()` when it does, and a second borrow across an
+    // `extern "system"` boundary aborts the process instead of unwinding.
+    // So no borrow may be alive once the sending starts. Taking also makes
+    // the failure mode safe: a lost cache means the next push rebuilds.
+    let prev: Vec<ListItem> = UI.with(|u| {
+        u.borrow_mut()
+            .as_mut()
+            .map(|x| std::mem::take(&mut x.items))
+            .unwrap_or_default()
+    });
     // Writing control text raises EN_CHANGE / CBN_EDITCHANGE. Without this
     // guard every repaint would feed the control's own text back into the
-    // model and mark it dirty.
+    // model and mark it dirty. It is also what swallows the LVN_ITEMCHANGED
+    // that `sync_list`'s own `LVM_SETITEMSTATE` fires synchronously.
     UI.with(|u| {
         if let Some(ui) = u.borrow_mut().as_mut() {
             ui.suppress = true;
@@ -780,39 +828,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     });
 
     unsafe {
-        SendMessageW(list, LVM_DELETEALLITEMS, Some(WPARAM(0)), Some(LPARAM(0)));
-        for (i, it) in st.items.iter().enumerate() {
-            let mut mark = wide(mark_glyph(it.mark));
-            let item = LVITEMW {
-                mask: LVIF_TEXT,
-                iItem: i as i32,
-                iSubItem: 0,
-                pszText: windows::core::PWSTR(mark.as_mut_ptr()),
-                ..Default::default()
-            };
-            SendMessageW(
-                list,
-                LVM_INSERTITEMW,
-                Some(WPARAM(0)),
-                Some(LPARAM(&item as *const _ as isize)),
-            );
-            for (sub, text) in [(1, &it.combo), (2, &it.app)] {
-                let mut t = wide(text);
-                let si = LVITEMW {
-                    mask: LVIF_TEXT,
-                    iItem: i as i32,
-                    iSubItem: sub,
-                    pszText: windows::core::PWSTR(t.as_mut_ptr()),
-                    ..Default::default()
-                };
-                SendMessageW(
-                    list,
-                    LVM_SETITEMW,
-                    Some(WPARAM(0)),
-                    Some(LPARAM(&si as *const _ as isize)),
-                );
-            }
-        }
+        sync_list(list, &prev, st);
 
         if let Some(names) = catalog {
             // Repopulating on every repaint would fight the user's typing;
@@ -874,11 +890,193 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         layout(hwnd);
     }
 
+    // Nothing is sent from here on, so this borrow is safe to hold while it
+    // records what the control now shows.
     UI.with(|u| {
         if let Some(ui) = u.borrow_mut().as_mut() {
             ui.suppress = false;
+            ui.items = st.items.clone();
         }
     });
+}
+
+/// The column texts for one row, in `LIST_COLUMNS` order.
+///
+/// Both the rebuild and the diff go through here, so they cannot disagree
+/// about what a cell says -- and the column set is one edit, in one place,
+/// when it changes.
+fn cells(it: &ListItem) -> Vec<String> {
+    vec![
+        mark_glyph(it.mark).to_string(),
+        it.combo.clone(),
+        it.app.clone(),
+    ]
+}
+
+/// Push `st.items` into the ListView, rebuilding only when it has to.
+///
+/// **The row count is the whole discriminator.** Every text edit leaves it
+/// unchanged, so every text edit takes the diff, where nothing is deleted
+/// and therefore neither the scroll position nor a tick nor the highlight
+/// can be disturbed. Only Add, Remove and a reload change it, and only they
+/// pay for a rebuild. That is what keeps this trivial: no keyed
+/// reconciliation and no ids in `LVITEM.lParam`.
+///
+/// The control's own count is consulted as well as the cache, so a list
+/// emptied by anything other than `apply_state` rebuilds rather than being
+/// written past the end.
+unsafe fn sync_list(list: HWND, prev: &[ListItem], st: &ControlState) {
+    let live = SendMessageW(list, LVM_GETITEMCOUNT, Some(WPARAM(0)), Some(LPARAM(0))).0;
+    if prev.len() != st.items.len() || live != st.items.len() as isize {
+        rebuild_list(list, st);
+        return;
+    }
+    for (i, it) in st.items.iter().enumerate() {
+        let now = cells(it);
+        let was = cells(&prev[i]);
+        for (sub, text) in now.iter().enumerate() {
+            if was.get(sub) != Some(text) {
+                set_item_text(list, i, sub as i32, text);
+            }
+        }
+        set_item_state(list, i, it.marked, st.selected == Some(i));
+    }
+}
+
+/// Delete and reinsert every row. Only for a changed row count.
+unsafe fn rebuild_list(list: HWND, st: &ControlState) {
+    // Read the scroll position while it still means something.
+    let top = SendMessageW(list, LVM_GETTOPINDEX, Some(WPARAM(0)), Some(LPARAM(0))).0;
+    let per = SendMessageW(list, LVM_GETCOUNTPERPAGE, Some(WPARAM(0)), Some(LPARAM(0))).0;
+
+    SendMessageW(list, WM_SETREDRAW, Some(WPARAM(0)), Some(LPARAM(0)));
+    SendMessageW(list, LVM_DELETEALLITEMS, Some(WPARAM(0)), Some(LPARAM(0)));
+    for (i, it) in st.items.iter().enumerate() {
+        let texts = cells(it);
+        let mut first = wide(&texts[0]);
+        // The state goes in with the insert, not after it: an item that is
+        // inserted without LVIF_STATE has no state image, and the
+        // LVN_ITEMCHANGED comctl32 fires when it paints the first empty box
+        // looks exactly like the user clicking a tick off.
+        //
+        // LVIS_FOCUSED is deliberately absent. Setting it scrolls the item
+        // into view, which would fight the scroll restore below.
+        let item = LVITEMW {
+            mask: LVIF_TEXT | LVIF_STATE,
+            iItem: i as i32,
+            iSubItem: 0,
+            pszText: windows::core::PWSTR(first.as_mut_ptr()),
+            stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_STATEIMAGEMASK.0 | LVIS_SELECTED.0),
+            state: LIST_VIEW_ITEM_STATE_FLAGS(
+                check_bits(it.marked) | selected_bits(st.selected == Some(i)),
+            ),
+            ..Default::default()
+        };
+        SendMessageW(
+            list,
+            LVM_INSERTITEMW,
+            Some(WPARAM(0)),
+            Some(LPARAM(&item as *const _ as isize)),
+        );
+        for (sub, text) in texts.iter().enumerate().skip(1) {
+            set_item_text(list, i, sub as i32, text);
+        }
+    }
+
+    SendMessageW(list, WM_SETREDRAW, Some(WPARAM(1)), Some(LPARAM(0)));
+
+    // A rebuild leaves the view at the top, so a lone ENSUREVISIBLE(top)
+    // does nothing at all -- `top` is already on screen. Ensuring the
+    // BOTTOM of the page that used to be showing is what scrolls; ensuring
+    // `top` afterwards stops it overshooting by a row.
+    //
+    // After WM_SETREDRAW TRUE on purpose, so the scroll is not asked of a
+    // control that has been told not to draw. It costs no flicker: lifting
+    // the block does not paint, it only marks the control dirty, and
+    // nothing reaches the screen until the WM_PAINT that follows this
+    // whole refresh.
+    let count = st.items.len() as isize;
+    if count > 0 && top > 0 {
+        let top = top.min(count - 1);
+        let bottom = (top + per.max(1) - 1).min(count - 1);
+        ensure_visible(list, bottom);
+        ensure_visible(list, top);
+    }
+
+    let _ = InvalidateRect(Some(list), None, true);
+}
+
+unsafe fn ensure_visible(list: HWND, i: isize) {
+    SendMessageW(
+        list,
+        LVM_ENSUREVISIBLE,
+        Some(WPARAM(i as usize)),
+        // fPartialOK = FALSE: the row must be fully on screen, or the pair
+        // above can land half a row short.
+        Some(LPARAM(0)),
+    );
+}
+
+unsafe fn set_item_text(list: HWND, i: usize, sub: i32, text: &str) {
+    let mut t = wide(text);
+    let it = LVITEMW {
+        iSubItem: sub,
+        pszText: windows::core::PWSTR(t.as_mut_ptr()),
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_SETITEMTEXTW,
+        Some(WPARAM(i)),
+        Some(LPARAM(&it as *const _ as isize)),
+    );
+}
+
+fn check_bits(on: bool) -> u32 {
+    if on {
+        LVIS_CHECKED
+    } else {
+        LVIS_UNCHECKED
+    }
+}
+
+fn selected_bits(on: bool) -> u32 {
+    if on {
+        LVIS_SELECTED.0
+    } else {
+        0
+    }
+}
+
+/// Set a row's tick and highlight, but only when they are not already
+/// right. Reading first keeps the diff from firing an `LVN_ITEMCHANGED`
+/// per row per keystroke, which the suppression guard would swallow but
+/// which comctl32 still has to raise.
+unsafe fn set_item_state(list: HWND, i: usize, marked: bool, selected: bool) {
+    let mask = LVIS_STATEIMAGEMASK.0 | LVIS_SELECTED.0;
+    let want = check_bits(marked) | selected_bits(selected);
+    let cur = SendMessageW(
+        list,
+        LVM_GETITEMSTATE,
+        Some(WPARAM(i)),
+        Some(LPARAM(mask as isize)),
+    )
+    .0 as u32
+        & mask;
+    if cur == want {
+        return;
+    }
+    let it = LVITEMW {
+        state: LIST_VIEW_ITEM_STATE_FLAGS(want),
+        stateMask: LIST_VIEW_ITEM_STATE_FLAGS(mask),
+        ..Default::default()
+    };
+    SendMessageW(
+        list,
+        LVM_SETITEMSTATE,
+        Some(WPARAM(i)),
+        Some(LPARAM(&it as *const _ as isize)),
+    );
 }
 
 unsafe fn check(parent: HWND, id: i32, on: bool) {
@@ -1046,11 +1244,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let nm = &*(lp.0 as *const NMHDR);
                 if nm.idFrom == IDC_LIST as usize && nm.code == LVN_ITEMCHANGED {
                     let lv = &*(lp.0 as *const NMLISTVIEW);
-                    if (lv.uNewState & LVIS_SELECTED.0) != 0
-                        && (lv.uOldState & LVIS_SELECTED.0) == 0
-                    {
+                    // iItem is -1 on the notifications that speak for the
+                    // whole list rather than one row; `as usize` would turn
+                    // that into an index no model has, and `set_marked`
+                    // indexes straight into `rows`.
+                    if lv.iItem >= 0 {
                         let i = lv.iItem as usize;
-                        with_cb(|cb| (cb.on_select)(i));
+                        // A tick and a selection both arrive as LVIF_STATE
+                        // and `uChanged` cannot tell them apart, so the two
+                        // bits are tested independently. Never `else if`:
+                        // clicking an unselected row's box changes both in
+                        // ONE message, and an `else if` drops whichever the
+                        // arm did not reach.
+                        let changed = lv.uOldState ^ lv.uNewState;
+                        if changed & LVIS_STATEIMAGEMASK.0 != 0 {
+                            let on = (lv.uNewState & LVIS_STATEIMAGEMASK.0) == LVIS_CHECKED;
+                            with_cb(|cb| (cb.on_mark)(i, on));
+                        }
+                        if changed & LVIS_SELECTED.0 != 0 && lv.uNewState & LVIS_SELECTED.0 != 0 {
+                            with_cb(|cb| (cb.on_select)(i));
+                        }
                     }
                 }
                 LRESULT(0)
