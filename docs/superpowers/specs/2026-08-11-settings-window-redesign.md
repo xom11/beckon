@@ -540,14 +540,26 @@ non-capture path exists.
 
 `DROPDOWNLIST` rather than `DROPDOWN` remains deliberate, and is the opposite
 of the App field, which must stay `DROPDOWN` because beckon supports apps
-with no Start Menu entry. A `DROPDOWNLIST` has **no edit control**, so the
-`CBN_EDITCHANGE` defect in §B.7 is structurally impossible here, and its
-typeahead gives the fast gesture: press `t`, it selects `t`.
+with no Start Menu entry. A `DROPDOWNLIST` has **no edit control** — so the
+App-field defect in §B.7 is structurally impossible here, and its typeahead
+gives the fast gesture: press `t`, it selects `t`.
+
+> **Both paragraphs used to name that defect by a refuted mechanism** — "the
+> `CBN_EDITCHANGE` defect", i.e. a combo rewriting its own edit text as you
+> type and delivering stale text to the notification. §7.15 records the
+> measurement that falsified it. The true mechanism, and the one the
+> reasoning below should be read against: a **populated combo re-synchronises
+> its edit field to the closest matching list item, and selects the whole
+> string, when it is RESIZED**. Both conclusions survive the correction —
+> `DROPDOWNLIST` has no edit field to corrupt at all, and the two-writer rule
+> is exactly the rule `layout`-on-the-keystroke-path broke — but they survive
+> for the true reason, not the believed one.
 
 **The two views must never both write at once.** Two writers on one value is
-exactly what produced the `CBN_EDITCHANGE` defect. While a capture is armed,
-the checkboxes and the dropdown are `EnableWindow(false)`; on commit or
-cancel they are restored from the model and re-enabled.
+what produced the App-field defect: the model wrote what the user typed and
+`layout`'s `SetWindowPos` made the control rewrite it back. While a capture
+is armed, the checkboxes and the dropdown are `EnableWindow(false)`; on
+commit or cancel they are restored from the model and re-enabled.
 
 Keys capture can never see — bare `escape`, bare `tab`, and anything the
 shell swallows — remain selectable from the dropdown. That is the JetBrains
@@ -1424,7 +1436,12 @@ reselected, leaving the next character to replace the lot. `combo_probe`'s
 `ModelLoopWithLayout` scenario reproduces the exact `"d"` signature from first
 principles, with the no-layout run beside it as the control. The fix is
 `Ui::shown_external` (banner visibility) plus `Ui::shown_empty` (the list's
-row height, the fourth input to `layout`).
+row height, the fourth input to `layout`). `layout` has a **fifth** input —
+the list's own client width, which loses `SM_CXVSCROLL` when the ListView
+grows a scroll bar — and it is deliberately unguarded: its error is always a
+stale gutter, never a clipped column, and guarding it would put `layout`, and
+so `SetWindowPos` on the combo, back on more data pushes. The argument is
+written out at the column sizing inside `layout`.
 
 Two things follow, and both are the reason this entry is long. **Do not
 re-derive the old mechanism from a gap** — every site that stated it now says

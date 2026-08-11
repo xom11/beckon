@@ -594,16 +594,29 @@ struct Ui {
     /// itself. See `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
     /// section 24 for the bisect that pinned it to this one call.
     ///
-    /// `layout`'s output depends on exactly four things -- the client rect,
-    /// the DPI, whether the banner is showing, and whether the list has any
-    /// rows in it. The first two arrive as `WM_SIZE` / `WM_DPICHANGED`, which
-    /// call `layout` directly and still do. The other two can change on a data
-    /// push, so a push watches both: this field and `shown_empty`.
+    /// `layout`'s output depends on FIVE things -- the client rect, the DPI,
+    /// whether the banner is showing, whether the list has any rows in it,
+    /// and the list's own client width, which shrinks by `SM_CXVSCROLL` the
+    /// moment the item count crosses the page size and comctl32 grows a
+    /// vertical scroll bar. The first two arrive as `WM_SIZE` /
+    /// `WM_DPICHANGED`, which call `layout` directly and still do. The next
+    /// two can change on a data push, so a push watches both: this field and
+    /// `shown_empty`.
+    ///
+    /// **The fifth is deliberately NOT guarded**, and the reason it is safe
+    /// to leave unguarded is written out at its own site -- see the column
+    /// sizing in `layout`. In one sentence: the error it produces is always a
+    /// gutter and never a clipped column, and buying it back would mean
+    /// running `layout`, and therefore `SetWindowPos` on the populated App
+    /// combo, on more data pushes than these two fields already allow --
+    /// trading a cosmetic stale margin for a re-entry into the measured
+    /// data-loss path above.
     shown_external: Option<bool>,
     /// Whether the list was EMPTY when the current layout was computed, for
-    /// the same reason `shown_external` exists: it is the fourth input to
-    /// `layout`, and skipping a layout that one of them has invalidated leaves
-    /// stale geometry on screen.
+    /// the same reason `shown_external` exists: it is the fourth of `layout`'s
+    /// five inputs, and skipping a layout that one of them has invalidated
+    /// leaves stale geometry on screen. (The fifth, the list's own client
+    /// width, is tolerated rather than guarded -- see `shown_external`.)
     ///
     /// The path runs through `list_row_height`, which cannot measure a row
     /// that is not there and returns `scale(20, dpi)` when the list is empty
@@ -2122,6 +2135,25 @@ unsafe fn layout(hwnd: HWND) {
     // scroll bar appearing later steals client width the columns have
     // already been told not to use. Measured before this change: 561 px of
     // columns inside a 482 px list, i.e. a horizontal scroll bar shipped.
+    //
+    // **This `GetClientRect` is `layout`'s fifth input, and the ONE the
+    // `apply_state` guard does not track.** When a scroll bar is up the list
+    // reports `C - SB`, so the columns get `C - 2*SB`; drop back under the
+    // page size and the client returns to `C` while the columns keep the
+    // narrower figure until the next resize, DPI change or banner flip --
+    // roughly a 34 px gutter at 96 DPI, 52 at 150 %.
+    //
+    // Tolerated, on purpose. The subtraction only ever errs in the safe
+    // direction: too narrow is a margin, never a clipped column or a
+    // horizontal scroll bar, which is the failure this line was written to
+    // kill. Guarding it would mean recording this width and re-running
+    // `layout` whenever it moved -- i.e. `SetWindowPos` on the populated App
+    // combo on a data push, the exact call that silently replaced what the
+    // user typed with a catalogue entry (see `Ui::shown_external`). A stale
+    // margin is not worth reopening that.
+    //
+    // If it is ever fixed: the cheap route is a `shown_list_w: Option<i32>`
+    // alongside the other two guards, NOT a wider `layout`.
     let mut lrc = RECT::default();
     let inner = if GetClientRect(ui.list, &mut lrc).is_ok() {
         clamp(lrc.right - lrc.left - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi))
@@ -2371,6 +2403,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         enable(hwnd, IDC_ADD, st.editable);
         enable(hwnd, IDC_LIST, st.editable);
         enable(hwnd, IDC_CAPS, st.editable);
+        // These four `check` calls need no `suppressed()` guard, unlike every
+        // text write above: `BM_SETCHECK` sets the state without raising
+        // `BN_CLICKED`, so a push cannot feed itself back as a user click.
         check(hwnd, IDC_CAPS, st.caps_checked);
         check(hwnd, IDC_TAP_CAPSLOCK, st.caps_tap == CapsTap::CapsLock);
         check(hwnd, IDC_TAP_ESCAPE, st.caps_tap == CapsTap::Escape);
@@ -2395,6 +2430,10 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // first row or loses its last, which changes the row height `layout`
         // measures. See `Ui::shown_empty`. `sync_list` has already run, so
         // `st.items` is what the control holds.
+        //
+        // These two do not cover `layout`'s fifth input, the list's client
+        // width; that omission is deliberate and is argued at the column
+        // sizing inside `layout`.
         let list_empty = st.items.is_empty();
         let relayout = UI.with(|u| {
             u.borrow()
