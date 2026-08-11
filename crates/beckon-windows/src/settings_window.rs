@@ -624,13 +624,26 @@ unsafe fn message_logfont(dpi: u32) -> LOGFONTW {
     }
     // Describe the stock GUI font rather than hand back a zeroed LOGFONT: a
     // zeroed one asks the mapper for "any face at any size", which is how
-    // you land on the 1995 bitmap font this path exists to avoid.
+    // you land on the 1995 bitmap font this path exists to avoid. GetObjectW
+    // can itself fail -- unreached today, since both SystemParametersInfo
+    // calls above already have to fail first -- and an unchecked failure
+    // here hands back exactly the zeroed LOGFONTW this comment says never
+    // to return, silently. Check it and say so, rather than let the two
+    // disagree.
     let mut lf = LOGFONTW::default();
-    GetObjectW(
+    let got = GetObjectW(
         GetStockObject(DEFAULT_GUI_FONT),
         std::mem::size_of::<LOGFONTW>() as i32,
         Some(&mut lf as *mut _ as *mut _),
     );
+    if got == 0 && beckon_core::verbose() {
+        eprintln!(
+            "verbose: settings window: GetObjectW(DEFAULT_GUI_FONT) failed \
+             -- both SystemParametersInfo calls already failed too, so this \
+             LOGFONTW is zeroed and every role will ask the mapper for \
+             \"any face at any size\""
+        );
+    }
     lf
 }
 
@@ -664,6 +677,18 @@ fn set_face(lf: &mut LOGFONTW, face: &str) -> bool {
 unsafe fn face_matches(hwnd: HWND, font: HFONT, want: &str) -> bool {
     let dc = GetDC(Some(hwnd));
     if dc.is_invalid() {
+        // `make_font` treats this exactly like the face genuinely being
+        // absent -- same fallback, same silence otherwise. Log it so a
+        // transient GetDC failure and a missing face read differently in a
+        // log instead of both showing up as "role fell back" with no trace
+        // of which cause it was.
+        if beckon_core::verbose() {
+            eprintln!(
+                "verbose: settings window: GetDC failed while checking for \
+                 {want} -- falling back to the shell face this time, not \
+                 because it is absent"
+            );
+        }
         return false;
     }
     let prev = SelectObject(dc, HGDIOBJ(font.0));
