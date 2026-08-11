@@ -82,6 +82,16 @@ pub fn render(
         .ok_or_else(|| "`keyboard` is not a table".to_string())?;
     kb["caps"] = toml_edit::value(keyboard.caps);
     kb["caps_tap"] = toml_edit::value(keyboard.caps_tap.as_str());
+    // Written ONLY when it carries information. Unknown keys under
+    // `keyboard` are a hard error by design, so a file that always carried
+    // this key would be rejected outright by any beckon built before it
+    // existed -- a real scenario when one machine updates through Scoop and
+    // another has not yet.
+    if keyboard.caps_hold.is_default() {
+        kb.remove("caps_hold");
+    } else {
+        kb["caps_hold"] = toml_edit::value(keyboard.caps_hold.canonical());
+    }
 
     Ok(doc.to_string())
 }
@@ -163,6 +173,7 @@ mod tests {
         let kb = KeyboardConfig {
             caps: true,
             caps_tap: CapsTap::Escape,
+            caps_hold: crate::shortcuts::Chord::default(),
         };
         let out = render(original, &[row("ctrl+alt+t", "Terminal")], &kb).unwrap();
         assert!(
@@ -192,6 +203,7 @@ mod tests {
         let kb = KeyboardConfig {
             caps: true,
             caps_tap: CapsTap::CapsLock,
+            caps_hold: crate::shortcuts::Chord::default(),
         };
         let out = render(original, &rows, &kb).unwrap();
         let c = parse_config(&out).unwrap_or_else(|e| panic!("must round-trip: {e}\n{out}"));
@@ -240,6 +252,7 @@ mod tests {
         let kb = KeyboardConfig {
             caps: true,
             caps_tap: CapsTap::None,
+            caps_hold: crate::shortcuts::Chord::default(),
         };
         let once = render(original, &rows, &kb).unwrap();
         let parsed = parse_config(&once).unwrap();
@@ -259,5 +272,28 @@ mod tests {
             .collect();
         let twice = render(&once, &rows2, &kb).unwrap();
         assert_eq!(once, twice, "saving twice changed the file");
+    }
+
+    #[test]
+    fn a_default_caps_hold_is_not_written_at_all() {
+        let out = render("", &[], &KeyboardConfig::default()).unwrap();
+        assert!(
+            !out.contains("caps_hold"),
+            "an untouched default must stay readable by older beckon binaries, \
+             which reject unknown keys under `keyboard`:\n{out}"
+        );
+    }
+
+    #[test]
+    fn a_non_default_caps_hold_is_written() {
+        let kb = KeyboardConfig {
+            caps: true,
+            caps_tap: CapsTap::CapsLock,
+            caps_hold: crate::shortcuts::Chord::parse("ctrl+alt").unwrap(),
+        };
+        let out = render("", &[], &kb).unwrap();
+        assert!(out.contains("caps_hold"), "{out}");
+        assert!(out.contains("ctrl+alt"), "{out}");
+        parse_config(&out).expect("the writer must emit what the reader accepts");
     }
 }

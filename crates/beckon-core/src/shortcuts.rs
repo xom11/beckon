@@ -198,6 +198,102 @@ impl Combo {
     }
 }
 
+/// The modifiers holding Caps Lock stands for. No main key, and no `shift`.
+///
+/// Shift is absent from the type rather than rejected by a rule. The hook
+/// has to press and release whatever is here, and releasing Shift while the
+/// user is physically holding it tells Windows their Shift is up -- so
+/// everything they type next arrives lowercase, silently, until they let go
+/// and press it again. Making it unrepresentable means no configuration,
+/// hand-written or otherwise, can reach that state. `shift` on an individual
+/// binding is unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chord {
+    pub ctrl: bool,
+    pub super_: bool,
+    pub alt: bool,
+}
+
+impl Default for Chord {
+    fn default() -> Self {
+        Chord {
+            ctrl: true,
+            super_: true,
+            alt: true,
+        }
+    }
+}
+
+impl Chord {
+    pub fn parse(s: &str) -> Result<Chord, String> {
+        let (mut ctrl, mut super_, mut alt) = (false, false, false);
+        for tok in s.split('+') {
+            let slot = match tok {
+                "ctrl" => &mut ctrl,
+                "super" => &mut super_,
+                "alt" => &mut alt,
+                "shift" => {
+                    return Err(format!(
+                        "`shift` is not allowed in `{}` -- beckon has to press and \
+                         release what you put here, and releasing Shift while you are \
+                         holding it makes everything you type next lowercase. Put \
+                         `shift` on the individual shortcut instead",
+                        KEYBOARD_CAPS_HOLD
+                    ))
+                }
+                "" => {
+                    return Err(format!(
+                        "`{KEYBOARD_CAPS_HOLD}` needs at least one modifier \
+                         (`ctrl`, `super` or `alt`)"
+                    ))
+                }
+                other => {
+                    return Err(format!(
+                        "expected a modifier in `{KEYBOARD_CAPS_HOLD}`, got `{other}` \
+                         -- only `ctrl`, `super` and `alt` are allowed, and there is no \
+                         main key here"
+                    ))
+                }
+            };
+            if *slot {
+                return Err(format!(
+                    "duplicate modifier `{tok}` in `{KEYBOARD_CAPS_HOLD}`"
+                ));
+            }
+            *slot = true;
+        }
+        if !(ctrl || super_ || alt) {
+            return Err(format!(
+                "`{KEYBOARD_CAPS_HOLD}` needs at least one modifier \
+                 (`ctrl`, `super` or `alt`)"
+            ));
+        }
+        Ok(Chord { ctrl, super_, alt })
+    }
+
+    /// Same order `Combo::canonical` prints: ctrl, super, alt.
+    pub fn canonical(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.ctrl {
+            parts.push("ctrl");
+        }
+        if self.super_ {
+            parts.push("super");
+        }
+        if self.alt {
+            parts.push("alt");
+        }
+        parts.join("+")
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Chord::default()
+    }
+}
+
+/// The dotted key name, used in every error message about it.
+pub const KEYBOARD_CAPS_HOLD: &str = "keyboard.caps_hold";
+
 /// One line of a shortcuts file: a combo bound to exactly one app name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shortcut {
@@ -243,10 +339,28 @@ impl CapsTap {
 /// The `keyboard` block. Read only by Windows `serve`, parsed everywhere:
 /// one config file is meant to travel between machines, so a Windows-only
 /// setting must not fail `beckon check` on macOS or Linux.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyboardConfig {
     pub caps: bool,
     pub caps_tap: CapsTap,
+    /// What holding Caps Lock stands for. Meaningful only when `caps` is
+    /// true; parsed everywhere so one config file travels between machines.
+    pub caps_hold: Chord,
+}
+
+// clippy sees this as derivable today only because `Chord::default()`
+// happens to match what a field-by-field derive would call; written by
+// hand anyway per the settings-window design (task 2 brief) so it stays
+// correct even if that stops holding.
+#[allow(clippy::derivable_impls)]
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        KeyboardConfig {
+            caps: false,
+            caps_tap: CapsTap::default(),
+            caps_hold: Chord::default(),
+        }
+    }
 }
 
 /// A whole shortcuts file.
@@ -329,6 +443,15 @@ fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
                 })?;
                 kb.caps_tap = CapsTap::parse(s)?;
             }
+            "caps_hold" => {
+                let s = v.as_str().ok_or_else(|| {
+                    format!(
+                        "`{KEYBOARD_CAPS_HOLD}` must be a string like \"ctrl+super+alt\", got {}",
+                        v.type_str()
+                    )
+                })?;
+                kb.caps_hold = Chord::parse(s)?;
+            }
             other => {
                 // TOML puts every bare key-value pair written after a
                 // `[keyboard]` header INSIDE that table. A shortcut appended
@@ -342,7 +465,8 @@ fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
                     ));
                 }
                 return Err(format!(
-                    "unknown setting `keyboard.{other}` (expected `caps` or `caps_tap`)"
+                    "unknown setting `keyboard.{other}` \
+                     (expected `caps`, `caps_tap` or `caps_hold`)"
                 ));
             }
         }
@@ -357,7 +481,7 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Combo};
+    use super::{all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Chord, Combo};
 
     #[test]
     fn key_table_covers_spec_names() {
@@ -640,5 +764,67 @@ mod tests {
         let s = parse_shortcuts("keyboard.caps = true\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].app, "Terminal");
+    }
+
+    // ---------- Chord / keyboard.caps_hold ----------
+
+    #[test]
+    fn a_chord_is_modifiers_with_no_main_key() {
+        let c = Chord::parse("ctrl+super+alt").unwrap();
+        assert!(c.ctrl && c.super_ && c.alt);
+        assert_eq!(c.canonical(), "ctrl+super+alt");
+        assert!(c.is_default());
+    }
+
+    #[test]
+    fn chord_modifier_order_is_free_and_canonical_output_is_not() {
+        assert_eq!(Chord::parse("alt+ctrl").unwrap().canonical(), "ctrl+alt");
+    }
+
+    #[test]
+    fn a_chord_needs_at_least_one_modifier() {
+        let e = Chord::parse("").unwrap_err();
+        assert!(e.contains("at least one modifier"), "{e}");
+    }
+
+    #[test]
+    fn shift_is_not_a_chord_modifier() {
+        let e = Chord::parse("ctrl+shift").unwrap_err();
+        assert!(e.contains("shift"), "{e}");
+        assert!(
+            e.contains("hold"),
+            "the message must say WHERE shift is allowed instead: {e}"
+        );
+    }
+
+    #[test]
+    fn a_main_key_in_a_chord_is_rejected() {
+        let e = Chord::parse("ctrl+alt+t").unwrap_err();
+        assert!(e.contains('t'), "{e}");
+    }
+
+    #[test]
+    fn caps_hold_defaults_when_absent_and_parses_when_present() {
+        let d = parse_config("\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert_eq!(d.keyboard.caps_hold, Chord::default());
+
+        let c = parse_config(
+            "keyboard.caps = true\nkeyboard.caps_hold = \"ctrl+alt\"\n\"ctrl+alt+t\" = \"Terminal\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.keyboard.caps_hold, Chord::parse("ctrl+alt").unwrap());
+    }
+
+    #[test]
+    fn an_invalid_caps_hold_names_the_key_in_the_error() {
+        let e = parse_config("keyboard.caps_hold = \"ctrl+shift\"\n").unwrap_err();
+        assert!(e.contains("caps_hold"), "{e}");
+    }
+
+    /// A Windows-only setting must not fail `beckon check` on another OS: one
+    /// config file is meant to travel between machines.
+    #[test]
+    fn caps_hold_parses_on_every_platform() {
+        assert!(parse_config("keyboard.caps_hold = \"ctrl+super+alt\"\n").is_ok());
     }
 }
