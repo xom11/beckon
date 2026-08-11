@@ -131,6 +131,21 @@ pub struct ControlState {
     /// How many rows are ticked. The window uses this to caption the
     /// remove button `Remove N`.
     pub marked_count: usize,
+    /// May the user change the file through this window at all?
+    ///
+    /// `true` for every state projected from a `Model`, and `false` for the
+    /// one state that has no `Model` to project from: a config file that did
+    /// not parse (`unreadable_state`). beckon opens that file rather than
+    /// refusing -- the moment someone who has never seen TOML most needs a
+    /// GUI is the moment their file is broken -- but it will not write over
+    /// something it cannot read, so every control that mutates is off.
+    ///
+    /// **One field, ANDed at the window's `enable` call sites, rather than a
+    /// branch there.** The window is not allowed to know *why* it is read
+    /// only, or that "the file did not parse" is even a state; it knows only
+    /// that this flag is off, exactly as it knows `apply_enabled` without
+    /// knowing what makes Save legal.
+    pub editable: bool,
 }
 
 impl Model {
@@ -604,7 +619,182 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         remove_enabled: m.selected.is_some(),
         marked_count: m.marked_count(),
+        // There is a `Model`, therefore the file parsed, therefore it can be
+        // edited. The only `false` in the program is `unreadable_state`.
+        editable: true,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The file did not parse
+// ---------------------------------------------------------------------------
+
+/// What the window draws when the config file could not be read.
+///
+/// `Model::from_text` returned `Err`, so there is no model to project a
+/// `ControlState` out of -- this IS the projection, and it is a function
+/// rather than a `Default` so that the one thing it varies, the explanation,
+/// has to be supplied.
+///
+/// The explanation rides in `detail.notes`, which is the notes strip's only
+/// input: `Detail` is "what the editor strip is showing", and here it is
+/// showing nothing at all, with the notes saying why. Every enable flag is
+/// off, `items` is empty, and `dirty` is false -- so Save is greyed and,
+/// just as importantly, dismissing the window cannot raise a save prompt for
+/// changes that do not exist.
+pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
+    ControlState {
+        items: Vec::new(),
+        selected: None,
+        detail: Some(Detail {
+            combo: String::new(),
+            app: String::new(),
+            notes,
+        }),
+        caps_checked: false,
+        caps_tap: CapsTap::default(),
+        dirty: false,
+        apply_enabled: false,
+        remove_enabled: false,
+        marked_count: 0,
+        editable: false,
+    }
+}
+
+/// Longest slice of the user's own file quoted back at them. The notes
+/// STATIC wraps, so a long line costs vertical room rather than being
+/// clipped, but a 4 KB minified line would still push everything under it
+/// off the band.
+const QUOTED_LINE_MAX: usize = 120;
+
+/// Say, to someone who has never seen TOML, what is wrong with their file.
+///
+/// `text` is the file as read and `err` is what `Model::from_text` said
+/// about it. Both are needed: the error names a line NUMBER at best, and the
+/// line itself is quoted out of `text` rather than scraped out of the
+/// error's own snippet, which is ASCII art that only lines up in a monospace
+/// font this window does not have.
+///
+/// **Every string beckon contributes here is ASCII**, for the reason
+/// `mark_glyph` gives. The two pass-through fragments -- the offending line
+/// and the parser's reason -- are not folded: the line is the user's own
+/// data and mangling it would defeat the purpose of quoting it, and every
+/// message `parse_config` produces is ASCII by the rule stated at its array
+/// arm.
+pub fn explain_unreadable(text: &str, err: &str) -> Vec<Note> {
+    let mut out = vec![Note {
+        mark: Mark::Bad,
+        text: "beckon cannot read this file, so it is open read only and \
+               nothing here can be changed."
+            .into(),
+    }];
+    out.push(Note {
+        mark: Mark::Bad,
+        text: location_note(text, err),
+    });
+    out.push(Note {
+        mark: Mark::Bad,
+        text: format!("What went wrong: {}", error_reason(err)),
+    });
+    out.push(Note {
+        mark: Mark::Warn,
+        // Precisely what happens, and no more: `serve` re-reads on the
+        // watcher and turns the window editable the moment the file parses
+        // (`settings_retry_unreadable`). It does NOT promise the explanation
+        // above updates on every keystroke of an external edit.
+        text: "Press Open config file to fix it in a text editor. This window \
+               turns editable on its own as soon as the file reads."
+            .into(),
+    });
+    out.push(Note {
+        mark: Mark::Warn,
+        text: "beckon never writes over a file it cannot read.".into(),
+    });
+    out
+}
+
+/// Where in the file to look, said only as precisely as the error allows.
+///
+/// **The `None` arm is the requirement, not a fallback.** Only the TOML
+/// *syntax* errors carry a location; beckon's own checks -- a duplicate
+/// combo, an unknown `keyboard.` setting, a value that is not a string --
+/// are about a key, not a place. Pointing at a line beckon had to guess
+/// would send someone to the wrong part of their file, so it says it does
+/// not know.
+fn location_note(text: &str, err: &str) -> String {
+    let Some(n) = error_line(err) else {
+        return "The error does not say which line.".into();
+    };
+    // Empty covers two cases, and neither is worth its own sentence: the
+    // line is blank, or it is one past the end of the file, which is where a
+    // TOML parser points an unexpected EOF.
+    let line = text.lines().nth(n - 1).map(str::trim).unwrap_or("");
+    if line.is_empty() {
+        format!("The problem is on line {n}.")
+    } else {
+        format!("The problem is on line {n}: {}", clip(line))
+    }
+}
+
+fn clip(line: &str) -> String {
+    if line.chars().count() <= QUOTED_LINE_MAX {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(QUOTED_LINE_MAX).collect();
+    format!("{head}...")
+}
+
+/// The 1-based line a `parse_config` error points at, when it points at one.
+///
+/// Measured against toml 0.8.23, not assumed: a TOML *syntax* error is
+/// `toml::de::Error`'s own rendering and its first line reads
+/// `TOML parse error at line 2, column 5`. Every other error `parse_config`
+/// produces is one of beckon's own, is a single line, and names no location
+/// at all -- so this returns `Option` and `explain_unreadable` says which
+/// case it is in rather than inventing a number.
+///
+/// Only the FIRST line is searched, so a parser reason that happens to
+/// contain the words "at line" cannot be mistaken for a location.
+fn error_line(err: &str) -> Option<usize> {
+    let head = err.lines().next()?;
+    let rest = head.split_once("at line ")?.1;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok().filter(|n| *n > 0)
+}
+
+/// The parser's own reason for refusing, on one line.
+///
+/// `toml::de::Error` renders as a header, a three-line caret snippet, and
+/// then the reason:
+///
+/// ```text
+/// TOML parse error at line 2, column 5
+///   |
+/// 2 | oops
+///   |     ^
+/// expected `.`, `=`
+/// ```
+///
+/// The snippet is dropped -- it lines up only in a monospace font, and the
+/// window has none -- so a multi-line error is reduced to its last non-empty
+/// line and a single-line error is its own reason. If that last line is part
+/// of the snippet rather than a reason (a rendering with no trailing
+/// explanation), the header is used instead: a caret drawn in a proportional
+/// font is worse than no detail at all.
+fn error_reason(err: &str) -> String {
+    let mut lines = err.lines().map(str::trim).filter(|l| !l.is_empty());
+    let head = lines.next().unwrap_or("");
+    match lines.next_back() {
+        Some(last) if !is_snippet(last) => last.to_string(),
+        _ => head.to_string(),
+    }
+}
+
+/// Is this line part of a rendered source snippet rather than prose? The
+/// gutter, the caret row and the quoted source all begin with a digit or a
+/// pipe; no reason `parse_config` can produce does.
+fn is_snippet(line: &str) -> bool {
+    line.starts_with('|') || line.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -1184,5 +1374,168 @@ mod tests {
             "B shifted down by the one removed row ahead of it"
         );
         assert_eq!(m.rows[m.selected.unwrap()].app, "B");
+    }
+
+    // ---------- the file did not parse ----------
+
+    /// The failure this whole path exists for, end to end: a real
+    /// `Model::from_text` error on a real file, not a hand-written string.
+    fn explain(text: &str) -> Vec<Note> {
+        let err = Model::from_text(text).expect_err("this text must not parse");
+        explain_unreadable(text, &err)
+    }
+
+    fn joined(notes: &[Note]) -> String {
+        notes
+            .iter()
+            .map(|n| n.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `toml::de::Error` DOES carry a location, so the note names the line
+    /// and quotes it out of the user's own file.
+    #[test]
+    fn a_syntax_error_names_the_line_and_quotes_it() {
+        let notes = explain("\"ctrl+alt+t\" = \"A\"\noops\n\"ctrl+alt+e\" = \"B\"\n");
+        let all = joined(&notes);
+        assert!(
+            all.contains("The problem is on line 2: oops"),
+            "the offending line must be named and quoted:\n{all}"
+        );
+        assert!(
+            all.contains("What went wrong: expected"),
+            "the parser's own reason must survive:\n{all}"
+        );
+    }
+
+    /// beckon's OWN errors -- a duplicate combo, an unknown `keyboard.`
+    /// setting, a non-string value -- name a key, not a place. Saying so is
+    /// the requirement; inventing a line number would send someone to the
+    /// wrong part of their file.
+    #[test]
+    fn a_beckon_error_admits_it_does_not_know_the_line() {
+        for text in [
+            "\"ctrl+alt+t\" = \"A\"\n\"alt+ctrl+t\" = \"B\"\n",
+            "\"ctrl+alt+t\" = 5\n",
+            "[keyboard]\ncaps = \"yes\"\n",
+        ] {
+            let all = joined(&explain(text));
+            assert!(
+                all.contains("The error does not say which line."),
+                "no line number is claimed for `{text}`:\n{all}"
+            );
+            assert!(
+                !all.contains("The problem is on line"),
+                "and none is invented either:\n{all}"
+            );
+        }
+    }
+
+    /// The caret snippet lines up only in a monospace font, and this window
+    /// has none, so none of it may reach the notes.
+    #[test]
+    fn the_parsers_ascii_art_never_reaches_the_notes() {
+        let all = joined(&explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
+        assert!(!all.contains('|'), "gutter/caret rows leaked:\n{all}");
+        assert!(!all.contains('^'), "caret leaked:\n{all}");
+        assert!(
+            !all.contains("TOML parse error"),
+            "the header is a location, not a reason, and the line note \
+             already carries the location:\n{all}"
+        );
+    }
+
+    /// A location with no text behind it: past the end of the file, which is
+    /// where a TOML parser points an unexpected EOF, or on a blank line. The
+    /// location is still worth saying; the note must not trail off as
+    /// `on line 9: `.
+    ///
+    /// The error string here is synthetic, and deliberately so -- it is
+    /// `toml::de::Error`'s shape with a location the fixture text does not
+    /// reach, which is easy to state and awkward to provoke. Every other
+    /// test in this group goes through a real `Model::from_text` failure.
+    #[test]
+    fn a_location_with_no_line_behind_it_still_names_the_line() {
+        for (text, line) in [("\"ctrl+alt+t\" = \"A\"\n", 9), ("a\n\nb\n", 2)] {
+            let err = format!("TOML parse error at line {line}, column 1\nexpected `=`");
+            let all = joined(&explain_unreadable(text, &err));
+            assert!(
+                all.contains(&format!("The problem is on line {line}.")),
+                "the location is still worth saying:\n{all}"
+            );
+            assert!(
+                !all.lines().any(|l| l.trim_end().ends_with(':')),
+                "no note ends in a colon with nothing after it:\n{all}"
+            );
+        }
+    }
+
+    /// The quoted line is the user's own data, so it is passed through --
+    /// but a minified 4 KB line would push every note under it off the band.
+    #[test]
+    fn a_very_long_offending_line_is_clipped() {
+        let long = "x".repeat(4000);
+        let all = joined(&explain(&format!("\"ctrl+alt+t\" = \"A\"\n{long}\n")));
+        assert!(all.contains("xxx"), "the line is still quoted:\n{all}");
+        assert!(
+            all.lines().all(|l| l.chars().count() < 200),
+            "no note is longer than a couple of wrapped lines"
+        );
+    }
+
+    /// Everything beckon itself writes here is ASCII, for the reason
+    /// `mark_glyph` gives: this window carries a text face, and a glyph it
+    /// lacks draws as a box that reads like a beckon bug. The user's own
+    /// file line is the one thing exempt, so it is ASCII in these fixtures.
+    ///
+    /// This is a live check on `parse_config`'s messages too, not only on
+    /// the wrapper's: two of them carried an em-dash until the read-only
+    /// window made them something a STATIC has to draw.
+    #[test]
+    fn every_displayed_string_is_ascii() {
+        for text in [
+            "\"ctrl+alt+t\" = \"A\"\noops\n",
+            "\"ctrl+alt+t\" = \"A\"\n\"alt+ctrl+t\" = \"B\"\n",
+            "\"ctrl+alt+t\" = [\"A\", \"B\"]\n",
+            "\"ctrl+super+alt+T\" = \"A\"\n",
+            "[keyboard]\ncaps_hold = \"nope\"\n",
+        ] {
+            let all = joined(&explain(text));
+            assert!(all.is_ascii(), "non-ASCII reached the window:\n{all}");
+        }
+    }
+
+    /// The read-only state is a real `ControlState`, so the window needs no
+    /// idea that it exists -- and above all it is NOT dirty, because a
+    /// window with nothing to save must not ask whether to save it.
+    #[test]
+    fn the_unreadable_state_edits_nothing_and_saves_nothing() {
+        let cs = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
+        assert!(!cs.editable, "every mutating control is off");
+        assert!(!cs.apply_enabled);
+        assert!(!cs.remove_enabled);
+        assert!(!cs.dirty, "no save prompt on the way out");
+        assert!(cs.items.is_empty());
+        assert_eq!(cs.selected, None);
+        assert_eq!(cs.marked_count, 0);
+        let notes = cs.detail.expect("the notes strip is the explanation").notes;
+        assert!(!notes.is_empty());
+        assert!(notes.iter().any(|n| n.mark == Mark::Bad));
+    }
+
+    /// The mirror of the test above: a state projected from a real model is
+    /// always editable, so `editable` cannot quietly become "sometimes off"
+    /// for a file that parsed.
+    #[test]
+    fn a_state_projected_from_a_model_is_always_editable() {
+        let mut m = model();
+        assert!(control_state(&m, &RuntimeStatus::default()).editable);
+        m.set_combo(0, "not a combo at all");
+        assert!(
+            control_state(&m, &RuntimeStatus::default()).editable,
+            "an invalid EDIT is not a read-only FILE: Save is greyed, the \
+             fields stay live so it can be fixed"
+        );
     }
 }

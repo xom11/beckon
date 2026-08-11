@@ -18,6 +18,13 @@
 //! calls `filter_dialog_message` first so Ctrl+S, Tab, Enter, Esc, the
 //! arrows and the Alt-mnemonics work inside it.
 //!
+//! **Read-only is a flag, not a mode.** A config file that does not parse
+//! opens here rather than being refused, with every mutating control off --
+//! but this file has no idea that state exists. `ControlState::editable`
+//! arrives false, the `enable` calls in `apply_state` AND it, and the
+//! explanation arrives as ordinary notes. There is no "the file is broken"
+//! branch to find, because there is no such branch.
+//!
 //! A deliberate non-feature: there is no "press a key to capture the
 //! shortcut" field. `msctls_hotkey32` cannot capture the Windows key and
 //! Explorer eats `Win+T` and its siblings before a normal window sees them,
@@ -94,6 +101,30 @@ const SS_CENTERIMAGE_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0200);
 
 /// Posted by the catalog worker thread with the scanned app names.
 pub const WM_CATALOG: u32 = WM_APP + 2;
+
+/// Posted to this window by `handle_command` when the App combo box reports
+/// that its text changed. Carries the `Ui::app_epoch` stamp current at the
+/// moment of posting.
+///
+/// **The whole point is that it is POSTED, not sent.** A populated
+/// `CBS_DROPDOWN` rewrites its own edit text as you type -- measured on a14,
+/// `N` leaves "Narrator" in the field and `o` leaves "Obsidian" -- and the
+/// `CBN_EDITCHANGE` that reaches us carries the text from BEFORE that
+/// rewrite, so reading the control inside the notification returned the one
+/// character just typed while the screen said something else entirely.
+/// Typing `Notepad` put `d` in the model. Every per-keystroke derivative --
+/// the dirty mark, the notes, the list row -- was computed from text the
+/// user never typed.
+///
+/// Reading LATER, from the message loop, is a fix that does not depend on
+/// knowing WHY the control rewrites itself: by the time a posted message is
+/// dispatched, the control has finished whatever it was doing -- autocomplete,
+/// an IME composition, comctl32 internals -- and the edit holds exactly what
+/// the user is looking at. The screen is the source of truth.
+///
+/// Private, unlike `WM_CATALOG`: nothing outside this file may post it, and
+/// a stamp forged from outside would defeat the staleness check.
+const WM_APP_EDITED: u32 = WM_APP + 3;
 
 const IDC_LIST: i32 = 1001;
 const IDC_COMBO: i32 = 1002;
@@ -510,6 +541,27 @@ struct Ui {
     /// control's contents are unknown" and the next push rebuilds -- which
     /// is always correct, just slower.
     items: Vec<ListItem>,
+    /// Which deferred read of the App combo box is still wanted. Bumped in
+    /// two places, and both are load-bearing:
+    ///
+    /// 1. **`post_app_read`**, so that of several keystrokes queued before
+    ///    any of them is dispatched only the LAST is honoured. The earlier
+    ///    reads would return the same final text anyway; dropping them saves
+    ///    a full `apply_state` per character.
+    /// 2. **`apply_state`, whenever it writes the App field itself.** This
+    ///    is the suppression hole `suppress` alone cannot close. `suppress`
+    ///    covers the window during which `apply_state` is writing, and a
+    ///    posted message cannot be dispatched inside that window -- nothing
+    ///    `apply_state` calls pumps the queue. What it cannot cover is a
+    ///    read posted BEFORE a push and dispatched AFTER it: by then
+    ///    `suppress` is false again, and the field holds what `apply_state`
+    ///    put there rather than what the user typed. Feeding that back would
+    ///    report a programmatic write as a user edit.
+    ///
+    /// A push that leaves the field alone does NOT bump, so an ordinary
+    /// keystroke -- where the model has already caught up and `apply_state`
+    /// finds the text it wanted is already there -- keeps its pending read.
+    app_epoch: u32,
 }
 
 /// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
@@ -1484,6 +1536,7 @@ unsafe fn build_children(hwnd: HWND) {
             suppress: false,
             external_change: false,
             items: Vec::new(),
+            app_epoch: 0,
         })
     });
 }
@@ -2006,6 +2059,12 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         }
     });
 
+    // Did this push write the App field? Collected here and acted on in the
+    // trailing block, which is equivalent to bumping at the write itself:
+    // the stamp only has to be current before a POSTED message can be
+    // dispatched, and nothing between these two points pumps the queue.
+    let mut wrote_app = false;
+
     unsafe {
         if let Some(t) = &new_title {
             set_text(hwnd, t);
@@ -2031,13 +2090,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
 
         match &st.detail {
             Some(d) => {
-                enable(hwnd, IDC_COMBO, true);
-                enable(hwnd, IDC_APP, true);
+                // `st.editable`, not `true`: there is a row to show but the
+                // file it came from may be one beckon could not read. The
+                // window is not told which -- see `ControlState::editable`.
+                enable(hwnd, IDC_COMBO, st.editable);
+                enable(hwnd, IDC_APP, st.editable);
                 if text_of(combo) != d.combo {
                     set_text(combo, &d.combo);
                 }
                 if text_of(app) != d.app {
                     set_text(app, &d.app);
+                    wrote_app = true;
                 }
                 let body: Vec<String> = d
                     .notes
@@ -2049,21 +2112,42 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             None => {
                 enable(hwnd, IDC_COMBO, false);
                 enable(hwnd, IDC_APP, false);
-                set_text(combo, "");
-                set_text(app, "");
+                // Conditional, like the `Some` arm above, and for the same
+                // two reasons: an unconditional `WM_SETTEXT` raises an
+                // `EN_CHANGE` / `CBN_EDITCHANGE` on every push, and clearing
+                // a field that is already clear must not invalidate a
+                // pending read of it.
+                if !text_of(combo).is_empty() {
+                    set_text(combo, "");
+                }
+                if !text_of(app).is_empty() {
+                    set_text(app, "");
+                    wrote_app = true;
+                }
                 set_text(notes, "Select a shortcut, or press Add.");
             }
         }
 
         enable(hwnd, IDC_APPLY, st.apply_enabled);
         enable(hwnd, IDC_REMOVE, st.remove_enabled);
+        // The rest of what can change the file. `apply_enabled` and
+        // `remove_enabled` already carry `editable` inside them (both are
+        // false in a state with no model); these three have no other input,
+        // so they read the flag directly.
+        //
+        // The list is disabled rather than merely empty: its tick boxes
+        // mutate, and a control that cannot be operated says "read only" in
+        // a way an empty control does not.
+        enable(hwnd, IDC_ADD, st.editable);
+        enable(hwnd, IDC_LIST, st.editable);
+        enable(hwnd, IDC_CAPS, st.editable);
         check(hwnd, IDC_CAPS, st.caps_checked);
         check(hwnd, IDC_TAP_CAPSLOCK, st.caps_tap == CapsTap::CapsLock);
         check(hwnd, IDC_TAP_ESCAPE, st.caps_tap == CapsTap::Escape);
         check(hwnd, IDC_TAP_NONE, st.caps_tap == CapsTap::None);
         // The tap choice only means anything when Caps is on.
         for id in [IDC_TAP_CAPSLOCK, IDC_TAP_ESCAPE, IDC_TAP_NONE] {
-            enable(hwnd, id, st.caps_checked);
+            enable(hwnd, id, st.editable && st.caps_checked);
         }
 
         show(banner, external_change);
@@ -2081,6 +2165,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             // Recorded AFTER the write, not instead of it, so a caption that
             // never made it to the screen is retried on the next push.
             ui.shown_dirty = Some(st.dirty);
+            // Any read of the App field posted before this push is now about
+            // text WE wrote, not text the user typed. See `Ui::app_epoch`.
+            if wrote_app {
+                ui.app_epoch = ui.app_epoch.wrapping_add(1);
+            }
         }
     });
 }
@@ -2368,6 +2457,27 @@ fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.suppress).unwrap_or(true))
 }
 
+/// Ask for the App combo box's text to be read from the message loop rather
+/// than from inside the notification that reported it changed. See
+/// `WM_APP_EDITED` for why, and `Ui::app_epoch` for what the stamp is for.
+///
+/// **No `UI` borrow survives the first statement.** `PostMessageW` does not
+/// re-enter this wndproc, but the discipline is the file's, not the call's:
+/// the borrow reads and writes a `u32` and drops with its closure.
+fn post_app_read(hwnd: HWND) {
+    let Some(stamp) = UI.with(|u| {
+        u.borrow_mut().as_mut().map(|ui| {
+            ui.app_epoch = ui.app_epoch.wrapping_add(1);
+            ui.app_epoch
+        })
+    }) else {
+        return;
+    };
+    unsafe {
+        let _ = PostMessageW(Some(hwnd), WM_APP_EDITED, WPARAM(stamp as usize), LPARAM(0));
+    }
+}
+
 /// Shared tail for `WM_SYSCOLORCHANGE`, `WM_THEMECHANGED`, and
 /// `WM_SETTINGCHANGE`(`SPI_SETHIGHCONTRAST`): forward the message verbatim
 /// to every child, then invalidate and relayout.
@@ -2585,6 +2695,43 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     DefWindowProcW(hwnd, msg, wp, lp)
                 }
             }
+            WM_APP_EDITED => {
+                // The deferred half of the App combo box's edit handling.
+                // Whatever the control was doing to its own text when it
+                // told us it had changed, it has finished doing by now, so
+                // the edit holds what the user is looking at.
+                //
+                // Two ways to be stale, and neither is an error:
+                //
+                // - a newer keystroke has already asked for a read, so this
+                //   one would only produce the same answer one push earlier;
+                // - `apply_state` wrote the field between the post and here,
+                //   so what is in it is ours and not the user's.
+                //
+                // Both are the same test, because both bump the stamp. The
+                // `suppress` test is separate and belt-and-braces: no posted
+                // message can be dispatched inside `apply_state` (nothing it
+                // calls pumps), but a future edit there must not be able to
+                // make that untrue silently.
+                //
+                // The borrow is taken and dropped inside each closure;
+                // `text_of` sends `WM_GETTEXTLENGTH`/`WM_GETTEXT` and
+                // `with_cb` runs caller code that can pump, so neither may
+                // run with one held.
+                let fresh = UI.with(|u| {
+                    u.borrow()
+                        .as_ref()
+                        .map(|ui| !ui.suppress && ui.app_epoch == wp.0 as u32)
+                        .unwrap_or(false)
+                });
+                if fresh {
+                    if let Some(app) = UI.with(|u| u.borrow().as_ref().map(|x| x.app)) {
+                        let t = text_of(app);
+                        with_cb(|cb| (cb.on_edit_app)(t));
+                    }
+                }
+                LRESULT(0)
+            }
             WM_CATALOG => {
                 // Reclaims what `post_catalog` leaked into the message.
                 let names = *Box::from_raw(lp.0 as *mut Vec<String>);
@@ -2702,7 +2849,10 @@ fn commit_fields() {
 }
 
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
-    let (combo, app) = match UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.app))) {
+    // The shortcut EDIT only. The App COMBOBOX is deliberately absent: no
+    // arm below reads it synchronously any more -- see `WM_APP_EDITED` --
+    // and a handle in scope here is an invitation to start again.
+    let combo = match UI.with(|u| u.borrow().as_ref().map(|x| x.combo)) {
         Some(t) => t,
         None => return,
     };
@@ -2745,16 +2895,23 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 with_cb(|cb| (cb.on_edit_combo)(t));
             }
         }
+        // Both codes, deferred, and BOTH is the point.
+        //
+        // `CBN_EDITCHANGE` is the measured defect: the control rewrites its
+        // own text as you type and this notification carries the text from
+        // before the rewrite. `CBN_SELCHANGE` used to be read synchronously
+        // out of the LIST -- correct for a mouse pick, where the edit field
+        // genuinely has not caught up yet -- but comctl32 also SELECTS the
+        // matching item while type-ahead is rewriting the field, so that
+        // path could report "Narrator" for a typed `N` on its own account.
+        // Worse, the push it triggered would rewrite the field and, with it,
+        // invalidate the pending read that was about to correct the record.
+        //
+        // Deferring both makes the edit control the single source of truth
+        // for what the App field says, which is also what the user sees.
         (IDC_APP, c) if c == CBN_EDITCHANGE || c == CBN_SELCHANGE => {
             if !suppressed() {
-                // On CBN_SELCHANGE the edit field has not been updated yet,
-                // so read the selected item instead of the field.
-                let t = if c == CBN_SELCHANGE {
-                    selected_combo_text(app).unwrap_or_else(|| text_of(app))
-                } else {
-                    text_of(app)
-                };
-                with_cb(|cb| (cb.on_edit_app)(t));
+                post_app_read(hwnd);
             }
         }
         // Tabbing or clicking away commits what is in the field, so a value
@@ -2777,15 +2934,14 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             // The fields are the source of truth at the moment Save is
             // pressed.
             //
-            // Measured on a14: a COMBOBOX whose list is populated jumps to
-            // the matching entry as you type -- 'N' leaves "Narrator" in
-            // the field, 'o' leaves "Obsidian" -- and the CBN_EDITCHANGE
-            // that reaches us carries the text from BEFORE that rewrite,
-            // i.e. the single character just typed. Trusting the
-            // incremental notifications alone therefore wrote "d" to the
-            // file while the screen said "Debuggable Package Manager".
-            // Incremental notifications still drive the enabled state; this
-            // is what decides the content.
+            // This used to be the ONLY thing standing between a COMBOBOX
+            // that rewrites its own text and a config file full of single
+            // characters (measured on a14: typing "Notepad" wrote "d"). It
+            // is now a backstop rather than the fix -- `WM_APP_EDITED` reads
+            // the field after every change, so the model already agrees with
+            // the screen -- and it stays because a notification that never
+            // arrives at all still has to be caught somewhere, and this
+            // costs one `WM_GETTEXT` per Save.
             commit_fields();
             with_cb(|cb| (cb.on_apply)())
         }
@@ -2822,33 +2978,12 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
     }
 }
 
-fn selected_combo_text(app: HWND) -> Option<String> {
-    unsafe {
-        let i = SendMessageW(app, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))).0;
-        if i < 0 {
-            return None;
-        }
-        let len = SendMessageW(
-            app,
-            CB_GETLBTEXTLEN,
-            Some(WPARAM(i as usize)),
-            Some(LPARAM(0)),
-        )
-        .0;
-        if len <= 0 {
-            return None;
-        }
-        let mut buf = vec![0u16; len as usize + 1];
-        SendMessageW(
-            app,
-            CB_GETLBTEXT,
-            Some(WPARAM(i as usize)),
-            Some(LPARAM(buf.as_mut_ptr() as isize)),
-        );
-        let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        Some(String::from_utf16_lossy(&buf[..n]))
-    }
-}
+// `selected_combo_text` lived here: it read the App combo's LIST selection
+// on `CBN_SELCHANGE`, because the edit field is documented not to have
+// caught up when that notification is sent. It is gone with the synchronous
+// read it served -- the deferred read of the edit control is dispatched
+// after the combo has finished updating itself, so the field is both correct
+// and, unlike the list selection, what the user is actually looking at.
 
 /// Report a save failure. The window has somewhere to put this, unlike
 /// bare `serve`.

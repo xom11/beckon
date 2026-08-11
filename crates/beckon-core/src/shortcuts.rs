@@ -159,7 +159,8 @@ impl Combo {
         }
         if key_name.chars().any(|c| c.is_ascii_uppercase()) {
             return Err(format!(
-                "uppercase key `{key_name}` in `{s}` — write it lowercase and add `shift` explicitly"
+                // ASCII hyphens; see the array arm of `parse_config`.
+                "uppercase key `{key_name}` in `{s}` -- write it lowercase and add `shift` explicitly"
             ));
         }
         let key = lookup_key(key_name).ok_or_else(|| {
@@ -390,9 +391,16 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             toml::Value::String(_) => return Err(format!("empty app name for `{raw_key}`")),
             toml::Value::Array(_) => {
                 return Err(format!(
-                    "value for `{raw_key}` is an array — candidate lists are not supported, \
+                    // ASCII hyphens, not an em-dash: since the settings
+                    // window opens read-only on a parse failure, every
+                    // string `parse_config` produces is now something a
+                    // STATIC in that window may have to draw -- and it
+                    // carries a text face, not a symbol one, so a glyph it
+                    // lacks draws as a box that reads like a beckon bug.
+                    // Same rule `mark_glyph` and `title_base` already state.
+                    "value for `{raw_key}` is an array -- candidate lists are not supported, \
                      write exactly one app name"
-                ))
+                ));
             }
             other => {
                 return Err(format!(

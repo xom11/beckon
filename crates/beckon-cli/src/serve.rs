@@ -126,6 +126,28 @@ struct ServeState {
     /// `control_state` projects out of this.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     settings: Option<beckon_core::settings::Model>,
+    /// The window is open against a file that did not parse: the
+    /// explanation, already in the window's own vocabulary
+    /// (`explain_unreadable`). Computed once, where both the file text and
+    /// the parser's message are in hand, because the window is pushed on
+    /// every tick and re-deriving it there would re-read the file.
+    ///
+    /// **This and `settings` are one enum written as two fields**, and only
+    /// three of the four combinations exist:
+    ///
+    /// | `settings` | this | meaning |
+    /// |---|---|---|
+    /// | `None` | `None` | the window is closed |
+    /// | `Some` | `None` | open, editable |
+    /// | `None` | `Some` | open, read only |
+    /// | `Some` | `Some` | impossible -- `load_settings_model` sets both |
+    ///
+    /// Two fields rather than an enum because every callback in
+    /// `open_settings` reaches for `settings.as_mut()`, and a real enum
+    /// would put a match in each of them for a variant none of them can act
+    /// on.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    settings_unreadable: Option<Vec<beckon_core::settings::Note>>,
     /// Installed app names for the window's combo box. `None` until the
     /// worker thread reports, which is NOT the same as "nothing installed"
     /// — `control_state` renders the two differently on purpose.
@@ -191,6 +213,7 @@ pub fn cmd_serve_app(
         registered: Default::default(),
         autostart,
         settings: None,
+        settings_unreadable: None,
         catalog: None,
         external_change: false,
     }));
@@ -423,6 +446,15 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             // rewriting the config (an editor sync, a `home-manager switch`
             // loop) would otherwise post once per tick, forever.
             crate::notify::report(&msg, crate::notify::Cause::MachineRepeat);
+            // A settings window open READ ONLY is the one thing that wants
+            // to hear about a failed reload: it is showing an explanation of
+            // exactly this, and the user is editing the file to make it go
+            // away. Restricted to that state on purpose -- calling the full
+            // external-change path from here would hand an EDITABLE window a
+            // file that does not parse, and its answer to that is an error
+            // dialog, once per watcher tick.
+            #[cfg(target_os = "windows")]
+            settings_retry_unreadable(state);
         }
         Ok(new) => {
             let mut m = mgr.borrow_mut();
@@ -713,21 +745,75 @@ fn sync_caps_hook(_state: &Rc<RefCell<ServeState>>) {}
 #[cfg(target_os = "windows")]
 fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     let s = state.borrow();
-    let Some(model) = s.settings.as_ref() else {
+    // Two projections, one push. The read-only one has no `Model` behind it
+    // -- `Model::from_text` failed -- which is exactly why `unreadable_state`
+    // exists: the window is given a `ControlState` either way and never
+    // learns that there are two ways to arrive at one.
+    let cs = if let Some(model) = s.settings.as_ref() {
+        let rt = beckon_core::settings::RuntimeStatus {
+            registered: s.registered.clone(),
+            catalog: s.catalog.clone(),
+            // Pausing CLEARS `registered`, so without this the window would
+            // show every row as "not registered yet" and never say why.
+            paused: s.paused,
+        };
+        beckon_core::settings::control_state(model, &rt)
+    } else if let Some(notes) = s.settings_unreadable.as_ref() {
+        beckon_core::settings::unreadable_state(notes.clone())
+    } else {
+        // The window is closed.
         return;
     };
-    let rt = beckon_core::settings::RuntimeStatus {
-        registered: s.registered.clone(),
-        catalog: s.catalog.clone(),
-        // Pausing CLEARS `registered`, so without this the window would show
-        // every row as "not registered yet" and never say why.
-        paused: s.paused,
-    };
-    let cs = beckon_core::settings::control_state(model, &rt);
     let external = s.external_change;
     let catalog = s.catalog.clone();
     drop(s);
     beckon_windows::settings_window::apply_state(&cs, external, catalog.as_deref());
+}
+
+/// Read the config file into whichever of the window's two states it
+/// deserves: a `Model` when it parses, the read-only explanation when it
+/// does not.
+///
+/// **A file that does not parse is not an error here, and that is the whole
+/// point of this function.** `open_settings` used to refuse outright --
+/// *"Fix it in a text editor first"* -- which told someone who has never
+/// seen TOML to go and do the thing the window exists to save them from.
+/// beckon still never writes over a file it cannot read; it just says so
+/// with the file open in front of them.
+///
+/// `Err` is reserved for a file that could not be READ at all -- deleted,
+/// locked, permission denied. There is nothing to show for that, so the
+/// caller reports it and does not open.
+#[cfg(target_os = "windows")]
+fn load_settings_model(state: &Rc<RefCell<ServeState>>) -> Result<(), String> {
+    let path = state.borrow().config.clone();
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}:\n\n{e}", path.display()))?;
+    let parsed = beckon_core::settings::Model::from_text(&text);
+    let mut s = state.borrow_mut();
+    match parsed {
+        Ok(m) => {
+            s.settings = Some(m);
+            s.settings_unreadable = None;
+        }
+        Err(e) => {
+            s.settings = None;
+            s.settings_unreadable = Some(beckon_core::settings::explain_unreadable(&text, &e));
+        }
+    }
+    s.external_change = false;
+    Ok(())
+}
+
+/// The window is closing, or failed to open. Both halves of the
+/// `settings` / `settings_unreadable` pair go, together: leaving the
+/// explanation behind would make `settings_saw_external_change` believe a
+/// window is still open and push into a destroyed one.
+#[cfg(target_os = "windows")]
+fn forget_settings(state: &Rc<RefCell<ServeState>>) {
+    let mut s = state.borrow_mut();
+    s.settings = None;
+    s.settings_unreadable = None;
 }
 
 /// Write the model to disk, atomically.
@@ -797,8 +883,17 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
         Ok(m) => {
             let mut s = state.borrow_mut();
             s.settings = Some(m);
+            // Keeps the pair's invariant unconditional rather than relying
+            // on this path being unreachable from the read-only state (the
+            // banner that owns `Reload` is hidden there).
+            s.settings_unreadable = None;
             s.external_change = false;
         }
+        // Deliberately NOT the read-only state: `Reload` means "discard my
+        // in-memory edits", and there IS a model here to discard. Dropping
+        // it for a file that no longer parses would throw away work the user
+        // can still save once they fix the file. The dialog says so and the
+        // model stays.
         Err(e) => {
             beckon_windows::settings_window::error(&format!(
                 "{} is not valid:\n\n{e}",
@@ -810,11 +905,42 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
     refresh_settings(state);
 }
 
+/// The file changed while the window is open READ ONLY: try it again.
+///
+/// There is no model here, so there is nothing to lose and nothing to ask
+/// about -- which is why this needs neither the banner nor a prompt. It is
+/// what makes the read-only notes' own advice true: fix the file in a text
+/// editor and the window turns editable by itself, with no reopen.
+///
+/// Silent either way, deliberately. On success the window simply becomes
+/// editable; on a second failure the notes are replaced with the new
+/// explanation. A dialog per write, from an editor that saves as you type,
+/// would be unusable.
+///
+/// Returns `false` when the window is not in that state, so callers that
+/// have their own answer for the editable window can carry on.
+#[cfg(target_os = "windows")]
+fn settings_retry_unreadable(state: &Rc<RefCell<ServeState>>) -> bool {
+    if state.borrow().settings_unreadable.is_none() {
+        return false;
+    }
+    let _ = load_settings_model(state);
+    refresh_settings(state);
+    true
+}
+
 /// Called from `reload()` after the file changed on disk. A clean window
 /// follows the file silently; a dirty one raises the banner and lets the
 /// user choose. beckon never picks for them.
+///
+/// A read-only window is neither: it has no model to follow the file WITH
+/// and no edits to protect, so it goes through `settings_retry_unreadable`
+/// and never reaches the dirty test below.
 #[cfg(target_os = "windows")]
 fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
+    if settings_retry_unreadable(state) {
+        return;
+    }
     let dirty = match state.borrow().settings.as_ref() {
         Some(m) => m.dirty(),
         None => return,
@@ -855,29 +981,11 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         return;
     }
 
-    let path = state.borrow().config.clone();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            win::error(&format!("Cannot read {}:\n\n{e}", path.display()));
-            return;
-        }
-    };
-    let model = match beckon_core::settings::Model::from_text(&text) {
-        Ok(m) => m,
-        Err(e) => {
-            win::error(&format!(
-                "{} is not valid, so it cannot be edited here:\n\n{e}\n\n\
-                 Fix it in a text editor first.",
-                path.display()
-            ));
-            return;
-        }
-    };
-    {
-        let mut s = state.borrow_mut();
-        s.settings = Some(model);
-        s.external_change = false;
+    // A file that does not parse opens READ ONLY rather than being refused.
+    // Only a file that cannot be read at all stops us here.
+    if let Err(e) = load_settings_model(state) {
+        win::error(&e);
+        return;
     }
 
     // One helper per callback so the borrow discipline is written once:
@@ -1005,6 +1113,9 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         on_close_request: Box::new({
             let st = Rc::clone(state);
             move || {
+                // A read-only window has no model, so `dirty` is false and
+                // this is the arm it leaves by: no save prompt for changes
+                // that could not have been made.
                 let dirty = st
                     .borrow()
                     .settings
@@ -1012,7 +1123,7 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                     .map(|m| m.dirty())
                     .unwrap_or(false);
                 if !dirty {
-                    st.borrow_mut().settings = None;
+                    forget_settings(&st);
                     return true;
                 }
                 match beckon_windows::shell::ask_save(
@@ -1032,12 +1143,12 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                             .map(|m| m.dirty())
                             .unwrap_or(false);
                         if !still_dirty {
-                            st.borrow_mut().settings = None;
+                            forget_settings(&st);
                         }
                         !still_dirty
                     }
                     beckon_windows::shell::SaveChoice::Discard => {
-                        st.borrow_mut().settings = None;
+                        forget_settings(&st);
                         true
                     }
                     beckon_windows::shell::SaveChoice::Cancel => false,
@@ -1049,10 +1160,11 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
     // The path is what names the window (`beckon - shortcuts.toml`) and what
     // its `Open config file` tooltip shows. Handed over once, at open: it is
     // `ServeState::config`, which nothing can repoint while the window is up.
+    let path = state.borrow().config.clone();
     if let Err(e) = win::open(cb, &path.to_string_lossy()) {
         eprintln!("beckon serve: cannot open settings: {e}");
         beckon_windows::settings_window::error(&format!("Cannot open settings:\n\n{e}"));
-        state.borrow_mut().settings = None;
+        forget_settings(state);
         return;
     }
     if let Some(h) = win::hwnd() {

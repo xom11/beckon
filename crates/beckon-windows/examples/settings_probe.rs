@@ -21,7 +21,7 @@ mod win {
     use std::cell::RefCell;
     use std::ffi::c_void;
     use std::time::Duration;
-    use windows::core::{w, BOOL};
+    use windows::core::{w, BOOL, PWSTR};
     use windows::Win32::Foundation::{
         CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, SIZE, WPARAM,
     };
@@ -34,8 +34,8 @@ mod win {
         OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
     };
     use windows::Win32::UI::Controls::{
-        BCM_GETIDEALSIZE, LVIR_BOUNDS, LVM_GETCOUNTPERPAGE, LVM_GETHEADER, LVM_GETITEMCOUNT,
-        LVM_GETITEMRECT,
+        BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE, LVM_GETHEADER,
+        LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
     };
     use windows::Win32::UI::HiDpi::{
         GetAwarenessFromDpiAwarenessContext, GetDpiForSystem, GetDpiForWindow,
@@ -177,6 +177,11 @@ mod win {
     const IDC_ADD: i32 = 1005;
     const IDC_REMOVE: i32 = 1006;
     const IDC_APPLY: i32 = 1007;
+    // Above the range the probe pins (1001-1007). Read only, never used to
+    // drive anything -- they say whether the window is in read-only mode.
+    const IDC_CAPS: i32 = 1008;
+    const IDC_OPENFILE: i32 = 1012;
+    const IDC_CLOSE: i32 = 1013;
 
     fn dlg_item(parent: HWND, id: i32) -> Option<HWND> {
         match unsafe { GetDlgItem(Some(parent), id) } {
@@ -200,6 +205,17 @@ mod win {
         addr: *mut c_void,
     }
 
+    /// How big a remote block `Remote::open` reserves. Big enough for the
+    /// largest struct sent through it (`LVITEMW`) at offset 0 AND for a
+    /// cell's text at `CELL_TEXT_OFF`, because `LVM_GETITEMTEXT` takes a
+    /// struct that itself CONTAINS a pointer -- and that inner pointer has
+    /// to be an address in the target process too, not just the outer one.
+    const REMOTE_SIZE: usize = CELL_TEXT_OFF + CELL_TEXT_CHARS * 2;
+    /// Where the text buffer starts inside that block. Comfortably past
+    /// `size_of::<LVITEMW>()` on both 32- and 64-bit.
+    const CELL_TEXT_OFF: usize = 256;
+    const CELL_TEXT_CHARS: usize = 256;
+
     impl Remote {
         fn open(h: HWND) -> Option<Remote> {
             let mut pid = 0u32;
@@ -215,8 +231,15 @@ mod win {
                 )
             }
             .ok()?;
-            let addr =
-                unsafe { VirtualAllocEx(proc, None, 64, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) };
+            let addr = unsafe {
+                VirtualAllocEx(
+                    proc,
+                    None,
+                    REMOTE_SIZE,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_READWRITE,
+                )
+            };
             if addr.is_null() {
                 unsafe {
                     let _ = CloseHandle(proc);
@@ -224,6 +247,12 @@ mod win {
                 return None;
             }
             Some(Remote { proc, addr })
+        }
+
+        /// An address inside the remote block, for a message that wants a
+        /// pointer the TARGET can dereference.
+        fn at(&self, off: usize) -> *mut c_void {
+            (self.addr as usize + off) as *mut c_void
         }
 
         fn put<T: Copy>(&self, v: &T) -> bool {
@@ -237,6 +266,25 @@ mod win {
                 )
             }
             .is_ok()
+        }
+
+        /// Read a NUL-terminated wide string back out of the remote block.
+        /// Not `get::<[u16; N]>`: arrays only implement `Default` up to 32
+        /// elements, and a 32-character cell is not a cell.
+        fn read_utf16(&self, off: usize, chars: usize) -> Option<String> {
+            let mut buf = vec![0u16; chars];
+            unsafe {
+                ReadProcessMemory(
+                    self.proc,
+                    self.at(off),
+                    buf.as_mut_ptr() as *mut c_void,
+                    chars * 2,
+                    None,
+                )
+            }
+            .ok()?;
+            let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            Some(String::from_utf16_lossy(&buf[..n]))
         }
 
         fn get<T: Copy + Default>(&self) -> Option<T> {
@@ -266,6 +314,47 @@ mod win {
 
     fn send(h: HWND, msg: u32, wp: usize, lp: isize) -> isize {
         unsafe { SendMessageW(h, msg, Some(WPARAM(wp)), Some(LPARAM(lp))) }.0
+    }
+
+    /// One cell of the ListView, read out of the target process.
+    ///
+    /// **This is the model, not the screen.** The list is rendered from
+    /// `ControlState::items`, which `serve` projects out of the `Model` on
+    /// every push -- so a cell is the cheapest witness there is to what the
+    /// window actually RECORDED, as opposed to what the control it was typed
+    /// into currently displays. Comparing the two after every character is
+    /// how the App combo box's lying is either caught or ruled out; nothing
+    /// reachable from a unit test can see both at once.
+    fn list_cell(list: HWND, row: i32, sub: i32) -> Option<String> {
+        let r = Remote::open(list)?;
+        let item = LVITEMW {
+            mask: LVIF_TEXT,
+            iItem: row,
+            iSubItem: sub,
+            pszText: PWSTR(r.at(CELL_TEXT_OFF) as *mut u16),
+            cchTextMax: CELL_TEXT_CHARS as i32,
+            ..Default::default()
+        };
+        if !r.put(&item) {
+            return None;
+        }
+        // Returns the character count, and 0 is a legitimate answer (an
+        // empty cell), so only the struct write above can fail here.
+        send(list, LVM_GETITEMTEXTW, row as usize, r.addr as isize);
+        r.read_utf16(CELL_TEXT_OFF, CELL_TEXT_CHARS)
+    }
+
+    /// Does this list cell agree with what the field it mirrors says?
+    ///
+    /// The App column appends the row's flag after three spaces
+    /// (`Notepad   not installed`), so the field's text is a PREFIX of the
+    /// cell rather than the whole of it. The Shortcut column is the combo
+    /// verbatim.
+    fn cell_agrees(cell: &str, field: &str) -> bool {
+        cell == field
+            || cell
+                .strip_prefix(field)
+                .is_some_and(|r| r.starts_with("   "))
     }
 
     /// The number every spacing token is measured against: one report-mode
@@ -417,8 +506,18 @@ mod win {
     /// forwards `CBN_EDITCHANGE` for input it processed itself — so a
     /// `WM_SETTEXT` test would pass on the Shortcut field and fail on the
     /// App field for a reason that has nothing to do with beckon.
-    fn type_into(h: HWND, s: &str) {
+    ///
+    /// `witness` is `(list, row, subitem)`: the list cell this field feeds.
+    /// After every character the cell is read back and compared with the
+    /// field, and the count of disagreements is returned. **That comparison
+    /// is the only thing that can settle the App combo box defect.** The
+    /// control rewriting its own text is not itself a bug — comctl32 is
+    /// entitled to autocomplete — the bug is beckon recording something
+    /// other than what the field ends up showing. One number, per keystroke,
+    /// with both sides printed.
+    fn type_into(h: HWND, s: &str, witness: Option<(HWND, i32, i32)>) -> usize {
         let mut empty: Vec<u16> = vec![0];
+        let mut disagreements = 0usize;
         unsafe {
             SendMessageW(
                 h,
@@ -428,15 +527,32 @@ mod win {
             );
             for ch in s.encode_utf16() {
                 SendMessageW(h, WM_CHAR, Some(WPARAM(ch as usize)), Some(LPARAM(1)));
-                std::thread::sleep(Duration::from_millis(60));
+                // Long enough for the window to have pumped the POSTED
+                // message the App field's read now rides on. A synchronous
+                // read needs no wait, so a probe with no wait here would
+                // report the fix as a regression.
+                std::thread::sleep(Duration::from_millis(120));
+                let field = ctl_text(h);
+                let verdict = match witness {
+                    Some((list, row, sub)) => match list_cell(list, row, sub) {
+                        Some(cell) if cell_agrees(&cell, &field) => format!("list {cell:?} MATCH"),
+                        Some(cell) => {
+                            disagreements += 1;
+                            format!("list {cell:?} <<< DISAGREES with the field")
+                        }
+                        None => "list UNREADABLE".to_string(),
+                    },
+                    None => "(no witness)".to_string(),
+                };
                 println!(
-                    "      typed {:?} -> control now {:?}",
+                    "      typed {:?} -> field {:?}   {verdict}",
                     char::from_u32(ch as u32).unwrap_or('?'),
-                    ctl_text(h)
+                    field,
                 );
             }
         }
         std::thread::sleep(Duration::from_millis(300));
+        disagreements
     }
 
     /// Dismiss a modal dialog by clicking one of its buttons.
@@ -495,6 +611,63 @@ mod win {
         );
     }
 
+    /// Is the window in read-only mode, and does it look like it?
+    ///
+    /// Reachable only by pointing `beckon-serve` at a config file that does
+    /// not parse, which the probe cannot arrange for itself -- it does not
+    /// own the path. So this REPORTS rather than asserts: run the probe once
+    /// against a good file and once against a deliberately broken one, and
+    /// the two blocks are the before and after.
+    ///
+    /// Returns true when editing is off, so the caller can skip the edit
+    /// drive instead of reporting a disabled Add as a failure.
+    fn report_read_only(h: HWND) -> bool {
+        let on = |id: i32| {
+            dlg_item(h, id)
+                .map(|c| unsafe { IsWindowEnabled(c) }.as_bool())
+                .unwrap_or(false)
+        };
+        let read_only = !on(IDC_ADD);
+        println!("  -- editing state --");
+        println!(
+            "    enabled: Add={} List={} Caps={} Save={} | escape routes: OpenFile={} Close={}",
+            on(IDC_ADD),
+            on(IDC_LIST),
+            on(IDC_CAPS),
+            on(IDC_APPLY),
+            on(IDC_OPENFILE),
+            on(IDC_CLOSE),
+        );
+        if read_only {
+            println!("    READ ONLY -- the file did not parse. The contract is:");
+            println!(
+                "      every mutating control off, both escape routes on, \
+                 and the notes say why"
+            );
+            let bad = [
+                ("Add", on(IDC_ADD)),
+                ("List", on(IDC_LIST)),
+                ("Caps", on(IDC_CAPS)),
+                ("Save", on(IDC_APPLY)),
+            ]
+            .iter()
+            .filter(|(_, e)| *e)
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>();
+            if bad.is_empty() && on(IDC_OPENFILE) && on(IDC_CLOSE) {
+                println!("      PASS");
+            } else {
+                println!(
+                    "      FAIL: still enabled {bad:?}, escape routes OpenFile={} Close={}",
+                    on(IDC_OPENFILE),
+                    on(IDC_CLOSE)
+                );
+            }
+            dump(h, "read only");
+        }
+        read_only
+    }
+
     fn drive_an_edit(h: HWND) {
         println!("  -- driving an edit --");
         dump(h, "start");
@@ -504,22 +677,56 @@ mod win {
         // the run that always has a row height in it.
         measure_listview(h, "after Add");
 
+        // Add appends and selects, so the new row is the last one. Its cells
+        // are what the two fields below are compared against.
+        let list = dlg_item(h, IDC_LIST);
+        let row = list
+            .map(|l| send(l, LVM_GETITEMCOUNT, 0, 0) as i32 - 1)
+            .filter(|r| *r >= 0);
+        match row {
+            Some(r) => println!("    witness row: {r}"),
+            None => println!("    NOTE: no list row to witness against; typing is unchecked"),
+        }
+        let witness = |sub: i32| match (list, row) {
+            (Some(l), Some(r)) => Some((l, r, sub)),
+            _ => None,
+        };
+
         let Some(combo_edit) = dlg_item(h, IDC_COMBO) else {
             println!("    FAIL: no shortcut field");
             return;
         };
-        type_into(combo_edit, "ctrl+super+alt+j");
+        // Column 1 is `Shortcut`; column 0 is `App`. A plain EDIT does not
+        // rewrite itself, so this half is the CONTROL for the App half: if
+        // it disagrees too, the probe's own timing is wrong and neither
+        // result means anything.
+        let combo_lies = type_into(combo_edit, "ctrl+super+alt+j", witness(1));
         dump(h, "after shortcut text");
 
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
         // only that child raises the change notification the window listens
         // for. Setting the combo itself is silent.
         let app_edit = dlg_item(h, IDC_APP).and_then(|c| first_child_of_class(c, "Edit"));
-        match app_edit {
-            Some(e) => type_into(e, "Notepad"),
-            None => println!("    FAIL: combo box has no edit child"),
-        }
+        let app_lies = match app_edit {
+            Some(e) => type_into(e, "Notepad", witness(0)),
+            None => {
+                println!("    FAIL: combo box has no edit child");
+                usize::MAX
+            }
+        };
         dump(h, "after app text");
+        println!(
+            "    per-keystroke agreement: Shortcut field {} ({combo_lies} disagreements), \
+             App field {} ({app_lies} disagreements)",
+            if combo_lies == 0 { "PASS" } else { "FAIL" },
+            if app_lies == 0 { "PASS" } else { "FAIL" },
+        );
+        if combo_lies > 0 {
+            println!(
+                "      the control field disagreed too -- suspect the probe's own \
+                 timing before believing the App result"
+            );
+        }
 
         let apply = dlg_item(h, IDC_APPLY);
         let enabled = apply.map(|a| unsafe { IsWindowEnabled(a) }.as_bool());
@@ -644,7 +851,11 @@ mod win {
 
         measure_geometry(h);
 
-        drive_an_edit(h);
+        // A read-only window has nothing to drive, and nothing to save on
+        // the way out either -- the close below must NOT produce a prompt.
+        if !report_read_only(h) {
+            drive_an_edit(h);
+        }
 
         // Leave the machine as it was found. If the model is still dirty
         // the window asks before closing -- that prompt is a feature, so
