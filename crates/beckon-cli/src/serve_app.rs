@@ -283,7 +283,18 @@ mod app {
             log: (log != log_default).then(|| log.clone()),
         });
 
-        if let Err(e) = crate::serve::cmd_serve_app(&config, Some(log), autostart) {
+        // 4. `ServeAnyway`: this binary has no console for a parse error and
+        // no caller for an exit code, and a modal dialog here is a dead end
+        // -- measured on a14 2026-08-11, a broken config left the process
+        // alive with NO tray icon, so the read-only settings window built for
+        // exactly this file could not be reached. It starts instead,
+        // registers nothing, writes nothing, and says so. See `BrokenConfig`.
+        if let Err(e) = crate::serve::cmd_serve_app(
+            &config,
+            Some(log),
+            autostart,
+            crate::serve::BrokenConfig::ServeAnyway,
+        ) {
             eprintln!("beckon serve: {e:#}");
             // The lock refusal is a designed outcome, not a fault -- but with
             // no console the user needs telling, or a double-click looks like

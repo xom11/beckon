@@ -88,6 +88,101 @@ pub struct AutostartCapability {
     pub log: Option<PathBuf>,
 }
 
+/// What a front door does when the config file reads but does not parse.
+///
+/// **The two front doors answer this differently on purpose.**
+///
+/// `beckon.exe serve` (`Refuse`) keeps the behaviour scripts already depend
+/// on: the parse error goes to stderr, which it has, and the process exits
+/// non-zero, which its caller can read. A Scheduled Task, a CI job or a shell
+/// that today distinguishes "config broken" by that exit code must keep
+/// doing so -- and `beckon check` is unaffected either way. Silently turning
+/// that into a process that runs forever would be a breaking change nobody
+/// asked for.
+///
+/// `beckon-serve.exe` (`ServeAnyway`) has neither: no console for the error
+/// and no caller for the code. Measured on a14 2026-08-11, a broken config
+/// there ended in a modal dialog with **no tray icon at all** -- which
+/// stranded the one thing built for this situation, the read-only settings
+/// window, behind a tray that was never installed. So it starts, registers
+/// nothing, writes nothing, and says what is wrong in the tray and in the
+/// window.
+///
+/// Both refuse a file that cannot be READ (deleted, locked, denied), on both
+/// front doors: `load_settings_model` returns `Err` for that too, so
+/// `open_settings` would refuse to open and a tray installed for its sake
+/// could do nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrokenConfig {
+    Refuse,
+    /// Constructed only by `serve_app_main` (`beckon-serve.exe`), which is
+    /// Windows-only -- so the other two CI jobs see a variant nothing builds.
+    /// Same annotation, and the same reasoning, as `ServeState::log`: the
+    /// decision it selects is tested on all three jobs, only the caller is
+    /// platform-bound. macOS `serve` runs under launchd with no tray and no
+    /// settings window, so there would be nothing for it to rescue.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    ServeAnyway,
+}
+
+/// What `cmd_serve_app` starts with.
+///
+/// Split out of `cmd_serve_app` so the decision is reachable from a test:
+/// `cmd_serve_app` itself installs a hotkey manager and never returns, the
+/// same reason `acquire_lock` is its own function.
+struct Startup {
+    shortcuts: Vec<Shortcut>,
+    keyboard: KeyboardConfig,
+    /// The parser's own message, when the file did not parse. `Some` means
+    /// the two fields above are empty defaults and nothing will be
+    /// registered -- there is no other way to reach that combination.
+    broken: Option<String>,
+}
+
+/// Read the config text into a startup plan, or refuse.
+///
+/// `Err` carries the parser's message unprefixed, so the caller can put the
+/// path in front of it and produce byte-for-byte the message `beckon serve`
+/// has always printed for a broken file.
+///
+/// **The `ServeAnyway` arm discards the parsed keyboard block along with the
+/// shortcuts**, and that is not laziness: a file that does not parse has no
+/// trustworthy `keyboard.caps`, and `sync_caps_hook` reads exactly that field
+/// to decide whether to install a low-level keyboard hook. Defaults keep the
+/// hook off, which is the only safe reading of a file beckon could not
+/// understand.
+fn plan_startup(text: &str, on_broken: BrokenConfig) -> Result<Startup, String> {
+    match parse_config(text) {
+        Ok(cfg) => Ok(Startup {
+            shortcuts: cfg.shortcuts,
+            keyboard: cfg.keyboard,
+            broken: None,
+        }),
+        Err(e) => match on_broken {
+            BrokenConfig::Refuse => Err(e),
+            BrokenConfig::ServeAnyway => Ok(Startup {
+                shortcuts: Vec::new(),
+                keyboard: KeyboardConfig::default(),
+                broken: Some(e),
+            }),
+        },
+    }
+}
+
+/// The status phrase while the config file does not parse.
+///
+/// Built out of the same pieces as every other status line -- `set_paused`'s
+/// "paused (N shortcuts)" is the shape, and the bracket is
+/// `registration_phrase`'s own words -- so the tray tooltip and the menu head
+/// say "beckon - cannot read the config (0 shortcuts registered)" with no new
+/// vocabulary to learn and no claim that anything is running.
+///
+/// ASCII, like every `serve` log line: Windows PowerShell 5.1's
+/// `Get-Content` defaults to ANSI.
+fn unreadable_phrase() -> String {
+    format!("cannot read the config ({})", registration_phrase(0, 0))
+}
+
 struct ServeState {
     shortcuts: Vec<Shortcut>,
     /// The `keyboard` block. `caps`/`caps_tap`/`caps_hold` today, and only
@@ -176,7 +271,9 @@ fn acquire_lock(config: &Path) -> Result<std::fs::File> {
 }
 
 pub fn cmd_serve(config: &Path, log: Option<PathBuf>) -> Result<()> {
-    cmd_serve_app(config, log, None)
+    // `Refuse`: this front door has a console to print the parse error to and
+    // a caller to hand the exit code to. See `BrokenConfig`.
+    cmd_serve_app(config, log, None, BrokenConfig::Refuse)
 }
 
 /// Shared implementation for both Windows front doors (`cmd_serve`, the CLI
@@ -191,6 +288,7 @@ pub fn cmd_serve_app(
     config: &Path,
     log: Option<PathBuf>,
     autostart: Option<AutostartCapability>,
+    on_broken: BrokenConfig,
 ) -> Result<()> {
     let _lock = acquire_lock(config)?;
     let config = config
@@ -198,14 +296,18 @@ pub fn cmd_serve_app(
         .with_context(|| format!("cannot resolve `{}`", config.display()))?;
     let text = std::fs::read_to_string(&config)
         .with_context(|| format!("cannot read `{}`", config.display()))?;
-    let parsed = parse_config(&text).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
-    let shortcuts = parsed.shortcuts;
+    // The path prefix is applied HERE rather than inside `plan_startup`, so
+    // the refusal is byte-for-byte the message `beckon serve` has always
+    // printed for a file that does not parse.
+    let plan =
+        plan_startup(&text, on_broken).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
+    let broken = plan.broken;
     // Outside the RefCell on purpose — see module doc.
     let backend: Rc<Box<dyn Backend>> = Rc::new(crate::pick_backend()?);
 
     let state = Rc::new(RefCell::new(ServeState {
-        shortcuts,
-        keyboard: parsed.keyboard,
+        shortcuts: plan.shortcuts,
+        keyboard: plan.keyboard,
         config: config.clone(),
         paused: false,
         log,
@@ -250,7 +352,20 @@ pub fn cmd_serve_app(
     #[cfg(target_os = "windows")]
     install_tray_menu(&state, &mgr);
 
-    let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+    // The parse error itself goes to the log first, in the same shape
+    // `reload` logs one, so the log says WHAT is wrong and not merely that
+    // something is. `broken` is `Some` only under `BrokenConfig::ServeAnyway`
+    // -- the other front door returned above.
+    if let Some(e) = &broken {
+        eprintln!(
+            "beckon serve: config does not parse, serving no shortcuts: {}: {e}",
+            config.display()
+        );
+    }
+    let phrase = match &broken {
+        Some(_) => unreadable_phrase(),
+        None => registration_phrase(outcome.ok, state.borrow().shortcuts.len()),
+    };
     state.borrow_mut().last_phrase = phrase.clone();
     state.borrow_mut().registered = outcome.by_canonical();
     sync_caps_hook(&state);
@@ -258,6 +373,18 @@ pub fn cmd_serve_app(
     set_tray_status(&format!("beckon - {phrase}"));
     if let Some(toast) = failure_toast(&outcome.failed) {
         crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
+    }
+    if broken.is_some() {
+        // A tray icon is passive, and this process may have been started by
+        // the Run key rather than by a person -- so say once that the keys
+        // are gone, and where to look. `MachineRepeat` for the same reason
+        // `reload`'s failure arm uses it: a logon loop must not become a
+        // notification loop.
+        crate::notify::report(
+            "no hotkeys registered - beckon cannot read the config. \
+             Open Settings from the tray icon to see why.",
+            crate::notify::Cause::MachineRepeat,
+        );
     }
     HotkeyManager::run_forever();
 }
@@ -1311,6 +1438,102 @@ mod tests {
         assert_eq!(
             failure_toast(&failed),
             Some("7 hotkeys failed to register: a, b, c, d, e and 2 more".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Starting on a config that does not parse
+    //
+    // Measured on a14 2026-08-11: `beckon-serve <broken.toml>` ended in a
+    // modal dialog with NO tray icon, so the read-only settings window --
+    // which exists precisely for a file that does not parse -- was
+    // unreachable from the one starting condition that most needs it. These
+    // tests pin the decision half of the fix, and they run on all three CI
+    // jobs; the tray and the window compile on one.
+    // -----------------------------------------------------------------
+
+    const GOOD: &str = "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\n";
+    /// Broken the way a real config breaks -- a value the user had not
+    /// finished typing -- and carrying `keyboard.caps = true` so the test
+    /// below can prove nothing in it is honoured.
+    const BROKEN: &str = "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\n\"ctrl+alt+e\" = \n";
+
+    #[test]
+    fn a_file_that_parses_is_served_whatever_the_policy_says() {
+        for policy in [BrokenConfig::Refuse, BrokenConfig::ServeAnyway] {
+            let plan = plan_startup(GOOD, policy).expect("this file parses");
+            assert_eq!(plan.shortcuts.len(), 1);
+            assert!(plan.keyboard.caps, "the keyboard block is carried through");
+            assert_eq!(plan.broken, None, "nothing is wrong with this file");
+        }
+    }
+
+    #[test]
+    fn the_console_front_door_still_refuses_a_broken_file() {
+        // `beckon.exe serve` must keep exiting non-zero for scripts. The
+        // message is the parser's own, unprefixed, so `cmd_serve_app` can put
+        // the path in front of it and print exactly what it always printed.
+        let err = plan_startup(BROKEN, BrokenConfig::Refuse)
+            .err()
+            .expect("a broken file must be refused on this front door");
+        assert_eq!(
+            err,
+            parse_config(BROKEN).unwrap_err(),
+            "the refusal must carry the parser's own words, unprefixed"
+        );
+    }
+
+    #[test]
+    fn the_gui_front_door_starts_with_nothing_registered() {
+        let plan =
+            plan_startup(BROKEN, BrokenConfig::ServeAnyway).expect("this front door must start");
+        assert!(
+            plan.shortcuts.is_empty(),
+            "a file beckon cannot read binds no keys"
+        );
+        assert_eq!(
+            registration_phrase(0, plan.shortcuts.len()),
+            "0 shortcuts registered",
+            "and the phrase must not claim otherwise"
+        );
+        assert!(plan.broken.is_some(), "the reason travels with the plan");
+        assert_eq!(
+            plan.broken.as_deref(),
+            Some(parse_config(BROKEN).unwrap_err()).as_deref()
+        );
+    }
+
+    /// The safety property, not a formatting one: `sync_caps_hook` reads
+    /// `keyboard.caps` to decide whether to install a `WH_KEYBOARD_LL` hook.
+    /// A half-parsed file must never arm one.
+    #[test]
+    fn a_broken_start_cannot_arm_the_caps_hook() {
+        assert!(
+            BROKEN.contains("keyboard.caps = true"),
+            "precondition: the broken file asks for the hook"
+        );
+        let plan = plan_startup(BROKEN, BrokenConfig::ServeAnyway).unwrap();
+        assert_eq!(
+            plan.keyboard,
+            KeyboardConfig::default(),
+            "nothing in a file that does not parse is honoured"
+        );
+        assert!(!plan.keyboard.caps);
+    }
+
+    #[test]
+    fn the_unreadable_phrase_is_honest_and_ascii() {
+        let p = unreadable_phrase();
+        assert_eq!(p, "cannot read the config (0 shortcuts registered)");
+        // What the tray tooltip and the menu head become. Neither may claim
+        // a registration that did not happen.
+        assert_eq!(
+            format!("beckon - {p}"),
+            "beckon - cannot read the config (0 shortcuts registered)"
+        );
+        assert!(
+            p.is_ascii(),
+            "serve status lines are read through ANSI tools"
         );
     }
 
