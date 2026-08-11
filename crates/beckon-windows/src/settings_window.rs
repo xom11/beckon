@@ -236,7 +236,16 @@ unsafe fn create() -> Result<(), String> {
     let _ = InitCommonControlsEx(&icc);
 
     let class = w!("BeckonSettingsWindow");
-    let wc = WNDCLASSW {
+    // Resource id 1, the same icon beckon.rc embeds and the tray already
+    // uses. Null here is why the title bar and Alt-Tab show the default
+    // while the tray shows beckon's.
+    let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16)).unwrap_or_default();
+    // WNDCLASSEXW, not WNDCLASSW: the brief called for hIconSm, but that
+    // field only exists on the Ex struct (paired with RegisterClassExW) --
+    // WNDCLASSW has no small-icon slot at all. Same feature flag either way
+    // (Win32_UI_WindowsAndMessaging), so this is not a new dependency.
+    let wc = WNDCLASSEXW {
+        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
         lpfnWndProc: Some(wndproc),
         hInstance: hinst.into(),
         lpszClassName: class,
@@ -245,11 +254,13 @@ unsafe fn create() -> Result<(), String> {
         // and not the raw index -- 0 means "no background", so passing
         // COLOR_BTNFACE unshifted paints the window with COLOR_BTNSHADOW.
         hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
+        hIcon: icon,
+        hIconSm: icon,
         ..Default::default()
     };
     // Non-zero on success; a second call for an already-registered class
     // fails harmlessly, which is what happens when the window is reopened.
-    RegisterClassW(&wc);
+    RegisterClassExW(&wc);
 
     // CW_USEDEFAULT for position, but the SIZE must be scaled by hand:
     // under per-monitor-v2 these are physical pixels, and no WM_DPICHANGED
@@ -448,6 +459,10 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_APP,
         font,
     );
+    // Under comctl32 v6 the `cy` passed to SetWindowPos no longer decides
+    // how tall the drop-down is; this does. Without it the list opens at
+    // the default 30 items regardless of the height layout computes.
+    SendMessageW(app, CB_SETMINVISIBLE, Some(WPARAM(8)), Some(LPARAM(0)));
     let notes = child(hwnd, w!("STATIC"), "", SS_LEFT_STYLE, IDC_NOTES, font);
 
     child(
@@ -592,6 +607,11 @@ unsafe fn layout(hwnd: HWND) {
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
     let s = |v: i32| v * dpi as i32 / 96;
+    // Independent of WM_GETMINMAXINFO: the floor is about the frame, and a
+    // clamp is about the arithmetic. Either alone leaves a negative cy
+    // reachable -- SetWindowPos with one produces a control the user can
+    // never see or focus again.
+    let clamp = |v: i32| v.max(0);
 
     let pad = s(10);
     let row = s(24);
@@ -613,7 +633,7 @@ unsafe fn layout(hwnd: HWND) {
     };
 
     let top = pad + banner_h;
-    let mid_h = h - top - kb_h - bottom_h - pad * 2;
+    let mid_h = clamp(h - top - kb_h - bottom_h - pad * 2);
     let list_w = (w - pad * 3) * 45 / 100;
 
     let place = |id: i32, x: i32, y: i32, cx: i32, cy: i32| {
@@ -641,7 +661,7 @@ unsafe fn layout(hwnd: HWND) {
         place_h(keep, pad + bw + s(92), pad, s(84), row);
     }
 
-    place_h(list, pad, top, list_w, mid_h - btn_h - s(6));
+    place_h(list, pad, top, list_w, clamp(mid_h - btn_h - s(6)));
     place(IDC_ADD, pad, top + mid_h - btn_h, s(70), btn_h);
     place(IDC_REMOVE, pad + s(76), top + mid_h - btn_h, s(80), btn_h);
 
@@ -658,7 +678,7 @@ unsafe fn layout(hwnd: HWND) {
     // the closed control; the closed control is sized by the system.
     place_h(app, rx, y, rw, row * 8);
     y += row + s(10);
-    place_h(notes, rx, y, rw, mid_h - (y - top) - btn_h - s(6));
+    place_h(notes, rx, y, rw, clamp(mid_h - (y - top) - btn_h - s(6)));
     place(
         IDC_APPLY,
         rx + rw - s(84),
@@ -873,6 +893,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_CREATE => {
                 build_children(hwnd);
                 layout(hwnd);
+                LRESULT(0)
+            }
+            WM_GETMINMAXINFO => {
+                // A frame promise, not an arithmetic one -- Step 2 clamps
+                // independently, because a floor does not make subtraction
+                // safe, it only makes it unlikely.
+                let dpi = GetDpiForWindow(hwnd).max(96);
+                let mm = &mut *(lp.0 as *mut MINMAXINFO);
+                mm.ptMinTrackSize.x = scale(720, dpi);
+                mm.ptMinTrackSize.y = scale(460, dpi);
                 LRESULT(0)
             }
             WM_SIZE => {
