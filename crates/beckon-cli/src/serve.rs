@@ -90,9 +90,9 @@ pub struct AutostartCapability {
 
 struct ServeState {
     shortcuts: Vec<Shortcut>,
-    /// The `keyboard` block. Only `caps`/`caps_tap` today, and only Windows
-    /// acts on them — but the file is parsed identically everywhere so one
-    /// config can travel between machines.
+    /// The `keyboard` block. `caps`/`caps_tap`/`caps_hold` today, and only
+    /// Windows acts on them — but the file is parsed identically everywhere
+    /// so one config can travel between machines.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     keyboard: KeyboardConfig,
     config: PathBuf,

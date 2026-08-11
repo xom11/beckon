@@ -739,7 +739,8 @@ the decision recorded under *Open questions → 1* that beckon uses
 "RegisterEventHotKey / RegisterHotKey: no event tap, no LLHOOK". The reversal
 is deliberate and narrow: one opt-in feature, off by default, on one OS.
 
-Caps is an **alias for `ctrl+super+alt`**, not a fifth modifier. The hook
+Caps is an **alias for the configured chord** — `ctrl+super+alt` by
+default, `keyboard.caps_hold` to change it — not a fifth modifier. The hook
 injects the chord `RegisterHotKey` already listens for, so `Combo`,
 `parse_shortcuts` and `register_all` are untouched and the config file is
 identical on a machine with the tick and one without. Decisions live in

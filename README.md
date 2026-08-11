@@ -273,6 +273,22 @@ Tapping Caps on its own still toggles Caps Lock by default.
 `keyboard.caps_tap = "escape"` makes it Esc instead, and `"none"` makes it
 do nothing.
 
+By default the chord Caps stands in for is `ctrl+super+alt`.
+`keyboard.caps_hold = "ctrl+alt"` changes which one — only `ctrl`, `super`
+and `alt` are accepted; `shift` is refused, because releasing Shift while
+you are physically holding it makes everything you type next lowercase
+until you let go and press it again.
+
+One thing worth knowing if you edit the file by hand rather than through
+Settings: `keyboard.caps_hold` is written to `apps.toml` only when it
+differs from the default. That is deliberate, not an omission — this key
+did not exist in earlier beckon releases, and an unknown key under
+`keyboard` is a hard parse error, so a file that always carried it would be
+rejected outright by any beckon built before it. Writing it only when it
+carries information keeps the default-chord case readable by every past
+version, which matters on a machine that updates through Scoop while
+another one has not yet.
+
 Three things to know before ticking it:
 
 - **It does nothing while an elevated window has focus.** beckon runs at
