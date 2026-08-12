@@ -865,8 +865,17 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .tab[aria-selected="true"] { color: var(--accent-fg); background: var(--accent); }
 
 /* With JS on this holds one panel; with JS off it holds four, stacked. Both
-   are correct pages, which is the whole point of the ordering. */
-.panels { display: grid; gap: 16px; }
+   are correct pages, which is the whole point of the ordering.
+
+   `minmax(0, 1fr)` rather than a bare implicit column, and it is what stops the
+   PAGE from scrolling sideways. A grid item's automatic minimum size is
+   content-based, and the panel's content includes a `white-space: pre` install
+   command 57 characters long — so an implicit `auto` column let every panel
+   size to that line instead of to its track. Measured at 375px before the fix:
+   `.panels` 327px, each `.panel` 679px, `documentElement.scrollWidth` 703px.
+   The `overflow-x: auto` on the inner `<code>` below only takes effect once the
+   panel is allowed to be narrower than its content. */
+.panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 
 .panel {
   padding: var(--pad);
