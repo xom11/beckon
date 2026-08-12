@@ -844,8 +844,13 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     };
 
     if !want {
-        if caps_hook::is_installed() {
-            caps_hook::uninstall();
+        // Drop the Caps reason unconditionally. `is_installed()` reports the
+        // HHOOK, which a chord capture may also be holding, so it cannot
+        // stand in for "Caps holds it"; the before/after pair is only for
+        // the log line, which is about the hook going away.
+        let was_installed = caps_hook::is_installed();
+        caps_hook::uninstall_for(caps_hook::HookReason::Caps);
+        if was_installed && !caps_hook::is_installed() {
             eprintln!("beckon serve: caps hook removed");
         }
         return;
@@ -853,11 +858,18 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 
     let keys = bound.len();
     caps_hook::set_bindings(bound, hold, tap);
-    if caps_hook::is_installed() {
-        return;
-    }
-    match caps_hook::install() {
-        Ok(()) => eprintln!("beckon serve: caps hook active, {keys} keys reachable through Caps"),
+    // Deliberately NOT `if is_installed() { return; }`. A capture may be
+    // holding the hook, and returning there would leave the Caps reason
+    // unregistered -- so when the capture ended it would take the hook away
+    // from a Caps feature that is switched on. `install_for` is idempotent;
+    // only the log line needs to know whether this call did the installing.
+    let was_installed = caps_hook::is_installed();
+    match caps_hook::install_for(caps_hook::HookReason::Caps) {
+        Ok(()) => {
+            if !was_installed {
+                eprintln!("beckon serve: caps hook active, {keys} keys reachable through Caps");
+            }
+        }
         Err(e) => {
             eprintln!("beckon serve: {e}");
             // The user just ticked this; tell them every time.

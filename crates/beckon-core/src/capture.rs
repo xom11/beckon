@@ -410,6 +410,166 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
     Outcome::Captured
 }
 
+// ---------------------------------------------------------------------------
+// What the window says (spec F.3)
+// ---------------------------------------------------------------------------
+
+/// Armed: `Record` pressed, nothing typed yet.
+///
+/// A const rather than an arm of `hint`, because arming is not an outcome --
+/// no key has been pressed when the window first shows it.
+pub const HINT_ARMED: &str = "Press the shortcut. Esc stops recording.";
+
+/// Shown *instead of* arming when `SetWindowsHookExW` fails.
+///
+/// Spec F.3: do not silently fall back to message-queue capture. That path
+/// cannot see the Windows key, so it fails on precisely the chords beckon
+/// recommends -- and it would fail by recording the wrong thing rather than
+/// by refusing, which is the worse of the two.
+pub const HINT_UNAVAILABLE: &str =
+    "Cannot record here. Use the modifier boxes and the Key list instead.";
+
+const HINT_UNKNOWN_KEY: &str = "beckon has no name for that key. Pick one from the Key list.";
+
+/// Not from spec F.3, which gives no wording for `Refusal::Reserved` -- only
+/// F.5's instruction that a refused chord arrives "with the help line saying
+/// so". Written to the same shape as the bare-key line: what happened, then
+/// the way out. Deliberately vague about mechanism, because the family does
+/// not share one -- `Win+L` is seen and cannot be suppressed, while a lock
+/// key has already toggled its light before the hook runs.
+const HINT_RESERVED: &str = "Windows reserves that shortcut. Press Record and try again.";
+
+/// The hint line for one `step` outcome. `None` means the line is idle --
+/// recording has ended (or never started) and there is nothing to say.
+///
+/// **UI-thread only**, like every other formatting method here: it
+/// allocates. The hook callback gets an `Outcome` and posts; the string is
+/// built when `WM_CAPTURE` arrives.
+///
+/// `refused_keycap` is `CaptureState::refused_keycap()` -- read it straight
+/// off the state that produced `outcome`, and read it only then. It keeps
+/// the *last* refusal rather than clearing itself, so pairing a stale one
+/// with a fresh outcome names the wrong key.
+pub fn hint(outcome: Outcome, refused_keycap: Option<&KeyDef>) -> Option<String> {
+    match outcome {
+        // Holding modifiers is still the prompt, not an error: releasing
+        // them all returns to Armed and F.3 calls that "not an error".
+        Outcome::Partial => Some(HINT_ARMED.to_string()),
+        Outcome::Refused(Refusal::NoModifier) => Some(match refused_keycap {
+            Some(k) => format!(
+                "{} alone is not a shortcut - hold Ctrl, Win or Alt as well. \
+                 Press Record and try again.",
+                keycap(k)
+            ),
+            // A bare key the 81-key table cannot name -- numpad0, or Caps
+            // Lock. There is no name to put in the sentence above, and the
+            // honest thing to say is the one that is already true of it:
+            // beckon could not bind that key with any modifier either.
+            None => HINT_UNKNOWN_KEY.to_string(),
+        }),
+        Outcome::Refused(Refusal::UnknownKey) => Some(HINT_UNKNOWN_KEY.to_string()),
+        Outcome::Refused(Refusal::Reserved) => Some(HINT_RESERVED.to_string()),
+        Outcome::Ignored
+        | Outcome::PassThrough
+        | Outcome::Captured
+        | Outcome::Cancelled
+        | Outcome::Disarmed => None,
+    }
+}
+
+/// A key name as the sentence above wants to read it: `a` -> `A`, `f1` ->
+/// `F1`, matching the `Ctrl, Win or Alt` beside it.
+///
+/// Only the first character, and only ASCII -- every name in the 81-key
+/// table is ASCII, and upper-casing the whole of `bracketleft` shouts. This
+/// is not keycap rendering (`settings_window.rs` says the window does none);
+/// it is the minimum that makes `A alone is not a shortcut` read as English
+/// rather than as an article.
+fn keycap(k: &KeyDef) -> String {
+    let mut c = k.name.chars();
+    match c.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + c.as_str(),
+        None => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Who holds the hook (spec F.2)
+// ---------------------------------------------------------------------------
+
+/// Why the one `WH_KEYBOARD_LL` hook is installed.
+///
+/// **There is exactly one hook, and these are its two reasons.** A second
+/// hook is not an option: `WH_KEYBOARD_LL` hooks chain, so a capture hook
+/// running beside the Caps one records the alias `Caps+T` injects instead of
+/// the key pressed, and swallows the Caps-up that `CapsState.held` is
+/// waiting for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookReason {
+    /// `keyboard.caps` is on and not paused. Resident for the session.
+    Caps,
+    /// A shortcut field is recording. Transient, seconds at a time.
+    Capture,
+}
+
+/// Which reasons currently want the hook installed.
+///
+/// Two bools, and pure, so all three CI jobs test it -- `caps_hook.rs`
+/// compiles on one job in three, and a lifetime bug there would be invisible
+/// to the other two. Same argument `caps.rs` makes for `decide`.
+///
+/// `add` and `remove` answer one question: **is an OS call needed now?**
+/// Install on the first reason, unhook on the last, nothing in between. That
+/// is what keeps a capture ending from resetting `CapsState`, and a config
+/// reload mid-capture from reinstalling the hook underneath the capture.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HookOwners {
+    caps: bool,
+    capture: bool,
+}
+
+impl HookOwners {
+    /// Nobody holds it. `const` so a `thread_local!` can use a `const` block.
+    pub const fn new() -> Self {
+        HookOwners {
+            caps: false,
+            capture: false,
+        }
+    }
+
+    /// Whether the hook should be installed right now.
+    pub fn wanted(&self) -> bool {
+        self.caps || self.capture
+    }
+
+    /// Take a reason. Returns whether `SetWindowsHookExW` must now be called
+    /// -- true only for the first reason.
+    pub fn add(&mut self, reason: HookReason) -> bool {
+        let before = self.wanted();
+        *self.slot(reason) = true;
+        !before
+    }
+
+    /// Drop a reason. Returns whether `UnhookWindowsHookEx` must now be
+    /// called -- true only when the last one goes.
+    ///
+    /// Dropping a reason that never held it is a no-op, not an unhook: that
+    /// is the whole safety property, and `caps_hook` resets `CapsState`
+    /// only on a `true` from here.
+    pub fn remove(&mut self, reason: HookReason) -> bool {
+        let before = self.wanted();
+        *self.slot(reason) = false;
+        before && !self.wanted()
+    }
+
+    fn slot(&mut self, reason: HookReason) -> &mut bool {
+        match reason {
+            HookReason::Caps => &mut self.caps,
+            HookReason::Capture => &mut self.capture,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +887,102 @@ mod tests {
         };
         assert_eq!(step(injected, &mut st), Outcome::Ignored);
         assert_eq!(st.partial(), None);
+    }
+
+    // -----------------------------------------------------------------
+    // The hook refcount (spec F.2)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn the_hook_lives_while_either_reason_holds_it() {
+        let mut o = HookOwners::default();
+        assert!(!o.wanted());
+        assert!(o.add(HookReason::Caps)); // true = the OS call is needed
+        assert!(o.wanted());
+        assert!(
+            !o.add(HookReason::Capture),
+            "already installed; no second SetWindowsHookEx"
+        );
+        assert!(!o.remove(HookReason::Capture), "Caps still wants it");
+        assert!(o.wanted());
+        assert!(o.remove(HookReason::Caps)); // true = now unhook
+        assert!(!o.wanted());
+    }
+
+    /// The reason the refcount exists at all: capture ending must not reset
+    /// the Caps state machine, and a config reload during capture must not
+    /// reinstall the hook underneath it.
+    #[test]
+    fn dropping_capture_while_caps_holds_does_not_ask_for_an_unhook() {
+        let mut o = HookOwners::default();
+        o.add(HookReason::Caps);
+        o.add(HookReason::Capture);
+        assert!(!o.remove(HookReason::Capture));
+        assert!(o.wanted());
+    }
+
+    #[test]
+    fn removing_a_reason_that_never_held_it_changes_nothing() {
+        let mut o = HookOwners::default();
+        o.add(HookReason::Caps);
+        assert!(!o.remove(HookReason::Capture));
+        assert!(o.wanted());
+    }
+
+    // -----------------------------------------------------------------
+    // The hint strings (spec F.3, verbatim)
+    // -----------------------------------------------------------------
+
+    /// Armed. `Record` has been pressed and nothing typed yet.
+    #[test]
+    fn the_armed_hint_is_verbatim() {
+        assert_eq!(HINT_ARMED, "Press the shortcut. Esc stops recording.");
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_CONTROL);
+        assert_eq!(
+            hint(Outcome::Partial, st.refused_keycap()).as_deref(),
+            Some("Press the shortcut. Esc stops recording."),
+            "holding a modifier is still the prompt, not an error"
+        );
+    }
+
+    /// The one hint carrying a key name. Built here, on the UI thread --
+    /// never in the hook callback, which may not allocate or format.
+    #[test]
+    fn the_bare_key_hint_names_the_key_and_is_verbatim() {
+        let mut st = CaptureState::armed();
+        let out = down(&mut st, VK_A);
+        assert_eq!(out, Outcome::Refused(Refusal::NoModifier));
+        assert_eq!(
+            hint(out, st.refused_keycap()).as_deref(),
+            Some(
+                "A alone is not a shortcut - hold Ctrl, Win or Alt as well. \
+                 Press Record and try again."
+            )
+        );
+    }
+
+    #[test]
+    fn the_unnameable_key_hint_is_verbatim() {
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_CONTROL);
+        let out = down(&mut st, VK_NUMPAD0);
+        assert_eq!(out, Outcome::Refused(Refusal::UnknownKey));
+        assert_eq!(
+            hint(out, st.refused_keycap()).as_deref(),
+            Some("beckon has no name for that key. Pick one from the Key list.")
+        );
+    }
+
+    /// Shown when `SetWindowsHookExW` fails. Never fall back to
+    /// message-queue capture: that path cannot see the Windows key, so it
+    /// fails on precisely the chords beckon recommends.
+    #[test]
+    fn the_unavailable_hint_is_verbatim() {
+        assert_eq!(
+            HINT_UNAVAILABLE,
+            "Cannot record here. Use the modifier boxes and the Key list instead."
+        );
     }
 
     /// Every Outcome the UI must react to has to be posted; the ones it

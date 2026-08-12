@@ -12,9 +12,14 @@
 //! chord, and the real work happens later on the ordinary `WM_HOTKEY` path.
 
 use beckon_core::caps::{decide, Action, CapsState, Edge, KeyEvent};
+use beckon_core::capture::HookOwners;
 use beckon_core::shortcuts::{CapsTap, Chord};
 use std::cell::RefCell;
 use std::collections::HashSet;
+
+/// Why the hook is installed. Re-exported so callers name one thing:
+/// `caps_hook::HookReason::Caps`.
+pub use beckon_core::capture::HookReason;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -32,6 +37,9 @@ struct Config {
 
 thread_local! {
     static HOOK: RefCell<Option<HHOOK>> = const { RefCell::new(None) };
+    /// Which reasons want the hook. The decision logic is
+    /// `beckon_core::capture::HookOwners`; this is only where it lives.
+    static OWNERS: RefCell<HookOwners> = const { RefCell::new(HookOwners::new()) };
     static STATE: RefCell<CapsState> = RefCell::new(CapsState::default());
     static CONFIG: RefCell<Config> = RefCell::new(Config {
         bound: HashSet::new(),
@@ -155,33 +163,75 @@ pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
     CONFIG.with(|c| *c.borrow_mut() = Config { bound, hold, tap });
 }
 
-/// Install the hook on the CURRENT thread, which must have a message loop.
-/// Idempotent — a second call is a no-op rather than a second hook.
-pub fn install() -> Result<(), String> {
-    if is_installed() {
+/// Take a reason to hold the hook, installing it on the CURRENT thread —
+/// which must have a message loop — if this is the first reason.
+///
+/// Idempotent per reason and across reasons: a second call is a no-op rather
+/// than a second hook. **There must never be two `WH_KEYBOARD_LL` hooks**;
+/// spec F.2 spells out both failures, and both are silent.
+///
+/// On failure the reason is handed back before returning, so nothing is left
+/// believing it holds a hook that was never installed — which would make the
+/// *next* reason's `install_for` a successful no-op over nothing.
+pub fn install_for(reason: HookReason) -> Result<(), String> {
+    // Never hold this borrow across the OS call: a re-entrant borrow across
+    // an `extern "system"` boundary aborts the process rather than unwinding.
+    let need = OWNERS.with(|o| o.borrow_mut().add(reason));
+    if !need {
         return Ok(());
     }
     // A fresh press cycle: anything left over from a previous install would
-    // have the machine believing Caps is still held.
+    // have the machine believing Caps is still held. Only reached when the
+    // hook is genuinely about to be installed -- a second reason arriving
+    // later returns above, which is the whole point of the refcount.
+    //
+    // Before the OS call, not after: the callback can be dispatched the
+    // instant `SetWindowsHookExW` returns, so resetting afterwards would
+    // race a real keystroke and wipe it. If the call then fails, the reset
+    // is harmless -- no hook exists to have observed anything.
     STATE.with(|s| *s.borrow_mut() = CapsState::default());
-    let h = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) }
-        .map_err(|e| format!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}"))?;
+    let h = match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) } {
+        Ok(h) => h,
+        Err(e) => {
+            OWNERS.with(|o| {
+                o.borrow_mut().remove(reason);
+            });
+            return Err(format!("SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}"));
+        }
+    };
     HOOK.with(|s| *s.borrow_mut() = Some(h));
     Ok(())
 }
 
-/// Remove the hook. Safe when it is not installed.
-pub fn uninstall() {
-    HOOK.with(|s| {
-        if let Some(h) = s.borrow_mut().take() {
-            unsafe {
-                let _ = UnhookWindowsHookEx(h);
-            }
+/// Give up a reason, unhooking only when it was the last one. Safe when the
+/// reason never held it, and safe when the hook is not installed.
+///
+/// **Only a real unhook resets `CapsState`.** Dropping the capture reason
+/// while Caps still holds the hook must leave the Caps state machine exactly
+/// as it was: clearing `consumed` mid-stream leaks an unpaired key-up into
+/// whichever application has focus, and clearing `held` makes the next
+/// Caps-up look like a tap. Same rule `set_bindings` documents, arrived at
+/// from the other direction.
+pub fn uninstall_for(reason: HookReason) {
+    let unhook = OWNERS.with(|o| o.borrow_mut().remove(reason));
+    if !unhook {
+        return;
+    }
+    // Take the handle out first and drop the borrow, then call the OS: see
+    // `install_for` on why no borrow may be live across the boundary.
+    let h = HOOK.with(|s| s.borrow_mut().take());
+    if let Some(h) = h {
+        unsafe {
+            let _ = UnhookWindowsHookEx(h);
         }
-    });
-    STATE.with(|s| *s.borrow_mut() = CapsState::default());
+        STATE.with(|s| *s.borrow_mut() = CapsState::default());
+    }
 }
 
+/// Whether an `HHOOK` is currently held. **Not** "does anyone want one":
+/// ask `HookOwners` for that. Note it can lie — past
+/// `LowLevelHooksTimeout` Windows removes the hook silently and there is no
+/// API to ask (spec F.2, recorded not fixed).
 pub fn is_installed() -> bool {
     HOOK.with(|h| h.borrow().is_some())
 }
