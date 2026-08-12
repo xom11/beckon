@@ -98,7 +98,9 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
-use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, Combo, ComboView};
+use beckon_core::shortcuts::{
+    combo_display, combo_view, key_table, CapsTap, Chord, Combo, ComboView,
+};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -3290,7 +3292,31 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
 /// about what a cell says -- and the column set is one edit, in one place,
 /// when it changes.
 fn cells(it: &ListItem) -> Vec<String> {
-    vec![app_cell(it), it.combo.clone()]
+    vec![app_cell(it), combo_cell(it)]
+}
+
+/// The Shortcut column's text: the chord as a keyboard spells it.
+///
+/// **`ListItem::combo` is unchanged** -- that is the config string, and
+/// `Model` writes it back to the file. This is the display of it, and the
+/// two must not be conflated: `beckon_core::shortcuts` keeps `combo_display`
+/// separate from `Combo::canonical` for exactly this reason (spec §B.4).
+///
+/// Falls back to the raw string when the chord does not parse, so a row
+/// whose stored text is not a valid combo still shows what is actually in
+/// the file rather than an empty cell -- `Model::problems` is what says why.
+///
+/// **Real text, not a placeholder for a later custom draw.** Spec §B.5: the
+/// keycaps land *over* text that is really there, which is what keeps
+/// `LVM_GETITEMTEXT` working for `examples/settings_probe.rs` and keeps a
+/// screen reader announcing what the screen shows.
+fn combo_cell(it: &ListItem) -> String {
+    let d = combo_display(&it.combo);
+    if d.is_empty() {
+        it.combo.clone()
+    } else {
+        d
+    }
 }
 
 /// The App column's text: the app name, and the row's flag beside it when
