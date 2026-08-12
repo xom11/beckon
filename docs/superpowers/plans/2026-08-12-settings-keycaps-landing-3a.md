@@ -618,9 +618,26 @@ Create `crates/beckon-windows/examples/customdraw_probe.rs`:
 //!
 //! **Reads pixels, not intentions.** The only honest answer comes from what
 //! is on the screen, so the probe screen-captures the state-image rectangle
-//! (`LVIR_ICON` on subitem 0 is the state image's rect under
-//! `LVS_EX_CHECKBOXES`) and counts non-background pixels. A drawn tick box is
-//! tens of dark pixels; an absent one is zero.
+//! and counts non-background pixels. A drawn tick box is tens of dark
+//! pixels; an absent one is zero.
+//!
+//! **REFUTED during landing 3a: `LVIR_ICON` is NOT the state image's rect.**
+//! This brief originally said it was, and the probe shipped that way before
+//! review caught it. comctl32 computes the report-view icon rect as
+//! `Icon.left = Box.left + state_image_width`, with `Icon.right = Icon.left`
+//! unless a small image list is set -- so the rect starts *after* the
+//! checkbox, and this probe sets no image list. Either it comes back
+//! zero-width (a `BLIND` verdict that burns the hardware trip with no clue
+//! why), or it lands on the App label -- and since `CDRF_SKIPDEFAULT` on
+//! subitem 0 suppresses the cell's *text* as well as its state image, the
+//! subject row would read 0 while the control row read the ink of the word
+//! "Claude": a confident **false `TICK_LOST`** closing off §B.6's first
+//! branch for no reason.
+//!
+//! The rect is `[bounds.left, icon.left) x [bounds.top, bounds.bottom)`, from
+//! two `LVM_GETITEMRECT` calls. That interval IS the state image by
+//! construction, and it degenerates visibly (width 0) if the assumption is
+//! ever wrong again. Do not re-add the `LVIR_ICON`-alone claim.
 //!
 //! **Carries a control:** row 0 is skipped, row 1 is default-drawn. Row 1 MUST
 //! come back with ink. If it does not, the capture is broken and the verdict
