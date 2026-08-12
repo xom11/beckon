@@ -297,14 +297,36 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .hero-meta { margin: 18px 0 0; color: var(--fg-dim); font-size: 13px; }
 
 .hero-demo { margin-top: 48px; text-align: start; }
-.hero-stage { display: grid; justify-items: center; gap: 26px; }
+.hero-stage { display: grid; }
 
-/* hero demo: the chord.
+/* hero demo: the chords.
    One timeline, 4.4s, shared by every animated part of this demo. Nothing
-   here declares animation-delay, so the caps and all three cards are
-   phase-locked by construction rather than by three delays that agree. */
-.hero-chord { font-size: 1.15rem; }
-.hero-chord .key { animation: hero-cap 4.4s linear infinite both; }
+   here declares animation-delay, so all ten caps across the three chords and
+   all three cards are phase-locked by construction rather than by delays that
+   have to agree.
+
+   There is no single .hero-chord any more, and that is a correctness fix
+   rather than a layout preference: README.md's modifier defaults are `Super`
+   on Linux, Hyper (`cmd+ctrl+alt`) on macOS and `Ctrl+Win+Alt` on Windows, so
+   one chord above three cards was the Windows chord shown being pressed on a
+   Mac and a Linux box. Each card now carries its own.
+
+   .key and .chord are untouched — this only scopes SIZE and wrapping to the
+   hero. The chord wraps rather than shrinking to fit: three cards at a third
+   of a 375px viewport cannot hold four spelled-out modifier caps on one line
+   at any legible size, and the glyphs (Cmd)(Ctrl)(Alt) teach a reader who
+   does not already know them nothing. Wrapping is safe because the window
+   stack is bottom-aligned (see .os-stack), so a chord that takes two lines in
+   one card and one in another still leaves every stack on the same line —
+   structural, rather than a reserved height to re-measure per font. */
+.os-chord {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 10px;
+  font-size: clamp(.68rem, 1.5vw, 1rem);
+}
+.os-chord .key { animation: hero-cap 4.4s linear infinite both; }
 
 @keyframes hero-cap {
   /* 0-18% resting */
@@ -323,6 +345,8 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   width: 100%;
 }
 .os-card {
+  display: flex;
+  flex-direction: column;
   background: var(--bg);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
@@ -336,8 +360,13 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 
 /* The two fake windows overlap by 6px, so z-index has something to say and
-   the raise is a real change of stacking order rather than a hint. */
-.os-stack { position: relative; margin-top: 12px; }
+   the raise is a real change of stacking order rather than a hint.
+
+   `margin-block-start: auto` is what keeps the three stacks level: grid items
+   stretch to the tallest card, so pushing the stack to the bottom of its card
+   aligns all three no matter how many lines each chord wrapped onto. The 12px
+   is padding rather than margin because the auto margin has taken that slot. */
+.os-stack { position: relative; margin-block-start: auto; padding-top: 12px; }
 .os-win {
   position: relative;                 /* z-index needs a positioned box */
   background: var(--bg-raised);
@@ -925,12 +954,13 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 
   .hero { padding-block: 44px 0; }
   .hero-demo { margin-top: 34px; }
-  .hero-stage { gap: 18px; }
-  .hero-chord { font-size: 1rem; }
   .hero-btn { flex: 1 1 auto; }
   .os-grid { gap: 8px; }
   .os-card { padding: 8px; border-radius: 8px; }
   .os-label { font-size: 10px; }
+  /* The chord's own size is a clamp() on viewport width, so it needs no rule
+     here; only the gap and the space above it tighten. */
+  .os-chord { gap: 4px; margin-top: 7px; }
   .os-win { height: 46px; }
   .os-bar { height: 20px; padding: 0 6px; font-size: 10px; gap: 5px; }
 

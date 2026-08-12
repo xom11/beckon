@@ -60,20 +60,26 @@
 
         <div class="hero-stage" aria-hidden="true">
 
-          <div class="chord hero-chord">
-            <kbd class="key">Ctrl</kbd>
-            <kbd class="key">Win</kbd>
-            <kbd class="key">Alt</kbd>
-            <span class="plus">+</span>
-            <kbd class="key">C</kbd>
-          </div>
-
-          <!-- Three cards, one animation, no per-card delay. Simultaneity is the
-               argument, so it is structural here rather than configured. -->
+          <!-- Three cards, three DIFFERENT chords, one animation, no per-card
+               delay. The chord lives inside the card because it is not the same
+               chord on all three machines: README.md's modifier defaults are
+               `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS and
+               `Ctrl+Win+Alt` on Windows. Only the letter is shared, and that is
+               the actual claim. Simultaneity is still the argument and is still
+               structural: no element here declares an animation-delay, so every
+               cap in all three chords depresses on the same beat of one 4.4s
+               timeline. -->
           <div class="os-grid">
 
             <div class="os-card">
               <div class="os-label">macOS</div>
+              <div class="chord os-chord">
+                <kbd class="key">Cmd</kbd>
+                <kbd class="key">Ctrl</kbd>
+                <kbd class="key">Alt</kbd>
+                <span class="plus">+</span>
+                <kbd class="key">C</kbd>
+              </div>
               <div class="os-stack">
                 <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
                 <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
@@ -82,6 +88,13 @@
 
             <div class="os-card">
               <div class="os-label">Windows</div>
+              <div class="chord os-chord">
+                <kbd class="key">Ctrl</kbd>
+                <kbd class="key">Win</kbd>
+                <kbd class="key">Alt</kbd>
+                <span class="plus">+</span>
+                <kbd class="key">C</kbd>
+              </div>
               <div class="os-stack">
                 <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
                 <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
@@ -90,6 +103,11 @@
 
             <div class="os-card">
               <div class="os-label">Linux</div>
+              <div class="chord os-chord">
+                <kbd class="key">Super</kbd>
+                <span class="plus">+</span>
+                <kbd class="key">C</kbd>
+              </div>
               <div class="os-stack">
                 <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
                 <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
@@ -99,7 +117,7 @@
           </div>
         </div>
 
-        <p class="demo-steps">Ctrl+Win+Alt+C, pressed once on each machine: Claude comes to the front on all three.</p>
+        <p class="demo-steps">One line &mdash; beckon Claude &mdash; bound to each machine's own modifier. Pressed once on all three: Claude comes to the front on all three.</p>
       </div>
 
     </div>
