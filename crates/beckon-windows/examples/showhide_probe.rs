@@ -11,7 +11,13 @@
 //! `ShowWindow` means nothing. Reported as `CONTROL_CORRUPTED`, which MUST be
 //! `True` for the run to be worth reading.
 //!
-//! Build: `cargo build -p beckon-windows --example showhide_probe --all-targets`
+//! Build: `cargo build -p beckon-windows --example showhide_probe`
+//!
+//! `--example` names ONE target and does not combine with `--all-targets`;
+//! the whole-tree form on the hardware pass is `cargo build --workspace
+//! --all-targets`. It is `--examples` (plural, no target name) that must be
+//! avoided -- it skips `[[bin]]`, which is how a stale `beckon-serve.exe`
+//! gets tested. See CLAUDE.md.
 //! Run from **session 1** (an SSH shell is session 0 and has no desktop).
 
 fn main() {
@@ -113,6 +119,12 @@ mod win {
     pub fn run() {
         if let Err(e) = try_run() {
             eprintln!("showhide_probe failed: {e}");
+            // A failed probe must exit non-zero -- a scheduled-task harness
+            // checking $LASTEXITCODE (or any other caller) needs to be able
+            // to tell "ran and answered" from "never ran" without parsing
+            // stderr text. Same rule, same wording, as `customdraw_probe`:
+            // G2 and G3 are read by the same harness on the same trip.
+            std::process::exit(1);
         }
     }
 

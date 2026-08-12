@@ -45,7 +45,13 @@
 //! the ink counts, so a `BLIND` run -- or any other surprise -- is
 //! diagnosable from the console alone, without a source-level round trip.
 //!
-//! Build: `cargo build -p beckon-windows --example customdraw_probe --all-targets`
+//! Build: `cargo build -p beckon-windows --example customdraw_probe`
+//!
+//! `--example` names ONE target and does not combine with `--all-targets`;
+//! the whole-tree form on the hardware pass is `cargo build --workspace
+//! --all-targets`. It is `--examples` (plural, no target name) that must be
+//! avoided -- it skips `[[bin]]`, which is how a stale `beckon-serve.exe`
+//! gets tested. See CLAUDE.md.
 //! Run from **session 1** (an SSH shell is session 0 and has no desktop).
 
 fn main() {

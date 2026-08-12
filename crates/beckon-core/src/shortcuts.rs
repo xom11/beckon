@@ -1132,6 +1132,32 @@ mod tests {
         }
     }
 
+    /// Two keys must never wear the same cap.
+    ///
+    /// `every_key_in_the_table_has_an_ascii_label` proves each label is
+    /// non-empty and ASCII; neither of those notices a COLLISION. Adding
+    /// `enter` beside `return`, or `esc` beside `escape`, would hand two rows
+    /// of the settings window an identical Shortcut cell -- two different
+    /// chords that read the same on screen, with nothing in the window able
+    /// to tell the user which is which. `key_table_has_no_duplicates` guards
+    /// the names, the mac keycodes and the win VKs; this guards the fourth
+    /// column, the one the user actually reads.
+    #[test]
+    fn no_two_keys_share_a_label() {
+        let mut seen: Vec<(String, &str)> = key_table()
+            .iter()
+            .map(|k| (key_label(&k.name), k.name.as_str()))
+            .collect();
+        seen.sort();
+        for w in seen.windows(2) {
+            assert_ne!(
+                w[0].0, w[1].0,
+                "keys `{}` and `{}` both display as `{}`",
+                w[0].1, w[1].1, w[0].0
+            );
+        }
+    }
+
     /// **The display path must never reach the file.** `Combo::canonical` is the
     /// serialiser; if these two ever merge, beckon writes `Win` into a TOML it
     /// then cannot parse -- a config the user did not break and cannot obviously

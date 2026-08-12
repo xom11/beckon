@@ -469,13 +469,17 @@ mod cap {
     pub const TAP_ITEMS: [&str; 3] = ["Caps Lock", "Esc", "Nothing"];
     /// The filter box's placeholder. ASCII, like every display string.
     pub const FILTER_CUE: &str = "Filter";
-    /// The editor group's caption in its two states. `EDITOR_UNNAMED` is the
-    /// row before an app name is picked.
+    /// The editor group's caption in **two of its three states**. No row
+    /// selected is `EDITOR_NONE`; a row with no app name yet is
+    /// `EDITOR_UNNAMED`; a named row gets `Editing "<app>"`, which is built
+    /// in `apply_state` rather than living here because it interpolates.
     ///
-    /// **No `&` on either.** A group box caption's mnemonic moves focus to
-    /// the next control in tab order, which is the same reason the `App` and
-    /// `Shortcut` labels carry none -- and the collision table above has no
-    /// room to spare.
+    /// **No `&` on either constant.** A group box caption's mnemonic moves
+    /// focus to the next control in tab order, which is the same reason the
+    /// `App` and `Shortcut` labels carry none -- and the collision table
+    /// above has no room to spare. The third caption cannot rely on that,
+    /// since the catalog supplies its text: `apply_state` doubles any `&`
+    /// before writing it, and says there why.
     pub const EDITOR_NONE: &str = "No shortcut selected";
     pub const EDITOR_UNNAMED: &str = "Editing this shortcut";
 }
@@ -616,10 +620,33 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // pixel added here became a pixel of notes room. The notes are a fixed line
 // inside the editor group now (`notes_height`), so the leftover no longer
 // lands on them: at 860x640 the list reaches its full `tok::ROWS` and the
-// surplus -- about 78 px at 96 DPI, 119 at 150 % -- is slack between the
-// editor group and the keyboard group. The number is left alone here because
+// surplus -- **74 px at 96 DPI, 113 at 150 %** -- is slack between the editor
+// group and the keyboard group. The number is left alone here because
 // re-picking it is a question about what the window should look like at rest,
 // not arithmetic, and nothing on this machine can see the answer.
+//
+// **Those two figures were re-derived against the SHIPPED `notes_height`.**
+// They read 78 / 119 when this comment was first written, which was Task 6's
+// 32 px notes stub; Task 9's real body costs 36 px at 96 and 54 at 144, so
+// `grp_h` grew 4 / 6 and the clearance lost exactly that. Neither the window
+// size nor any token moved -- only the number written down here. The
+// clearance, with the banner hidden and the list unclamped, is
+//
+//   clearance = kb_y - (grp_y + grp_h)
+//             = h - 2*pad - 5*ctl - 2*band - 2*s(24) - 5*gap - list_h - notes_h
+//
+// @96, h = 640 - 39 non-client = 601, and pad/ctl/band/gap = 16/32/14/8:
+//   bar_y 553, kb_h 64, kb_y 475; y after band 2 = 56; notes_h 36,
+//   grp_h 148; want = 21 + 20*8 + 2 = 183 and room 405, so list_h = 183;
+//   grp_y 253, group bottom 401 -> 475 - 401 = **74**.
+// @144 (150 %), h = 960 - 58 non-client = 902, tokens 24/48/21/12:
+//   bar_y 830, kb_h 96, kb_y 713; y after band 2 = 84; notes_h 54,
+//   grp_h 222; want = 31 + 30*8 + 2 = 273 and room 608, so list_h = 273;
+//   grp_y 378, group bottom 600 -> 713 - 600 = **113**.
+// Row and header heights are `list_row_height` / `list_header_height`'s own
+// fallbacks, the same honest numbers `MIN_HEIGHT`'s table derives from.
+// Simulated, not seen: nothing on the machine this was written on can display
+// the window.
 const WINDOW_WIDTH: i32 = 860;
 const WINDOW_HEIGHT: i32 = 640;
 
@@ -630,11 +657,16 @@ const WINDOW_HEIGHT: i32 = 640;
 /// **This is no longer "the point where `layout` starts overlapping
 /// controls".** That is what this comment used to say, and it stopped being
 /// true when band 4 became a fixed-height group: every subtraction in
-/// `layout` is clamped, and band 3 gives up its own height (`editor_min`)
-/// before anything below it moves, so a window dragged past this floor
-/// produces a list with fewer rows — eventually none — rather than two
-/// controls in the same place. What the floor buys is that **the list is
-/// still worth looking at**.
+/// `layout` is clamped, and band 3 gives up **its own** height — `list_h`,
+/// the one flexing figure in the window — before anything below it moves, so
+/// a window dragged past this floor produces a list with fewer rows —
+/// eventually none — rather than two controls in the same place. What the
+/// floor buys is that **the list is still worth looking at**.
+///
+/// (`editor_min` is not that height and must not be read as it: it is what
+/// band 3 RESERVES for band 4 before choosing `list_h`, and it equals
+/// `grp_h`, band 4's own height. The distinction earns its ink here because
+/// this block is the derivation everything vertical is checked against.)
 ///
 /// `MIN_WIDTH` is spec B.2's number and clears both zero points this file
 /// computes — band 2's heading at a raw client width of ~332, band 4's key
@@ -969,11 +1001,19 @@ struct Ui {
     /// config with no shortcuts lays out with the fallback, and without this
     /// field the first Add would keep it: `external_change` does not move, the
     /// layout is skipped, and the list stays ~8 px taller than the eight rows
-    /// it is sized for, with the notes strip absorbing the difference until
-    /// the next resize. Small on screen; the reason it is guarded rather than
-    /// tolerated is that `list_row_height`'s own comment used to justify the
-    /// fallback by saying `apply_state` re-lays-out the instant a row appears,
-    /// which `shown_external` made false.
+    /// it is sized for.
+    ///
+    /// **Where those 8 px go changed with Task 9, and the guard is what stops
+    /// mattering more, not less.** They used to be absorbed by the notes
+    /// strip, which flexed into whatever the bands above left; the notes are
+    /// a fixed line inside the editor group now (`notes_height`), so nothing
+    /// absorbs anything. The extra 8 px push `y`, therefore `grp_y`,
+    /// therefore the whole editor group down by 8 -- eating slack above the
+    /// keyboard group, and near `MIN_HEIGHT` running into `y.min(kb_y)`. The
+    /// other reason it is guarded rather than tolerated is unchanged:
+    /// `list_row_height`'s own comment used to justify the fallback by saying
+    /// `apply_state` re-lays-out the instant a row appears, which
+    /// `shown_external` made false.
     ///
     /// Empty-vs-not is the whole condition: every non-empty list measures the
     /// same row, so no other transition changes the answer.
@@ -3420,10 +3460,29 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // the populated App combo -- the measured data-loss call (`Ui::shown_external`).
         // A group box caption is never measured by `layout`, so there is no
         // second path back in.
+        //
+        // **`&` is DOUBLED here, and only here.** A `BS_GROUPBOX` is a BUTTON,
+        // and a button caption reads a lone `&` as a mnemonic prefix: it is
+        // not drawn, and the letter after it gets an underline that steals a
+        // key. The two static captions (`cap::EDITOR_NONE` /
+        // `EDITOR_UNNAMED`) need no escape because they simply contain no
+        // `&` -- see the note on them. This third caption is the only one in
+        // the window fed from the CATALOG, and Start Menu names really do
+        // carry ampersands: `SS_NOPREFIX_STYLE`'s comment names `Notes & To
+        // Do` and `Arts & Crafts` for exactly this reason. Unescaped, the
+        // first draws as `Editing "Notes  To Do"` with **T** underlined --
+        // colliding with the `Ctrl` hold chip -- and the second underlines
+        // **C**, colliding with `Close`. There is no `SS_NOPREFIX` for a
+        // button, so doubling is the only route.
+        //
+        // **Not `shown()`**: that helper does the INVERSE (it strips markers
+        // so `layout` measures ink, not `&`), and running it here would drop
+        // the ampersand instead of drawing it. `set_text_if_changed` stays
+        // correct because it compares the same escaped string it writes.
         let editor_caption = match &st.detail {
             None => cap::EDITOR_NONE.to_string(),
             Some(d) if d.app.trim().is_empty() => cap::EDITOR_UNNAMED.to_string(),
-            Some(d) => format!("Editing \"{}\"", d.app.trim()),
+            Some(d) => format!("Editing \"{}\"", d.app.trim().replace('&', "&&")),
         };
         set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
 

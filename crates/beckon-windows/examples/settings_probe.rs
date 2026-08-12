@@ -248,16 +248,23 @@ mod win {
     const IDC_MOD_WIN: i32 = 1029;
     const IDC_MOD_ALT: i32 = 1030;
     const IDC_MOD_SHIFT: i32 = 1031;
-    /// `[(id, the word the config file spells it with)]`, in the canonical
-    /// order `Combo::canonical` prints. The probe reconstructs the whole
-    /// combo from the controls, so it needs its own copy of that order --
-    /// which is the point: a copy that agrees is a check, and one derived
-    /// from the window's own would only ever agree with itself.
-    const MODIFIERS: [(i32, &str); 4] = [
-        (IDC_MOD_CTRL, "ctrl"),
-        (IDC_MOD_WIN, "super"),
-        (IDC_MOD_ALT, "alt"),
-        (IDC_MOD_SHIFT, "shift"),
+    /// `[(id, the word the config file spells it with, the word the SCREEN
+    /// spells it with)]`, in the canonical order `Combo::canonical` prints.
+    /// The probe reconstructs the whole combo from the controls, so it needs
+    /// its own copy of that order -- which is the point: a copy that agrees
+    /// is a check, and one derived from the window's own would only ever
+    /// agree with itself.
+    ///
+    /// **Two spellings, because the window uses two.** `super` is what goes
+    /// in the TOML; `Win` is what the Shortcut column shows, because nothing
+    /// on a Windows keyboard is labelled `super`. `shortcut_shown` builds the
+    /// first, `shortcut_caps` the second, and only the second is comparable
+    /// to a list cell.
+    const MODIFIERS: [(i32, &str, &str); 4] = [
+        (IDC_MOD_CTRL, "ctrl", "Ctrl"),
+        (IDC_MOD_WIN, "super", "Win"),
+        (IDC_MOD_ALT, "alt", "Alt"),
+        (IDC_MOD_SHIFT, "shift", "Shift"),
     ];
     /// How many keys `beckon_core::shortcuts::key_table()` holds, and the
     /// order it holds them in at seven fixed points. The probe cannot link
@@ -332,7 +339,18 @@ mod win {
     }
 
     /// The whole shortcut the five controls currently show, spelled the way
-    /// the config file spells it.
+    /// the config file spells it: `ctrl+super+alt+t`.
+    ///
+    /// **This is the MODEL's spelling, and it is not what any list cell
+    /// says.** It is printed by `dump` beside the display spelling so the two
+    /// can be read against each other; comparing it to a cell is what
+    /// `shortcut_caps` is for. The key list holds the config names verbatim
+    /// (the window fills it from `key_table()`, whose `name` is the TOML
+    /// token), so the item text goes in here unchanged -- and that is not an
+    /// assumption, it is what `KEY_ORDER` checks on hardware: it expects item
+    /// 56 to read `comma`, not `,`. If the list ever showed labels instead,
+    /// `KEY_ORDER` fails first and loudly, before this function can quietly
+    /// start writing them into a config spelling.
     ///
     /// `""` when no key is selected -- which is a state the window is
     /// entitled to be in, and the one in which it must send the model
@@ -343,11 +361,94 @@ mod win {
         };
         let mut parts: Vec<&str> = MODIFIERS
             .iter()
-            .filter(|(id, _)| checked(parent, *id))
-            .map(|(_, word)| *word)
+            .filter(|(id, _, _)| checked(parent, *id))
+            .map(|(_, word, _)| *word)
             .collect();
         parts.push(&key);
         parts.join("+")
+    }
+
+    /// One key's cap as the Shortcut column draws it -- the probe's OWN copy
+    /// of `beckon_core::shortcuts::key_label`.
+    ///
+    /// **The copy is the point, exactly as it is for `KEY_ORDER`.** The probe
+    /// drives another process and cannot link the crate; calling
+    /// `combo_display` here -- even if the linkage existed -- would compare
+    /// the window's output against the same function that produced it, which
+    /// agrees by construction and checks nothing.
+    ///
+    /// Independent at RUN time, which is the property that matters: this
+    /// table was transcribed from `key_label`, not invented, but it does not
+    /// resolve to it, so a later edit on either side shows up as a
+    /// disagreement on hardware instead of being absorbed silently. The
+    /// failure it exists to catch is `key_label` drifting -- or the window
+    /// reverting the column to `Combo::canonical` -- while the probe goes on
+    /// reporting MATCH.
+    ///
+    /// Exhaustive rather than "uppercase and hope": the punctuation and
+    /// navigation keys are precisely where a display table drifts, and they
+    /// are the ones no `assert_eq!` in `beckon-core` can see on a real
+    /// ListView.
+    fn key_cap(name: &str) -> String {
+        match name {
+            "space" => "Space".to_string(),
+            "comma" => ",".to_string(),
+            "period" => ".".to_string(),
+            "slash" => "/".to_string(),
+            "minus" => "-".to_string(),
+            "equal" => "=".to_string(),
+            "semicolon" => ";".to_string(),
+            "quote" => "'".to_string(),
+            "bracketleft" => "[".to_string(),
+            "bracketright" => "]".to_string(),
+            "backslash" => "\\".to_string(),
+            "grave" => "`".to_string(),
+            "tab" => "Tab".to_string(),
+            "return" => "Enter".to_string(),
+            "escape" => "Esc".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "delete" => "Del".to_string(),
+            "home" => "Home".to_string(),
+            "end" => "End".to_string(),
+            "pageup" => "PgUp".to_string(),
+            "pagedown" => "PgDn".to_string(),
+            "up" => "Up".to_string(),
+            "down" => "Down".to_string(),
+            "left" => "Left".to_string(),
+            "right" => "Right".to_string(),
+            // Letters, digits and f1-f20 uppercase whole: `t` -> `T`,
+            // `f10` -> `F10`, `7` -> `7`.
+            other => other.to_uppercase(),
+        }
+    }
+
+    /// The whole shortcut the five controls currently show, spelled the way
+    /// the SHORTCUT COLUMN spells it: `Ctrl + Win + Alt + T`.
+    ///
+    /// **This is the expectation `expect_shown` compares a cell against**, and
+    /// it exists because the column stopped being the config string verbatim:
+    /// the cell is `combo_display`'s output now, so an expectation built from
+    /// `shortcut_shown` disagreed with a correct window at every step and
+    /// turned this whole half -- the CONTROL for the App half -- into 5/5
+    /// false alarms.
+    ///
+    /// Built from `MODIFIERS`' third column and `key_cap`, both of which are
+    /// the probe's own; the only thing read out of the window is which boxes
+    /// are ticked and which key is selected.
+    ///
+    /// `""` when no key is selected, for the same reason `shortcut_shown`
+    /// returns it.
+    fn shortcut_caps(parent: HWND) -> String {
+        let Some((_, key)) = key_sel(parent) else {
+            return String::new();
+        };
+        let mut parts: Vec<String> = MODIFIERS
+            .iter()
+            .filter(|(id, _, _)| checked(parent, *id))
+            .map(|(_, _, cap)| (*cap).to_string())
+            .collect();
+        parts.push(key_cap(&key));
+        parts.join(" + ")
     }
 
     /// A scratch buffer inside the window's OWN process.
@@ -508,8 +609,15 @@ mod win {
     ///
     /// The App column appends the row's flag after three spaces
     /// (`Notepad   not installed`), so the field's text is a PREFIX of the
-    /// cell rather than the whole of it. The Shortcut column is the combo
-    /// verbatim.
+    /// cell rather than the whole of it -- which is what the second arm
+    /// allows for.
+    ///
+    /// **The Shortcut column is NOT the combo verbatim.** It used to be, and
+    /// this comment used to say so; the column now shows the chord as a
+    /// keyboard spells it (`Ctrl + Win + Alt + T`), never the TOML token
+    /// (`ctrl+super+alt+t`). It carries no flag suffix, so it only ever takes
+    /// the first arm -- and the expectation handed in must come from
+    /// `shortcut_caps`, not `shortcut_shown`.
     fn cell_agrees(cell: &str, field: &str) -> bool {
         cell == field
             || cell
@@ -971,11 +1079,15 @@ mod win {
         // field to read. `""` means the key list has nothing selected, which
         // is a legitimate state and not a failed read.
         let shortcut = shortcut_shown(h);
+        let caps = shortcut_caps(h);
         let appfld = dlg_item(h, IDC_APP).map(ctl_text).unwrap_or_default();
         let apply = dlg_item(h, IDC_APPLY)
             .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
             .unwrap_or(false);
-        println!("    [{label}] apply={apply} shortcut={shortcut:?} app={appfld:?}");
+        // Both spellings: `shortcut` is what the model carries and the file
+        // would get, `caps` is what the Shortcut cell must say. They differ
+        // on purpose -- see `shortcut_caps`.
+        println!("    [{label}] apply={apply} shortcut={shortcut:?} caps={caps:?} app={appfld:?}");
         println!(
             "      notes: {}",
             notes.replace('\r', "").replace('\n', " | ")
@@ -1133,10 +1245,19 @@ mod win {
 
     /// The controls' own reading is the expectation: whatever they show, the
     /// model must carry.
+    ///
+    /// Read through `shortcut_caps`, because the witness is the **Shortcut
+    /// cell** and that cell is the display spelling. Both spellings are
+    /// printed: they are the input and the output of the mapping under test,
+    /// and a run where they disagree in some *third* way is worth being able
+    /// to see.
     fn expect_shown(h: HWND, witness: Option<(HWND, i32, i32)>, step: &str) -> (usize, usize) {
-        let shown = shortcut_shown(h);
-        println!("    controls now show {shown:?}");
-        expect_cell(witness, step, Some(&shown))
+        let caps = shortcut_caps(h);
+        println!(
+            "    controls now show {caps:?} (config spelling: {:?})",
+            shortcut_shown(h)
+        );
+        expect_cell(witness, step, Some(&caps))
     }
 
     /// Drive the five shortcut controls and check the model followed.
@@ -1230,8 +1351,11 @@ mod win {
         late += l;
 
         // Steps 2-5: one modifier at a time, in canonical order, so a
-        // disagreement names the chip that caused it.
-        for (id, word) in MODIFIERS {
+        // disagreement names the chip that caused it. The step is labelled
+        // with the CONFIG word (`+super`), which names the chip
+        // unambiguously; the cell it is checked against is the display
+        // spelling, and `expect_shown` prints both.
+        for (id, word, _) in MODIFIERS {
             tick(h, id);
             let (w, l) = expect_shown(h, witness, &format!("+{word}"));
             wrong += w;

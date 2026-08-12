@@ -352,14 +352,31 @@ adding a second import.
 
 - [ ] **Step 4: Grep for anything that compares a cell to a config string**
 
+**Across the whole crate, not one file.** This grep was originally scoped to
+`settings_window.rs` alone, and that is structurally unable to reach the one
+place in the repo that actually compares a cell to a config string —
+`examples/settings_probe.rs`, which reconstructs `ctrl+super+alt+t` from the
+five controls and checks the Shortcut cell against it. It shipped broken for
+that reason: five of five steps in `drive_the_shortcut` reported `STILL
+WRONG, not slow` on a correct window, on the half the probe's own doc calls
+*the CONTROL for the App half*. Widen it:
+
 ```bash
-grep -n 'cells(\|app_cell(\|\.combo' crates/beckon-windows/src/settings_window.rs
+grep -rn 'cells(\|app_cell(\|combo_cell(\|\.combo\|list_cell(\|cell_agrees(' \
+  crates/beckon-windows/src crates/beckon-windows/examples crates/beckon-core/src
 ```
 Expected: every hit is either the model side (`it.combo`, `row.combo` — the
 config string, correct) or goes through `cells`. **If any code path compares a
 cell's text to a combo string to decide something, it breaks here** — the diff
 path compares cell-to-cell and is fine; a cell-to-model comparison is not.
 Record what you found in the commit message.
+
+**A probe that still reads the cell is not a probe that still checks it.**
+This task's own doc-comment text cites `settings_probe.rs` as evidence the
+change is safe, on the grounds that real `LVITEM` text "keeps
+`LVM_GETITEMTEXT` working". True, and insufficient: it establishes the probe
+can still *read* the cell, not that it compares it against the right string.
+Any task changing what a cell SAYS must check both.
 
 - [ ] **Step 5: Commit**
 
@@ -408,7 +425,14 @@ Create `crates/beckon-windows/examples/showhide_probe.rs`:
 //! `ShowWindow` means nothing. Reported as `CONTROL_CORRUPTED`, which MUST be
 //! `True` for the run to be worth reading.
 //!
-//! Build: `cargo build -p beckon-windows --example showhide_probe --all-targets`
+//! Build: `cargo build -p beckon-windows --example showhide_probe`
+//!
+//! `--example` names ONE target and does not combine with `--all-targets`;
+//! the whole-tree form on the hardware pass is `cargo build --workspace
+//! --all-targets`. It is `--examples` (plural, no target name) that must be
+//! avoided -- it skips `[[bin]]`, which is how a stale `beckon-serve.exe`
+//! gets tested. See CLAUDE.md.
+//!
 //! Run from **session 1** (an SSH shell is session 0 and has no desktop).
 
 use windows::core::*;
@@ -643,7 +667,14 @@ Create `crates/beckon-windows/examples/customdraw_probe.rs`:
 //! come back with ink. If it does not, the capture is broken and the verdict
 //! on row 0 means nothing.
 //!
-//! Build: `cargo build -p beckon-windows --example customdraw_probe --all-targets`
+//! Build: `cargo build -p beckon-windows --example customdraw_probe`
+//!
+//! `--example` names ONE target and does not combine with `--all-targets`;
+//! the whole-tree form on the hardware pass is `cargo build --workspace
+//! --all-targets`. It is `--examples` (plural, no target name) that must be
+//! avoided -- it skips `[[bin]]`, which is how a stale `beckon-serve.exe`
+//! gets tested. See CLAUDE.md.
+//!
 //! Run from **session 1**.
 
 use windows::core::*;
@@ -1666,7 +1697,7 @@ which does not build `[[bin]]` targets and will leave you testing a stale
 | **G1** | Open the settings window at **96 DPI** on the current build, before any of this lands. Screenshot it. Note every place the layout differs from the 150 % shots in `measurements/2026-08-11-landing-1-a14.md`. | Task 6 Step 3's arithmetic | Every `tok` constant is written in 96-DPI units and every measurement in this project was taken at 150 %. This is the base case, and it is the untested one. |
 | **G2** | `showhide_probe.exe` | Task 8 | `CONTROL_CORRUPTED` must be `True` or the run is blind. |
 | **G3** | `customdraw_probe.exe` | the 3b plan's §B.6 scope | `CONTROL_INK` must be non-zero or the run is blind. |
-| **G5** | `settings_probe.exe`, unchanged | nothing in this plan; it is the regression check | Expect a clean run. Nothing here renumbers a pinned id or changes `IDC_COMBO`'s style — which is exactly why it must be run rather than assumed. |
+| **G5** | `settings_probe.exe`, **rebuilt** — it is no longer unchanged. Task 2 made the Shortcut column the display spelling, so the probe grew its own `key_cap` + `shortcut_caps` (its independent copy of `combo_display`, in the spirit of `KEY_ORDER`) and `expect_shown` now compares the cell against `Ctrl + Win + Alt + T`. | nothing in this plan; it is the regression check | Expect a clean run. The five `drive_the_shortcut` steps are the ones to read first: this row said *unchanged* while Task 2 was silently invalidating them, and against the old expectation every one of the five reported `STILL WRONG, not slow` on a correct window. Nothing here renumbers a pinned id or changes `IDC_COMBO`'s style — which is exactly why the rest of the run must be run rather than assumed. |
 | **G6** | Re-run `hwpass\GlyphWidth.cs` (§36 — already builds `Segoe UI Variable Small` at 96 DPI and calls `GetTextExtentPoint32W`, the exact call `text_size` makes) and additionally record `sz.cy`, not only `sz.cx`. No new probe needed. | `notes_height`'s 96-DPI line-height figure (see its doc comment in `settings_window.rs`) | §36's own table shows the face's 144→96 advance ratio is not a clean 1.5 (35→22, 20→14, 18→12, i.e. 1.43–1.59, integer rounding at small sizes), so read the ratio-derived 16 px as 15–17, not exact. Either way the disagreement is bounded, not alarming: `MIN_HEIGHT`'s doc shows any real line height up to 18 px is absorbed by the shipped +4 slack, and 19 px costs one list row and nothing else. |
 | **eye** | Open the rebuilt window at 96 DPI **and** 150 %: group caption tracks the selection; empty state on deselect; two lines never overlap at `MIN_WIDTH` 720; `Ctrl + Win + Alt + T` in the Shortcut column; the notes cap reads as "there is more," not as a rendering fault. | — | The two-line cap and the `MIN_WIDTH` floor are the two things unit tests structurally cannot see. |
 | **eye2** | Select a row whose probe returns `Availability::CaptureSawNothing`, at `MIN_WIDTH` 720, with ≥3 notes on that row: does the note's own text wrap past two rendered lines, does a third note clip, and is `(+N more)` itself visible or clipped? | — | `IDC_NOTES` is `SS_LEFT` and word-wraps: the cap in `apply_state` bounds NOTES, not RENDERED lines, so one wide note can already overflow the two-line box on its own. This is the specific setup that exposes it — deliberately not left to whichever row happens to be selected. |
