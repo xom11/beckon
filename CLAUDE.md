@@ -769,7 +769,9 @@ Mutter (GNOME) and KWin (KDE) block external processes from focusing arbitrary w
 `keyboard.caps = true` installs a `WH_KEYBOARD_LL` hook. That **reverses**
 the decision recorded under *Open questions → 1* that beckon uses
 "RegisterEventHotKey / RegisterHotKey: no event tap, no LLHOOK". The reversal
-is deliberate and narrow: one opt-in feature, off by default, on one OS.
+is deliberate and narrow: off by default, on one OS. **Not "one opt-in
+feature" any more** — that was true until 2026-08-12; the next paragraph is
+why it no longer is.
 
 **Since 2026-08-12 there are TWO reasons to hold that hook, not one**: Caps,
 and a settings-window chord capture (see *Out of scope → GUI/TUI*). There is
@@ -829,8 +831,15 @@ Known gaps, documented in the README rather than hidden:
   never sees it. Detection is unreliable; documented, not guessed.
 - **EDR.** A low-level keyboard hook is the classic keylogger signature.
 
-`set_paused(true)` must unhook. Leaving it installed while paused would
-swallow Caps while nothing works — the worst available state.
+Pausing must never leave Caps able to swallow a keystroke. That used to mean
+`set_paused(true)` unhooks outright — true while Caps was the only reason to
+hold the hook, no longer guaranteed now that capture can hold it too:
+`sync_caps_hook`'s `uninstall_for(HookReason::Caps)` (`serve.rs:869`) drops
+only the Caps reason, and the HHOOK survives if a capture also owns it. What
+actually makes pausing safe is `clear_bindings()`, called first: it zeroes
+`Config::wanted`, and `hook_proc`'s `!c.wanted && st.at_rest()` arm passes
+every event straight through once nothing swallowed is still owed a matching
+up — installed or not, a paused hook eats nothing.
 
 ### macOS Accessibility permission
 Required to focus arbitrary apps. Permission is bound to the codesigned binary identity — rebuilding the binary may invalidate it and require re-granting in System Settings.

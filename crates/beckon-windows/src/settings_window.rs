@@ -555,9 +555,15 @@ mod tok {
     /// characters, comfortably inside this plus a drop-down button. It only
     /// ever had 200 because it inherited the column's number.
     ///
-    /// The 60 px that buys is what pays for `Record` and `Reset` sharing its
-    /// line. Without it the App combo's width reaches zero at a window about
-    /// 707 px wide, which `MIN_WIDTH` (720) does not keep a drag out of.
+    /// The 60 px this buys (`SHORTCUT_COL` 200 minus this 140) is what pays
+    /// for `Record` and `Reset` sharing its line. Put `key_w` back at
+    /// `SHORTCUT_COL`, everything else unchanged, and the fixed part of band
+    /// 4's line grows by exactly that 60 px -- from ~613 to ~673 px of
+    /// CLIENT width (see `layout`'s own comment on band 4 for where 613
+    /// comes from). The App combo would then hit zero at a WINDOW width of
+    /// about 720 -- `MIN_WIDTH` itself -- rather than the ~660 the current
+    /// tokens give it: no margin at all, instead of the ~60 px margin band 4
+    /// documents.
     pub const KEY_COL: i32 = 140;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
@@ -4015,11 +4021,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // BEFORE the save prompt, not after. `on_close_request` can
                 // put up a `MessageBoxW`, which runs a MODAL LOOP on this
                 // thread -- the same thread that dispatches the hook
-                // callback -- so a capture left armed across it would be
-                // swallowing every keystroke while the one dialog asking the
-                // user a question could not receive any. And if they answer
-                // Cancel, the window stays open with a hook that spent the
-                // dialog eating the keyboard.
+                // callback. That does not put the dialog's own keyboard at
+                // risk: once the box is foreground, `hook_proc`'s per-event
+                // `GetForegroundWindow()` gate stops matching `hwnd`, and
+                // losing activation fires the `WM_ACTIVATE(WA_INACTIVE)` arm
+                // above, which already calls `end_capture`. The reason to
+                // call it here too is F.2/F.4's own rule -- every route out
+                // of a live capture tears the hook down -- and WM_CLOSE is
+                // one more such route: it should not depend on whichever
+                // teardown path happens to run first, nor on
+                // `on_close_request` continuing to show a modal dialog at
+                // all.
                 //
                 // Cheap when nothing is armed, which is the overwhelmingly
                 // common case: `end_capture` is idempotent by construction.
