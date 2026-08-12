@@ -3755,14 +3755,19 @@ fn commit_fields() {
     // `ComboView`s instead makes the reordering invisible, because
     // `combo_view` -- like `Combo::parse` underneath it -- does not care
     // what order the modifiers were written in.
+    //
+    // Capture the App field text BEFORE the guard: if the combo push
+    // re-enters `apply_state`, it may rewrite the App field, so we must read
+    // it before any control changes that could trigger that re-entrancy.
+    let a = text_of(app);
     if Some(combo_view_of(hwnd, combo)) == stored.as_deref().map(combo_view) {
-        with_cb(|cb| (cb.on_edit_app)(text_of(app)));
+        with_cb(|cb| (cb.on_edit_app)(a));
         return;
     }
     if let Some(c) = shortcut_shown(hwnd, combo) {
         with_cb(|cb| (cb.on_edit_combo)(c));
     }
-    with_cb(|cb| (cb.on_edit_app)(text_of(app)));
+    with_cb(|cb| (cb.on_edit_app)(a));
 }
 
 /// The five shortcut controls' current values, as a `ComboView` -- the same
