@@ -35,17 +35,29 @@ struct Config {
     tap: CapsTap,
 }
 
+impl Default for Config {
+    /// What `caps::decide` sees when the Caps feature is off: no bound keys,
+    /// so no chord is ever injected, and `CapsTap::CapsLock`, so a Caps tap
+    /// is still a Caps tap. Spelled once, here, because `clear_bindings`
+    /// and the `thread_local!` below must not drift apart -- a `CapsTap`
+    /// that stayed on the user's configured `escape` after they switched
+    /// Caps off would keep remapping a key the config says is theirs again.
+    fn default() -> Self {
+        Config {
+            bound: HashSet::new(),
+            hold: Chord::default(),
+            tap: CapsTap::default(),
+        }
+    }
+}
+
 thread_local! {
     static HOOK: RefCell<Option<HHOOK>> = const { RefCell::new(None) };
     /// Which reasons want the hook. The decision logic is
     /// `beckon_core::capture::HookOwners`; this is only where it lives.
     static OWNERS: RefCell<HookOwners> = const { RefCell::new(HookOwners::new()) };
     static STATE: RefCell<CapsState> = RefCell::new(CapsState::default());
-    static CONFIG: RefCell<Config> = RefCell::new(Config {
-        bound: HashSet::new(),
-        hold: Chord::default(),
-        tap: CapsTap::CapsLock,
-    });
+    static CONFIG: RefCell<Config> = RefCell::new(Config::default());
     /// Whether a shortcut field is recording. A `Cell`, not a `RefCell`:
     /// this is the first thing the callback reads on EVERY keystroke, and a
     /// `Cell<bool>` cannot be borrowed and therefore cannot be the second
@@ -232,6 +244,25 @@ pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
     CONFIG.with(|c| *c.borrow_mut() = Config { bound, hold, tap });
 }
 
+/// Forget the key set, chord and tap behaviour. **Call this whenever the
+/// Caps feature stops being wanted** -- switched off, or paused.
+///
+/// Giving up the Caps *reason* is not enough, and this is the whole reason
+/// the function exists. The hook is shared: a chord capture installs it too,
+/// and `hook_proc`'s capture arm is gated on `armed() && GetForegroundWindow()
+/// == hwnd`, so a capture armed while the settings window is not frontmost
+/// falls straight through to `caps::decide` -- with whatever `CONFIG` was
+/// last handed. Leaving the old set in place means a config that says Caps
+/// is off can still alias `Caps+T`, seconds at a time, whenever the user
+/// records a shortcut. Clearing it leaves `decide` nothing to act on.
+///
+/// Like `set_bindings`, this must NEVER touch `STATE`: a key-down already
+/// swallowed still needs its up swallowed, and only the next Caps-down may
+/// clear that set.
+pub fn clear_bindings() {
+    CONFIG.with(|c| *c.borrow_mut() = Config::default());
+}
+
 /// Take a reason to hold the hook, installing it on the CURRENT thread —
 /// which must have a message loop — if this is the first reason.
 ///
@@ -248,6 +279,28 @@ pub fn install_for(reason: HookReason) -> Result<(), String> {
     let need = OWNERS.with(|o| o.borrow_mut().add(reason));
     if !need {
         return Ok(());
+    }
+    // A handle a previous `UnhookWindowsHookEx` failed to remove. Try once
+    // more before installing, because chaining a second `WH_KEYBOARD_LL` on
+    // top of a live one is exactly what spec F.2 forbids and what the
+    // refcount exists to prevent.
+    //
+    // One attempt, on the install path, on the UI thread -- never a loop and
+    // never on the callback path. The slot is cleared either way: past this
+    // point a handle we have now failed twice to remove is not worth aiming
+    // at again, and keeping it across the install below is the one ordering
+    // that could turn a retry into a double-unhook -- `SetWindowsHookExW`
+    // may hand back the same `HHOOK` value, and unhooking the stale copy
+    // would then kill the hook we just installed.
+    //
+    // Bound on its own line, like `uninstall_for` does it: the borrow must
+    // be released before the OS call, and an `if let` scrutinee keeps its
+    // temporaries alive for the whole body.
+    let stale = HOOK.with(|s| s.borrow_mut().take());
+    if let Some(stale) = stale {
+        if let Err(e) = unsafe { UnhookWindowsHookEx(stale) } {
+            eprintln!("beckon serve: caps hook: leftover hook not removed: {e}");
+        }
     }
     // A fresh press cycle: anything left over from a previous install would
     // have the machine believing Caps is still held. Only reached when the
@@ -290,10 +343,31 @@ pub fn uninstall_for(reason: HookReason) {
     // `install_for` on why no borrow may be live across the boundary.
     let h = HOOK.with(|s| s.borrow_mut().take());
     if let Some(h) = h {
-        unsafe {
-            let _ = UnhookWindowsHookEx(h);
+        match unsafe { UnhookWindowsHookEx(h) } {
+            Ok(()) => STATE.with(|s| *s.borrow_mut() = CapsState::default()),
+            Err(e) => {
+                // Put the handle back. Dropping it on the floor is what let
+                // the next `install_for` chain a SECOND `WH_KEYBOARD_LL`
+                // over a hook that may still be delivering -- the one thing
+                // spec F.2 forbids, and the reason capture shares this hook
+                // rather than installing its own. `install_for` makes one
+                // further attempt before it installs anything.
+                //
+                // `CapsState` is deliberately NOT reset here: if the hook is
+                // still live it is still swallowing, and clearing `consumed`
+                // mid-stream leaks an unpaired key-up into whichever
+                // application has focus -- the hazard `set_bindings`
+                // documents. Only a real unhook resets it.
+                //
+                // Most plausibly this means Windows already removed the hook
+                // itself past `LowLevelHooksTimeout`, in which case there is
+                // nothing live and the handle is merely stale. There is no
+                // API to tell the two apart (F.2, recorded not fixed), so
+                // this takes the branch that cannot leave two hooks running.
+                HOOK.with(|s| *s.borrow_mut() = Some(h));
+                eprintln!("beckon serve: caps hook: UnhookWindowsHookEx failed: {e}");
+            }
         }
-        STATE.with(|s| *s.borrow_mut() = CapsState::default());
     }
 }
 

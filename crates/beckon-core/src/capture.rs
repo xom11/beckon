@@ -43,9 +43,12 @@ pub enum Refusal {
     NoModifier,
     /// A key the 81-key table cannot name: numpad, media, IME.
     UnknownKey,
-    /// A chord Windows keeps for itself. Measured on a14: the hook sees
-    /// `Win+L` but cannot suppress it, so recording it would hand the user
-    /// a binding that can never fire.
+    /// A chord beckon cannot bind. Two unrelated reasons wear this one
+    /// variant -- see `is_reserved`: `Win+L` and `Ctrl+Alt+Del` are Windows'
+    /// own (measured on a14, the hook sees `Win+L` but cannot suppress it,
+    /// so recording it would hand the user a binding that can never fire),
+    /// while the three lock keys are beckon's own limit, their light having
+    /// already toggled by the time the hook runs.
     Reserved,
 }
 
@@ -479,11 +482,22 @@ const HINT_UNKNOWN_KEY: &str = "beckon has no name for that key. Pick one from t
 
 /// Not from spec F.3, which gives no wording for `Refusal::Reserved` -- only
 /// F.5's instruction that a refused chord arrives "with the help line saying
-/// so". Written to the same shape as the bare-key line: what happened, then
-/// the way out. Deliberately vague about mechanism, because the family does
-/// not share one -- `Win+L` is seen and cannot be suppressed, while a lock
-/// key has already toggled its light before the hook runs.
-const HINT_RESERVED: &str = "Windows reserves that shortcut. Press Record and try again.";
+/// so". The one invented string in this module, so what it may claim is
+/// bounded by what is true of all five chords `is_reserved` covers.
+///
+/// **It names no mechanism, because the five do not share one.** An earlier
+/// draft read `Windows reserves that shortcut.`, which is true of `Win+L`
+/// and `Ctrl+Alt+Del` and false of the three lock keys: those are refused
+/// because the lock state toggles before the hook runs, so swallowing the
+/// key cannot undo the light. That is beckon's limit, not a Windows
+/// reservation, and stating it the other way is a confidently-worded wrong
+/// sentence shown to the user -- worse, in this project, than saying less.
+///
+/// It also drops that draft's `Press Record and try again.` tail. A refusal
+/// leaves the field Armed (see `step`), so there is nothing to press; the
+/// mandated bare-key line carries the same tail and is copied verbatim
+/// anyway, because F.3 fixes its wording and does not fix this one.
+const HINT_RESERVED: &str = "beckon cannot bind that shortcut. Try a different one.";
 
 /// The hint line for one `step` outcome. `None` means the line is idle --
 /// recording has ended (or never started) and there is nothing to say.
@@ -973,6 +987,19 @@ mod tests {
         o.add(HookReason::Caps);
         assert!(!o.remove(HookReason::Capture));
         assert!(o.wanted());
+
+        // The case that separates `remove`'s `before && !self.wanted()` from
+        // a plain `!self.wanted()`: everything above passes under both
+        // spellings. On an EMPTY `HookOwners` the plain one returns true and
+        // asks for an `UnhookWindowsHookEx` against a hook that was never
+        // installed -- which, in `uninstall_for`, would also reset
+        // `CapsState` mid-stream.
+        let mut empty = HookOwners::new();
+        assert!(
+            !empty.remove(HookReason::Caps),
+            "nobody held it, so there is nothing to unhook"
+        );
+        assert!(!empty.wanted());
     }
 
     // -----------------------------------------------------------------
@@ -1020,9 +1047,90 @@ mod tests {
         );
     }
 
-    /// Shown when `SetWindowsHookExW` fails. Never fall back to
-    /// message-queue capture: that path cannot see the Windows key, so it
-    /// fails on precisely the chords beckon recommends.
+    /// The other route to that same string, and the judgement call `hint`'s
+    /// `NoModifier` arm makes rather than inventing a fifth sentence.
+    ///
+    /// A BARE unnameable key is `Refused(NoModifier)`, not
+    /// `Refused(UnknownKey)` -- `step` tests `mods.any()` first -- and
+    /// leaves `refused_keycap()` empty, so the named sentence has no name to
+    /// carry. Falling back to the unnameable-key line is honest because it
+    /// is true of this key under any modifier too. The sibling above cannot
+    /// reach this arm, so without this test the fallback is unpinned.
+    #[test]
+    fn a_bare_unnameable_key_falls_back_to_the_unnameable_hint() {
+        let mut st = CaptureState::armed();
+        let out = down(&mut st, VK_NUMPAD0);
+        assert_eq!(
+            out,
+            Outcome::Refused(Refusal::NoModifier),
+            "nothing is held, so this is the no-modifier refusal"
+        );
+        assert_eq!(
+            st.refused_keycap().map(|k| k.name.as_str()),
+            None,
+            "the 81-key table cannot name numpad0"
+        );
+        assert_eq!(
+            hint(out, st.refused_keycap()).as_deref(),
+            Some("beckon has no name for that key. Pick one from the Key list.")
+        );
+
+        // A bare lock key lands in the same arm for the same reason, and
+        // NOT in the reserved arm: `mods.any()` is tested before
+        // `is_reserved`.
+        let mut caps = CaptureState::armed();
+        let out = down(&mut caps, VK_CAPITAL);
+        assert_eq!(out, Outcome::Refused(Refusal::NoModifier));
+        assert_eq!(
+            hint(out, caps.refused_keycap()).as_deref(),
+            Some("beckon has no name for that key. Pick one from the Key list.")
+        );
+    }
+
+    /// The one invented string, so the test is what bounds what it may
+    /// claim: `is_reserved` covers two unrelated families and the sentence
+    /// has to be true of both.
+    ///
+    /// `Windows reserves that shortcut.` was not. It is true of `Win+L` and
+    /// `Ctrl+Alt+Del`, and false of the three lock keys -- those are refused
+    /// because the light toggles before the hook runs, which is beckon's
+    /// limit. Both halves below assert the same sentence deliberately.
+    #[test]
+    fn the_reserved_hint_is_true_of_both_reserved_families() {
+        let mut win_l = CaptureState::armed();
+        down(&mut win_l, VK_LWIN);
+        let out = down(&mut win_l, VK_L);
+        assert_eq!(out, Outcome::Refused(Refusal::Reserved));
+        assert_eq!(
+            hint(out, win_l.refused_keycap()).as_deref(),
+            Some("beckon cannot bind that shortcut. Try a different one."),
+            "Windows' own reservation"
+        );
+
+        let mut lock = CaptureState::armed();
+        down(&mut lock, VK_CONTROL);
+        let out = down(&mut lock, VK_CAPITAL);
+        assert_eq!(out, Outcome::Refused(Refusal::Reserved));
+        assert_eq!(
+            hint(out, lock.refused_keycap()).as_deref(),
+            Some("beckon cannot bind that shortcut. Try a different one."),
+            "beckon's own limit -- the sentence must not blame Windows here"
+        );
+    }
+
+    /// **A spec-text pin, not a behaviour test.** `hint` cannot produce this
+    /// string and no assertion below calls it: `HINT_UNAVAILABLE` is shown
+    /// *instead of* arming, when `SetWindowsHookExW` fails, and there is no
+    /// `Outcome` for a hook that never installed. Nothing consumes the
+    /// const yet either -- `settings_window.rs` will, on a `false` from
+    /// `arm_capture` -- so until it does this asserts a const against its
+    /// own literal and cannot fail under any breakage. It is here to make an
+    /// edit to F.3's wording deliberate, and that is the whole of its value.
+    ///
+    /// The rule it carries: never fall back to message-queue capture when
+    /// this is shown. That path cannot see the Windows key, so it fails on
+    /// precisely the chords beckon recommends -- and it fails by recording
+    /// the wrong chord rather than by refusing.
     #[test]
     fn the_unavailable_hint_is_verbatim() {
         assert_eq!(

@@ -844,6 +844,23 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     };
 
     if !want {
+        // Forget the key set BEFORE giving up the reason, and unconditionally
+        // -- dropping the reason is not enough to stop Caps aliasing.
+        //
+        // The hook is shared. A chord capture installs it too, and
+        // `hook_proc`'s capture arm is gated on `armed() &&
+        // GetForegroundWindow() == hwnd`, so a capture armed while the
+        // settings window is not frontmost falls through to `caps::decide`
+        // with whatever `CONFIG` was last handed it. Without this line the
+        // set the user just switched off stays loaded, and `Caps+T` starts
+        // aliasing again -- seconds at a time, whenever a shortcut is
+        // recorded -- under a config that says Caps is off. Same for pause,
+        // which reaches this branch by the same `want`.
+        //
+        // `clear_bindings` resets `tap` to `capslock` as well, so a
+        // configured `caps_tap = "escape"` stops remapping the key the
+        // moment the feature it belongs to is off.
+        caps_hook::clear_bindings();
         // Drop the Caps reason unconditionally. `is_installed()` reports the
         // HHOOK, which a chord capture may also be holding, so it cannot
         // stand in for "Caps holds it"; the before/after pair is only for
