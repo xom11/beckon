@@ -121,6 +121,17 @@ pub fn lookup_key(name: &str) -> Option<&'static KeyDef> {
     all_keys().iter().find(|k| k.name == name)
 }
 
+/// The reverse of `lookup_key`: the key a Windows virtual-key code belongs
+/// to, or `None` for one no binding can name (numpad, media, IME,
+/// `VK_PROCESSKEY`).
+///
+/// Linear, like `lookup_key`, over 81 entries. It runs once per captured
+/// key-down, not per keystroke, so a map would buy nothing and cost a
+/// second source of truth.
+pub fn lookup_win_vk(vk: u32) -> Option<&'static KeyDef> {
+    all_keys().iter().find(|k| k.win == vk)
+}
+
 /// A parsed key combo. Modifier order in the input is free; `canonical()`
 /// always prints ctrl → super → alt → shift → key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,7 +491,8 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_keys, lookup_key, parse_config, parse_shortcuts, CapsTap, Chord, Combo, KeyboardConfig,
+        all_keys, lookup_key, lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo,
+        KeyboardConfig,
     };
 
     #[test]
@@ -835,5 +847,47 @@ mod tests {
     #[test]
     fn caps_hold_parses_on_every_platform() {
         assert!(parse_config("keyboard.caps_hold = \"ctrl+super+alt\"\n").is_ok());
+    }
+
+    // ---------- lookup_win_vk ----------
+
+    #[test]
+    fn a_vk_maps_back_to_the_key_that_owns_it() {
+        // 0x41 is VK_A; 0x1B is VK_ESCAPE.
+        assert_eq!(lookup_win_vk(0x41).map(|k| k.name.as_str()), Some("a"));
+        assert_eq!(lookup_win_vk(0x1B).map(|k| k.name.as_str()), Some("escape"));
+    }
+
+    #[test]
+    fn a_vk_no_key_claims_maps_to_nothing() {
+        // 0xFC is VK_NONAME, which `caps` uses precisely because nothing
+        // reaches it. 0x00 is not a virtual key at all.
+        assert_eq!(lookup_win_vk(0xFC).map(|k| k.name.as_str()), None);
+        assert_eq!(lookup_win_vk(0x00).map(|k| k.name.as_str()), None);
+    }
+
+    /// The reverse lookup is only well defined if the forward table is
+    /// injective on `win`. If two keys ever share a VK, `lookup_win_vk`
+    /// silently starts returning whichever the iteration order reaches
+    /// first -- so pin it here rather than discovering it through a
+    /// mis-captured chord.
+    #[test]
+    fn no_two_keys_share_a_windows_vk() {
+        let mut seen: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
+        for k in all_keys() {
+            if let Some(prev) = seen.insert(k.win, k.name.as_str()) {
+                panic!("`{prev}` and `{}` both claim VK {:#04x}", k.name, k.win);
+            }
+        }
+    }
+
+    /// Every key the user can type must survive the round trip, or capture
+    /// can record a chord that `Combo::parse` then rejects.
+    #[test]
+    fn every_key_round_trips_through_its_vk() {
+        for k in all_keys() {
+            let back = lookup_win_vk(k.win).unwrap_or_else(|| panic!("{} lost", k.name));
+            assert_eq!(back.name, k.name);
+        }
     }
 }
