@@ -194,8 +194,8 @@ impl CaptureState {
     /// `None` means only that the table could not name the key. It does NOT
     /// identify which refusal happened: it is always `None` for
     /// `Refusal::UnknownKey`, but a bare unnameable key -- numpad0, or Caps
-    /// Lock with nothing held -- is refused as `NoModifier` or `Reserved`
-    /// and leaves it `None` too. Read the `Refusal` to know which.
+    /// Lock without a modifier -- is refused as `NoModifier` and leaves it
+    /// `None` too. Read the `Refusal` to know which.
     ///
     /// Read when a `Refused` arrives, not otherwise: it deliberately keeps
     /// the last refusal rather than clearing itself on the next keystroke,
