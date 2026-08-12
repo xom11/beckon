@@ -3300,6 +3300,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
 /// control, not the control autocompleting. This is a general backstop for a
 /// notification that never arrives, not a workaround for a known offender.
 fn commit_fields() {
+    // `apply_state`'s `None` arm calls `enable(hwnd, IDC_COMBO, false)` /
+    // `enable(hwnd, IDC_APP, false)` whenever `st.detail` is `None`, and
+    // `EnableWindow(FALSE)` on a focused control moves focus off it
+    // synchronously -- which fires EN_KILLFOCUS / CBN_KILLFOCUS and
+    // re-enters this wndproc from inside `apply_state`, before that
+    // `apply_state` call has finished writing the new control state.
+    // Without this guard, that re-entrant notification would read back
+    // whatever the field still shows and feed it into the model as if the
+    // user had typed it. `apply_state` sets `ui.suppress = true` before it
+    // starts disabling anything, so `suppressed()` catches exactly that
+    // window.
+    //
+    // Before the filter, `st.detail` went `None` only on an explicit
+    // deselect (e.g. after the last row is removed), so this path was
+    // near-unreachable. Now it also goes `None` whenever the filter hides
+    // the selected row (`ControlState::selected` -- see its doc), and the
+    // filter matches the Combo/App text itself -- so ordinary edits to the
+    // selected row's own Combo or App field can filter that row out of
+    // view mid-keystroke, disabling the very field the user is typing in
+    // and re-entering right here.
     if suppressed() {
         return;
     }

@@ -31,9 +31,12 @@ pub struct Model {
     dirty: bool,
     /// The list filter. **View state**: never written to disk, never makes
     /// the model dirty. It lives here rather than in the window because
-    /// `remove_pressed`, `remove_enabled`, `marked_count` and `selected` all
-    /// depend on which rows are visible, and those decisions belong in the
-    /// crate all three CI jobs compile.
+    /// `Model::remove_pressed` and `Model::marked_count` act only on the
+    /// rows the filter is showing, and `control_state` needs it to compute
+    /// `ControlState::selected` (`None` when the filter hides the selected
+    /// row -- unlike `Model::selected`, which keeps pointing at that row
+    /// regardless) and `ControlState::remove_enabled`. Those are decisions
+    /// that belong in the crate all three CI jobs compile.
     filter: String,
 }
 
@@ -125,7 +128,9 @@ pub struct ControlState {
     /// to put `LVIS_SELECTED` back on after it rebuilds -- and it must not
     /// reuse the highlight it had before, because `add_row` and
     /// `remove_row` both move the selection without the window hearing
-    /// about it.
+    /// about it. Also `None` when the filter is hiding the selected row --
+    /// there is no view index to give it, even though `Model::selected`
+    /// still points at that row underneath.
     pub selected: Option<usize>,
     pub detail: Option<Detail>,
     /// What the filter box should show. Pushed so `Add` can clear it; the
@@ -342,7 +347,7 @@ impl Model {
     /// highest index first precisely so that nothing still queued shifts
     /// underneath it, and `Model::visible` returns model order, which
     /// satisfies that.
-    pub fn remove_indices(&mut self, idx: &[usize]) {
+    fn remove_indices(&mut self, idx: &[usize]) {
         if idx.is_empty() {
             return;
         }
