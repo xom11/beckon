@@ -2215,11 +2215,15 @@ unsafe fn layout(hwnd: HWND) {
     //
     // A single-line EDIT draws its text at the TOP of its client rect --
     // Win32 gives it no vertical centring at all -- so stretching one to
-    // the 32 px band line would park the text against the top edge. The
-    // two text fields therefore take a height the font justifies and are
-    // centred within the line; the buttons, which do honour `cy` and look
-    // right at 32, take the token directly.
-    let field_h = (text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1 + s(10)).min(ctl);
+    // the 32 px band line would park the text against the top edge. Neither
+    // text field takes the token, then: both are centred within the line,
+    // and both take the height the COMBOBOX's theme picked (see `combo_h`
+    // below). `field_h` is what the font alone justifies, and remains the
+    // fallback for when the combo cannot be measured -- plus the unit of
+    // the dropped-down list's height. The buttons do honour `cy` and look
+    // right at 32, so they take the token directly.
+    let text_h = text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1;
+    let field_h = (text_h + s(10)).min(ctl);
     let fy = y + clamp(ctl - field_h) / 2;
     // A hair of slack past the measured width: a STATIC clips to its rect,
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
@@ -2242,14 +2246,35 @@ unsafe fn layout(hwnd: HWND) {
     // would invalidate.
     place_h(ui.app, app_x, fy, app_w, field_h * 9);
     let mut arc = RECT::default();
-    if GetWindowRect(ui.app, &mut arc).is_ok() {
+    let combo_h = if GetWindowRect(ui.app, &mut arc).is_ok() {
         let ah = arc.bottom - arc.top;
         if ah > 0 && ah < ctl {
             place_h(ui.app, app_x, y + (ctl - ah) / 2, app_w, field_h * 9);
+            Some(ah)
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
+    // The Shortcut EDIT takes the combo's height, so the two fields on this
+    // line are ONE box repeated rather than two boxes sharing a midline.
+    // Measured at 144 DPI before this: EDIT 43 px against the combo's 36,
+    // centres agreeing to within half a pixel -- concentric and unequal,
+    // which reads as a mistake rather than a pair.
+    //
+    // `combo_h` is read back from a control already on screen, so this adds
+    // NO input to `layout`: it is the same `GetWindowRect` the centring above
+    // already needed. The floor is what keeps it safe -- an EDIT top-aligns
+    // its text with no vertical centring of its own, so a height that cannot
+    // hold one Body line would clip descenders; below that, and whenever the
+    // combo did not answer, the font-derived height stands.
+    let (edit_h, edit_y) = match combo_h {
+        Some(ah) if ah >= text_h + s(2) => (ah, y + clamp(ctl - ah) / 2),
+        _ => (field_h, fy),
+    };
     place(IDC_LBL_SHORTCUT, lbl_short_x, y, lw_short, ctl);
-    place_h(ui.combo, edit_x, fy, field_w, field_h);
+    place_h(ui.combo, edit_x, edit_y, field_w, edit_h);
     y += ctl + gap;
     place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
 
