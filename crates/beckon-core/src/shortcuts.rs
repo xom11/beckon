@@ -132,6 +132,47 @@ pub fn lookup_win_vk(vk: u32) -> Option<&'static KeyDef> {
     all_keys().iter().find(|k| k.win == vk)
 }
 
+/// The whole key list, in the order the settings window shows it.
+///
+/// Public so the window can fill its key list without a second copy of the
+/// names. Index into it is what `ComboView::key` means, and the two must
+/// stay the same slice — which is why this returns `all_keys()` rather
+/// than building anything.
+pub fn key_table() -> &'static [KeyDef] {
+    all_keys()
+}
+
+/// A combo as the five controls that show it: four modifier check boxes and
+/// one index into `key_table`.
+///
+/// `key` is `None` when the string does not parse — a row that has never
+/// been given a shortcut, or one whose stored text is not a valid combo.
+/// The window shows that as "nothing selected" rather than guessing, and
+/// `Model::problems` is what tells the user why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ComboView {
+    pub ctrl: bool,
+    pub super_: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub key: Option<usize>,
+}
+
+/// Render a combo string as control values. Never fails: an unparseable
+/// string is `ComboView::default()`, i.e. nothing ticked and no key chosen.
+pub fn combo_view(s: &str) -> ComboView {
+    let Ok(c) = Combo::parse(s) else {
+        return ComboView::default();
+    };
+    ComboView {
+        ctrl: c.ctrl,
+        super_: c.super_,
+        alt: c.alt,
+        shift: c.shift,
+        key: key_table().iter().position(|k| k.name == c.key.name),
+    }
+}
+
 /// A parsed key combo. Modifier order in the input is free; `canonical()`
 /// always prints ctrl → super → alt → shift → key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,8 +532,8 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_keys, lookup_key, lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo,
-        KeyboardConfig,
+        all_keys, combo_view, key_table, lookup_key, lookup_win_vk, parse_config, parse_shortcuts,
+        CapsTap, Chord, Combo, KeyboardConfig,
     };
 
     #[test]
@@ -888,6 +929,77 @@ mod tests {
         for k in all_keys() {
             let back = lookup_win_vk(k.win).unwrap_or_else(|| panic!("{} lost", k.name));
             assert_eq!(back.name, k.name);
+        }
+    }
+
+    // ---------- key_table / combo_view ----------
+
+    #[test]
+    fn the_key_table_is_the_whole_key_list() {
+        assert_eq!(key_table().len(), all_keys().len());
+        assert!(key_table().iter().any(|k| k.name == "t"));
+        assert!(key_table().iter().any(|k| k.name == "escape"));
+    }
+
+    #[test]
+    fn a_combo_becomes_five_control_values() {
+        let v = combo_view("ctrl+super+alt+t");
+        assert!(v.ctrl && v.super_ && v.alt);
+        assert!(!v.shift);
+        assert_eq!(key_table()[v.key.expect("a key")].name, "t");
+    }
+
+    #[test]
+    fn shift_is_a_modifier_here_unlike_in_a_hold_chord() {
+        let v = combo_view("ctrl+shift+a");
+        assert!(v.ctrl && v.shift);
+        assert!(!v.super_ && !v.alt);
+        assert_eq!(key_table()[v.key.unwrap()].name, "a");
+    }
+
+    /// A row that has never been given a shortcut, and a row whose stored
+    /// text does not parse, must both render as "nothing chosen" rather
+    /// than panicking or inventing a key.
+    #[test]
+    fn an_unparseable_combo_selects_nothing() {
+        for s in ["", "ctrl+", "ctrl+nosuchkey", "banana"] {
+            let v = combo_view(s);
+            assert_eq!(v.key, None, "{s:?} must select no key");
+            assert!(!(v.ctrl || v.super_ || v.alt || v.shift), "{s:?}");
+        }
+    }
+
+    /// The round trip the window depends on: whatever the controls show,
+    /// rebuilding the canonical string from them must mean the same thing.
+    #[test]
+    fn a_view_rebuilds_the_same_canonical_combo() {
+        for s in [
+            "ctrl+t",
+            "ctrl+super+alt+shift+f1",
+            "alt+escape",
+            "super+space",
+        ] {
+            let v = combo_view(s);
+            let mut parts: Vec<&str> = Vec::new();
+            if v.ctrl {
+                parts.push("ctrl");
+            }
+            if v.super_ {
+                parts.push("super");
+            }
+            if v.alt {
+                parts.push("alt");
+            }
+            if v.shift {
+                parts.push("shift");
+            }
+            let key = &key_table()[v.key.unwrap()].name;
+            parts.push(key);
+            assert_eq!(
+                parts.join("+"),
+                Combo::parse(s).unwrap().canonical(),
+                "{s:?}"
+            );
         }
     }
 }
