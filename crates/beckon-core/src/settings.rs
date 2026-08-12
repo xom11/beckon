@@ -2126,6 +2126,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_leading_comment_survives_a_save() {
+        let src = "# my notes about this file\n\"ctrl+alt+a\" = \"Notepad\"\n\"ctrl+alt+b\" = \"Brave\"\n";
+        let mut m = Model::from_text(src).unwrap();
+        m.set_app(0, "Notepad++");
+        let out = m.render().unwrap();
+        assert_eq!(
+            out.matches("# my notes about this file").count(),
+            1,
+            "a hand-written comment must survive a window edit exactly ONCE -- the \
+         point of writing back through toml_edit is that hand edits and window \
+         edits stay interchangeable, and a header-restoring fix that cannot \
+         tell 'survived' from 'was eaten' would duplicate it here.\n\
+         --- got ---\n{out}"
+        );
+    }
+
+    #[test]
+    fn deleting_the_first_row_eats_the_file_header_comment() {
+        let src = "# my notes about this file\n\"ctrl+alt+a\" = \"Notepad\"\n\"ctrl+alt+b\" = \"Brave\"\n";
+        let mut m = Model::from_text(src).unwrap();
+        m.selected = Some(0);
+        m.remove_pressed();
+        let out = m.render().unwrap();
+        assert!(
+            out.contains("# my notes about this file"),
+            "a comment above the FIRST binding must not be deleted along with \
+             it -- toml_edit carries a leading comment as the first key's \
+             prefix decor, so removing that key takes the comment with it.\n\
+             --- got ---\n{out}"
+        );
+    }
+
     // ---------- the filter ----------
 
     fn three() -> Model {

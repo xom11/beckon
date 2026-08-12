@@ -93,7 +93,44 @@ pub fn render(
         kb["caps_hold"] = toml_edit::value(keyboard.caps_hold.canonical());
     }
 
-    Ok(doc.to_string())
+    // 4. Put the file's header back if step 1 ate it.
+    //
+    // `toml_edit` carries a leading comment block as the PREFIX DECOR OF THE
+    // FIRST KEY, not as a property of the document. So `doc.remove(k)` on the
+    // first key deletes the user's header along with the binding -- silently,
+    // and they only find out by diffing. Found on a14: a stray keypress
+    // deleted the top row of a 21-row config, and the saved file had lost
+    // `# hardware pass 2 ...` as well as the row.
+    //
+    // Re-adding is guarded by a `contains` rather than by "did we remove the
+    // first key", because the second question has more ways to be answered
+    // wrongly than the first.
+    let out = doc.to_string();
+    let header = leading_comment_block(original);
+    if !header.trim().is_empty() && !out.contains(header.trim_end()) {
+        return Ok(format!("{header}{out}"));
+    }
+    Ok(out)
+}
+
+/// The comment block at the very top of the file: every leading blank or
+/// `#` line, up to the first line that is neither.
+///
+/// Deliberately taken from the ORIGINAL TEXT rather than from the parsed
+/// document. Once the key that carried the comment has been removed, there is
+/// nothing left in the document to read it back from.
+fn leading_comment_block(original: &str) -> String {
+    let mut out = String::new();
+    for line in original.lines() {
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+        } else {
+            break;
+        }
+    }
+    out
 }
 
 #[cfg(test)]
