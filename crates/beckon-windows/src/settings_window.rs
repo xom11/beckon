@@ -672,18 +672,23 @@ const WINDOW_HEIGHT: i32 = 640;
 /// controls in the same place. What the floor buys is that **the list is
 /// still worth looking at**.
 ///
-/// `MIN_WIDTH` is spec B.2's number and is hundreds of pixels clear of both
-/// zero points this file computes: band 2's heading at a raw client width of
-/// ~332, band 4's key list at ~519.
+/// `MIN_WIDTH` is spec B.2's number and clears both zero points this file
+/// computes — band 2's heading at a raw client width of ~332, band 4's key
+/// list at ~519 — by a wide margin. Compared like for like, client against
+/// client: a 720 px window with a 16 px frame has `w = 704`, so the two
+/// margins are ~372 px and ~185 px. Both **shrink** as the OS frame grows,
+/// so each is a ceiling on the margin rather than a floor under it.
 ///
 /// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
-/// which band 3 still shows **four** rows — half of `tok::ROWS`. Four is
-/// enough to see a selection with a row of context above and below it; a
-/// window whose list shows one row is not a smaller version of this window,
-/// it is a broken one.
+/// which band 3 still shows **four** rows — half of `tok::ROWS` — **with the
+/// external-change banner up**. Four is enough to see a selection with a row
+/// of context above and below it; a window whose list shows one row is not a
+/// smaller version of this window, it is a broken one.
 ///
 /// ```text
 ///   pad                                          16
+///   band 1  banner, ctl                          32
+///           band                                 14
 ///   band 2  head, ctl                            32
 ///           gap                                   8
 ///   band 3  header  (list_header_height, 21)      21
@@ -703,14 +708,14 @@ const WINDOW_HEIGHT: i32 = 640;
 ///   band 7  command bar, ctl                      32
 ///   pad                                          16
 ///                                              ----
-///   client                                      457
+///   client                                      503
 ///   caption + frame at 96 DPI (SM_CYCAPTION 23
 ///     + 2*SM_CYSIZEFRAME + 2*SM_CXPADDEDBORDER)   39
 ///                                              ----
-///   window                                     ~496
+///   window                                      542
 /// ```
 ///
-/// Shipped as 500. The four pixels are slack against a non-client area the
+/// Shipped as 546. The four pixels are slack against a non-client area the
 /// OS sizes, not a fudge of the derivation — and the whole constant is scaled
 /// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
 /// was never exact at 150 % either. Erring high costs nothing; erring low
@@ -721,14 +726,22 @@ const WINDOW_HEIGHT: i32 = 640;
 /// picks the real ones from the live font at the live DPI, which is exactly
 /// why neither is a token.
 ///
-/// **Band 1 is deliberately not in the table**, and that is a trade rather
-/// than an oversight: the banner contributes no height until the config file
-/// moves under us, and reserving its `ctl + band` permanently would raise the
-/// floor by 46 px for a state that is normally absent. The cost is that at
-/// this floor, with the banner up, the list drops from four rows to one until
-/// `Reload` or `Keep mine` dismisses it.
+/// **Band 1 is in the table, and that is what the number is for.** The banner
+/// contributes no height until the config file moves under us, so reserving
+/// its `ctl + band` costs 46 px of floor for a state that is normally absent
+/// — but the state it pays for is exactly the one in which the window is
+/// least disposable, and the alternative was measured: at a floor derived
+/// without band 1 (500), raising the banner took the list from four rows to
+/// **one**, which the paragraph above calls broken. Nothing overlapped there;
+/// the failure was a useless window, not a corrupt one, and that is the
+/// standard this constant is held to.
+///
+/// So the floor buys **four rows with the banner up, six without it**, at
+/// both 96 DPI and 150 %; the editor group clears the keyboard group by
+/// exactly one `band` in all four cases. Simulated, not seen — nothing on the
+/// machine this was written on can display the window.
 const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 500;
+const MIN_HEIGHT: i32 = 546;
 
 /// One of §B.3's three type roles. There is no fourth: the `Keys` role the
 /// spec table also lists belongs to keycap rendering, which this window
@@ -2706,6 +2719,19 @@ unsafe fn layout(hwnd: HWND) {
     // constrains dragging, not that), so `w` is 0 here on every minimize,
     // on every machine, and every subtraction below goes negative without
     // it.
+    //
+    // **Widths take `clamp`; a POSITION computed leftward from a right edge
+    // takes `.max(cx)` instead.** They are not interchangeable: clamping a
+    // width to 0 hides the control, which is recoverable, while clamping a
+    // position to 0 puts it outside the surface padding -- flush against the
+    // window edge, overlapping whatever is to its left -- which is not.
+    //
+    // No band needs `.max(cx)` today, and that is structural rather than
+    // lucky: every rightward position in this function is spelled
+    // `origin + clamp(...)`, which cannot fall left of its origin. The rule
+    // is written down here, beside the tool it is about, because the band
+    // that reintroduces the hazard will be a NEW one subtracting from a right
+    // edge, and it will have no local precedent to copy.
     let clamp = |v: i32| v.max(0);
 
     // ONE borrow of UI, taken here and dropped on this line. Nothing below
@@ -2923,10 +2949,21 @@ unsafe fn layout(hwnd: HWND) {
     // only by an intermediate resize below MIN_HEIGHT that WM_DPICHANGED's
     // suggested rect can hand us without asking WM_GETMINMAXINFO (dragging
     // can't reach it; a 0x0 client rect clamps everything to 0 and is fine).
-    // In that state `y` here can still land past `kb_y`, and unlike the
-    // list and the notes STATIC below, the strip's height is the fixed
-    // `ctl`, not something `clamp` already shrinks -- so without this it
-    // draws over the keyboard group box.
+    // In that state `y` here can still land past `kb_y`, and this line is
+    // what stops it: band 4 reads `y` straight into `grp_y`, so this is the
+    // editor group box's TOP edge, and band 4's height is the fixed `grp_h`
+    // -- not something `clamp` shrinks the way it shrinks `list_h` above.
+    //
+    // **It bounds the top, and only the top.** What keeps the group's BOTTOM
+    // off `kb_y` at and above `MIN_HEIGHT` is `editor_min` above, which
+    // reserves the whole of `grp_h` before the list takes any height at all.
+    // This line cannot do that job -- it runs before `grp_h` is added, so it
+    // can pin `grp_y` to `kb_y` but never pull the group's bottom back up.
+    // Drop `editor_min` back to the `ctl + gap + ctl` the one-line strip used
+    // and this line will not save you: simulated at `MIN_HEIGHT` itself, the
+    // group draws 16 px over the keyboard group with the banner down and
+    // 58 px with it up (22 / 87 at 150 %). That is the ordinary minimum drag
+    // size, not a sub-floor `WM_DPICHANGED` edge case.
     y = y.min(kb_y);
 
     // -- Band 4: the editor group. TWO lines inside a titled BS_GROUPBOX,
@@ -3041,18 +3078,28 @@ unsafe fn layout(hwnd: HWND) {
     // chip figure is `4 * glyph` (96 px) plus the four measured captions;
     // `lw_lbl` is `tw("Shortcut") + 4`, the wider of the two labels.
     //
-    // `ins_w` is `cw - 2*gap`, so `key_w` clamps to zero at a client width of
-    // ~487 -- a raw client `w`, before the PAD margins, of ~519. `MIN_WIDTH`
-    // is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
+    // `ins_w` is `cw - 2*gap` and `cw` is `w - 2*pad`, so below its ceiling
+    // this whole expression collapses to `key_w = min(200, w - 519)` -- the
+    // key list clamps to zero at a raw client `w` of ~519, and above that it
+    // IS the margin over that zero point. One number, read two ways.
+    //
+    // `MIN_WIDTH` is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
     // `ptMinTrackSize.x`, which bounds the whole window including the OS's
     // own frame, so its 720 does not translate into an exact `cw` this file
-    // computes -- only into "two hundred pixels clear of the 519 px zero
-    // point under any frame the OS adds," which is why a drag cannot reach
-    // it. Concretely, at `MIN_WIDTH` the key list is still ~185 px of its
-    // 200 px ceiling and the App combo on line 1 has ~590 px, where the old
-    // one-line strip left it 59. Every subtraction here is clamped
-    // regardless, because `WM_DPICHANGED` can suggest a rect below that floor
-    // without asking `WM_GETMINMAXINFO`.
+    // computes. Compare like for like -- client against client -- and a
+    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~185 px clear of
+    // the zero point, which is why a drag cannot reach it. **That margin is a
+    // ceiling, not a floor**: a wider OS frame leaves a narrower client, so
+    // the figure only ever falls from 185. (Do not compare the 720 against
+    // the 519 directly for a "~200 px" margin -- that is the window-against-
+    // client mistake this paragraph exists to avoid.)
+    //
+    // Concretely at `MIN_WIDTH`, then: the key list is 185 px of its 200 px
+    // ceiling -- the same 185, necessarily, by the collapse above -- and the
+    // App combo on line 1 has ~590 px, where the old one-line strip left it
+    // 59. Every subtraction here is clamped regardless, because
+    // `WM_DPICHANGED` can suggest a rect below that floor without asking
+    // `WM_GETMINMAXINFO`.
     let key_w = s(tok::SHORTCUT_COL).min(clamp(rec_x - gap - mx));
     // `cy` is the DROPPED-DOWN height here too, capped by the same
     // CB_SETMINVISIBLE(8) the App combo carries.
@@ -3076,12 +3123,11 @@ unsafe fn layout(hwnd: HWND) {
     // so (`unused_assignments`). Restore it, with its `y.min(kb_y)` guard, the
     // moment band 5 grows a control.
     //
-    // The guard that line used to carry -- against an intermediate resize
-    // below `MIN_HEIGHT`, which a `WM_DPICHANGED` suggested rect can hand us
-    // without ever asking `WM_GETMINMAXINFO` -- has moved to band 3's
-    // `editor_min`, which is the only place it can still do anything: `grp_y`
-    // is read before the group is placed, so clamping `y` afterwards moves
-    // nothing.
+    // The guard THAT deleted line used to carry -- not band 3's surviving
+    // `y.min(kb_y)`, which still bounds `grp_y` and is still needed -- has
+    // moved to band 3's `editor_min`. That is the only place it can still do
+    // anything: `grp_y` is read before the group is placed, so clamping `y`
+    // afterwards moves nothing.
 
     // -- Band 5: the suggestion row. No control, no height.
 
