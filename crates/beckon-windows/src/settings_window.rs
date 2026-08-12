@@ -686,8 +686,11 @@ const WINDOW_HEIGHT: i32 = 640;
 /// costs list rows.
 ///
 /// **This constant moved with `notes_height`, as documented on that
-/// function, and this is that move.** Task 6 shipped 546 against the stub's
-/// assumed 32 px notes line; the real body costs 36, four pixels more, and
+/// function, and this is that move.** Task 6 SHIPPED 546 (the old constant,
+/// not the raw figure in the table above -- Task 6's own raw derivation was
+/// 542; that this task's new raw also lands on 546 is coincidence, not the
+/// same number carried forward) against the stub's assumed 32 px notes
+/// line; the real body costs 36, four pixels more, and
 /// this table -- and the constant -- carry that four pixels through rather
 /// than absorbing it as slack. 546 → 550 is that difference and nothing
 /// else: every other row in the table is unchanged from Task 6's derivation.
@@ -2659,17 +2662,24 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 ///
 /// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`,
 /// and `grp_h` is derived from this -- change what a notes line costs and
-/// the floor moves with it. Measured here at 16 px (96 DPI) / 24 px
-/// (144 DPI): not itself a fresh a14 reading, but the second number IS one
-/// -- item 10 of the 2026-08-11 a14 pass sized the read-only notes STATIC
-/// against "5 lines x 24" at 144 DPI, the same Caption face this line
-/// measures. The 16 at 96 DPI comes from applying the same internal-leading
-/// ratio the Body font showed at that pass (`text_h` 28 against a requested
-/// 21, i.e. 4/3) to Caption's 12 px request -- and that same ratio, applied
-/// to Caption's 144-DPI request of 18, reproduces the hardware 24 exactly,
-/// which is why it is trusted for the DPI nobody has measured. If a real
-/// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
-/// nudged.
+/// the floor moves with it. 16 px (96 DPI, derived) / 24 px (144 DPI,
+/// measured): the 144 figure IS a fresh a14 reading -- item 10 of the
+/// 2026-08-11 a14 pass sized the read-only notes STATIC against "5 lines x
+/// 24" at 144 DPI, the same Caption face this line measures. The 96 DPI
+/// figure comes from applying the same internal-leading ratio the Body font
+/// showed at that pass (`text_h` 28 against a requested 21, i.e. 4/3) to
+/// Caption's 12 px request -- and that same ratio, applied to Caption's
+/// 144-DPI request of 18, reproduces the hardware 24 exactly, which is why
+/// it is trusted for the DPI nobody has measured. If a real 96-DPI reading
+/// disagrees, `MIN_HEIGHT` must be re-derived from it, not nudged -- though
+/// the disagreement is bounded, not open-ended: the derived window height
+/// is `546 + 2(L - 16)` for a real Caption line height `L`, so the shipped
+/// 550 absorbs any `L` up to 18 px with the four-row banner-up guarantee
+/// intact. `L = 19` costs one row and nothing else -- `editor_min = grp_h`
+/// in `layout` (see its own comment there) is computed from the RUNTIME
+/// value, not this estimate, so a wrong `L` can only shrink the list at the
+/// absolute floor; it cannot produce an overlap at any `L`. That is the
+/// safe direction.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)
@@ -3338,10 +3348,22 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 match &cap_notes {
                     Some(t) => set_text(notes, t),
                     None => {
-                        // Two lines, because that is what `notes_height`
-                        // reserves. A third would draw outside the rect and
-                        // be clipped, which reads as a rendering fault
-                        // rather than as "there is more".
+                        // Caps at two NOTES, not two RENDERED lines.
+                        // `IDC_NOTES` is `SS_LEFT` and word-wraps (see its
+                        // own comment above), so this cap does not bound
+                        // what actually reaches the screen: a single note
+                        // wider than the control's inset width wraps to two
+                        // lines on its own, a second note then lands on a
+                        // clipped third line, and "(+N more)" -- appended to
+                        // the end of note 2 -- inherits that clipping, so
+                        // the "there is more" text can itself be the part
+                        // nobody sees. `notes_height` reserves exactly two
+                        // RENDERED lines; nothing here guarantees these two
+                        // NOTES fit inside them. The real fix is
+                        // measure-and-truncate or an owner-draw `DrawText`
+                        // with `DT_WORDBREAK | DT_END_ELLIPSIS` -- out of
+                        // scope for this landing; see the hardware
+                        // checklist's wrap-case entry.
                         const NOTE_LINES: usize = 2;
                         let body: Vec<String> = d
                             .notes
@@ -4572,6 +4594,14 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 /// lines sit exactly where a healthy note sits. That is the only reason this
 /// goes through the glyph table rather than writing spaces: a second
 /// indentation rule is a second thing to keep in step with the first.
+///
+/// **Two lines is the ceiling `notes_height` reserves, and this fits it
+/// exactly, not by accident.** The `Some(p)` arm below IS two lines -- the
+/// partial combo, then the hint -- so calling the capture prompt "one line
+/// by construction" undercounts it; it fits because two is what it is. A
+/// third capture line would clip exactly as a third NOTE line does, and
+/// nothing here would stop one from being added -- if one ever is, check it
+/// against this ceiling first.
 fn capture_notes(c: &Capture) -> String {
     let g = mark_glyph(Mark::Ok);
     match &c.partial {
