@@ -19,6 +19,12 @@
 /* --- 1. tokens ------------------------------------------------------------ */
 
 :root {
+  /* UA-painted surfaces — scrollbars on every <pre>, the table wrap and the
+     document itself, plus the caret — follow this, not the palette. Without it
+     a #0B0D12 page keeps a white scrollbar. Restated in both dark blocks
+     because the explicit toggle has to win over the OS preference. */
+  color-scheme: light dark;
+
   --bg:         #FFFFFF;
   --bg-raised:  #F6F7F9;
   --fg:         #0B0D12;
@@ -46,6 +52,7 @@
    preference, once for the explicit toggle, so the toggle wins both ways. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
     --fg-dim: #9AA1B4; --rule: #232936;
     --accent: #5B8CFF;  /* #2563EB is 3.8:1 here and fails AA */
@@ -53,10 +60,12 @@
   }
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
   --fg-dim: #9AA1B4; --rule: #232936;
   --accent: #5B8CFF; --accent-fg: #0B0D12;
 }
+:root[data-theme="light"] { color-scheme: light; }
 
 
 /* --- 2. shell ------------------------------------------------------------- */
@@ -72,6 +81,17 @@ html { scroll-behavior: smooth; }
    exists to prevent, so it is enforced here rather than avoided by discipline. */
 [hidden] { display: none !important; }
 
+/* The ONLY sr-only text on the page: the copy button's "Copied" confirmation,
+   which is otherwise a label swap no assistive technology is told about. It is
+   created by JS alongside the button it belongs to, so nothing here is
+   sr-only in the JS-off page. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+
 body {
   margin: 0;
   background: var(--bg);       /* explicit, never transparent */
@@ -85,8 +105,14 @@ body {
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
+/* The opaque background is a FALLBACK, not a duplicate. color-mix() shipped in
+   Safari 16.2; where it is unsupported the whole declaration is invalid and the
+   UA drops it, and a sticky bar whose only background was that one line renders
+   fully transparent with the page scrolling through it. The later declaration
+   wins wherever color-mix parses, so this costs nothing there. */
 .nav {
   position: sticky; top: 0; z-index: 10;
+  background: var(--bg);
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--rule);
@@ -94,11 +120,21 @@ a { color: var(--accent); }
 .nav .wrap { display: flex; align-items: center; gap: 24px; height: var(--nav-h); }
 .nav a { color: var(--fg-dim); text-decoration: none; font-size: 15px; }
 .nav a:hover { color: var(--fg); }
+
+/* WCAG 2.2 SC 2.5.8: a target is at least 24x24 CSS px. Both link rows are
+   14-15px text on a 1.6 line box, i.e. 22px, and the spacing exception does not
+   rescue them — the nav wraps to a 8px/16px gap at 375px and the footer sits at
+   16px, so 24px target circles would overlap. min-height costs no layout at
+   desktop, where both rows are already taller than their text. The in-sentence
+   links in .note / .prose are exempt under the inline exception and are left
+   alone. */
+.nav a:not(.brand),
+footer .wrap a { display: inline-flex; align-items: center; min-height: 24px; }
 .brand {
   display: flex; align-items: center; gap: 9px;
   font-weight: 650; color: var(--fg) !important; margin-inline-end: auto;
 }
-.brand img { width: 22px; height: 22px; border-radius: 5px; }
+.brand img { width: 22px; height: 22px; border-radius: var(--radius-sm); }
 
 /* The theme toggle is the page's only <button> outside a section, and it was
    shipping as a default UA button next to designed hero buttons. It borrows
@@ -118,7 +154,7 @@ a { color: var(--accent); }
    no margin of its own; otherwise the page ends on a gap twice as tall as
    every other. */
 footer { border-top: 1px solid var(--rule); margin-top: 0; padding-block: 40px; }
-footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; color: var(--fg-dim); font-size: 14px; }
+footer .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; color: var(--fg-dim); font-size: 14px; }
 
 
 /* --- 3. system: rhythm, headings, prose and code -------------------------- */
@@ -519,10 +555,16 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .how-keyrow { display: flex; justify-content: center; padding: 4px 0 20px; }
 
 /* One press period, 1.8s, shared by both demos. The ring demo's rows run on
-   7.2s (four presses) and the toggle demo's on 3.6s (two presses); both are
+   5.4s (three presses) and the toggle demo's on 3.6s (two presses); both are
    whole multiples of 1.8s, so every row's state change stays on the press that
    causes it, and the two demos stay in step with each other for good. Change
-   one of the three durations and you must change them all. */
+   one of the three durations and you must change them all.
+
+   THE PRESS COUNT AND THE TRANSITION COUNT MUST MATCH. A ring of three windows
+   returns to its head in three presses, not four: 1/3 -> 2/3 -> 3/3 -> 1/3. The
+   ring ran on 7.2s (four press slots) against three transitions, so the first
+   press of every lap moved nothing on screen — a demo of the one thing beckon
+   is claimed never to do, sitting under a table row that says the opposite. */
 .how-key { animation: how-press 1.8s linear 0s infinite both; }
 
 @keyframes how-press {
@@ -563,41 +605,54 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .how-dots { display: inline-flex; gap: 4px; flex: none; }
 .how-dots span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
 .how-title { font-weight: 600; }
-.how-count { margin-left: auto; font-family: var(--mono); font-size: 11px; opacity: .75; }
+/* No opacity here. These counters ARE the ring demo's payload — they are what
+   shows the highlight walking 1/3 -> 2/3 -> 3/3 — and at .75 over --bg the
+   inherited --fg-dim composited to 3.55:1 in the light palette. aria-hidden on
+   the stage redirects screen readers to the transcript; it does not exempt
+   visible text from 1.4.3. Inherited, --fg-dim on --bg is 6.27:1 / 7.52:1. */
+.how-count { margin-left: auto; font-family: var(--mono); font-size: 11px; }
 
-/* DEMO A — the ring. Four presses over 7.2s, one press per 25%: the highlight
-   walks 1/3 -> 2/3 -> 3/3 and the fourth press comes back round to 1/3, which
-   is the honest surprise. The state changes land at slot_start + 5%, just after
-   the cap bottoms out; the row it is leaving lets go at slot_start + 3.5%.
-   Written out per row rather than as one shape plus delays — see the section
-   note above.
+/* DEMO A — the ring. THREE presses over 5.4s, one press per 33.33%: the
+   highlight walks 1/3 -> 2/3 -> 3/3 and the third press comes back round to
+   1/3, which is the honest surprise. Every press moves something; there is no
+   fourth slot for a press that does nothing.
+
+   The offsets are in ABSOLUTE time, not in percent copied between timelines.
+   Both demos hand over 0.126s -> 0.180s after the slot starts, which is where
+   the cap is at the bottom of its travel (how-press bottoms out 0.162s-0.252s
+   in). On demo B's 3.6s that is 3.5% -> 5%; on this 5.4s it is 2.33% -> 3.33%,
+   and each later slot adds 33.33%. Percentages are NOT portable between the two
+   demos — reusing 3.5%/5% here put demo A's handover 180 ms later than demo
+   B's, and they sit side by side from 900px up.
 
    ring1's base rule is the lit state because it is BOTH the 100% frame (the
-   fourth press) and the 0% frame (the first press lands on it again), so the
-   ring reads correctly with motion off and the loop has no visible seam. */
+   third press) and the 0% frame (the next lap's first press lands on it again),
+   so the ring reads correctly with motion off and the loop has no visible
+   seam. Written out per row rather than as one shape plus delays — see the
+   section note above. */
 .how-ring1 {
   border-left-color: var(--accent);
   color: var(--fg);
   transform: translateX(10px);
-  animation: how-ring1 7.2s linear 0s infinite both;
+  animation: how-ring1 5.4s linear 0s infinite both;
 }
-.how-ring2 { animation: how-ring2 7.2s linear 0s infinite both; }
-.how-ring3 { animation: how-ring3 7.2s linear 0s infinite both; }
+.how-ring2 { animation: how-ring2 5.4s linear 0s infinite both; }
+.how-ring3 { animation: how-ring3 5.4s linear 0s infinite both; }
 
 @keyframes how-ring1 {
-  0%,  28.5% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  30%, 78.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  80%, 100%  { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  0%,     2.33% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  3.33%, 69%    { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  70%,   100%   { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
 }
 @keyframes how-ring2 {
-  0%,  28.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  30%, 53.5% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  55%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  0%,     2.33% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  3.33%, 35.67% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  36.67%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
 }
 @keyframes how-ring3 {
-  0%,  53.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  55%, 78.5% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  80%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  0%,     35.67% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  36.67%, 69%    { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  70%,   100%    { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
 }
 
 /* DEMO B — the one-window case. Two presses over 3.6s: the first focuses
@@ -694,10 +749,16 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   /* min() keeps a 220px track from overflowing a 375px viewport. */
   grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }
+/* align-content, not align-items. Grid stretches every tile to the tallest in
+   its row; with the default `stretch` the spare height was shared between the
+   name line and the note line, so four tiles in one row started their titles on
+   four different baselines. Pinning the LINES to the top fixes that while
+   align-items still centres the pill against the name inside line one. */
 .tile {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  align-content: start;
   gap: 6px 10px;
   padding: var(--pad);
   background: var(--bg-raised);
@@ -727,14 +788,20 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   color: var(--fg);
   font-weight: 600;
 }
+/* The pill is a chip on the page ground, not a tint on the tile's. A 14% accent
+   wash over .tile-marked's own 7% wash left --accent at 3.67:1 light and
+   4.19:1 dark — 11px text needs 4.5:1, so the one label the block above says
+   must not be softened was the softest text on the page. --accent on --bg is
+   5.17:1 / 6.15:1 with no compositing to compute and no color-mix to support. */
 .tile-flag {
-  padding: 4px 8px;
+  padding: 3px 7px;
+  border: 1px solid var(--accent);
   border-radius: 999px;
   font: 600 11px/1 var(--sans);
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--bg);
 }
 
 .keys {
@@ -998,7 +1065,7 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   .hero-demo { margin-top: 34px; }
   .hero-btn { flex: 1 1 auto; }
   .os-grid { gap: 8px; }
-  .os-card { padding: 8px; border-radius: 8px; }
+  .os-card { padding: 8px; }
   .os-label { font-size: 10px; }
   /* The chord's own size is a clamp() on viewport width, so it needs no rule
      here; only the gap and the space above it tighten. */

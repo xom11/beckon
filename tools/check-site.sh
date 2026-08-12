@@ -73,10 +73,15 @@ if grep -q 'prefers-reduced-motion: reduce' "$C" \
 else
   bad "no reduced-motion block, or it does not pin animation-duration + iteration-count"
 fi
-demos=$(grep -c 'class="[^"]*demo' "$H" || true)
-steps=$(grep -c 'demo-steps' "$H" || true)
-if [ "$demos" -gt 0 ] && [ "$steps" -gt 0 ]; then
-  ok "demos carry a text transcript (.demo-steps)"
+# Per demo, not "at least one of each": the old form counted any line whose
+# class attribute contained the substring "demo" (so .how-demos and .demo-cap
+# both scored) and passed on `> 0`, which three demos and one transcript also
+# does — while the failure message claimed to name a demo that had none.
+# `class="demo"` / `class="demo …"` matches the token exactly.
+demos=$(grep -cE 'class="demo( |")' "$H" || true)
+steps=$(grep -c 'class="demo-steps"' "$H" || true)
+if [ "$demos" -gt 0 ] && [ "$demos" -eq "$steps" ]; then
+  ok "every demo carries a text transcript ($demos demos, $steps transcripts)"
 else
   bad "a demo has no .demo-steps text transcript ($demos demos, $steps transcripts)"
 fi
@@ -105,6 +110,26 @@ cargo install --git https://github.com/xom11/beckon
 nix run github:xom11/beckon -- list
 CMDS
 [ "$cmd_fail" -eq 0 ] && ok "install commands match README byte for byte"
+
+# The other half of spec item 5, and it was missing: the letter->app table.
+# Read the rows out of README's own table and require the page to carry the
+# same pairing, so re-binding a letter in examples/ cannot leave the page
+# teaching the old one.
+key_fail=0
+keys=0
+while IFS='|' read -r _ letter app _; do
+  letter=$(printf '%s' "$letter" | tr -d ' `')
+  app=$(printf '%s' "$app" | sed 's/^ *//;s/ *$//')
+  [ -z "$letter" ] && continue
+  keys=$((keys + 1))
+  grep -qF "<kbd class=\"key\">$letter</kbd></th><td>$app</td>" "$H" \
+    || { bad "letter table drifted from README: $letter -> $app"; key_fail=1; }
+done < <(awk '/^\| Letter \| App \|/{f=1;next} f&&/^\|---/{next} f&&/^\|/{print} f&&!/^\|/{exit}' README.md)
+if [ "$keys" -eq 0 ]; then
+  bad "could not find README's letter->app table"
+elif [ "$key_fail" -eq 0 ]; then
+  ok "letter->app table matches README ($keys rows)"
+fi
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf 'all checks passed\n'; else printf 'checks FAILED\n'; fi

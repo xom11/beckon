@@ -17,6 +17,19 @@
 <link rel="icon" href="favicon.png" type="image/png">
 <link rel="apple-touch-icon" href="icon-512.png">
 <link rel="stylesheet" href="beckon.css">
+
+<!-- The saved theme, and nothing else, applied BEFORE first paint. beckon.js is
+     `defer`, so it runs after the document is parsed and can run after the first
+     paint: a reader whose stored choice differs from their OS preference got a
+     full paint of #0B0D12 and then a flip to #FFFFFF, the highest-delta flash
+     this palette can produce. Everything else about the toggle — the button, its
+     label, the click handler — stays in beckon.js. -->
+<script>
+  try {
+    var t = localStorage.getItem('beckon-theme');
+    if (t) document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 </head>
 <body id="top">
 
@@ -30,7 +43,13 @@
     <a href="#how">How it works</a>
     <a href="https://github.com/xom11/beckon/blob/main/README.md">Docs</a>
     <a href="https://github.com/xom11/beckon">GitHub</a>
-    <button id="theme" type="button" aria-label="Switch theme">Theme</button>
+    <!-- Ships `hidden`; beckon.js removes it. Same shape as the install
+         tablist below, and for the same reason: this button does nothing at all
+         without JS, and the page's rule — stated on .copy in beckon.css — is
+         that there is never a control on screen that silently does nothing.
+         Its aria-label is set by beckon.js too, because the right label depends
+         on the resolved theme and only JS can resolve it. -->
+    <button id="theme" type="button" hidden>Theme</button>
   </div>
 </header>
 
@@ -75,7 +94,9 @@
               <div class="os-label">macOS</div>
               <div class="chord os-chord">
                 <kbd class="key">Cmd</kbd>
+                <span class="plus">+</span>
                 <kbd class="key">Ctrl</kbd>
+                <span class="plus">+</span>
                 <kbd class="key">Alt</kbd>
                 <span class="plus">+</span>
                 <kbd class="key">C</kbd>
@@ -90,7 +111,9 @@
               <div class="os-label">Windows</div>
               <div class="chord os-chord">
                 <kbd class="key">Ctrl</kbd>
+                <span class="plus">+</span>
                 <kbd class="key">Win</kbd>
+                <span class="plus">+</span>
                 <kbd class="key">Alt</kbd>
                 <span class="plus">+</span>
                 <kbd class="key">C</kbd>
@@ -148,7 +171,7 @@
           <table class="how-table">
             <thead>
               <tr>
-                <th scope="col">Press</th>
+                <th scope="col">Situation</th>
                 <th scope="col">What happens</th>
               </tr>
             </thead>
@@ -189,7 +212,7 @@
               </div>
 
             </div>
-            <p class="demo-steps">Four presses with three Claude windows open: it walks the ring and comes back round to the first.</p>
+            <p class="demo-steps">Three presses with three Claude windows open: it walks the ring and comes back round to the first.</p>
           </div>
 
           <div class="demo">
@@ -259,7 +282,7 @@ beckon doctor</code></pre>
         </li>
         <li class="tile">
           <span class="tile-name">Windows</span>
-          <span class="tile-note">Start menu, MSIX/AppX and PWAs</span>
+          <span class="tile-note">Start menu and MSIX/AppX resolution</span>
         </li>
         <li class="tile">
           <span class="tile-name">sway</span>
@@ -341,7 +364,8 @@ beckon doctor</code></pre>
       <h2 id="serve-h">Or let beckon hold the keys.</h2>
 
       <p class="lead">On macOS and Windows nothing binds hotkeys for you, so beckon can do it
-      itself. <code>beckon serve</code> reads a flat TOML and registers every line.</p>
+      itself. <code>beckon serve</code> reads a flat TOML and reports how many of its lines
+      actually registered.</p>
 
       <figure class="toml-fig">
         <figcaption>apps.toml</figcaption>
@@ -364,7 +388,7 @@ beckon doctor</code></pre>
         <li class="card card-linux">
           <h3>Linux</h3>
           <p>Deliberately not served here. Your compositor already binds keys better than
-          beckon could, so <code>bindsym $cap+c exec beckon Claude</code> is the
+          beckon could, so <code>bindsym $mod+c exec beckon Claude</code> is the
           integration.</p>
         </li>
       </ul>
@@ -401,6 +425,13 @@ beckon doctor</code></pre>
        the tablist's own `hidden` survive `.tabs { display: flex }`; without it
        the class rule wins on source order and the strip ships visible and inert.
 
+       The panels carry NO role="tabpanel" here — beckon.js sets it, with
+       tabindex="0", at the same moment it reveals the tablist. Shipped in the
+       markup it left the JS-off page announcing four tab panels for a tab
+       widget that is display:none, with four aria-controls relationships
+       pointing into it. With JS off these are plain labelled regions, which is
+       what they are.
+
        Tab order is Homebrew, Scoop, Cargo, Nix, because beckon.js maps
        macOS to 0, Windows to 1 and Linux to 3.
 
@@ -408,9 +439,9 @@ beckon doctor</code></pre>
        byte-match README.md. Restyle freely; do not re-author them. -->
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
-      <h2 id="install-h">Install</h2>
-      <p class="lead">One binary, no runtime, nothing to configure afterwards. Take whichever
-      channel your machine already has.</p>
+      <h2 id="install-h">Install.</h2>
+      <p class="lead">No runtime to install, and no config file for <code>beckon &lt;id&gt;</code> &mdash; ids
+      resolve against the OS on every call. Take whichever channel your machine already has.</p>
 
       <div class="tabs" role="tablist" aria-label="Install method" hidden>
         <button class="tab" type="button" role="tab" id="tab-brew"  aria-controls="panel-brew"  aria-selected="true">Homebrew</button>
@@ -421,7 +452,7 @@ beckon doctor</code></pre>
 
       <div class="panels">
 
-        <section class="panel" id="panel-brew" role="tabpanel" aria-labelledby="panel-brew-h">
+        <section class="panel" id="panel-brew" aria-labelledby="panel-brew-h">
           <h3 id="panel-brew-h">Homebrew <span class="panel-os">macOS &middot; Linux</span></h3>
 <pre><code>brew install xom11/tap/beckon</code></pre>
           <p class="note">On macOS the formula also ships the LaunchAgent, so resident mode is one
@@ -430,7 +461,7 @@ beckon doctor</code></pre>
 <pre><code>brew services start beckon</code></pre>
         </section>
 
-        <section class="panel" id="panel-scoop" role="tabpanel" aria-labelledby="panel-scoop-h">
+        <section class="panel" id="panel-scoop" aria-labelledby="panel-scoop-h">
           <h3 id="panel-scoop-h">Scoop <span class="panel-os">Windows</span></h3>
 <pre><code>scoop bucket add xom11 https://github.com/xom11/scoop-bucket
 scoop install xom11/beckon</code></pre>
@@ -440,14 +471,14 @@ scoop install xom11/beckon</code></pre>
           your editor.</p>
         </section>
 
-        <section class="panel" id="panel-cargo" role="tabpanel" aria-labelledby="panel-cargo-h">
+        <section class="panel" id="panel-cargo" aria-labelledby="panel-cargo-h">
           <h3 id="panel-cargo-h">Cargo <span class="panel-os">from git</span></h3>
 <pre><code>cargo install --git https://github.com/xom11/beckon</code></pre>
           <p class="note">Needs Rust 1.75+ and a system C / MSVC toolchain. The binary lands in
           <code>~/.cargo/bin/beckon</code>; add <code>--force</code> to update in place.</p>
         </section>
 
-        <section class="panel" id="panel-nix" role="tabpanel" aria-labelledby="panel-nix-h">
+        <section class="panel" id="panel-nix" aria-labelledby="panel-nix-h">
           <h3 id="panel-nix-h">Nix <span class="panel-os">flake</span></h3>
 <pre><code>nix run github:xom11/beckon -- list</code></pre>
           <p class="note">To pull beckon into your own flake, add
@@ -526,7 +557,7 @@ scoop install xom11/beckon</code></pre>
           <summary>Is it fast?</summary>
           <p>The whole focus-or-launch path measured about <strong>57 ms</strong> on the ARM64
           Windows 11 laptop beckon is developed against, and about <strong>95&ndash;105 ms</strong> on
-          the macOS host in the same notes. Each figure is one machine and one run series, not a
+          an M3 MacBook Air. Each figure is one machine and one run series, not a
           benchmark suite. Both are dominated by the OS rather than by beckon: on macOS,
           <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of the total, and
           no API avoids that round trip.</p>

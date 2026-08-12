@@ -1200,6 +1200,16 @@ OS metadata on every call.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
 
+**Landing page**: `site/`, deployed by `.github/workflows/pages.yml` (Pages
+source = **GitHub Actions**, set by hand in repo settings — left at *Deploy
+from a branch* the workflow goes green and publishes nothing). Not `docs/`:
+that directory holds internal specs, plans and measurements, and serving
+Pages from `/docs` would publish them. `tools/check-site.sh` is the page's
+test suite and runs in CI; it asserts the install commands still byte-match
+`README.md`, that the letter→app table still matches it, and that the version
+matches `Cargo.toml`, so a release bump that forgets the page fails CI rather
+than shipping a stale command.
+
 The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Renewal procedure is documented in the tap repo's README. **Rotated 2026-08-11; expires 2027-08-12.**
 
 **`Bump packagers` does NOT fire on its own.** It listens for

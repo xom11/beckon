@@ -3,6 +3,8 @@
 > *beckon* (v.) — to call someone toward you with a gesture.
 > Press a key, the app comes to you.
 
+**https://xom11.github.io/beckon/** — what it does, in one page.
+
 Cross-platform focus-or-launch app switcher. A thin CLI invoked by your existing
 hotkey dotfile (sway, i3, Hammerspoon, AHK) — or, on macOS and Windows,
 hosting the hotkeys itself via [resident mode](#resident-mode-macos--windows).
