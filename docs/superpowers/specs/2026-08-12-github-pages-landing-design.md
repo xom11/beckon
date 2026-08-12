@@ -1,6 +1,7 @@
 # A landing page for beckon, on GitHub Pages
 
-Status: design approved 2026-08-12. Not built.
+Status: built and live at <https://xom11.github.io/beckon/>. §8 (the OS axis and
+the two interactive demos) added 2026-08-12, after the page shipped.
 
 ## Goal
 
@@ -58,7 +59,8 @@ persuaded.
 site/
 ├── index.html        # the whole page
 ├── beckon.css        # tokens, components, sections, motion
-├── beckon.js         # ~60 lines vanilla: accordion, copy, OS tabs, theme
+├── beckon.js         # vanilla: accordion, copy, install tabs, theme, the OS
+│                     #   axis, and the two interactive demos (§8)
 ├── favicon.png       # sips -s format png -Z 64  assets/beckon.ico
 └── icon-512.png      # sips -s format png -Z 512 assets/beckon.ico
 ```
@@ -165,7 +167,8 @@ to repeat:
    returns to `1/3`; 5b and 5c are unreachable from that precondition.
 
 **Three** demos, all pure CSS `@keyframes` on fixed timelines, no JS, no
-`Intersection Observer`:
+`Intersection Observer`. These are what the page ships in its markup, and with
+JS disabled they are what the reader gets:
 
 - **Hero** — each of the three OS cards carries **its own** chord:
   `[Cmd][Ctrl][Alt]+[C]` on macOS, `[Ctrl][Win][Alt]+[C]` on Windows,
@@ -174,9 +177,11 @@ to repeat:
   window together. The point is still simultaneity, and it is stronger for
   being honest: different key, same instant, same result. Simultaneity is
   structural — **no `animation-delay` anywhere in the demo**.
-- **Algorithm A, "Three windows open"** — four presses over 7.2s against
-  `Claude 1/3`, `2/3`, `3/3`; the highlight walks `1/3 → 2/3 → 3/3 → 1/3` and
-  rests back on the first. The lap is the thing worth showing.
+- **Algorithm A, "Three windows open"** — three presses over 5.4s against
+  `Claude 1/3`, `2/3`, `3/3`; the highlight walks `1/3 → 2/3 → 3/3` and the
+  third press comes back round to the first. Three presses, three transitions:
+  a fourth press slot would be a press that moves nothing, which is the one
+  thing beckon is claimed never to do.
 - **Algorithm B, "One window open"** — two presses over 3.6s against `Claude`
   and `Brave`: focus Claude, then back to Brave, resting on Brave. The
   nothing-else-open case (5c, hide) lives in the transcript, because a demo
@@ -184,6 +189,11 @@ to repeat:
 
 Every demo names its precondition in a caption, because step 5 branches on one
 and an unlabelled demo is a claim about all cases.
+
+**ADDED 2026-08-12: with JS on, the reader drives it instead** — see §8. The
+looping demos above are not removed and not reduced to a fallback nobody ever
+sees: they are the shipped markup, JS takes them away, and the direction is a
+correctness requirement rather than an implementation detail.
 
 Under `@media (prefers-reduced-motion: reduce)` a single global block pins
 `animation-duration: .01ms` and `animation-iteration-count: 1`, and each demo's
@@ -201,13 +211,13 @@ animation *is* the argument.
 
 | # | Section | Substance |
 |---|---|---|
-| 0 | Nav (sticky) | `b` mark · Install · How it works · Docs → README · GitHub · theme toggle |
-| 1 | Hero | *One key per app. Every OS you use.* Sub: the same `beckon Claude` on macOS, Windows, Linux. Three cards, each with **its own** default chord (see §5). Two buttons: Install, GitHub. |
-| 2 | Focus is only the first press | The algorithm as a table whose rows carry their preconditions, plus **two** demos — the three-window ring and the one-window toggle (see §5). This is what separates beckon from a launcher. |
+| 0 | Nav (sticky) | `b` mark · Install · How it works · Docs → README · GitHub · **OS switcher** · theme toggle |
+| 1 | Hero | *One key per app. Every OS you use.* Sub: the same `beckon Claude` on macOS, Windows, Linux. Three cards, each with **its own** default chord (see §5), pressable with JS on (§8). Two buttons: Install, GitHub. |
+| 2 | Focus is only the first press | The algorithm as a table whose rows carry their preconditions, plus **two** demos — the three-window ring and the one-window toggle (see §5) — which JS replaces with the playground (§8). This is what separates beckon from a launcher. |
 | 3 | Type the name, not the id | `beckon Claude` beside `brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default`, and the reason: Brave/Chrome PWA hashes are minted at install time and differ per machine, so canonical ids cannot be synced through a dotfile. `Name=` can. |
 | 4 | Works with your setup | Eight tiles (below) + the letter→app table + the per-OS modifier defaults. |
 | 5 | Or let beckon hold the keys | `serve` on macOS and Windows: flat TOML, `brew services start beckon`, the Windows tray app and its settings window. States plainly that Linux is not served here and the compositor binds the key. |
-| 6 | Install | Four tabs — Homebrew, Scoop, Cargo, Nix — each a copyable block. Defaults to the visitor's platform via `navigator.platform`, falls back to Homebrew. |
+| 6 | Install | Four tabs — Homebrew, Scoop, Cargo, Nix — each a copyable block. Opens on the tab `data-os` names (§8), so the nav's switcher corrects a wrong guess; Cargo is nobody's default and is reachable only by clicking. |
 | 7 | FAQ | `<details>`/`<summary>`, seven entries (below). |
 | 8 | Footer | MIT OR Apache-2.0 · v0.8.0 · repo · releases. |
 
@@ -245,18 +255,110 @@ selling something beckon does not do.
 
 ### 7. JavaScript
 
-Roughly sixty lines, no framework, all progressive enhancement — every section
-is readable and every link works with JS disabled:
+No framework, no build step, all progressive enhancement — every section is
+readable and every link works with JS disabled:
 
 - FAQ is native `<details>`; JS only closes siblings on open.
 - Copy button on each install block via `navigator.clipboard`, hidden when the
   API is absent.
-- OS tabs: the HTML ships all four panels **visible**, each under its own
+- Install tabs: the HTML ships all four panels **visible**, each under its own
   heading, and JS adds `hidden` to three of them on load. Written the other way
   round — `hidden` in the markup, removed by JS — a reader without JS sees
   three empty gaps and no way to install on their OS.
 - Theme toggle: writes `data-theme` on `<html>` plus `localStorage`; absent, CSS
   still follows `prefers-color-scheme`.
+- The OS axis and the two interactive demos: §8.
+
+**ONE RULE GOVERNS ALL OF IT, and it is the rule this page is most likely to
+lose:** ship everything VISIBLE in the markup; JS only ever REDUCES what is
+shown. Markup that ships `hidden` and needs JS to appear is a defect, not a
+style choice. The single admissible inversion is a control that changes nothing
+a reader without it cannot already see in full — the theme button and the OS
+switcher, both of which ship `hidden`, because all three modifier chords, all
+four install panels and all three `serve` answers are on screen either way.
+
+### 8. The OS axis, and the two interactive demos
+
+**`data-os` on `<html>`.** One shared value — `macos` / `windows` / `linux` —
+detected in the `<head>` bootstrap before first paint, remembered in
+`localStorage` under `beckon-os`, and overridable from a `<select>` in the nav
+that announces the state the reader is IN rather than the one a cycling button
+would offer next. Changing it dispatches `beckon:os` on `document`; consumers
+subscribe without the switcher knowing about them.
+
+Unrecognised platform → `linux`, deliberately: it is the cheapest place to be
+wrong (macOS and Windows each preselect an installer that cannot exist on a
+machine that is not one of them), and it is already this page's bucket for
+every EWMH X11 desktop and every Wayland compositor rather than a named
+product.
+
+It drives three things and **reduces nothing**: the preselected install tab,
+the marked row in the modifier list and the marked `serve` card (all three
+alternatives stay on screen — "the same letter on all three" is the claim those
+lists exist to make), and the window chrome and chord in the playground.
+
+**The hero becomes pressable.** JS adds `.is-live`, which cancels the 4.4s
+loop; `data-front` on the stage becomes the only input to what is drawn. Press
+or click and Claude comes forward in all three cards at once, naming step 5;
+press again and it goes back to Brave, naming 5b. The three cards are never
+reduced to the reader's own OS — they are the cross-platform claim.
+
+**The `#how` demos are replaced by a playground.** Four scenarios, together
+covering every branch of step 5:
+
+| Scenario | Presses |
+|---|---|
+| Claude is not running | launch (4), then the one-window case: hide (5c), focus (5), … |
+| One window, Brave also open | focus (5) → back to Brave (5b) → focus (5) → … |
+| Three windows open | focus 1/3 (5) → 2/3 (5a) → 3/3 (5a) → 1/3 (5a) → … |
+| One window, nothing else open | focus (5) → hide (5c) → focus (5) → … |
+
+The branch is **not scripted per scenario**. One function is the algorithm from
+`CLAUDE.md`'s *Focus algorithm*, run against a small model of the desk, and the
+readout names whichever branch it took — so the drawing and the readout cannot
+disagree about which step fired. Scenario 3's honest surprise falls out of the
+branch order rather than being asserted: 5a is tested before 5b and 5c, so
+while Claude has more than one window, Brave and hide are unreachable.
+
+The readout carries `role="status"` + `aria-live="polite"` (never `assertive`:
+a reader pressing the key repeatedly must not have every other announcement cut
+off) and is a panel beside the drawing, not a caption under it — it is the part
+that actually teaches.
+
+**The stand-in key, which is also the pitch.** A browser cannot have beckon's
+chord: Windows gives `Win` to the shell before any ordinary window is offered
+the keystroke — the same fact `CLAUDE.md` records about beckon's own chord
+capture, and why that needs a `WH_KEYBOARD_LL` hook rather than a window
+message — a Linux compositor keeps `Super`, and on every OS a page only
+receives keys while the browser is in front, which is the one moment nobody
+needs a hotkey. So the demos listen for a bare `C`, the letter README's own
+example table binds to Claude, and say so in the reader's own chord before the
+first press.
+
+**Input.** Click or tap the keycap (the primary path; touch has no keyboard at
+all), or press `C`. One document-level listener serves both demos and refuses a
+keystroke that belongs to something else: any modifier, a repeat, an IME
+composition, a text field, a `<select>`, contenteditable, or any button other
+than the two press buttons — those carry `data-press` and are exempt, because
+clicking one leaves it focused and excluding it would silently stop `C`
+working. It also acts only on a demo the reader can SEE, measured from
+`getBoundingClientRect` at keypress time — no observer, nothing running when
+nobody is typing — so `C` typed while reading the FAQ cannot walk a ring three
+sections up the page.
+
+**OS-authentic chrome, pure CSS.** macOS: three dots at the LEFT, title
+centred, rounded. Windows: minimise / maximise / close at the RIGHT, square
+corners, title left. Linux: a plain bar — beckon supports six Linux desktops
+and drawing one would be a claim about which. No icon font, no asset. The
+traffic lights are neutral rather than red/amber/green: every colour on this
+page comes from a token, and a screenshot-accurate window would be claiming to
+be a screenshot.
+
+**Motion.** Nothing in either interactive demo animates; state changes are
+transitions, which the reduced-motion block pins to `.01ms`. So the three rules
+§5 depends on (fill-mode `both`, base rule = 100% keyframe, no positive delay)
+have nothing new to hold, and a reader with motion off gets the correct frame
+instantly after every press.
 
 ## Data flow
 
@@ -297,9 +399,17 @@ Needing a browser — `python3 -m http.server` from `site/`, driven with the
 
 6. Renders in both themes and at 375 px, 768 px and 1440 px with no horizontal
    scroll on `body`.
-7. Tab order reaches nav, both hero buttons, the OS tabs, every FAQ summary and
+7. Tab order reaches nav, both hero buttons, the playground's four scenario
+   buttons, both press buttons, Reset, the install tabs, every FAQ summary and
    the footer links, with a visible focus ring on each.
-8. Both demos complete a full cycle and loop cleanly.
+8. With JS **off**, both looping demos complete a full cycle and loop cleanly.
+   Verify by deleting `beckon.js` and looking: `#how` must still show the
+   algorithm table and both demos, and the hero must still run its 4.4s loop.
+   An empty gap anywhere is the defect §7's one rule exists to prevent.
+9. With JS **on**, all four playground scenarios walk their branches and the
+   readout names the step that fired; Reset returns to the start; `C` advances
+   the demo on screen and does nothing while another section is; the chrome and
+   the chord follow all three `data-os` values.
 
 ## Documentation
 
