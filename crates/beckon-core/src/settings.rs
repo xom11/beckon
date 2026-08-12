@@ -33,10 +33,14 @@ pub struct Model {
     /// the model dirty. It lives here rather than in the window because
     /// `Model::remove_pressed` and `Model::marked_count` act only on the
     /// rows the filter is showing, and `control_state` needs it to compute
-    /// `ControlState::selected` (`None` when the filter hides the selected
-    /// row -- unlike `Model::selected`, which keeps pointing at that row
-    /// regardless) and `ControlState::remove_enabled`. Those are decisions
-    /// that belong in the crate all three CI jobs compile.
+    /// `ControlState::items`, `ControlState::selected` (a position within
+    /// those items, not a model row) and `ControlState::remove_enabled`.
+    /// Those are decisions that belong in the crate all three CI jobs
+    /// compile.
+    ///
+    /// `Model::selected` is deliberately NOT one of them: it stays a model
+    /// row whatever the filter says, and `Model::visible` exempts it so the
+    /// filter can never hide the row the user is working on.
     filter: String,
 }
 
@@ -128,9 +132,12 @@ pub struct ControlState {
     /// to put `LVIS_SELECTED` back on after it rebuilds -- and it must not
     /// reuse the highlight it had before, because `add_row` and
     /// `remove_row` both move the selection without the window hearing
-    /// about it. Also `None` when the filter is hiding the selected row --
-    /// there is no view index to give it, even though `Model::selected`
-    /// still points at that row underneath.
+    /// about it.
+    ///
+    /// `None` only when `Model::selected` is `None`. A filter cannot make it
+    /// `None`, because `Model::visible` exempts the selected row from the
+    /// filter -- see the reasoning there; it used to be able to, and that is
+    /// exactly what disabled a focused field mid-edit.
     pub selected: Option<usize>,
     pub detail: Option<Detail>,
     /// What the filter box should show. Pushed so `Add` can clear it; the
@@ -252,6 +259,26 @@ impl Model {
     /// Trimmed first: a trailing space left by typing would otherwise match
     /// nothing and hide every row, which reads as a hang.
     ///
+    /// **The selected row is always visible, matching or not.** Without that
+    /// exception, editing a row until it stops matching pulls the row out from
+    /// under the editor mid-word: `control_state` returns `selected: None` and
+    /// `detail: None`, and `apply_state`'s `None` arm then disables the very
+    /// field that has keyboard focus and blanks it, leaving the partial value
+    /// in the model and nothing on screen to explain it. Type `Brave` into a
+    /// row while the filter says `brave`, press Backspace, and the field dies.
+    ///
+    /// It also closes the relayout path that measurements §40 measured and
+    /// judged benign: with a row selected the list can no longer reach zero
+    /// rows, so `Ui::shown_empty` cannot flip, so `layout` -- and its
+    /// `SetWindowPos` on a populated App combo -- never runs on a filter
+    /// keystroke at all. §40's argument was that the whole-string selection
+    /// could not be consumed; this removes the selection instead of arguing
+    /// about it.
+    ///
+    /// This does NOT undo `add_row` clearing the filter. That decision is
+    /// about a *new* row, which is empty and would match no filter; this is
+    /// about an *existing* row the user is working on.
+    ///
     /// Model order is a precondition of `remove_indices`, not a convenience.
     fn visible(&self) -> Vec<usize> {
         let f = self.filter.trim().to_lowercase();
@@ -261,8 +288,10 @@ impl Model {
         self.rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| {
-                r.app.to_lowercase().contains(&f) || r.combo.to_lowercase().contains(&f)
+            .filter(|(i, r)| {
+                self.selected == Some(*i)
+                    || r.app.to_lowercase().contains(&f)
+                    || r.combo.to_lowercase().contains(&f)
             })
             .map(|(i, _)| i)
             .collect()
@@ -403,9 +432,12 @@ impl Model {
         if !marked.is_empty() {
             self.remove_indices(&marked);
         } else if let Some(i) = self.selected.filter(|i| vis.contains(i)) {
-            // The `filter` is NOT redundant: `Model::selected` still points
-            // at a model row while the filter hides it, so without this the
-            // fallback would delete an invisible row.
+            // Defence in depth, and currently unreachable: `visible()` exempts
+            // the selected row from the filter, so a `Some` selection is always
+            // in `vis`. Kept anyway, because the invariant belongs at the point
+            // of deletion rather than being inherited from a view policy three
+            // functions away -- if that exemption is ever reconsidered, this
+            // holds the line instead of the line quietly moving.
             self.remove_row(i);
         }
     }
@@ -718,11 +750,15 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
     let problems = m.problems();
 
     let vis = m.visible();
+    // Counted here rather than through `Model::marked_count`, which would
+    // rebuild `vis` a second and third time -- and this runs on every
+    // keystroke now that a filter box feeds it.
+    let marked_count = vis.iter().filter(|&&i| m.rows[i].marked).count();
     let mut items = Vec::with_capacity(vis.len());
     let mut detail = None;
     // The VIEW index of the selected row, which is what the ListView needs
-    // in order to put `LVIS_SELECTED` back after a rebuild. `None` when the
-    // filter is hiding the selected row -- see `ControlState::selected`.
+    // in order to put `LVIS_SELECTED` back after a rebuild -- see
+    // `ControlState::selected`.
     let mut selected = None;
     for (pos, &i) in vis.iter().enumerate() {
         let r = &m.rows[i];
@@ -759,8 +795,8 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         // Either gesture arms the button, because either gesture is one
         // `remove_pressed` acts on -- and both are scoped to what is on
         // screen, so an armed Remove always has something visible to take.
-        remove_enabled: selected.is_some() || m.marked_count() > 0,
-        marked_count: m.marked_count(),
+        remove_enabled: selected.is_some() || marked_count > 0,
+        marked_count,
         // There is a `Model`, therefore the file parsed, therefore it can be
         // edited. The only `false` in the program is `unreadable_state`.
         editable: true,
@@ -2191,17 +2227,43 @@ mod tests {
     }
 
     #[test]
-    fn selected_is_none_when_its_row_is_filtered_out() {
+    fn the_selected_row_stays_visible_even_when_it_stops_matching() {
         let mut m = three();
-        m.selected = Some(0); // Notepad
+        m.selected = Some(0); // Notepad, which "brave" does not match
         m.set_filter("brave");
         let cs = control_state(&m, &status_all_ok());
-        assert_eq!(cs.selected, None);
-        assert!(
-            cs.detail.is_none(),
-            "the editor strip must not describe a row that is not on screen -- \
-             and clearing the App field before `layout` runs is what keeps a \
-             filter keystroke off the combo-box data-loss path"
+        assert_eq!(cs.items.len(), 2, "Brave, plus the selected Notepad");
+        assert_eq!(cs.selected, Some(0), "Notepad leads in model order");
+        assert_eq!(
+            cs.detail.as_ref().unwrap().app,
+            "Notepad",
+            "the editor must keep describing the row the user has selected"
+        );
+    }
+
+    /// The defect the exception exists for. Dropping a row from the view the
+    /// moment it stops matching pulls it out from under the editor mid-word:
+    /// `apply_state`'s `None` arm disables the field that has keyboard focus
+    /// and blanks it, leaving the half-typed value in the model with nothing
+    /// on screen to explain it.
+    #[test]
+    fn editing_a_row_until_it_stops_matching_does_not_kill_the_editor() {
+        let mut m = three();
+        m.set_filter("brave");
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items.len(), 1);
+        let row = cs.items[0].row;
+        m.selected = Some(row);
+
+        // The user backspaces "Brave" down to "Brav", which no longer matches.
+        m.set_app(row, "Brav");
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items.len(), 1, "the row being edited stays on screen");
+        assert_eq!(cs.selected, Some(0));
+        assert_eq!(
+            cs.detail.unwrap().app,
+            "Brav",
+            "the editor keeps the partial value it is holding"
         );
     }
 
@@ -2235,16 +2297,19 @@ mod tests {
     }
 
     #[test]
-    fn remove_does_nothing_when_the_selected_row_is_filtered_out() {
+    fn remove_takes_the_selected_row_because_the_filter_cannot_hide_it() {
         let mut m = three();
-        m.selected = Some(0); // Notepad
-        m.set_filter("brave"); // hides it; nothing is ticked
+        m.selected = Some(0); // Notepad, which "brave" does not match
+        m.set_filter("brave"); // nothing is ticked, so the fallback runs
         m.remove_pressed();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
         assert_eq!(
-            m.rows.len(),
-            3,
-            "the selection fallback must check visibility -- Model::selected \
-             still points at a model row while that row is hidden"
+            apps,
+            vec!["Brave", "Weather"],
+            "the selected row is exempt from the filter, so it IS on screen \
+             and Remove is entitled to take it -- the invariant is 'never \
+             delete a row you cannot see', not 'never delete a row that does \
+             not match'"
         );
     }
 
