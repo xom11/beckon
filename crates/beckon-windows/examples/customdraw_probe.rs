@@ -7,13 +7,43 @@
 //!
 //! **Reads pixels, not intentions.** The only honest answer comes from what
 //! is on the screen, so the probe screen-captures the state-image rectangle
-//! (`LVIR_ICON` on subitem 0 is the state image's rect under
-//! `LVS_EX_CHECKBOXES`) and counts non-background pixels. A drawn tick box is
-//! tens of dark pixels; an absent one is zero.
+//! and counts non-background pixels. A drawn tick box is tens of dark
+//! pixels; an absent one is zero.
+//!
+//! **The state-image rect is not `LVIR_ICON` alone.** comctl32 computes the
+//! report-view icon rect as `Icon.left = Bounds.left + state_image_width`,
+//! with `Icon.right == Icon.left` unless a *small image list* is set on the
+//! control -- this probe sets none, so `LVIR_ICON`'s own rect starts
+//! immediately AFTER the checkbox, not on it. `LVM_GETITEMRECT` also has no
+//! subitem parameter (only `LVM_GETSUBITEMRECT` takes one), so it addresses
+//! the item as a whole -- "subitem 0" is not something this message can ask
+//! for directly. The probe instead calls `LVM_GETITEMRECT` twice per row --
+//! once with `LVIR_BOUNDS`, once with `LVIR_ICON` -- and captures the strip
+//! between them, `[bounds.left, icon.left) x [bounds.top, bounds.bottom)`.
+//! That strip IS the state image by construction, and it degenerates to a
+//! visible zero-width rect in the printed geometry if this assumption is
+//! ever wrong on a given comctl32 build, rather than silently reading the
+//! App label instead.
 //!
 //! **Carries a control:** row 0 is skipped, row 1 is default-drawn. Row 1 MUST
 //! come back with ink. If it does not, the capture is broken and the verdict
-//! on row 0 means nothing.
+//! on row 0 means nothing. Both rows are ticked
+//! (`LVM_SETITEMSTATE` / `INDEXTOSTATEIMAGEMASK(2)`) before capture, so an
+//! *unchecked* box's bare border can't be mistaken for "no state image at
+//! all" if the measured rect ever catches only the box interior -- the
+//! glyph gives the measurement margin either way.
+//!
+//! **Foreground, not assumed.** The window is fixed at screen (100,100),
+//! which is where a launching terminal often sits, and `BitBlt` reads
+//! whatever is physically on those pixels -- occlusion produces ink (or the
+//! absence of it) that has nothing to do with the ListView. Before
+//! capturing, the probe calls `SetForegroundWindow` + topmost and prints
+//! whether it actually won the foreground, following the house convention
+//! in `combo_probe.rs:584-598`.
+//!
+//! Prints both rects (position, size) and the background COLORREF alongside
+//! the ink counts, so a `BLIND` run -- or any other surprise -- is
+//! diagnosable from the console alone, without a source-level round trip.
 //!
 //! Build: `cargo build -p beckon-windows --example customdraw_probe --all-targets`
 //! Run from **session 1** (an SSH shell is session 0 and has no desktop).
@@ -38,6 +68,13 @@ mod win {
     /// Row 0 is the subject (subitem 0 skipped); row 1 is the control.
     const SUBJECT_ROW: i32 = 0;
     const CONTROL_ROW: i32 = 1;
+
+    /// `LVITEMW.state`/`stateMask` value for "ticked", per the
+    /// `ListView_SetCheckState` macro (`commctrl.h`). `windows` 0.61 has no
+    /// generated constant for `INDEXTOSTATEIMAGEMASK(i)` -- it's a header
+    /// macro (`(i) << 12`), not an exported symbol -- so it's spelled out
+    /// here instead of invented as a magic number.
+    const LVIS_CHECKED: u32 = 2 << 12;
 
     fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -108,17 +145,15 @@ mod win {
         ink
     }
 
-    /// The state-image rect for `row`, in SCREEN coordinates.
-    unsafe fn state_rect(list: HWND, row: i32) -> RECT {
+    /// One `LVM_GETITEMRECT` variant (`LVIR_BOUNDS` or `LVIR_ICON`) for
+    /// `row`, mapped to SCREEN coordinates. `LVM_GETITEMRECT` addresses the
+    /// item as a whole -- it has no subitem parameter -- so `which` selects
+    /// which rect comes back, not which column.
+    unsafe fn item_rect(list: HWND, row: i32, which: u32) -> RECT {
         let mut rc = RECT {
-            // `LVIR_ICON` in `rc.left` before `LVM_GETITEMRECT` is the
-            // documented calling convention for that message (it selects
-            // which rect variant comes back), not a bug to remove.
-            //
-            // `LVIR_ICON` is a bare `u32` in `windows` 0.61 (unlike most of
-            // the surrounding `LV*` constants, which are newtypes with a
-            // `.0` field) -- `LVIR_ICON.0` does not compile.
-            left: LVIR_ICON as i32,
+            // The requested variant goes in `rc.left` before the call --
+            // the documented calling convention for `LVM_GETITEMRECT`.
+            left: which as i32,
             top: 0,
             right: 0,
             bottom: 0,
@@ -148,6 +183,34 @@ mod win {
         }
     }
 
+    /// `(bounds, icon, state_strip)` for `row`, all in SCREEN coordinates.
+    /// `state_strip` is `[bounds.left, icon.left) x [bounds.top,
+    /// bounds.bottom)` -- see the file header for why that strip, and not
+    /// `icon` itself, is the state image.
+    unsafe fn state_rects(list: HWND, row: i32) -> (RECT, RECT, RECT) {
+        let bounds = item_rect(list, row, LVIR_BOUNDS);
+        let icon = item_rect(list, row, LVIR_ICON);
+        let strip = RECT {
+            left: bounds.left,
+            top: bounds.top,
+            right: icon.left,
+            bottom: bounds.bottom,
+        };
+        (bounds, icon, strip)
+    }
+
+    fn fmt_rect(rc: RECT) -> String {
+        format!(
+            "({},{})-({},{}) {}x{}",
+            rc.left,
+            rc.top,
+            rc.right,
+            rc.bottom,
+            rc.right - rc.left,
+            rc.bottom - rc.top
+        )
+    }
+
     /// Pumps the message queue for `ms` milliseconds so the ListView actually
     /// paints (and repaints, if the WM sends more than one pass) before the
     /// capture. `windows` 0.61's `GetTickCount64` lives behind the
@@ -170,6 +233,11 @@ mod win {
     pub fn run() {
         if let Err(e) = try_run() {
             eprintln!("customdraw_probe failed: {e}");
+            // A failed probe must exit non-zero -- a scheduled-task harness
+            // checking $LASTEXITCODE (or any other caller) needs to be able
+            // to tell "ran and answered" from "never ran" without parsing
+            // stderr text.
+            std::process::exit(1);
         }
     }
 
@@ -264,15 +332,78 @@ mod win {
                 );
             }
 
+            // Tick both rows (finding 4). For the question actually asked --
+            // is the state image drawn AT ALL -- an unchecked box's border is
+            // legitimate ink on its own, but it removes all margin: if the
+            // measured rect ever catches only the box interior, an unchecked
+            // interior is background-colored and reads as if there were no
+            // state image at all. A checked glyph fills that interior, so
+            // the signal is unambiguous either way.
+            for row in 0..2i32 {
+                let mut state_item = LVITEMW {
+                    state: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_CHECKED),
+                    stateMask: LVIS_STATEIMAGEMASK,
+                    ..Default::default()
+                };
+                SendMessageW(
+                    list,
+                    LVM_SETITEMSTATE,
+                    Some(WPARAM(row as usize)),
+                    Some(LPARAM(&mut state_item as *mut LVITEMW as isize)),
+                );
+            }
+
             let _ = ShowWindow(parent, SW_SHOW);
             let _ = UpdateWindow(parent);
-            pump_for(600);
+            pump_for(200);
 
-            let subject = ink_in(state_rect(list, SUBJECT_ROW));
-            let control = ink_in(state_rect(list, CONTROL_ROW));
+            // Occlusion mitigation (finding 2), following the house
+            // convention at `combo_probe.rs:584-598`: the window sits at a
+            // fixed (100,100), where a launching terminal often is, and
+            // `BitBlt` from a screen DC reads whatever is physically there.
+            // `ShowWindow(SW_SHOW)` alone does not guarantee the foreground.
+            let _ = SetForegroundWindow(parent);
+            let _ = SetWindowPos(
+                parent,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
+            pump_for(400);
+
+            let foreground_ok = GetForegroundWindow() == parent;
+            println!("FOREGROUND_OK={foreground_ok}");
+            if !foreground_ok {
+                println!(
+                    "FOREGROUND_OK=false -- NOT FOCUSED, a clean result below may be a FALSE NEGATIVE (occlusion)"
+                );
+            }
+
+            let (subject_bounds, subject_icon, subject_rect) = state_rects(list, SUBJECT_ROW);
+            let (control_bounds, control_icon, control_rect) = state_rects(list, CONTROL_ROW);
+            let bg = GetSysColor(COLOR_WINDOW) & 0x00FF_FFFF;
+
+            let subject = ink_in(subject_rect);
+            let control = ink_in(control_rect);
 
             println!("SUBJECT_ROW={SUBJECT_ROW} (subitem 0 CDRF_SKIPDEFAULT)");
             println!("CONTROL_ROW={CONTROL_ROW} (default drawn)");
+            println!("BG_COLOR=0x{bg:06X}");
+            println!(
+                "SUBJECT_BOUNDS={}  SUBJECT_ICON={}",
+                fmt_rect(subject_bounds),
+                fmt_rect(subject_icon)
+            );
+            println!("SUBJECT_STATE_RECT={}  (captured)", fmt_rect(subject_rect));
+            println!(
+                "CONTROL_BOUNDS={}  CONTROL_ICON={}",
+                fmt_rect(control_bounds),
+                fmt_rect(control_icon)
+            );
+            println!("CONTROL_STATE_RECT={}  (captured)", fmt_rect(control_rect));
             println!("SUBJECT_INK={subject}");
             println!("CONTROL_INK={control}");
             println!();
