@@ -315,7 +315,7 @@ impl Model {
             .count()
     }
 
-    /// Remove every ticked row in one go.
+    /// Remove the rows at `idx`, in one go.
     ///
     /// Walks the marked indices in reverse: removing row 0 first would
     /// shift every later row down by one, so the next removal by index
@@ -332,15 +332,15 @@ impl Model {
     /// highest index first precisely so that nothing still queued shifts
     /// underneath it, and `Model::visible` returns model order, which
     /// satisfies that.
-    pub fn remove_indices(&mut self, marked_indices: &[usize]) {
-        if marked_indices.is_empty() {
+    pub fn remove_indices(&mut self, idx: &[usize]) {
+        if idx.is_empty() {
             return;
         }
         self.selected = self.selected.map(|sel| {
-            let before = marked_indices.iter().filter(|&&m| m < sel).count();
+            let before = idx.iter().filter(|&&m| m < sel).count();
             sel - before
         });
-        for &i in marked_indices.iter().rev() {
+        for &i in idx.iter().rev() {
             self.rows.remove(i);
         }
         self.selected = if self.rows.is_empty() {
