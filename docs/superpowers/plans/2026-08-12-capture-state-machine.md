@@ -533,3 +533,56 @@ is §F.8.
 `Option<&'static KeyDef>` and is consumed by Task 2 for both the captured
 key and `refused_keycap`. `Outcome` and `Refusal` are `Copy`, which the
 `post()` test relies on.
+
+---
+
+## What 2b-i leaves for the later pieces
+
+Written here rather than in the SDD ledger, which is scratch and gets deleted.
+
+**A contract 2b-iv (hook wiring) must honour, and which nothing enforces yet.**
+`Outcome::PassThrough` is the **one** outcome where the hook must NOT return
+`1`. Spec §F.2's sketch returns `LRESULT(1)` unconditionally while armed;
+that sketch predates this outcome. Wiring that returns 1 for everything
+except `Disarmed` reinstates the stuck-modifier bug **with every test in this
+crate still green**, because no test in `beckon-core` can see what the
+callback returns. Assert it there.
+
+The bug it exists for, so it is not re-simplified away: hold `Ctrl`
+physically, click `Record` **with the mouse** — so the Ctrl-down was never
+seen — then press `Alt+T`. On commit the drain eats the Ctrl-up, and the
+system believes Ctrl is held with no up ever coming. Unrecoverable without
+killing beckon. The armed path was worse still: the up was swallowed *and*
+posted a redraw.
+
+**Two hazards `step` documents but cannot fix**, both for the hook piece:
+
+- Refusal beeps must be de-duplicated **by vk**. Auto-repeat of a refused
+  bare key re-refuses on every repeat, and F.3 beeps on refusal.
+- Admitting refused keys to the held set is the obvious in-module fix for
+  that and is **wrong**: rolled-over bare keys would consume the fixed
+  `HELD_MAX` slots and silently drop a real modifier.
+
+**One deferred defect**, for whichever piece wires the hint strings: a bare
+`VK_CAPITAL` reports `Refusal::NoModifier`, so it selects *"hold Ctrl, Win or
+Alt as well"* — advice that cannot work for a lock key.
+
+**Still a hardware question:** whether a passed-through key-up with no
+matching key-down actually clears the system's modifier state. `PassThrough`
+is the right thing to return either way; whether it is *sufficient* is for
+the a14 pass.
+
+## Two plan defects this landing found, recorded so the plan is not trusted over the code
+
+1. **The brief's tests contradicted each other.**
+   `escape_with_a_modifier_is_a_chord` and `a_cancel_drains_too` had
+   byte-identical inputs (`armed → Ctrl↓ → Esc↓`) expecting `Captured` and
+   `Cancelled`. No deterministic machine satisfies both. Resolved toward the
+   prose, spec §F.3 and the sibling test's own doc comment, all three of
+   which agree: bare Escape cancels, Escape with a modifier is a chord.
+2. **The brief's reserved set omitted `Ctrl+Alt+Del`**, which spec §F.5 says
+   to treat as refused until measured — and `delete` is in the 81-key table,
+   so it was recordable.
+
+Both were found by the implementer and flagged rather than silently
+resolved, which is the only reason they are written down.
