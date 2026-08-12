@@ -269,20 +269,12 @@ fn is_push_button(id: i32) -> bool {
 /// |---|---|---|---|
 /// | `A` | Add | `R` | Reload |
 /// | `M` | Re**m**ove | `K` | Keep mine |
-/// | `S` | Save | `C` | Use **C**aps Lock (check box) |
-/// | `C` | Close | `C` | **C**trl (hold chip) |
-/// | `O` | Open config file | `W` | **W**in (hold chip) |
-/// |  |  | `L` | A**l**t (hold chip) |
+/// | `U` | **U**se Caps Lock (check box) | `T` | C**t**rl (hold chip) |
+/// | `C` | Close | `W` | **W**in (hold chip) |
+/// | `O` | Open config file | `L` | A**l**t (hold chip) |
 ///
-/// **`C` is claimed three times, and that is a known defect rather than a
-/// decision.** `Close`, the Caps check box and the `Ctrl` chip all take it,
-/// so `Alt+C` cycles focus between the three instead of pressing any of
-/// them. Both new claimants arrived with the Caps row -- the check box used
-/// to be `&Use`, i.e. `U` -- and the captions above are the ones the landing
-/// plan specified verbatim, so respelling them was not this pass's call to
-/// make. The fix costs nothing but the position of two ampersands, and both
-/// letters are free: `&Use Caps Lock as a shortcut key` (`U`) and `C&trl`
-/// (`T`).
+/// **Mnemonic uniqueness is maintained by hand.** There is no test for it,
+/// so verify by inspection before adding new captions.
 ///
 /// `Remove` cannot take `R` because `Reload` has it, and `Reload` is the
 /// one that appears without warning -- a banner the user did not ask for is
@@ -302,10 +294,10 @@ mod cap {
     pub const OPEN_FILE: &str = "&Open config file";
     pub const RELOAD: &str = "&Reload";
     pub const KEEP_MINE: &str = "&Keep mine";
-    pub const CAPS: &str = "Use &Caps Lock as a shortcut key";
+    pub const CAPS: &str = "&Use Caps Lock as a shortcut key";
     pub const HOLD: &str = "Hold";
     pub const TAP: &str = "Tap";
-    pub const HOLD_CTRL: &str = "&Ctrl";
+    pub const HOLD_CTRL: &str = "C&trl";
     pub const HOLD_WIN: &str = "&Win";
     pub const HOLD_ALT: &str = "A&lt";
     /// The three `Tap` items, in `CB_ADDSTRING` order. Read back by INDEX
