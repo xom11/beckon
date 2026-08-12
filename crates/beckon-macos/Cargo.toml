@@ -22,6 +22,15 @@ objc2-app-kit    = { version = "0.3", features = [
     "NSMenu", "NSMenuItem", "NSApplication",
     "NSResponder", "NSControl", "NSButton", "NSView", "NSCell", "NSButtonCell",
     "NSImage", "NSGraphics",
+    # The settings window (src/settings_window.rs). NSStackView is what
+    # keeps this file from growing the ~2000 lines of manual layout
+    # arithmetic the Win32 twin needs -- AppKit does the band stacking.
+    "NSWindow", "NSPanel", "NSStackView", "NSLayoutConstraint",
+    "NSTableView", "NSTableColumn", "NSScrollView", "NSClipView",
+    "NSTextField", "NSTextFieldCell", "NSText", "NSPopUpButton",
+    "NSPopUpButtonCell", "NSSecureTextField", "NSBox", "NSFont", "NSColor",
+    "NSAlert", "NSUserInterfaceItemIdentification", "NSAccessibilityProtocols",
+    "NSLayoutAnchor", "NSAnimation", "NSDragging", "NSPasteboard",
 ] }
 core-foundation  = "0.10"
 plist            = "1"

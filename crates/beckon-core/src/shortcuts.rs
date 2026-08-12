@@ -158,6 +158,39 @@ pub struct ComboView {
     pub key: Option<usize>,
 }
 
+impl ComboView {
+    /// What these control values spell, or `None` when no key is chosen.
+    ///
+    /// **`None` is not an error and must not be turned into one.** A
+    /// modifier set with no main key is not a combo: writing `ctrl+` into
+    /// the model would make the row invalid on a keystroke the user has not
+    /// finished, and flag it for a mistake it is halfway through not
+    /// making. Callers send nothing instead, so the row keeps whatever it
+    /// had until a key is chosen.
+    ///
+    /// Spelled through `Combo::canonical` rather than by joining strings,
+    /// so the order a window writes and the order the parser prints cannot
+    /// drift apart. `key` is looked up with `get` rather than indexed,
+    /// because a control is not a proof.
+    ///
+    /// The exact inverse of `combo_view` for every string `combo_view`
+    /// resolves a key from — pinned by
+    /// `spell_round_trips_through_combo_view`.
+    pub fn spell(&self) -> Option<String> {
+        let key = key_table().get(self.key?)?;
+        Some(
+            Combo {
+                ctrl: self.ctrl,
+                super_: self.super_,
+                alt: self.alt,
+                shift: self.shift,
+                key,
+            }
+            .canonical(),
+        )
+    }
+}
+
 /// Render a combo string as control values. Never fails: an unparseable
 /// string is `ComboView::default()`, i.e. nothing ticked and no key chosen.
 pub fn combo_view(s: &str) -> ComboView {
@@ -619,7 +652,8 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 mod tests {
     use super::{
         all_keys, combo_caps, combo_display, combo_view, key_label, key_table, lookup_key,
-        lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo, KeyboardConfig,
+        lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo, ComboView,
+        KeyboardConfig,
     };
 
     #[test]
@@ -1168,5 +1202,69 @@ mod tests {
         assert_eq!(c.canonical(), "ctrl+super+alt+t");
         assert!(c.canonical().contains("super"));
         assert!(!c.canonical().contains("Win"));
+    }
+
+    /// `spell` is the inverse of `combo_view`, and both settings windows
+    /// depend on that being exact: `commit_fields` compares the live
+    /// controls against the stored string as `ComboView`s precisely so a
+    /// file written `"super+ctrl+alt+t"` does not read back as an edit.
+    /// If the round trip drifted, every window open would mark rows dirty
+    /// that nobody touched.
+    #[test]
+    fn spell_round_trips_through_combo_view() {
+        for key in key_table() {
+            for mods in 0u8..16 {
+                let v = ComboView {
+                    ctrl: mods & 1 != 0,
+                    super_: mods & 2 != 0,
+                    alt: mods & 4 != 0,
+                    shift: mods & 8 != 0,
+                    key: key_table().iter().position(|k| k.name == key.name),
+                };
+                let spelled = v.spell().expect("a key is selected");
+                assert_eq!(
+                    combo_view(&spelled),
+                    v,
+                    "{spelled:?} did not read back as the controls that wrote it"
+                );
+            }
+        }
+    }
+
+    /// Modifier order in the input is free but `spell` always prints
+    /// canonically, which is the property that makes the `ComboView`
+    /// comparison in `commit_fields` see reordering as "no change".
+    #[test]
+    fn spell_is_canonical_regardless_of_how_the_file_wrote_it() {
+        assert_eq!(
+            combo_view("super+ctrl+alt+t").spell().unwrap(),
+            combo_view("ctrl+super+alt+t").spell().unwrap()
+        );
+    }
+
+    /// A modifier set with no key is not a half-combo to be repaired -- it
+    /// is nothing to send. Turning this into `"ctrl+"` would flag a row for
+    /// a mistake the user is halfway through not making.
+    #[test]
+    fn spell_declines_when_no_key_is_chosen() {
+        let v = ComboView {
+            ctrl: true,
+            super_: true,
+            alt: true,
+            shift: false,
+            key: None,
+        };
+        assert_eq!(v.spell(), None);
+    }
+
+    /// `key` is an index into `key_table()`, and a control is not a proof --
+    /// an out-of-range index must decline rather than panic.
+    #[test]
+    fn spell_declines_on_an_index_no_key_table_entry_has() {
+        let v = ComboView {
+            key: Some(usize::MAX),
+            ..ComboView::default()
+        };
+        assert_eq!(v.spell(), None);
     }
 }

@@ -26,6 +26,8 @@ mod ffi;
 #[cfg(target_os = "macos")]
 pub mod hotkey;
 #[cfg(target_os = "macos")]
+pub mod settings_window;
+#[cfg(target_os = "macos")]
 mod state;
 #[cfg(target_os = "macos")]
 pub mod tray;
@@ -48,6 +50,24 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     Err(BackendError::UnsupportedEnvironment(
         "beckon-macos only compiles on macOS".to_string(),
     ))
+}
+
+/// Installed-app display names, for the settings window's App field.
+///
+/// Names only: the window is filling in a Name while someone authors a
+/// binding, which is the job `beckon search` already has. It never focuses
+/// or launches anything, so it has no use for a bundle id or a path.
+#[cfg(target_os = "macos")]
+pub fn installed_app_names() -> Vec<String> {
+    let mut v: Vec<String> = apps::installed_apps().into_iter().map(|a| a.name).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn installed_app_names() -> Vec<String> {
+    Vec::new()
 }
 
 /// Whether the current process is trusted for the Accessibility API.

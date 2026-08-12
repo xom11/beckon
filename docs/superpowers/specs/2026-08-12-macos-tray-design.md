@@ -56,8 +56,11 @@ Quit
 Four rows against Windows' seven. Each omission is a decision, not an
 oversight:
 
-- **`Settings…` is omitted** because the window does not exist on macOS yet.
-  A row that opens nothing is worse than no row. It returns with subsystem 2.
+- **`Settings…` is present** — it was omitted in the first pass of this spec,
+  when the window did not exist. It does now (see §10), so the row is built
+  and `MenuModel::settings` is `true` on both platforms. The field stays,
+  because "a row that opens nothing is worse than no row" is why it is a
+  capability flag rather than a constant.
 - **`Open log` is omitted** because `--log` is `#[cfg(target_os = "windows")]`
   (`crates/beckon-cli/src/lib.rs:130`), so `ServeState::log` is structurally
   always `None` on macOS and the row could only ever be greyed out. beckon does
@@ -243,10 +246,43 @@ are listed here so the same gap is not reproduced.
 
 ## 10. Out of scope this round
 
-- **Settings window.** Its model is already OS-neutral —
-  `beckon_core::settings` is 3169 lines of `Model` / `probe_plan` /
-  `control_state` / `row_condition` that the Windows window only draws — so the
-  macOS work is a view, not a rewrite. Separate spec.
+- ~~**Settings window.**~~ **Built 2026-08-12, same session** — the scope
+  guard above turned out to be protecting against the wrong risk. The one
+  open measurement (§5) gates whether *any* AppKit surface draws in this
+  process; if the answer is "swap the run loop", that is a one-line change in
+  `run_forever` and it invalidates no view code. So the window was not
+  blocked, only the confidence that it renders was.
+
+  `crates/beckon-macos/src/settings_window.rs` implements the same contract
+  as the Win32 twin — `open` / `apply_state` / `is_open` / `open_existing` /
+  `error` / `post_catalog`, against a `Callbacks` now shared from
+  `beckon_core::settings`. It is roughly a tenth of the Win32 file's size,
+  and the reason is worth recording: most of those 4979 lines are layout
+  arithmetic plus the defences against its own layout pass. `NSStackView`
+  removes the first, and removing the second is not a saving but a
+  correctness property — **the measured Windows data-loss bug (typing
+  "Notepad", model receives `"d"`) came from `apply_state` calling `layout`,
+  whose `SetWindowPos` re-synchronised a populated combo's edit.** Nothing
+  on the macOS data push calls a layout pass, so that class of bug is absent
+  by construction rather than guarded against. That claim is exactly what
+  `examples/settings_probe.rs` exists to confirm or refute.
+
+  Three things did NOT come across, each on purpose:
+
+  1. **No OS availability probe.** `probe_plan`'s first five steps — parse,
+     the F12 guard, the row's own chord, other rows in the file, the row's
+     saved chord — all still run. The sixth, asking the OS, does not:
+     whether `RegisterEventHotKey` even refuses a chord another app holds is
+     unmeasured, and `RegisterHotKey`'s behaviour is not evidence about a
+     different API on a different OS. `probe` stays `None`, which
+     `row_condition` already renders as "not yet probed" — and *not-yet-probed
+     is not the same as free*.
+  2. **The catalog scan is synchronous.** The Windows twin uses a worker
+     thread; macOS has no main-queue hop yet, so a worker would have nowhere
+     to deliver. It costs the window-open, never the hot path. This is the
+     first caller that actually needs the hop described above, and it is
+     where that hop will land.
+  3. **Caps Lock and chord capture** remain out — see below.
 - **Caps Lock and chord capture.** Needs a `CGEventTap` in place of
   `WH_KEYBOARD_LL`, which means Input Monitoring *and* Accessibility, both
   bound to code signature. `beckon_core::caps` and `beckon_core::capture`

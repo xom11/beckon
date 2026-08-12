@@ -100,9 +100,7 @@ use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
     default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark,
 };
-use beckon_core::shortcuts::{
-    combo_display, combo_view, key_table, CapsTap, Chord, Combo, ComboView,
-};
+use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -923,60 +921,18 @@ fn shade(c: COLORREF, num: u32, den: u32) -> COLORREF {
 
 /// Everything the window reports back. The caller owns all policy: what an
 /// edit means, whether a close is allowed, what Apply writes.
-pub struct Callbacks {
-    /// A row became current. The index is a **model** row -- the window has
-    /// already mapped it through `ListItem::row`, because the ListView only
-    /// ever knows the position within the filtered list it was given.
-    pub on_select: Box<dyn FnMut(usize)>,
-    /// A row's tick changed: `(model row, ticked)`. Independent of
-    /// `on_select` -- one click can raise both, and neither implies the
-    /// other.
-    pub on_mark: Box<dyn FnMut(usize, bool)>,
-    pub on_edit_combo: Box<dyn FnMut(String)>,
-    /// The five shortcut controls now spell a whole chord: find out whether
-    /// anything else already has it.
-    ///
-    /// Separate from `on_edit_combo`, and raised FIRST, for two reasons that
-    /// are both about not lying:
-    ///
-    /// 1. **It is a global OS mutation**, however brief -- one
-    ///    `RegisterHotKey` round trip -- so it must be raised by a change to
-    ///    the shortcut and by nothing else. `on_edit_combo` is also sent by
-    ///    `commit_fields` (an App-field focus loss, a Save), where the chord
-    ///    has not moved and there is nothing to find out; and `apply_state`
-    ///    pushes data on every keystroke, which `push_shortcut`'s
-    ///    `suppressed()` guard keeps out of here.
-    /// 2. **The model must still hold the row's PREVIOUS chord** when the
-    ///    caller decides. `probe_plan`'s "Unchanged - this row already uses
-    ///    it" compares the typed chord against the row's own, so a probe
-    ///    asked after `on_edit_combo` has written it would find every chord
-    ///    unchanged and never ask the OS anything.
-    ///
-    /// Nothing is sent while a key is not selected, exactly as
-    /// `on_edit_combo` is not -- see `shortcut_shown`.
-    pub on_probe_shortcut: Box<dyn FnMut(String)>,
-    pub on_edit_app: Box<dyn FnMut(String)>,
-    /// The filter box's text changed. Indices in `on_select` / `on_mark` are
-    /// model rows either way -- the window maps them.
-    pub on_filter: Box<dyn FnMut(String)>,
-    pub on_add: Box<dyn FnMut()>,
-    pub on_remove: Box<dyn FnMut()>,
-    pub on_apply: Box<dyn FnMut()>,
-    pub on_caps: Box<dyn FnMut(bool)>,
-    pub on_caps_tap: Box<dyn FnMut(CapsTap)>,
-    /// What holding Caps stands for. The window sends all three chips
-    /// together because they are one value.
-    pub on_caps_hold: Box<dyn FnMut(Chord)>,
-    pub on_open_file: Box<dyn FnMut()>,
-    /// The installed-app catalog finished scanning.
-    pub on_catalog: Box<dyn FnMut(Vec<String>)>,
-    /// Reload the model from disk, discarding in-memory edits.
-    pub on_reload_from_disk: Box<dyn FnMut()>,
-    /// Keep the in-memory edits and dismiss the external-change banner.
-    pub on_keep_mine: Box<dyn FnMut()>,
-    /// `true` if the window may close. The caller shows any save prompt.
-    pub on_close_request: Box<dyn FnMut() -> bool>,
-}
+///
+/// Defined in `beckon_core::settings` and re-exported here so the macOS
+/// window implements the same contract and `serve.rs` builds one set. Two
+/// notes that are Win32-specific and so did not travel with it:
+///
+/// - `on_probe_shortcut` is also NOT sent by `commit_fields` (an App-field
+///   focus loss, a Save), where the chord has not moved and there is
+///   nothing to find out; `apply_state` pushes data on every keystroke,
+///   which `push_shortcut`'s `suppressed()` guard keeps out of there.
+/// - Nothing is sent while a key is not selected, exactly as
+///   `on_edit_combo` is not -- see `shortcut_shown`.
+pub use beckon_core::settings::Callbacks;
 
 struct Ui {
     hwnd: HWND,
@@ -1248,6 +1204,16 @@ thread_local! {
 }
 
 /// The window's handle, or `None` when it is closed.
+/// Is the window open?
+///
+/// The same question `hwnd().is_some()` answers, under the name the macOS
+/// window uses, so `serve::open_settings` is one function rather than two.
+/// `hwnd` itself stays because the probe and the catalog worker need the
+/// handle, not merely the fact.
+pub fn is_open() -> bool {
+    hwnd().is_some()
+}
+
 pub fn hwnd() -> Option<HWND> {
     UI.with(|u| u.borrow().as_ref().map(|ui| ui.hwnd))
 }
@@ -5872,28 +5838,18 @@ fn combo_view_of(hwnd: HWND, combo: HWND) -> ComboView {
 /// it for a mistake it is halfway through not making. Every caller sends
 /// nothing instead, so the row keeps whatever it had until a key is chosen.
 ///
-/// Spelled through `Combo::canonical` rather than by joining strings here,
-/// so the order this window writes and the order the parser prints cannot
-/// drift apart.
+/// Spelled through `ComboView::spell` -- i.e. through `Combo::canonical`,
+/// not by joining strings -- so the order this window writes and the order
+/// the parser prints cannot drift apart.
+///
+/// The reading of the controls lives in `combo_view_of` and the spelling in
+/// core, which is what makes this the exact inverse of the `combo_view` that
+/// `commit_fields` compares against. When the two were separate
+/// implementations, keeping them inverse was a convention; now it is
+/// `spell_round_trips_through_combo_view`, and the macOS window gets it for
+/// free rather than by copying this function.
 fn shortcut_shown(hwnd: HWND, combo: HWND) -> Option<String> {
-    let i = cur_sel_raw(combo);
-    if i < 0 {
-        return None;
-    }
-    // The index is a position in `key_table()` -- see `set_key_sel` for why
-    // that is true and what would break it. `get` rather than an index,
-    // because a control is not a proof.
-    let key = key_table().get(i as usize)?;
-    Some(
-        Combo {
-            ctrl: is_checked(hwnd, IDC_MOD_CTRL),
-            super_: is_checked(hwnd, IDC_MOD_WIN),
-            alt: is_checked(hwnd, IDC_MOD_ALT),
-            shift: is_checked(hwnd, IDC_MOD_SHIFT),
-            key,
-        }
-        .canonical(),
-    )
+    combo_view_of(hwnd, combo).spell()
 }
 
 /// Send what the five shortcut controls now spell, if they spell anything.

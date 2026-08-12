@@ -39,6 +39,7 @@ say "build"
 # beckon-windows crate does not build on a macOS host at all.
 cargo build -p beckon-macos --examples || exit 1
 PROBE=target/debug/examples/tray_probe
+PROBE_SETTINGS=target/debug/examples/settings_probe
 
 say "control: menu bar with no probe running"
 screencapture -x $BAR "$OUT/baseline.png"
@@ -60,6 +61,18 @@ for mode in carbon nsapp; do
   cat "$OUT/stdout-$mode.txt"
 done
 
+say "settings window"
+"$PROBE_SETTINGS" >"$OUT/stdout-settings.txt" 2>&1 &
+spid=$!
+sleep 3
+if kill -0 "$spid" 2>/dev/null; then
+  screencapture -x "$OUT/settings.png"
+  printf 'screencapture exit=%s (full screen: the window is not in the menu bar)\n' "$?"
+  kill "$spid" 2>/dev/null
+fi
+wait "$spid" 2>/dev/null
+cat "$OUT/stdout-settings.txt"
+
 say "results"
 printf 'PNGs in %s\n' "$OUT"
 ls -la "$OUT"/*.png 2>/dev/null
@@ -80,4 +93,16 @@ Read the three PNGs. Look for the word "beckon" in the menu bar.
 
 Then open the menu by hand and click a row: stdout must print "menu click".
 The screenshot cannot show that, and a drawn-but-dead menu looks identical.
+
+settings.png is the settings window. Nothing it does touches a config file --
+Save prints the TOML it would have written. The things worth doing by hand,
+because no screenshot and no unit test can reach them:
+
+  * type a filter, THEN click a row -- stdout must print the model index,
+    which is only distinguishable from the view index once a filter is on.
+  * type a whole app name into the App field. The model must receive the
+    whole name, not its last character. That is the Windows data-loss bug
+    this window claims to be structurally immune to, and this is the only
+    place the claim gets tested.
+  * change a modifier box: "probe" must print BEFORE "edit".
 EOF

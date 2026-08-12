@@ -48,8 +48,12 @@ use beckon_core::shortcuts::{parse_config, KeyboardConfig, Shortcut};
 use beckon_core::Backend;
 #[cfg(target_os = "macos")]
 use beckon_macos::hotkey;
+#[cfg(target_os = "macos")]
+use beckon_macos::settings_window as swin;
 #[cfg(target_os = "windows")]
 use beckon_windows::hotkey;
+#[cfg(target_os = "windows")]
+use beckon_windows::settings_window as swin;
 use hotkey::HotkeyManager;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -852,13 +856,14 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // beckon must not write a competing LaunchAgent behind it.
             autostart: None,
             log: None,
-            settings: false,
+            settings: true,
         })
     });
 
     let st = Rc::clone(state);
     let mg = Rc::clone(mgr);
     let on_click = Box::new(move |id: u32| match id {
+        MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st),
         MENU_RELOAD => reload(&st, &mg),
         MENU_PAUSE => {
             let now = !st.borrow().paused;
@@ -868,8 +873,8 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             eprintln!("beckon serve: quit requested from the menu bar");
             tray::request_quit();
         }
-        // MENU_EDIT / MENU_LOG / MENU_AUTOSTART never reach here: those rows
-        // are not built on macOS at all.
+        // MENU_LOG / MENU_AUTOSTART never reach here: those rows are not
+        // built on macOS at all.
         _ => {}
     });
 
@@ -968,12 +973,102 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 fn sync_caps_hook(_state: &Rc<RefCell<ServeState>>) {}
 
 // ---------------------------------------------------------------------------
-// Settings window (Windows only)
+// Settings window
+//
+// The window itself is per-OS (`beckon_windows::settings_window`,
+// `beckon_macos::settings_window`), aliased to `swin`. Everything below is
+// shared, because it is all policy and `beckon_core::settings` already owns
+// the decisions. Four calls genuinely differ, and each gets a shim here
+// rather than a `cfg` in the middle of `open_settings`.
+// ---------------------------------------------------------------------------
+
+/// What the user chose when asked about unsaved edits on close.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+enum SaveChoice {
+    Save,
+    Discard,
+    Cancel,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn ask_save_changes() -> SaveChoice {
+    #[cfg(target_os = "windows")]
+    {
+        use beckon_windows::shell;
+        match shell::ask_save("beckon", "Save your changes to the shortcuts file?") {
+            shell::SaveChoice::Save => SaveChoice::Save,
+            shell::SaveChoice::Discard => SaveChoice::Discard,
+            shell::SaveChoice::Cancel => SaveChoice::Cancel,
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match swin::ask_save("beckon", "Save your changes to the shortcuts file?") {
+            swin::SaveChoice::Save => SaveChoice::Save,
+            swin::SaveChoice::Discard => SaveChoice::Discard,
+            swin::SaveChoice::Cancel => SaveChoice::Cancel,
+        }
+    }
+}
+
+/// Open the config file in the user's editor.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn open_config_file(p: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        beckon_windows::shell::open_path(p)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        swin::open_path(p)
+    }
+}
+
+/// Scan the installed-app catalog off the UI thread.
+///
+/// `scan_installed_apps` was measured at ~370-500 ms on Windows and the
+/// macOS bundle walk is the same order; the run loop that would stall is
+/// the one dispatching hotkeys, so this never runs inline.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn spawn_catalog_scan() {
+    #[cfg(target_os = "windows")]
+    {
+        // The Windows window is told through a posted message, which needs
+        // its handle. `None` means it closed between opening and here.
+        if let Some(h) = swin::hwnd() {
+            let target = swin::WindowHandle(h);
+            std::thread::spawn(move || {
+                let names: Vec<String> = beckon_windows::apps::scan_installed_apps()
+                    .into_iter()
+                    .map(|a| a.name)
+                    .collect();
+                swin::post_catalog(target, names);
+            });
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Deliberately synchronous for now. The macOS window has no
+        // main-queue hop yet (see `tray.rs`'s module doc), and AppKit may
+        // only be touched from the main thread -- so a worker here would
+        // have nowhere to deliver its answer. Scanning inline costs the
+        // window-open, not the hot path: `beckon <id>` never reaches this
+        // code, and hotkeys are not dispatched while a menu action runs.
+        //
+        // This is the first caller that will actually need that hop, and
+        // it is why the hop is specified rather than built: it lands here.
+        let names: Vec<String> = beckon_macos::installed_app_names();
+        swin::post_catalog(names);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings model plumbing
 // ---------------------------------------------------------------------------
 
 /// Recompute what the window should show and push it. Every callback ends
 /// here; nothing else touches the controls.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     let s = state.borrow();
     // Two projections, one push. The read-only one has no `Model` behind it
@@ -1003,7 +1098,7 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     let external = s.external_change;
     let catalog = s.catalog.clone();
     drop(s);
-    beckon_windows::settings_window::apply_state(&cs, external, catalog.as_deref());
+    swin::apply_state(&cs, external, catalog.as_deref());
 }
 
 /// Decide whether `combo` is free for the row being edited, asking the OS
@@ -1043,7 +1138,7 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
 /// all. Closing that needs the probe to read `ServeState::shortcuts`, which
 /// is a policy §F.6 has no verdict or string for; it stays written up in the
 /// task 2 report rather than guessed at here.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
     use beckon_core::settings::{ProbePlan, ProbeResult};
 
@@ -1060,12 +1155,28 @@ fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
     };
     let verdict = match plan {
         ProbePlan::Verdict(v) => v,
+        #[cfg(target_os = "macos")]
+        ProbePlan::AskTheOs => {
+            // No macOS probe, and reporting `Free` would be a guess. Whether
+            // `RegisterEventHotKey` even refuses a chord another app holds
+            // is unmeasured -- on Windows `RegisterHotKey` says so plainly,
+            // and assuming the Carbon API behaves the same way is exactly
+            // the kind of claim this repo has had to retract before.
+            //
+            // Leaving `probe` as it is renders "not yet probed", which
+            // `row_condition` already distinguishes from "free". The five
+            // steps BEFORE this one -- parse, the F12 guard, the row's own
+            // chord, other rows in the file, the row's saved chord -- all
+            // still run, and they are the ones that catch real mistakes.
+            return;
+        }
+        #[cfg(target_os = "windows")]
         ProbePlan::AskTheOs => {
             // The SETTINGS window's handle, never the tray's -- see
             // `hotkey::probe_chord`, which is where that rule and its reason
             // live. `None` means the window closed between the notification
             // and here, which leaves nothing to ask on and nobody to tell.
-            let Some(h) = beckon_windows::settings_window::hwnd() else {
+            let Some(h) = swin::hwnd() else {
                 return;
             };
             // `AskTheOs` is only reachable for a chord `probe_plan` parsed,
@@ -1094,7 +1205,7 @@ fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
 /// `Err` is reserved for a file that could not be READ at all -- deleted,
 /// locked, permission denied. There is nothing to show for that, so the
 /// caller reports it and does not open.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn load_settings_model(state: &Rc<RefCell<ServeState>>) -> Result<(), String> {
     let path = state.borrow().config.clone();
     let text = std::fs::read_to_string(&path)
@@ -1119,7 +1230,7 @@ fn load_settings_model(state: &Rc<RefCell<ServeState>>) -> Result<(), String> {
 /// `settings` / `settings_unreadable` pair go, together: leaving the
 /// explanation behind would make `settings_saw_external_change` believe a
 /// window is still open and push into a destroyed one.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn forget_settings(state: &Rc<RefCell<ServeState>>) {
     let mut s = state.borrow_mut();
     s.settings = None;
@@ -1132,7 +1243,7 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// on the rename and the 1 Hz tick reloads within a second. A shortcut path
 /// here would buy under a second at the cost of a second code path, and the
 /// watcher would run anyway.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let rendered = {
         let s = state.borrow();
@@ -1144,7 +1255,7 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let (text, path) = match rendered {
         Ok(v) => v,
         Err(e) => {
-            beckon_windows::settings_window::error(&format!("Cannot save:\n\n{e}"));
+            swin::error(&format!("Cannot save:\n\n{e}"));
             return;
         }
     };
@@ -1156,7 +1267,7 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let wrote = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = wrote {
         let _ = std::fs::remove_file(&tmp);
-        beckon_windows::settings_window::error(&format!("Cannot write {}:\n\n{e}", path.display()));
+        swin::error(&format!("Cannot write {}:\n\n{e}", path.display()));
         return;
     }
     // The model is now what is on disk, so re-seed it from the text we just
@@ -1184,16 +1295,13 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
 }
 
 /// Load the model from disk into the window, discarding in-memory edits.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
     let path = state.borrow().config.clone();
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) => {
-            beckon_windows::settings_window::error(&format!(
-                "Cannot read {}:\n\n{e}",
-                path.display()
-            ));
+            swin::error(&format!("Cannot read {}:\n\n{e}", path.display()));
             return;
         }
     };
@@ -1213,10 +1321,7 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
         // can still save once they fix the file. The dialog says so and the
         // model stays.
         Err(e) => {
-            beckon_windows::settings_window::error(&format!(
-                "{} is not valid:\n\n{e}",
-                path.display()
-            ));
+            swin::error(&format!("{} is not valid:\n\n{e}", path.display()));
             return;
         }
     }
@@ -1271,38 +1376,18 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
     }
 }
 
-/// Scan the installed-app catalog off the UI thread.
-///
-/// `scan_installed_apps` was measured at ~370-500 ms and `run_forever`'s
-/// message loop is the same thread that dispatches `WM_HOTKEY`; scanning
-/// inline would stall every hotkey for half a second each time the window
-/// opens. The worker gets its own STA -- an MTA worker would be handed a
-/// marshalling proxy back to the host apartment and serialise anyway.
-#[cfg(target_os = "windows")]
-fn spawn_catalog_scan(target: beckon_windows::settings_window::WindowHandle) {
-    std::thread::spawn(move || {
-        let names: Vec<String> = beckon_windows::apps::scan_installed_apps()
-            .into_iter()
-            .map(|a| a.name)
-            .collect();
-        beckon_windows::settings_window::post_catalog(target, names);
-    });
-}
-
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn open_settings(state: &Rc<RefCell<ServeState>>) {
-    use beckon_windows::settings_window as win;
-
     // Already open: raise it, do not build a second model.
-    if win::hwnd().is_some() {
-        let _ = win::open_existing();
+    if swin::is_open() {
+        let _ = swin::open_existing();
         return;
     }
 
     // A file that does not parse opens READ ONLY rather than being refused.
     // Only a file that cannot be read at all stops us here.
     if let Err(e) = load_settings_model(state) {
-        win::error(&e);
+        swin::error(&e);
         return;
     }
 
@@ -1324,7 +1409,7 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         }};
     }
 
-    let cb = win::Callbacks {
+    let cb = beckon_core::settings::Callbacks {
         // Not `edit!`: a probe verdict is about the row it was requested
         // for, and `row_condition` only re-checks the COMBO, not which row
         // asked -- two rows sharing a chord means a verdict stored for row A
@@ -1450,7 +1535,7 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 // cloned out and the borrow dropped BEFORE the call -- the
                 // rule this module's doc states for backend.beckon().
                 let p = st.borrow().config.clone();
-                if let Err(e) = beckon_windows::shell::open_path(&p) {
+                if let Err(e) = open_config_file(&p) {
                     eprintln!("beckon serve: {e}");
                 }
             }
@@ -1482,11 +1567,8 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                     forget_settings(&st);
                     return true;
                 }
-                match beckon_windows::shell::ask_save(
-                    "beckon",
-                    "Save your changes to the shortcuts file?",
-                ) {
-                    beckon_windows::shell::SaveChoice::Save => {
+                match ask_save_changes() {
+                    SaveChoice::Save => {
                         apply_settings(&st);
                         // Only leave if the write actually succeeded --
                         // apply_settings clears `dirty` by reseeding the
@@ -1503,11 +1585,11 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                         }
                         !still_dirty
                     }
-                    beckon_windows::shell::SaveChoice::Discard => {
+                    SaveChoice::Discard => {
                         forget_settings(&st);
                         true
                     }
-                    beckon_windows::shell::SaveChoice::Cancel => false,
+                    SaveChoice::Cancel => false,
                 }
             }
         }),
@@ -1517,15 +1599,13 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
     // its `Open config file` tooltip shows. Handed over once, at open: it is
     // `ServeState::config`, which nothing can repoint while the window is up.
     let path = state.borrow().config.clone();
-    if let Err(e) = win::open(cb, &path.to_string_lossy()) {
+    if let Err(e) = swin::open(cb, &path.to_string_lossy()) {
         eprintln!("beckon serve: cannot open settings: {e}");
-        beckon_windows::settings_window::error(&format!("Cannot open settings:\n\n{e}"));
+        swin::error(&format!("Cannot open settings:\n\n{e}"));
         forget_settings(state);
         return;
     }
-    if let Some(h) = win::hwnd() {
-        spawn_catalog_scan(win::WindowHandle(h));
-    }
+    spawn_catalog_scan();
     refresh_settings(state);
 }
 
@@ -1833,22 +1913,24 @@ mod tests {
         );
     }
 
-    /// The macOS menu is four rows, and each absence is structural: there
-    /// is no settings window to open yet, `--log` is
-    /// `#[cfg(target_os = "windows")]` so beckon never owns a log path
-    /// there, and login lifecycle belongs to `brew services`.
+    /// The macOS menu says nothing it cannot do, and each absence is
+    /// structural: `--log` is `#[cfg(target_os = "windows")]` so beckon
+    /// never owns a log path there, and login lifecycle belongs to
+    /// `brew services`. (`Settings...` WAS absent while the window did not
+    /// exist; it is built now, which is why this model has `settings:
+    /// true` and the flag survives as a capability rather than a constant.)
     ///
     /// Asserted as a whole-shape equality rather than three separate
     /// "row is absent" checks, because the failure this guards against is a
     /// row being ADDED — which no absence check can see.
     #[test]
-    fn the_macos_menu_is_four_rows_and_says_nothing_it_cannot_do() {
+    fn the_macos_menu_says_nothing_it_cannot_do() {
         let rows = build_entries(&MenuModel {
             phrase: "18 shortcuts registered".into(),
             paused: false,
             autostart: None,
             log: None,
-            settings: false,
+            settings: true,
         });
         let shape: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(
@@ -1856,6 +1938,7 @@ mod tests {
             vec![
                 "beckon - 18 shortcuts registered",
                 "",
+                "Settings...",
                 "Reload now",
                 "",
                 "Pause hotkeys",
@@ -1876,7 +1959,7 @@ mod tests {
             paused: true,
             autostart: None,
             log: None,
-            settings: false,
+            settings: true,
         });
         assert_eq!(rows[0].label, "beckon - paused (18 shortcuts registered)");
         assert_eq!(
