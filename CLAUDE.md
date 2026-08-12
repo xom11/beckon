@@ -1202,6 +1202,21 @@ OS metadata on every call.
 
 The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Renewal procedure is documented in the tap repo's README. **Rotated 2026-08-11; expires 2027-08-12.**
 
+**`Bump packagers` does NOT fire on its own.** It listens for
+`release: published`, but the release is created by `release.yml` using
+`GITHUB_TOKEN`, and GitHub deliberately raises no workflow events for actions
+taken with that token — the recursion guard. Measured at v0.8.0: the release
+job went green, the release was published, and the last `Bump packagers` run
+was still months old. Dispatch it by hand after every release:
+
+```sh
+gh workflow run "Bump packagers" -f tag=vX.Y.Z
+```
+
+The permanent fix, if it is ever wanted, is for `release.yml` to invoke it
+through `workflow_call` — `bump-packagers.yml` already declares that trigger
+and its `tag` input — or to create the release with a PAT instead.
+
 **Re-running the bump does not test the token.** Both packager repos are
 public, so `git clone` with a dead token still succeeds, and both push
 steps in `bump-packagers.yml` `exit 0` before reaching `git push` whenever
@@ -1213,6 +1228,9 @@ GitHub what the token may do:
 env: { GH_TOKEN: "${{ secrets.PACKAGER_TOKEN }}" }
 run: gh api repos/xom11/homebrew-tap --jq .permissions.push   # must be true
 ```
+
+At v0.8.0 the manifest genuinely changed (0.7.0 to 0.8.0), so `git push`
+actually ran and the token was exercised for real rather than skipped.
 
 A fine-grained PAT cannot even read a repo it was not granted, so a 404
 there means the repo is missing from the token's list. `gh api rate_limit
