@@ -4,7 +4,8 @@
      1. tokens                    (bare :root, then the two dark restatements)
      2. shell                     (container, nav, footer)
      3. system                    (section rhythm, headings, prose, code)
-     4. one block per section     (hero, how, names, setups, serve — page order)
+     4. one block per section     (hero, how, names, setups, serve, install,
+                                   faq — page order)
      5. responsive                (exactly two breakpoints, for the whole page)
      6. prefers-reduced-motion    (LAST, so it wins)
 
@@ -62,6 +63,15 @@
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
+
+/* The install tablist ships with the `hidden` attribute and JS removes it. The
+   UA rule for `[hidden]` is `display: none` at specificity (0,1,0) — exactly
+   what `.tabs { display: flex }` scores — and an author rule beats the UA sheet
+   at equal specificity, so without this line the strip ships VISIBLE and inert
+   for every reader with JS off. That is the one failure the JS-off ordering
+   exists to prevent, so it is enforced here rather than avoided by discipline. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);       /* explicit, never transparent */
@@ -757,9 +767,134 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .card-linux { border-style: dashed; }
 
 /* Keycaps sit ~2.4em tall inside a small paragraph; the extra leading keeps
-   consecutive lines from touching when the line wraps. */
+   consecutive lines from touching when the line wraps. Reused by the Caps Lock
+   FAQ answer, which is the same shape — a chord set inside running prose. */
 .caps { line-height: 2.15; }
 .caps .chord { margin-inline: 2px; }
+
+
+/* --- 4f. section: install ------------------------------------------------- */
+
+/* The tab strip is an ENHANCEMENT over four panels that already work. It ships
+   `hidden` (see the [hidden] rule in §2, which is what makes that stick) and
+   beckon.js reveals it, so nothing here may be the only thing that makes a
+   panel readable. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 20px;
+  padding: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.tab {
+  flex: 1 1 auto;
+  padding: 9px 16px;
+  font: 600 15px var(--sans);
+  color: var(--fg-dim);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.tab:hover { color: var(--fg); }
+.tab[aria-selected="true"] { color: var(--accent-fg); background: var(--accent); }
+
+/* With JS on this holds one panel; with JS off it holds four, stacked. Both
+   are correct pages, which is the whole point of the ordering. */
+.panels { display: grid; gap: 16px; }
+
+.panel {
+  padding: var(--pad);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.panel h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 0 14px;
+  font-size: 1.05rem;
+}
+.panel-os {
+  color: var(--fg-dim);
+  font: 600 11px/1 var(--sans);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.panel .note + pre { margin-top: 14px; }
+
+/* The <pre> sits inside a --bg-raised panel, so it takes --bg to stay a well
+   rather than dissolving into its container — the same figure/ground pair the
+   hero demo uses for .os-card. */
+.panel pre { background: var(--bg); }
+
+/* beckon.js appends the copy button INSIDE the <pre>, so the <pre> cannot also
+   be the scroll container: an absolutely positioned child of an
+   `overflow-x: auto` box scrolls out of view with the text, and the longest
+   install line is 57 characters. The scroll therefore moves to the <code>,
+   which is display:block for exactly that reason, and the reserved
+   padding-inline-end keeps the button off the command. */
+#install pre {
+  position: relative;
+  overflow-x: visible;
+  padding-inline-end: 86px;
+}
+#install pre > code { display: block; overflow-x: auto; }
+
+/* Created by JS and only when navigator.clipboard exists, so there is never a
+   button on screen that silently does nothing. */
+.copy {
+  position: absolute;
+  top: 10px;
+  inset-inline-end: 10px;
+  padding: 5px 10px;
+  font: 600 12px/1.4 var(--sans);
+  color: var(--fg-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.copy:hover { color: var(--accent); border-color: var(--accent); }
+
+
+/* --- 4g. section: faq ----------------------------------------------------- */
+
+/* Native <details>/<summary>. The JS closes siblings and nothing else, so with
+   it disabled the FAQ is still a working accordion — every answer one click
+   away, and all seven openable at once. */
+.faq-list { max-width: var(--measure); border-top: 1px solid var(--rule); }
+.faq-list details { border-bottom: 1px solid var(--rule); }
+
+.faq-list summary {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 18px 0;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;          /* Firefox */
+}
+.faq-list summary::-webkit-details-marker { display: none; }   /* Safari */
+
+/* The marker is a glyph rather than a rotating chevron: it needs no transform,
+   so it reads identically whether or not motion is reduced. */
+.faq-list summary::after {
+  content: "+";
+  margin-inline-start: auto;
+  font: 400 20px/1 var(--mono);
+  color: var(--fg-dim);
+}
+.faq-list details[open] summary::after { content: "\2212"; }
+.faq-list summary:hover { color: var(--accent); }
+
+.faq-list details > p { margin: 0 0 20px; color: var(--fg-dim); }
+.faq-list details > p.caps { margin-bottom: 14px; }
 
 
 /* --- 5. responsive: two breakpoints, for the whole page ------------------- */
@@ -805,6 +940,11 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   .compare-label { white-space: normal; }
 
   .cards { grid-template-columns: minmax(0, 1fr); }
+
+  /* Four tabs do not fit one row at 375px, so they wrap to two. Shrinking them
+     until they did would put a 12px tap target on a phone. */
+  .tab { padding: 8px 12px; font-size: 14px; }
+  #install pre { padding-inline-end: 78px; }
 }
 
 

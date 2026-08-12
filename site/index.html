@@ -340,25 +340,165 @@ beckon doctor</code></pre>
     </div>
   </section>
 
-  <!-- Placeholder. A later task restyles this section; it does not re-author
-       the commands, which are the ones tools/check-site.sh matches against
-       README.md byte for byte. -->
+  <!-- Install.
+
+       JS-OFF FIRST, and this is a correctness requirement rather than a
+       preference. All four panels ship VISIBLE and the tablist ships with the
+       `hidden` attribute; beckon.js removes `hidden` from the tablist and adds
+       it to three panels. Written the other way round — `hidden` in the markup,
+       removed by JS — a reader with JS off gets three empty gaps and no way to
+       install on their own OS.
+
+       `[hidden] { display: none !important }` in §2 of beckon.css is what makes
+       the tablist's own `hidden` survive `.tabs { display: flex }`; without it
+       the class rule wins on source order and the strip ships visible and inert.
+
+       Tab order is Homebrew, Scoop, Cargo, Nix, because beckon.js maps
+       macOS to 0, Windows to 1 and Linux to 3.
+
+       The command text is FIXED: tools/check-site.sh asserts these five lines
+       byte-match README.md. Restyle freely; do not re-author them. -->
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
       <h2 id="install-h">Install</h2>
+      <p class="lead">One binary, no runtime, nothing to configure afterwards. Take whichever
+      channel your machine already has.</p>
 
-      <h3>Homebrew (macOS, Linux)</h3>
+      <div class="tabs" role="tablist" aria-label="Install method" hidden>
+        <button class="tab" type="button" role="tab" id="tab-brew"  aria-controls="panel-brew"  aria-selected="true">Homebrew</button>
+        <button class="tab" type="button" role="tab" id="tab-scoop" aria-controls="panel-scoop" aria-selected="false">Scoop</button>
+        <button class="tab" type="button" role="tab" id="tab-cargo" aria-controls="panel-cargo" aria-selected="false">Cargo</button>
+        <button class="tab" type="button" role="tab" id="tab-nix"   aria-controls="panel-nix"   aria-selected="false">Nix</button>
+      </div>
+
+      <div class="panels">
+
+        <section class="panel" id="panel-brew" role="tabpanel" aria-labelledby="panel-brew-h">
+          <h3 id="panel-brew-h">Homebrew <span class="panel-os">macOS &middot; Linux</span></h3>
 <pre><code>brew install xom11/tap/beckon</code></pre>
+          <p class="note">On macOS the formula also ships the LaunchAgent, so resident mode is one
+          more line. Write <code>~/.config/beckon/apps.toml</code> and <code>beckon check</code> it
+          first.</p>
+<pre><code>brew services start beckon</code></pre>
+        </section>
 
-      <h3>Scoop (Windows)</h3>
+        <section class="panel" id="panel-scoop" role="tabpanel" aria-labelledby="panel-scoop-h">
+          <h3 id="panel-scoop-h">Scoop <span class="panel-os">Windows</span></h3>
 <pre><code>scoop bucket add xom11 https://github.com/xom11/scoop-bucket
 scoop install xom11/beckon</code></pre>
+          <p class="note">That also puts <strong>beckon serve</strong> in your Start menu, which
+          launches <code>beckon-serve.exe</code> &mdash; a tray app with no console window at any
+          point. First launch with no config writes a starter <code>apps.toml</code> and opens it in
+          your editor.</p>
+        </section>
 
-      <h3>Cargo (from git)</h3>
+        <section class="panel" id="panel-cargo" role="tabpanel" aria-labelledby="panel-cargo-h">
+          <h3 id="panel-cargo-h">Cargo <span class="panel-os">from git</span></h3>
 <pre><code>cargo install --git https://github.com/xom11/beckon</code></pre>
+          <p class="note">Needs Rust 1.75+ and a system C / MSVC toolchain. The binary lands in
+          <code>~/.cargo/bin/beckon</code>; add <code>--force</code> to update in place.</p>
+        </section>
 
-      <h3>Nix</h3>
+        <section class="panel" id="panel-nix" role="tabpanel" aria-labelledby="panel-nix-h">
+          <h3 id="panel-nix-h">Nix <span class="panel-os">flake</span></h3>
 <pre><code>nix run github:xom11/beckon -- list</code></pre>
+          <p class="note">To pull beckon into your own flake, add
+          <code>inputs.beckon.url = "github:xom11/beckon"</code> and
+          <code>beckon.overlays.default</code> to your overlays; <code>pkgs.beckon</code> then
+          resolves.</p>
+        </section>
+
+      </div>
+
+      <p class="note">Every release also attaches prebuilt binaries for six targets &mdash; x86_64
+      and aarch64, for Linux, macOS and Windows:
+      <a href="https://github.com/xom11/beckon/releases">github.com/xom11/beckon/releases</a>.</p>
+    </div>
+  </section>
+
+  <!-- FAQ. Native <details>/<summary>, so every answer is reachable with JS
+       off; beckon.js only closes the siblings when one opens. The seven
+       entries are the spec's, and every figure in "Is it fast?" carries the
+       machine it was measured on — a bare "57 ms" is not allowed to appear. -->
+  <section id="faq" aria-labelledby="faq-h">
+    <div class="wrap">
+      <h2 id="faq-h">Questions.</h2>
+
+      <div class="faq-list">
+
+        <details>
+          <summary>Do I need a config file?</summary>
+          <p>Not for <code>beckon &lt;id&gt;</code>. Ids resolve against the OS's own metadata on
+          every call, so there is nothing to generate, no cache to rebuild and no alias file to keep
+          in sync between machines. Only <code>serve</code> reads a file, and that file is a hotkey
+          table &mdash; <code>"ctrl+super+alt+t" = "kitty"</code> &mdash; not a place to rename apps.</p>
+        </details>
+
+        <details>
+          <summary>Why names instead of bundle ids?</summary>
+          <p>Because canonical ids drift and names do not. Brave and Chrome mint a hash into a PWA's
+          id when you install it, so
+          <code>brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default</code> is a different string on your
+          second laptop and the dotfile you copied there silently stops working. The display name is
+          the same on all of them. A canonical id is still accepted, and is the right answer when two
+          apps share a display name.</p>
+        </details>
+
+        <details>
+          <summary>Does beckon register the hotkey on Linux?</summary>
+          <p>No &mdash; your compositor does, and that is a choice rather than a gap. Every Linux
+          desktop already ships a place to bind a key to a command, and there is no single API that
+          would cover all of them: X11 has <code>XGrabKey</code>, KDE has KWin scripting, Hyprland
+          has the GlobalShortcuts portal, GNOME would need its extension, and sway has no route at
+          all. Four implementations for one feature, on the platform that needs it least. The survey
+          is in <a href="https://github.com/xom11/beckon/blob/main/CLAUDE.md">CLAUDE.md</a> under
+          <em>Wayland hotkey</em>.</p>
+        </details>
+
+        <details>
+          <summary>Why does macOS ask for Accessibility?</summary>
+          <p>Raising another application's window goes through the Accessibility API, and macOS gates
+          it behind an explicit grant. The grant is bound to the binary's code signature, so building
+          beckon yourself and rebuilding it can invalidate it and ask again.
+          <code>beckon doctor</code> reports whether the process it is running in is trusted.</p>
+        </details>
+
+        <details>
+          <summary>What does GNOME Wayland need?</summary>
+          <p>The bundled shell extension from
+          <a href="https://github.com/xom11/beckon/tree/main/extensions">extensions/</a>, plus a log
+          out and back in &mdash; Wayland cannot reload the shell live. Mutter gives an external
+          process no way to focus a window at all, so the extension runs inside gnome-shell and
+          beckon talks to it over the session bus. KDE Wayland is the opposite case and needs nothing
+          installed: KWin ships its own scripting engine, so beckon loads a script, reads the answer
+          back and unloads it.</p>
+        </details>
+
+        <details>
+          <summary>Is it fast?</summary>
+          <p>The whole focus-or-launch path measured about <strong>57 ms</strong> on the ARM64
+          Windows 11 laptop beckon is developed against, and about <strong>95&ndash;105 ms</strong> on
+          the macOS host in the same notes. Each figure is one machine and one run series, not a
+          benchmark suite. Both are dominated by the OS rather than by beckon: on macOS,
+          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of the total, and
+          no API avoids that round trip.</p>
+        </details>
+
+        <details>
+          <summary>Can I use Caps Lock as the modifier?</summary>
+          <p class="caps">On Windows, and it is off by default. Tick the Caps Lock box in Settings and holding Caps
+          stands in for <code>ctrl+super+alt</code>, so
+          <span class="chord"><kbd class="key">Caps</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
+          does what <code>ctrl+super+alt+T</code> does &mdash; your bindings do not change, and the
+          same file still works on a machine where the box is not ticked. Three caveats, all real: it
+          does nothing while an elevated window has focus, though typing the chord by hand still works
+          there; any other remapper that already claims Caps &mdash; kanata, PowerToys Keyboard
+          Manager, an AutoHotkey script &mdash; wins, so use one or the other and not both; and it
+          installs a low-level keyboard hook, the same mechanism every remapper uses and the one
+          antivirus software associates with keyloggers.</p>
+        </details>
+
+      </div>
     </div>
   </section>
 
@@ -376,6 +516,6 @@ scoop install xom11/beckon</code></pre>
   </div>
 </footer>
 
-<script src="beckon.js" defer></script>
+<!-- JS-OFF TEST, TEMPORARY: <script src="beckon.js" defer></script> -->
 </body>
 </html>

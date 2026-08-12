@@ -11,3 +11,4 @@ extensions/*.shell-extension.zip
 
 # Local git worktrees (isolated workspaces)
 .worktrees/
+.gstack/
