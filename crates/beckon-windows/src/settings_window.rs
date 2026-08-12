@@ -134,6 +134,10 @@ const CMD_FROM_ACCELERATOR: u32 = 1;
 /// lines tall.
 const SS_CENTERIMAGE_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0200);
 
+/// `EM_SETCUEBANNER` (`ECM_FIRST + 1`), which `windows` 0.61 does not
+/// export -- the same gap `SS_CENTERIMAGE_STYLE` above fills.
+const EM_SETCUEBANNER_MSG: u32 = 0x1501;
+
 /// Posted by the catalog worker thread with the scanned app names.
 pub const WM_CATALOG: u32 = WM_APP + 2;
 
@@ -207,6 +211,7 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// 1001-1007 and the class name are hard-coded in
 /// `examples/settings_probe.rs` and are fixed points.
 const IDC_LBL_SECTION: i32 = 1020;
+const IDC_FILTER: i32 = 1021;
 
 /// Every `BS_PUSHBUTTON`/`BS_DEFPUSHBUTTON` in the window. Three things key
 /// off exactly this set, which is why it is one list and not three:
@@ -279,6 +284,8 @@ mod cap {
     pub const TAP_CAPSLOCK: &str = "&Tapping Caps alone: Caps Lock";
     pub const TAP_ESCAPE: &str = "&Esc";
     pub const TAP_NONE: &str = "&nothing";
+    /// The filter box's placeholder. ASCII, like every display string.
+    pub const FILTER_CUE: &str = "Filter";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -518,6 +525,9 @@ pub struct Callbacks {
     pub on_mark: Box<dyn FnMut(usize, bool)>,
     pub on_edit_combo: Box<dyn FnMut(String)>,
     pub on_edit_app: Box<dyn FnMut(String)>,
+    /// The filter box's text changed. Indices in `on_select` / `on_mark` are
+    /// model rows either way -- the window maps them.
+    pub on_filter: Box<dyn FnMut(String)>,
     pub on_add: Box<dyn FnMut()>,
     pub on_remove: Box<dyn FnMut()>,
     pub on_apply: Box<dyn FnMut()>,
@@ -540,6 +550,7 @@ struct Ui {
     combo: HWND,
     app: HWND,
     notes: HWND,
+    filter: HWND,
     banner: HWND,
     reload: HWND,
     keep: HWND,
@@ -693,6 +704,7 @@ struct LayoutHandles {
     combo: HWND,
     app: HWND,
     notes: HWND,
+    filter: HWND,
     banner: HWND,
     reload: HWND,
     keep: HWND,
@@ -707,6 +719,7 @@ impl LayoutHandles {
             combo: ui.combo,
             app: ui.app,
             notes: ui.notes,
+            filter: ui.filter,
             banner: ui.banner,
             reload: ui.reload,
             keep: ui.keep,
@@ -1547,13 +1560,7 @@ unsafe fn build_children(hwnd: HWND) {
     show(reload, false);
     show(keep, false);
 
-    // -- Band 2: the section head.
-    //
-    // **No filter control, and no placeholder for one.** `on_select(i)` and
-    // `on_mark(i)` index `m.rows` DIRECTLY, so the moment the list shows a
-    // filtered subset those callbacks address the wrong row -- ticking one
-    // binding and deleting another. It lands together with the
-    // view-index-to-model-index mapping that makes it safe, not before.
+    // -- Band 2: the section head, the filter, then Remove and Add.
     child(
         hwnd,
         w!("STATIC"),
@@ -1561,6 +1568,24 @@ unsafe fn build_children(hwnd: HWND) {
         SS_CENTERIMAGE_STYLE,
         IDC_LBL_SECTION,
         &fonts,
+    );
+    let filter = child(
+        hwnd,
+        w!("EDIT"),
+        "",
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
+        IDC_FILTER,
+        &fonts,
+    );
+    // Placeholder text rather than a STATIC label: it costs no band-2 width
+    // and gets out of the way on focus. comctl32 v6 only, which the manifest
+    // guarantees. The buffer must outlive the call, so it is bound.
+    let cue = wide(cap::FILTER_CUE);
+    SendMessageW(
+        filter,
+        EM_SETCUEBANNER_MSG,
+        Some(WPARAM(0)),
+        Some(LPARAM(cue.as_ptr() as isize)),
     );
     child(
         hwnd,
@@ -1789,6 +1814,7 @@ unsafe fn build_children(hwnd: HWND) {
             combo,
             app,
             notes,
+            filter,
             banner,
             reload,
             keep,
@@ -2117,6 +2143,36 @@ unsafe fn layout(hwnd: HWND) {
 
     let mut y = pad;
 
+    // Field geometry, computed before band 2 because the filter box needs it
+    // there and the editor strip needs it in band 4. `combo_h` is therefore
+    // read BEFORE the combo is placed this pass, i.e. it is the height the
+    // combo had on the PREVIOUS pass. That is sound: the value is the theme's
+    // choice for a font and a DPI, so it moves only on WM_DPICHANGED or a
+    // font change, both of which run `layout` again immediately. The one pass
+    // that can read a not-yet-snapped height is the first, and the floor
+    // below falls back to the font-derived height there.
+    let text_h = text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1;
+    let field_h = (text_h + s(10)).min(ctl);
+    let mut arc = RECT::default();
+    let combo_h = if GetWindowRect(ui.app, &mut arc).is_ok() {
+        let ah = arc.bottom - arc.top;
+        if ah > 0 && ah < ctl && ah >= text_h + s(2) {
+            Some(ah)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    // Both EDITs take the combo's height, so the three fields in this window
+    // are one box repeated. A single-line EDIT top-aligns its text -- Win32
+    // gives it no vertical centring at all -- so it is centred in its band
+    // line rather than stretched to it.
+    let (edit_h, edit_dy) = match combo_h {
+        Some(ah) => (ah, clamp(ctl - ah) / 2),
+        None => (field_h, clamp(ctl - field_h) / 2),
+    };
+
     // -- Band 1: the banner. Contributes NO height when hidden.
     if ui.external_change {
         let bw_reload = btn(cap::RELOAD);
@@ -2128,10 +2184,20 @@ unsafe fn layout(hwnd: HWND) {
         y += ctl + band;
     }
 
-    // -- Band 2: the section head. `Shortcuts` leading, Remove and Add
-    // right-aligned. No filter control -- see `build_children`.
+    // -- Band 2: the section head. `Shortcuts` leading, then the filter,
+    // then Remove and Add right-aligned.
     let bw_add = btn(cap::ADD);
     let bw_remove = btn(cap::REMOVE);
+    // Capped at a third of the width, the same ceiling band 4 puts on the
+    // Shortcut field, so the two text boxes narrow together. The HEADING
+    // takes what is left, which makes it -- not the filter -- the first
+    // thing to run out: 288 px of heading beside 200 px of filter at
+    // MIN_WIDTH, and the heading reaches zero around a 400 px client, which
+    // `WM_GETMINMAXINFO` keeps out of reach of a drag. Every subtraction is
+    // clamped, so the intermediate rects `WM_DPICHANGED` can suggest below
+    // that floor produce a hidden heading rather than a negative width.
+    let filter_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
+    let filter_x = cx + clamp(cw - bw_add - gap - bw_remove - gap - filter_w);
     place(IDC_ADD, cx + clamp(cw - bw_add), y, bw_add, ctl);
     place(
         IDC_REMOVE,
@@ -2140,13 +2206,8 @@ unsafe fn layout(hwnd: HWND) {
         bw_remove,
         ctl,
     );
-    place(
-        IDC_LBL_SECTION,
-        cx,
-        y,
-        clamp(cw - bw_add - gap - bw_remove - gap),
-        ctl,
-    );
+    place_h(ui.filter, filter_x, y + edit_dy, filter_w, edit_h);
+    place(IDC_LBL_SECTION, cx, y, clamp(filter_x - gap - cx), ctl);
     // A control gap, not a band gap: the head labels the list directly
     // below it, so the two read as one group.
     y += ctl + gap;
@@ -2221,14 +2282,13 @@ unsafe fn layout(hwnd: HWND) {
     // Win32 gives it no vertical centring at all -- so stretching one to
     // the 32 px band line would park the text against the top edge. Neither
     // text field takes the token, then: both are centred within the line,
-    // and both take the height the COMBOBOX's theme picked (see `combo_h`
-    // below). `field_h` is what the font alone justifies, and remains the
-    // fallback for when the combo cannot be measured -- plus the unit of
-    // the dropped-down list's height. The buttons do honour `cy` and look
-    // right at 32, so they take the token directly.
-    let text_h = text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1;
-    let field_h = (text_h + s(10)).min(ctl);
-    let fy = y + clamp(ctl - field_h) / 2;
+    // and both take the height the COMBOBOX's theme picked (see `combo_h`,
+    // computed above band 2 because the filter box needs it too). `field_h`
+    // is what the font alone justifies, and remains the fallback for when
+    // the combo cannot be measured -- plus the unit of the dropped-down
+    // list's height. The buttons do honour `cy` and look right at 32, so
+    // they take the token directly.
+    //
     // A hair of slack past the measured width: a STATIC clips to its rect,
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
     let lw_app = tw("App") + s(4);
@@ -2245,40 +2305,17 @@ unsafe fn layout(hwnd: HWND) {
     // A COMBOBOX's `cy` is the height of its DROPPED-DOWN list, not of the
     // closed control -- and under comctl32 v6 even that is capped by
     // `build_children`'s CB_SETMINVISIBLE(8). The closed height is the
-    // system's to choose from the font, so ask what it took and centre THAT
-    // in the line, rather than guessing a chrome delta the next font change
+    // system's to choose from the font, which is why `combo_h` above asks
+    // what it took rather than guessing a chrome delta the next font change
     // would invalidate.
-    place_h(ui.app, app_x, fy, app_w, field_h * 9);
-    let mut arc = RECT::default();
-    let combo_h = if GetWindowRect(ui.app, &mut arc).is_ok() {
-        let ah = arc.bottom - arc.top;
-        if ah > 0 && ah < ctl {
-            place_h(ui.app, app_x, y + (ctl - ah) / 2, app_w, field_h * 9);
-            Some(ah)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    // The Shortcut EDIT takes the combo's height, so the two fields on this
-    // line are ONE box repeated rather than two boxes sharing a midline.
-    // Measured at 144 DPI before this: EDIT 43 px against the combo's 36,
-    // centres agreeing to within half a pixel -- concentric and unequal,
-    // which reads as a mistake rather than a pair.
-    //
-    // `combo_h` is read back from a control already on screen, so this adds
-    // NO input to `layout`: it is the same `GetWindowRect` the centring above
-    // already needed. The floor is what keeps it safe -- an EDIT top-aligns
-    // its text with no vertical centring of its own, so a height that cannot
-    // hold one Body line would clip descenders; below that, and whenever the
-    // combo did not answer, the font-derived height stands.
-    let (edit_h, edit_y) = match combo_h {
-        Some(ah) if ah >= text_h + s(2) => (ah, y + clamp(ctl - ah) / 2),
-        _ => (field_h, fy),
-    };
+    place_h(ui.app, app_x, y + edit_dy, app_w, field_h * 9);
+    // The Shortcut EDIT takes the combo's height, so the fields on this line
+    // are ONE box repeated rather than two boxes sharing a midline. Measured
+    // at 144 DPI before this: EDIT 43 px against the combo's 36, centres
+    // agreeing to within half a pixel -- concentric and unequal, which reads
+    // as a mistake rather than a pair.
     place(IDC_LBL_SHORTCUT, lbl_short_x, y, lw_short, ctl);
-    place_h(ui.combo, edit_x, edit_y, field_w, edit_h);
+    place_h(ui.combo, edit_x, y + edit_dy, field_w, edit_h);
     y += ctl + gap;
     place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
 
@@ -2333,10 +2370,10 @@ unsafe fn layout(hwnd: HWND) {
 /// Push a snapshot into the controls. The only path that changes what is on
 /// screen; the window never reads the model.
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
-    let Some((hwnd, list, combo, app, notes, banner, reload, keep)) = UI.with(|u| {
+    let Some((hwnd, list, combo, app, notes, filter, banner, reload, keep)) = UI.with(|u| {
         u.borrow().as_ref().map(|x| {
             (
-                x.hwnd, x.list, x.combo, x.app, x.notes, x.banner, x.reload, x.keep,
+                x.hwnd, x.list, x.combo, x.app, x.notes, x.filter, x.banner, x.reload, x.keep,
             )
         })
     }) else {
@@ -2451,6 +2488,14 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 }
                 set_text(notes, "Select a shortcut, or press Add.");
             }
+        }
+
+        // Conditional, like every other field write here: an unconditional
+        // WM_SETTEXT raises EN_CHANGE on every push, which for this control
+        // would mean fighting the user's own typing on every keystroke. It
+        // is written at all only so `Add` can clear it.
+        if text_of(filter) != st.filter {
+            set_text(filter, &st.filter);
         }
 
         enable(hwnd, IDC_APPLY, st.apply_enabled);
@@ -3258,6 +3303,10 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         Some(t) => t,
         None => return,
     };
+    let filter = match UI.with(|u| u.borrow().as_ref().map(|x| x.filter)) {
+        Some(t) => t,
+        None => return,
+    };
     match (id, code) {
         // ---- The default ring follows focus. THESE ARMS MUST COME FIRST.
         //
@@ -3295,6 +3344,12 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             if !suppressed() {
                 let t = text_of(combo);
                 with_cb(|cb| (cb.on_edit_combo)(t));
+            }
+        }
+        (IDC_FILTER, c) if c == EN_CHANGE => {
+            if !suppressed() {
+                let t = text_of(filter);
+                with_cb(|cb| (cb.on_filter)(t));
             }
         }
         // ONE of the two codes is deferred, and the asymmetry is the point.

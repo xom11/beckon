@@ -128,6 +128,11 @@ pub struct ControlState {
     /// about it.
     pub selected: Option<usize>,
     pub detail: Option<Detail>,
+    /// What the filter box should show. Pushed so `Add` can clear it; the
+    /// window writes it back ONLY when it differs from what the control
+    /// already holds, because an unconditional `WM_SETTEXT` raises
+    /// `EN_CHANGE` on every push and would fight the user's typing.
+    pub filter: String,
     pub caps_checked: bool,
     pub caps_tap: CapsTap,
     /// Are there unsaved edits? **Not the same question as
@@ -273,6 +278,11 @@ impl Model {
     }
 
     pub fn add_row(&mut self) {
+        // A new row matches no non-empty filter, so it would be created off
+        // screen while the editor strip pointed at it. Checklist item 6
+        // ("after Add, the new row is visible AND selected") keeps its
+        // meaning this way instead of needing a new one.
+        self.filter.clear();
         self.rows.push(Row {
             orig_key: None,
             combo: String::new(),
@@ -736,6 +746,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         items,
         selected,
         detail,
+        filter: m.filter().to_string(),
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
         dirty: m.dirty(),
@@ -901,6 +912,7 @@ pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
             app: String::new(),
             notes,
         }),
+        filter: String::new(),
         caps_checked: false,
         caps_tap: CapsTap::default(),
         dirty: false,
@@ -2243,5 +2255,20 @@ mod tests {
              that Remove does not honour"
         );
         assert!(!cs.remove_enabled, "nothing visible is ticked or selected");
+    }
+
+    #[test]
+    fn add_clears_the_filter_so_the_new_row_is_visible() {
+        let mut m = three();
+        m.set_filter("brave");
+        m.add_row();
+        assert_eq!(m.filter(), "");
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items.len(), 4);
+        assert_eq!(
+            cs.selected,
+            Some(3),
+            "the new row must be both visible and selected"
+        );
     }
 }

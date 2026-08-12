@@ -1145,8 +1145,9 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 {
                     let mut s = st.borrow_mut();
                     if let Some(m) = s.settings.as_mut() {
-                        // `set_marked` indexes `rows` directly, and a panic
-                        // here would unwind out of a wndproc callback.
+                        // `set_marked` indexes `rows` directly. The window
+                        // has already mapped the view row to a model row, so
+                        // this guards a stale push rather than a filter.
                         if i < m.rows.len() {
                             m.set_marked(i, on);
                         }
@@ -1170,6 +1171,10 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                     m.set_app(i, &t);
                 }
             }
+        )),
+        on_filter: Box::new(edit!(
+            state,
+            |m: &mut beckon_core::settings::Model, t: String| m.set_filter(&t)
         )),
         on_caps: Box::new(edit!(
             state,
