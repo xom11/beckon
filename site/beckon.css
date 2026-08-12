@@ -503,6 +503,89 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   46%, 100% { background: var(--accent); }
 }
 
+/* Shared: the press control.
+   CONTRACT — built by beckon.js, once in the hero and once in the playground.
+
+     <div class="try">
+       <button class="try-press" type="button" data-press>
+         <kbd class="key" aria-hidden="true">C</kbd>       <- the real .key
+       </button>
+       <span class="try-hint">Click the key, or press C.</span>
+       <button class="try-reset" type="button">Reset</button>   (playground only)
+     </div>
+
+   The button is a TRANSPARENT WRAPPER around a real `.key`, not a second
+   keycap style — .key's contract above says do not fork it, and this does not:
+   the button owns the hit target and the font-size that scales the cap, and
+   the pressed look is still `.key[data-down]`. `data-press` is the attribute
+   the document-level `C` handler exempts from its "ignore keys aimed at a
+   button" rule; see beckon.js.
+
+   Nothing here animates, and that is deliberate rather than incidental: the
+   reduced-motion block at the end of the file pins animation-duration, and a
+   cap that has to go down and come back is exactly the shape that block cannot
+   land on a correct frame. The press flash is an attribute JS sets and clears. */
+.try {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+.try-press {
+  display: inline-flex; align-items: center;
+  margin: 0; padding: 4px;
+  color: inherit; background: none; border: 0;
+  border-radius: var(--radius-sm);
+  font-size: 1.55rem; line-height: 1;
+  cursor: pointer;
+}
+.try-press:hover .key { color: var(--accent); border-color: var(--accent); }
+.try-hint { color: var(--fg-dim); font-size: 13px; }
+.try-reset {
+  margin-inline-start: auto;
+  min-height: 32px; padding: 6px 12px;
+  font: 600 13px/1.2 var(--sans);
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.try-reset:hover { color: var(--accent); border-color: var(--accent); }
+
+/* The hero, once JS has the wheel.
+
+   `.is-live` cancels every animation inside the demo — chord caps, both fake
+   windows, the accent dot — and `data-front` on the stage becomes the single
+   input to what is drawn. So the CSS has two named states instead of a
+   timeline, which is what makes a press a state change rather than a seek.
+
+   The base rules in the block above ARE the `claude` state (that is the motion
+   contract: base = final keyframe), so only `brave` needs writing out. Every
+   selector here carries .hero-stage[data-front], which outscores the
+   .os-win.is-* rules it has to beat. With JS off none of this matches and the
+   4.4s loop runs exactly as it did. */
+.hero-demo.is-live .os-chord .key,
+.hero-demo.is-live .os-win,
+.hero-demo.is-live .os-win .os-dot { animation: none; }
+
+.hero-demo.is-live .os-win {
+  transition: opacity .2s, transform .2s, border-color .2s, box-shadow .2s;
+}
+.hero-demo.is-live .os-win .os-dot { transition: background .2s; }
+
+.hero-stage[data-front="brave"] .os-win.is-brave { opacity: 1; }
+.hero-stage[data-front="brave"] .os-win.is-claude {
+  z-index: 1;
+  transform: translateY(0);
+  border-color: var(--rule);
+  box-shadow: 0 10px 26px -12px transparent;
+}
+.hero-stage[data-front="brave"] .os-win.is-claude .os-dot {
+  background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
+}
+
+.try-out { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.5; }
+
 
 /* --- 4b. section: how ("Focus is only the first press.") ------------------- */
 
@@ -707,6 +790,177 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   5%,  53.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
   55%, 100%  { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
 }
+
+
+/* --- 4b (ii). #how: the playground --------------------------------------- */
+
+/* EVERY SELECTOR IN THIS BLOCK IS INERT IN THE SHIPPED MARKUP. beckon.js
+   builds this subtree and puts it inside .how-demos, replacing the two looping
+   demos above. With JS off nothing here matches, .how-demos still holds those
+   two demos and the algorithm table above them is untouched — which is the
+   whole JS-off story for this section: the enhancement replaces working
+   content and is never the only copy of it.
+
+   NOTHING HERE ANIMATES. State changes are transitions, which the
+   reduced-motion block at the end of the file pins to .01ms — so a reader with
+   motion off gets the correct frame instantly after every press, and the three
+   rules the looping demos depend on (fill-mode both, base rule = 100%
+   keyframe, no positive delay) have nothing new to hold.
+
+   NO OPACITY ON ANYTHING CARRYING TEXT, for the reason spelled out on
+   .how-count above: --fg-dim on --bg is 6.27:1, and dimming it to .7 composites
+   to 3.23:1, which fails 1.4.3. aria-hidden on the stage redirects screen
+   readers to the readout; it does not exempt visible text. An unfocused window
+   is marked by its border and by the word in .pg-tag, never by fading it. */
+
+.how-demos.is-live { grid-template-columns: minmax(0, 1fr); }
+
+.pg { display: grid; gap: 18px; }
+
+/* The honest constraint, and it is also the pitch, so it reads at prose size
+   above the controls rather than as a footnote below them. The chord inside it
+   is the reader's own, rebuilt by beckon.js whenever `data-os` moves. */
+.pg-why {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 2.05;          /* keycaps run ~2.4em tall inside a paragraph */
+}
+.pg-why strong { color: var(--fg); }
+.pg-why .chord { flex-wrap: wrap; margin-inline: 2px; }
+
+.pg-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+.pg-pick {
+  min-height: 34px; padding: 8px 12px;
+  font: 600 13px/1.2 var(--sans);
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.pg-pick:hover { color: var(--fg); border-color: var(--accent); }
+.pg-pick[aria-pressed="true"] {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Drawing and readout are equal columns from 900px up (see §5), because the
+   readout is what actually teaches — it names the branch that fired and quotes
+   the algorithm — and a caption-sized line under the drawing would read as a
+   footnote to it. */
+.pg-main {
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  align-items: start; gap: 18px;
+}
+.pg-stage { display: grid; gap: 8px; }
+
+/* The fake windows, in the chrome of :root[data-os]. Three axes and no more:
+   where the controls sit, where the title sits, and the corner radius. Drawn
+   with borders and pseudo-elements — no icon font, no asset, nothing to fetch.
+
+   The traffic lights are NEUTRAL rather than red/amber/green. Two reasons:
+   every colour on this page comes from a token, and a screenshot-accurate
+   window would be claiming to be a screenshot, which the spec's *Deferred*
+   entry says these illustrations must never do. Position (left, round, three)
+   is the recognisable half anyway. */
+.pg-win {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transform: translateX(0);
+  transition: transform .18s, border-color .18s, background-color .18s;
+}
+.pg-bar {
+  display: flex; align-items: center; gap: 8px;
+  height: 26px; padding: 0 8px;
+  border-bottom: 1px solid var(--rule);
+  font: 600 11px/1 var(--mono);
+  color: var(--fg-dim);
+}
+.pg-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pg-face {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 40px; padding: 0 10px;
+  font: 500 11px/1 var(--mono);
+  color: var(--fg-dim);
+}
+.pg-tag { margin-inline-start: auto; letter-spacing: .06em; text-transform: uppercase; }
+
+/* Both gutters are the same 34px (3x8px + 2x5px gap) and both are `display:
+   none` until an OS asks for one, so a gutter that is not drawn costs no width
+   AND no flex gap — a collapsed-but-present item would still take the bar's
+   8px gap on each side and indent the title past the left edge on Windows and
+   Linux, where it belongs against it.
+
+   macOS is the one case that lays out BOTH: the right gutter is a
+   `visibility: hidden` spacer, and it is what centres the title between the
+   traffic lights and the far edge rather than leaving it centred on a bar with
+   only one gutter. */
+.pg-dots,
+.pg-ctl { display: none; align-items: center; gap: 5px; flex: none; width: 34px; }
+.pg-ctl { justify-content: flex-end; }
+.pg-dots span { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .5; }
+.pg-ctl span { position: relative; flex: none; width: 8px; height: 8px; opacity: .75; }
+
+.pg-min::before,
+.pg-close::before,
+.pg-close::after {
+  content: ""; position: absolute;
+  left: 0; right: 0; top: 50%;
+  height: 1px; background: currentColor;
+}
+.pg-max::before { content: ""; position: absolute; inset: 0; border: 1px solid currentColor; }
+.pg-close::before { transform: rotate(45deg); }
+.pg-close::after  { transform: rotate(-45deg); }
+
+:root[data-os="macos"] .pg-win  { border-radius: 9px; }
+:root[data-os="macos"] .pg-dots { display: flex; }
+:root[data-os="macos"] .pg-ctl  { display: flex; visibility: hidden; }
+:root[data-os="macos"] .pg-name { text-align: center; }
+
+:root[data-os="windows"] .pg-win { border-radius: 0; }
+:root[data-os="windows"] .pg-ctl { display: flex; }
+
+/* Linux keeps the base: a plain bar, no controls, a modest radius. beckon
+   supports sway, i3, Hyprland, GNOME, KDE and every EWMH X11 desktop, so
+   drawing one of them would be a claim about which one the reader has. */
+
+.pg-win[data-state="focused"] {
+  border-color: var(--accent);
+  box-shadow: 0 10px 26px -14px color-mix(in srgb, var(--accent) 62%, transparent);
+  transform: translateX(6px);
+}
+.pg-win[data-state="focused"] .pg-bar { color: var(--fg); border-bottom-color: var(--accent); }
+.pg-win[data-state="focused"] .pg-tag { color: var(--accent); }
+
+/* Off-screen windows sink into the panel's own ground instead of fading:
+   same text colour, same contrast, a dashed edge and a word. */
+.pg-win[data-state="hidden"],
+.pg-win[data-state="absent"] { background: transparent; border-style: dashed; }
+.pg-win[data-state="hidden"] .pg-bar,
+.pg-win[data-state="absent"] .pg-bar { border-bottom-style: dashed; }
+
+.pg-readout {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-inline-start: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+.pg-step {
+  margin: 0;
+  font: 700 12px/1 var(--mono);
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent);
+}
+.pg-said { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.55; }
 
 
 /* --- 4c. section: names ("Type the name, not the id.") -------------------- */
@@ -1131,6 +1385,9 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
    order the markup already reads in. */
 @media (min-width: 900px) {
   .how-demos { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  /* The playground is ONE block, so it takes the whole row back off the two
+     columns above — and splits it itself, drawing beside readout. */
+  .pg-main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .keys { grid-template-columns: minmax(220px, 300px) 1fr; }
 }
 
@@ -1171,6 +1428,13 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   .os-bar { height: 20px; padding: 0 6px; font-size: 10px; gap: 5px; }
 
   .how-grid { gap: 28px; }
+
+  /* Four scenario buttons cannot share a row at 375px; they wrap to two, and
+     shrinking them until they did would put a 12px tap target on a phone —
+     the same call the install tabs make below. `Reset` gives up its auto
+     margin so it does not sit alone on a line of its own once the row wraps. */
+  .pg-pick { padding: 7px 10px; font-size: 12px; }
+  .try-reset { margin-inline-start: 0; }
 
   .compare-row { grid-template-columns: minmax(0, 1fr); }
   .compare-label { white-space: normal; }

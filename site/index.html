@@ -119,7 +119,16 @@
   <!-- Hero + three-OS demo. Owns the shared .key / .chord / .demo /
        .demo-steps components; see the matching block in beckon.css for their
        contract. Everything decorative inside the demo is aria-hidden;
-       .demo-steps is the accessible transcript and is not. -->
+       .demo-steps is the accessible transcript and is not.
+
+       WITH JS ON THIS DEMO BECOMES PRESSABLE. beckon.js adds `.is-live` to
+       .hero-demo, which cancels the 4.4s loop, and inserts a keycap button and
+       a readout above .demo-steps; `data-front` on .hero-stage then decides
+       what is drawn. Nothing below changes: the three cards, their three
+       different chords and the window stacks are the markup either way, and
+       with JS off the loop runs exactly as it always has. The three OS cards
+       are the page's cross-platform claim, so they are never reduced to the
+       reader's own OS — only #setups and #serve mark it. -->
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
 
@@ -220,7 +229,20 @@
        windows open the ring NEVER exits 5a, so the five-press demo that walked
        1/3 -> 2/3 -> 3/3 -> Brave -> hidden could not happen: 5b and 5c are
        unreachable until the app is down to one window. Demo A is the ring,
-       demo B is the one-window case, and each names its precondition. -->
+       demo B is the one-window case, and each names its precondition.
+
+       WITH JS ON, BOTH ARE REPLACED BY THE PLAYGROUND — four scenarios the
+       reader steps through with a real keypress, covering every branch of the
+       algorithm, with a readout that names the branch that fired. beckon.js
+       builds it and empties .how-demos into it.
+
+       That direction is the requirement, not a preference. The two demos and
+       the table below ship VISIBLE and JS takes them away; written the other
+       way round — a playground shipped `hidden` for JS to reveal — a reader
+       with JS off would get an empty gap where the section's entire argument
+       used to be. The rule is the same one the install tablist keeps: JS only
+       ever REDUCES what is on screen. Delete beckon.js and this section is
+       exactly what it was before the playground existed. -->
   <section id="how" aria-labelledby="how-h">
     <div class="wrap">
       <h2 id="how-h">Focus is only the first press.</h2>
