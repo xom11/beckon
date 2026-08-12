@@ -173,6 +173,92 @@ pub fn combo_view(s: &str) -> ComboView {
     }
 }
 
+/// One key's label as it appears on the keyboard, for display only.
+///
+/// **ASCII, exhaustively.** The settings window's faces are Segoe UI
+/// Variable Text and Small -- text fonts, not symbol fonts -- and
+/// `mark_glyph` already records what a missing glyph looks like there: a box
+/// that reads as a rendering fault rather than as a key. So the punctuation
+/// keys take their own ASCII symbol (which any text font has) and the arrow
+/// keys take words (because an arrow is not ASCII).
+///
+/// Never used for serialisation. `Combo::canonical` is that.
+pub fn key_label(name: &str) -> String {
+    match name {
+        "space" => "Space".to_string(),
+        "comma" => ",".to_string(),
+        "period" => ".".to_string(),
+        "slash" => "/".to_string(),
+        "minus" => "-".to_string(),
+        "equal" => "=".to_string(),
+        "semicolon" => ";".to_string(),
+        "quote" => "'".to_string(),
+        "bracketleft" => "[".to_string(),
+        "bracketright" => "]".to_string(),
+        "backslash" => "\\".to_string(),
+        "grave" => "`".to_string(),
+        "tab" => "Tab".to_string(),
+        "return" => "Enter".to_string(),
+        "escape" => "Esc".to_string(),
+        "backspace" => "Backspace".to_string(),
+        "delete" => "Del".to_string(),
+        "home" => "Home".to_string(),
+        "end" => "End".to_string(),
+        "pageup" => "PgUp".to_string(),
+        "pagedown" => "PgDn".to_string(),
+        "up" => "Up".to_string(),
+        "down" => "Down".to_string(),
+        "left" => "Left".to_string(),
+        "right" => "Right".to_string(),
+        // Letters, digits and f1-f20: uppercase the whole thing. `t` -> `T`,
+        // `f10` -> `F10`, `7` -> `7`.
+        other => other.to_uppercase(),
+    }
+}
+
+/// The chord as the user's keyboard spells it, one label per key.
+///
+/// `ctrl+super+alt+t` -> `["Ctrl", "Win", "Alt", "T"]`. **`super` is a valid
+/// TOML token and a word on no keyboard**, which is the whole reason this
+/// function exists.
+///
+/// Empty when the string does not parse -- the caller shows the raw text
+/// instead, the same "show it rather than guess" rule `ComboView::key = None`
+/// follows.
+///
+/// **Display only.** See `display_never_reaches_the_serialiser`.
+pub fn combo_caps(s: &str) -> Vec<String> {
+    let Ok(c) = Combo::parse(s) else {
+        return Vec::new();
+    };
+    // Fixed order, independent of the order the string listed them in:
+    // `Combo::parse` accepts free modifier order, and a display that varied
+    // with it would make two identical chords look different.
+    let mut v = Vec::with_capacity(5);
+    if c.ctrl {
+        v.push("Ctrl".to_string());
+    }
+    if c.super_ {
+        v.push("Win".to_string());
+    }
+    if c.alt {
+        v.push("Alt".to_string());
+    }
+    if c.shift {
+        v.push("Shift".to_string());
+    }
+    v.push(key_label(&c.key.name));
+    v
+}
+
+/// `combo_caps` joined for a screen reader, for a list cell, and for the
+/// ellipsis fallback when the caps do not fit their column (spec §B.3).
+///
+/// Empty string when the chord does not parse.
+pub fn combo_display(s: &str) -> String {
+    combo_caps(s).join(" + ")
+}
+
 /// A parsed key combo. Modifier order in the input is free; `canonical()`
 /// always prints ctrl → super → alt → shift → key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -532,8 +618,8 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_keys, combo_view, key_table, lookup_key, lookup_win_vk, parse_config, parse_shortcuts,
-        CapsTap, Chord, Combo, KeyboardConfig,
+        all_keys, combo_caps, combo_display, combo_view, key_label, key_table, lookup_key,
+        lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo, KeyboardConfig,
     };
 
     #[test]
@@ -1001,5 +1087,60 @@ mod tests {
                 "{s:?}"
             );
         }
+    }
+
+    #[test]
+    fn caps_spell_the_chord_the_way_a_keyboard_does() {
+        assert_eq!(
+            combo_caps("ctrl+super+alt+t"),
+            vec!["Ctrl", "Win", "Alt", "T"]
+        );
+        assert_eq!(
+            combo_caps("ctrl+super+alt+shift+bracketright"),
+            vec!["Ctrl", "Win", "Alt", "Shift", "]"]
+        );
+        // Modifier order is fixed by this function, not by the input string:
+        // `Combo::parse` accepts free order, the display must not vary with it.
+        assert_eq!(combo_caps("alt+ctrl+f10"), vec!["Ctrl", "Alt", "F10"]);
+    }
+
+    #[test]
+    fn an_unparseable_chord_yields_no_caps_rather_than_a_guess() {
+        assert!(combo_caps("").is_empty());
+        assert!(combo_caps("ctrl+").is_empty());
+        assert!(combo_caps("ctrl+nosuchkey").is_empty());
+        assert_eq!(combo_display("ctrl+nosuchkey"), "");
+    }
+
+    #[test]
+    fn display_joins_the_caps_the_way_the_window_reads_them_aloud() {
+        assert_eq!(combo_display("ctrl+super+alt+t"), "Ctrl + Win + Alt + T");
+        assert_eq!(combo_display("f1"), "F1");
+    }
+
+    /// Exhaustive over the 81-key table: every key must produce a non-empty,
+    /// ASCII label. ASCII on purpose -- `mark_glyph`'s comment records that the
+    /// window's faces are text fonts, not symbol fonts, and a missing glyph
+    /// reads as a rendering bug rather than as a key. That is why the arrow keys
+    /// are words and not arrows.
+    #[test]
+    fn every_key_in_the_table_has_an_ascii_label() {
+        for k in key_table() {
+            let l = key_label(&k.name);
+            assert!(!l.is_empty(), "no label for `{}`", k.name);
+            assert!(l.is_ascii(), "label for `{}` is not ASCII: {l}", k.name);
+        }
+    }
+
+    /// **The display path must never reach the file.** `Combo::canonical` is the
+    /// serialiser; if these two ever merge, beckon writes `Win` into a TOML it
+    /// then cannot parse -- a config the user did not break and cannot obviously
+    /// fix. Spec §B.4.
+    #[test]
+    fn display_never_reaches_the_serialiser() {
+        let c = Combo::parse("ctrl+super+alt+t").expect("valid combo");
+        assert_eq!(c.canonical(), "ctrl+super+alt+t");
+        assert!(c.canonical().contains("super"));
+        assert!(!c.canonical().contains("Win"));
     }
 }
