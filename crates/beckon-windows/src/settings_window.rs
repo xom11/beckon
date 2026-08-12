@@ -664,7 +664,7 @@ const WINDOW_HEIGHT: i32 = 640;
 ///           gap                                    8
 ///           Shortcut line, ctl                    32
 ///           gap                                    8
-///           notes  (`notes_height`)               32
+///           notes  (`notes_height`)               36
 ///           bottom inset, gap                      8
 ///   band                                         14
 ///   band 6  kb_h = s(24) + ctl + gap              64
@@ -672,18 +672,25 @@ const WINDOW_HEIGHT: i32 = 640;
 ///   band 7  command bar, ctl                      32
 ///   pad                                          16
 ///                                              ----
-///   client                                      503
+///   client                                      507
 ///   caption + frame at 96 DPI (SM_CYCAPTION 23
 ///     + 2*SM_CYSIZEFRAME + 2*SM_CXPADDEDBORDER)   39
 ///                                              ----
-///   window                                      542
+///   window                                      546
 /// ```
 ///
-/// Shipped as 546. The four pixels are slack against a non-client area the
+/// Shipped as 550. The four pixels are slack against a non-client area the
 /// OS sizes, not a fudge of the derivation — and the whole constant is scaled
 /// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
 /// was never exact at 150 % either. Erring high costs nothing; erring low
 /// costs list rows.
+///
+/// **This constant moved with `notes_height`, as documented on that
+/// function, and this is that move.** Task 6 shipped 546 against the stub's
+/// assumed 32 px notes line; the real body costs 36, four pixels more, and
+/// this table -- and the constant -- carry that four pixels through rather
+/// than absorbing it as slack. 546 → 550 is that difference and nothing
+/// else: every other row in the table is unchanged from Task 6's derivation.
 ///
 /// The two row figures are `list_row_height` / `list_header_height`'s own
 /// 96-DPI fallbacks. They are the honest numbers to derive from: comctl32
@@ -702,10 +709,15 @@ const WINDOW_HEIGHT: i32 = 640;
 ///
 /// So the floor buys **four rows with the banner up, six without it**, at
 /// both 96 DPI and 150 %; the editor group clears the keyboard group by
-/// exactly one `band` in all four cases. Simulated, not seen — nothing on the
-/// machine this was written on can display the window.
+/// exactly one `band` in all four cases -- simulated at the new floor the
+/// same way Task 6 simulated the old one: 720x550 @96 gives 103+4=107 px of
+/// list under the banner (4 rows, 4 px of a fifth row's worth of slack, same
+/// shape Task 6's own 103→107 had) and 14 px of clearance; 1080x825 @144
+/// gives 161 px of list (4 rows) and 21 px of clearance. Simulated, not
+/// seen — nothing on the machine this was written on can display the
+/// window.
 const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 546;
+const MIN_HEIGHT: i32 = 550;
 
 /// One of §B.3's three type roles. There is no fourth: the `Keys` role the
 /// spec table also lists belongs to keycap rendering, which this window
@@ -2634,15 +2646,33 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
     );
 }
 
-/// Height of the notes line inside the editor group. Task 9 replaces this
-/// with the two-line cap; the strip's old behaviour is one line.
+/// Height of the notes line inside the editor group: exactly two lines of
+/// the notes' own face, whatever the DPI and whatever the face.
 ///
-/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`, and
-/// `grp_h` is derived from this — change what a notes line costs and the
-/// floor moves with it.
+/// **Fixed, not flexing.** It used to take every pixel between the strip and
+/// the keyboard group, which measured on a14 as a 1220x177 control holding a
+/// single 258 px line -- a large blank band whose only job was to exist.
+///
+/// Two is a guess and is worth revisiting: nobody has looked at what three
+/// notes at once reads like, which is exactly the gap the followups record.
+/// It is a cheap guess to change and an expensive band to leave empty.
+///
+/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`,
+/// and `grp_h` is derived from this -- change what a notes line costs and
+/// the floor moves with it. Measured here at 16 px (96 DPI) / 24 px
+/// (144 DPI): not itself a fresh a14 reading, but the second number IS one
+/// -- item 10 of the 2026-08-11 a14 pass sized the read-only notes STATIC
+/// against "5 lines x 24" at 144 DPI, the same Caption face this line
+/// measures. The 16 at 96 DPI comes from applying the same internal-leading
+/// ratio the Body font showed at that pass (`text_h` 28 against a requested
+/// 21, i.e. 4/3) to Caption's 12 px request -- and that same ratio, applied
+/// to Caption's 144-DPI request of 18, reproduces the hardware 24 exactly,
+/// which is why it is trusted for the DPI nobody has measured. If a real
+/// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
+/// nudged.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
-    let _ = (hwnd, ui);
-    32 * dpi as i32 / 96
+    let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
+    line * 2 + scale(4, dpi)
 }
 
 /// Seven horizontal bands, top to bottom: the external-change banner (no
@@ -2926,7 +2956,9 @@ unsafe fn layout(hwnd: HWND) {
     // Drop `editor_min` back to the `ctl + gap + ctl` the one-line strip used
     // and this line will not save you: simulated at `MIN_HEIGHT` itself, the
     // group draws 16 px over the keyboard group with the banner down and
-    // 58 px with it up (22 / 87 at 150 %). That is the ordinary minimum drag
+    // 62 px with it up (22 / 91 at 150 %; re-simulated for Task 9's floor of
+    // 550 -- `notes_height`'s real body costs 4 px more than the stub these
+    // figures were first taken against). That is the ordinary minimum drag
     // size, not a sub-floor `WM_DPICHANGED` edge case.
     y = y.min(kb_y);
 
@@ -3306,12 +3338,22 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 match &cap_notes {
                     Some(t) => set_text(notes, t),
                     None => {
+                        // Two lines, because that is what `notes_height`
+                        // reserves. A third would draw outside the rect and
+                        // be clipped, which reads as a rendering fault
+                        // rather than as "there is more".
+                        const NOTE_LINES: usize = 2;
                         let body: Vec<String> = d
                             .notes
                             .iter()
+                            .take(NOTE_LINES)
                             .map(|n| format!("{}  {}", mark_glyph(n.mark), n.text))
                             .collect();
-                        set_text(notes, &body.join("\r\n"));
+                        let mut text = body.join("\r\n");
+                        if d.notes.len() > NOTE_LINES {
+                            text.push_str(&format!("  (+{} more)", d.notes.len() - NOTE_LINES));
+                        }
+                        set_text(notes, &text);
                     }
                 }
             }
