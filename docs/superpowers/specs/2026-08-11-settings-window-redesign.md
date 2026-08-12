@@ -949,22 +949,41 @@ fails on precisely the chords beckon recommends. Hint:
 
 ## F.5 What cannot be captured
 
+**MEASURED 2026-08-12 on a14, with a person at the keyboard.** Results in
+`docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §47–§50. The eight
+chords named below the table are confirmed capturable; **the `Win+L` row was
+wrong and is rewritten**; `Win+G` is untested for a nameable reason. The rows
+that were never in doubt (`Fn`, the lock keys, the Office/Copilot keys, UIPI,
+other remappers) are unchanged.
+
 | | Why | What the user sees |
 |---|---|---|
-| `Ctrl+Alt+Del`, `Win+L` | The SAS is monitored by winlogon below the hook chain, and Microsoft documents `Win+L` as OS-reserved alongside it. The mechanism is desktop scoping: `SetWindowsHookEx` binds a hook to the threads of the **calling thread's desktop**, and these run on the Winlogon secure desktop where beckon's hook does not exist | Nothing is recorded; the static help line under the field says so up front |
+| `Win+L` — **REVISED, the old mechanism was disproved** | The hook **does** see it: `SEEN=True`, measured. The key-down is delivered on the normal desktop before winlogon acts. What returning 1 cannot do is stop the lock — the machine locked anyway. The old entry claimed the hook "sees **nothing**, including key-ups", which is false | **A block-list, not blindness.** Because capture *can* see it, it would happily record `Win+L` and hand the user a binding that can never fire. It must be refused explicitly at commit, with the help line saying so |
+| `Ctrl+Alt+Del` | The SAS is monitored by winlogon below the hook chain. **Not tested** — it shares the secure-desktop story with `Win+L`, and that story has now been disproved for `Win+L`, so this row is unverified rather than merely untested. Deliberately not run: far more disruptive to a live session than the one measurement it would add | Treat as refused, like `Win+L`, until measured |
 | Anything typed while a secure desktop is up (UAC, lock screen) | Same mechanism. The hook sees **nothing, including key-ups** | The state machine must **re-seed** from `GetAsyncKeyState` on regaining foreground, never resume |
 | `Fn` | Handled in keyboard firmware; emits no scan code | Pressing it does nothing |
 | `Num Lock`, `Caps Lock`, `Scroll Lock` as part of a combo | The lock state toggles **before** the hook runs, so swallowing does not undo the light | Excluded from the capturable set rather than replayed |
-| `Win+G` | Game Bar opens even when reassigned | Same shape as the lock keys |
+| `Win+G` — **UNTESTED, not refuted** | Claimed: Game Bar opens even when reassigned. On a14 it did not open **even with the key passed through**, so the swallowed run proved nothing — `Microsoft.XboxGamingOverlay` is not installed there. The pass-through control is the only reason this reads as untested rather than as a refutation | Unchanged pending a machine with the overlay |
 | Office key, Copilot key | The physical key emits a whole chord — Office is `Win+Ctrl+Alt+Shift`, Copilot is `Win+C` or `LShift+Win+F23` | Capture records what the keyboard actually sent, which is the honest answer; one explanatory line, not a bug |
 | Anything, while an elevated window has focus | UIPI. Measured on a14 2026-08-11 | The watchdog fires |
 | Anything another remapper claimed first | kanata / PowerToys / AHK started after beckon sits ahead of it in the chain | The field silently records the **wrong** chord. This is the existing "other remappers" gap in a new guise |
 
 `Win+T`, `Win+X`, `Win+D`, `Win+E`, `Win+R`, `Win+Tab`, `Alt+Tab` and
-`Ctrl+Shift+Esc` are **not** on this list. The strongest available
-documentary evidence is that PowerToys Keyboard Manager is a plain
-`WH_KEYBOARD_LL` returning 1 plus `SendInput`, and it remaps Windows-key
-shortcuts globally. **This table is not shipped until it is measured on a14.**
+`Ctrl+Shift+Esc` are **not** on this list, and that is now **measured rather
+than inferred**: all eight came back `SEEN=True SWALLOWED=True ACTED=False` on
+a14. The inference this replaces — that PowerToys Keyboard Manager is a plain
+`WH_KEYBOARD_LL` returning 1 plus `SendInput`, and remaps Windows-key
+shortcuts globally — happened to be right, which is not the same as having
+been checked.
+
+The control that carries the claim is `Win+R` appearing **twice in one run**:
+passed through it opened the Run dialog, swallowed it did not. One chord, one
+session, one variable.
+
+~~**This table is not shipped until it is measured on a14.**~~ Measured.
+§F.5 no longer gates Landing 2b — with two rows carried forward as open:
+`Ctrl+Alt+Del` (unverified, and its shared explanation is now disproved) and
+`Win+G` (untested, no Game Bar on the only machine available).
 
 ## F.6 The availability probe
 
