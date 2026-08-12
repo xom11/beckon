@@ -32,7 +32,8 @@
 //! ShellExecuteW) letting a second menu open and resolve before the first
 //! handler returns — not, any more, the modal loop's own delivery.
 
-use beckon_core::shortcuts::KeyDef;
+use beckon_core::settings::Availability;
+use beckon_core::shortcuts::{Combo, KeyDef};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use windows::core::w;
@@ -42,7 +43,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    MOD_SHIFT, MOD_WIN,
 };
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
@@ -401,6 +403,30 @@ fn tray_add(hwnd: HWND) {
     }
 }
 
+/// The four modifier flags, as `RegisterHotKey` wants them.
+///
+/// One translation, shared by the live table (`HotkeyManager::register`) and
+/// by `probe_chord`. A second copy would be a second thing to keep in step,
+/// and the whole worth of the probe is that it asks about the *same* chord
+/// the real registration will later ask for -- `MOD_NOREPEAT` included, so
+/// the two calls differ in nothing but the window they name.
+fn hotkey_modifiers(ctrl: bool, super_: bool, alt: bool, shift: bool) -> HOT_KEY_MODIFIERS {
+    let mut mods = MOD_NOREPEAT;
+    if ctrl {
+        mods |= MOD_CONTROL;
+    }
+    if super_ {
+        mods |= MOD_WIN;
+    }
+    if alt {
+        mods |= MOD_ALT;
+    }
+    if shift {
+        mods |= MOD_SHIFT;
+    }
+    mods
+}
+
 pub struct HotkeyManager {
     ids: Vec<u32>,
     tray_hwnd: HWND,
@@ -475,19 +501,7 @@ impl HotkeyManager {
         shift: bool,
         key: &KeyDef,
     ) -> Result<(), String> {
-        let mut mods = MOD_NOREPEAT;
-        if ctrl {
-            mods |= MOD_CONTROL;
-        }
-        if super_ {
-            mods |= MOD_WIN;
-        }
-        if alt {
-            mods |= MOD_ALT;
-        }
-        if shift {
-            mods |= MOD_SHIFT;
-        }
+        let mods = hotkey_modifiers(ctrl, super_, alt, shift);
         // Against tray_hwnd, not None: WM_HOTKEY is posted as a WINDOW
         // message (msg.hwnd == tray_hwnd), which DispatchMessage delivers to
         // wndproc from ANY pump on this thread — including one a hotkey
@@ -640,6 +654,77 @@ impl Drop for HotkeyManager {
     }
 }
 
+/// The availability probe's hotkey id, and there is exactly one of it.
+///
+/// A hotkey is identified by the `(hWnd, id)` PAIR, and the probe's half of
+/// that pair is the settings window -- never `tray_hwnd`, where the live
+/// table's ids are row indices. That is why the value here does not have to
+/// be "high enough" to clear the config: it shares a window with nothing.
+/// Any value in Windows' 0x0000..=0xBFFF application range would do; what
+/// matters is that it is fixed, that it lives here, and that no other call
+/// in this process ever passes it.
+const PROBE_HOTKEY_ID: i32 = 0xBEC0;
+
+/// Ask Windows whether `c` is free to bind, by registering it and giving it
+/// straight back.
+///
+/// Four rules, all of them structural (spec §F.6):
+///
+/// 1. **`hwnd` is the SETTINGS WINDOW's, never `tray_hwnd`.** A hotkey is
+///    identified by the `(hWnd, id)` pair, so a different window makes an
+///    identity collision with the live table impossible by construction.
+///    MSDN: *"If a hot key already exists with the same hWnd and id
+///    parameters, it is maintained along with the new hot key"* -- so a probe
+///    that reused `tray_hwnd` and guessed an unused id wrong would leave two
+///    registrations under one id, and its `UnregisterHotKey` would remove an
+///    unspecified one of the two. That is a silently dead hotkey, the same
+///    class as the "20 shortcuts registered" incident.
+/// 2. **Every exit path gives the chord back.** There are three, and the two
+///    that reach `UnregisterHotKey` share one call site above them; the third
+///    is the failure return, where nothing was ever claimed. Nothing between
+///    the register and the unregister can return early, panic by
+///    construction, or pump.
+/// 3. **Called on the thread that owns `hwnd`.** `RegisterHotKey` is
+///    thread-affine, and the settings window lives on `serve`'s message-loop
+///    thread -- the same one that runs the wndproc this is reached from.
+/// 4. **Never from inside a hook callback.** The only caller is a settings
+///    window notification; `caps_hook`'s `WH_KEYBOARD_LL` callback must stay
+///    at a hash lookup plus one `SendInput` (see CLAUDE.md), and a global
+///    registration round trip has no business there.
+///
+/// It deliberately pumps NOTHING -- no `PeekMessageW` drain of a `WM_HOTKEY`
+/// the probe itself might have generated, the way `unregister_all` drains
+/// one. Such a message could only be addressed to the settings window, whose
+/// wndproc ignores it, whereas a pump here could re-enter the wndproc, reach
+/// this function a second time, and register the same `(hWnd, id)` pair --
+/// rule 1's hazard, introduced by the cleanup meant to be tidy. No pump, no
+/// re-entry.
+///
+/// **A failure is reported as `Taken` and nothing else.** Windows does not
+/// say which program holds a chord, so decoding the error into the note would
+/// be inventing detail the API cannot support. The success side is just as
+/// narrow: `Free` means *nothing else is holding this right now*, never
+/// "this shortcut works" -- see `probe_notes`.
+pub fn probe_chord(hwnd: HWND, c: &Combo) -> Availability {
+    let mods = hotkey_modifiers(c.ctrl, c.super_, c.alt, c.shift);
+    if unsafe { RegisterHotKey(Some(hwnd), PROBE_HOTKEY_ID, mods, c.key.win) }.is_err() {
+        // Nothing was claimed, so there is nothing to release: MSDN gives
+        // RegisterHotKey no partial-success state.
+        return Availability::Taken;
+    }
+    if let Err(e) = unsafe { UnregisterHotKey(Some(hwnd), PROBE_HOTKEY_ID) } {
+        // Should be unreachable -- the pair was accepted a line ago and only
+        // this thread can touch it. Say so if it ever is: beckon would then
+        // be holding a chord the user never bound, until the process exits.
+        eprintln!("hotkey: probe UnregisterHotKey failed: {e} - beckon still holds that shortcut");
+    }
+    if c.super_ {
+        Availability::FreeWithWin
+    } else {
+        Availability::Free
+    }
+}
+
 /// Repeating tick on the tray window's message queue (SetTimer, a window
 /// timer — not a thread timer; see module doc for why that distinction
 /// matters). Call after `HotkeyManager::install`, which is what sets the
@@ -722,6 +807,34 @@ mod tests {
         assert!(
             buf[2..].iter().all(|&c| c == 0),
             "stale text from the previous call must not survive"
+        );
+    }
+
+    /// The live table and the probe share this translation, so a swapped
+    /// flag would make the probe ask about a chord nobody is going to bind.
+    /// `MOD_NOREPEAT` is part of it on purpose -- see `hotkey_modifiers`.
+    #[test]
+    fn modifiers_translate_one_flag_at_a_time() {
+        assert_eq!(hotkey_modifiers(false, false, false, false), MOD_NOREPEAT);
+        assert_eq!(
+            hotkey_modifiers(true, false, false, false),
+            MOD_NOREPEAT | MOD_CONTROL
+        );
+        assert_eq!(
+            hotkey_modifiers(false, true, false, false),
+            MOD_NOREPEAT | MOD_WIN
+        );
+        assert_eq!(
+            hotkey_modifiers(false, false, true, false),
+            MOD_NOREPEAT | MOD_ALT
+        );
+        assert_eq!(
+            hotkey_modifiers(false, false, false, true),
+            MOD_NOREPEAT | MOD_SHIFT
+        );
+        assert_eq!(
+            hotkey_modifiers(true, true, true, true),
+            MOD_NOREPEAT | MOD_CONTROL | MOD_WIN | MOD_ALT | MOD_SHIFT
         );
     }
 

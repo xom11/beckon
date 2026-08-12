@@ -252,6 +252,15 @@ struct ServeState {
     /// user chooses, beckon does not.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     external_change: bool,
+    /// The last availability probe, and the chord it was about. `None` until
+    /// one runs -- not-yet-probed is not the same as free -- and `None` again
+    /// after a save, because `register_all` is the authority from that moment
+    /// on and the window already hears its answer through `registered`.
+    ///
+    /// Written by `probe_shortcut`, read by `refresh_settings`, and only ever
+    /// on Windows: the settings window is the one thing that asks.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    probe: Option<beckon_core::settings::ProbeResult>,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -318,6 +327,7 @@ pub fn cmd_serve_app(
         settings_unreadable: None,
         catalog: None,
         external_change: false,
+        probe: None,
     }));
 
     let mgr = {
@@ -883,10 +893,11 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
             // Pausing CLEARS `registered`, so without this the window would
             // show every row as "not registered yet" and never say why.
             paused: s.paused,
-            // Nothing probes yet -- task 2b-ii owns `probe_chord` and the
-            // `ServeState` field that feeds this. `None` is the honest
-            // value in the meantime: not-yet-probed, not free.
-            probe: None,
+            // `row_condition` shows this on the selected row only, and only
+            // while that row still spells the chord it was about -- so a
+            // verdict the user has typed past disappears rather than being
+            // shown against its replacement.
+            probe: s.probe.clone(),
         };
         beckon_core::settings::control_state(model, &rt)
     } else if let Some(notes) = s.settings_unreadable.as_ref() {
@@ -899,6 +910,74 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     let catalog = s.catalog.clone();
     drop(s);
     beckon_windows::settings_window::apply_state(&cs, external, catalog.as_deref());
+}
+
+/// Decide whether `combo` is free for the row being edited, asking the OS
+/// only when nothing beckon already knows can settle it, and keep the
+/// verdict for the next push.
+///
+/// **Order, and why there is no `refresh_settings` here.** The window sends
+/// this BEFORE `on_edit_combo` (see `Callbacks::on_probe_shortcut`), so the
+/// model still holds the row's previous chord -- which is what makes
+/// `probe_plan`'s `Unchanged` mean "this row already uses it" instead of
+/// "the model was updated a moment ago". The push that draws the verdict is
+/// therefore the one `on_edit_combo` does immediately afterwards, by which
+/// time the row spells the probed chord and `row_condition` folds the note
+/// in. Pushing here as well would draw a state where the two disagree.
+///
+/// **Every borrow is dropped before `probe_chord`.** `RegisterHotKey` is a
+/// call into the OS from a wndproc callback, and a second `RefCell` borrow
+/// taken across an `extern "system"` boundary aborts the process rather than
+/// unwinding -- the rule this module's doc states for `backend.beckon()`.
+///
+/// **Known false alarm, from reading MSDN rather than from hardware.**
+/// `RegisterHotKey` refuses a chord that is *already registered anywhere on
+/// this desktop*, and that includes beckon's own live table on `tray_hwnd`
+/// -- the separate HWND only rules out an `(hWnd, id)` identity collision,
+/// never a chord collision. `probe_plan` catches the ordinary case (a chord
+/// another row of the model still spells) before the OS is asked, but not
+/// this one: a row edited away from its saved chord and then edited back
+/// leaves that chord registered by `serve` and named by no model row, so the
+/// probe reports `Taken` -- "Another program already has this shortcut" --
+/// about beckon itself. Narrowing it means teaching the probe about
+/// `ServeState::shortcuts`, which is a policy §F.6 does not have a verdict or
+/// a string for; it is written up in the task 2 report rather than guessed at
+/// here.
+#[cfg(target_os = "windows")]
+fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
+    use beckon_core::settings::{ProbePlan, ProbeResult};
+
+    // One borrow, taken and dropped before anything below touches the OS.
+    let plan = {
+        let s = state.borrow();
+        let Some(m) = s.settings.as_ref() else {
+            return; // read-only window, or no window at all
+        };
+        let Some(row) = m.selected else {
+            return; // nothing is being edited, so there is nothing to ask about
+        };
+        beckon_core::settings::probe_plan(m, row, &combo)
+    };
+    let verdict = match plan {
+        ProbePlan::Verdict(v) => v,
+        ProbePlan::AskTheOs => {
+            // The SETTINGS window's handle, never the tray's -- see
+            // `hotkey::probe_chord`, which is where that rule and its reason
+            // live. `None` means the window closed between the notification
+            // and here, which leaves nothing to ask on and nobody to tell.
+            let Some(h) = beckon_windows::settings_window::hwnd() else {
+                return;
+            };
+            // `AskTheOs` is only reachable for a chord `probe_plan` parsed,
+            // so this cannot fail -- but a control is not a proof, and an
+            // `expect` here would abort `serve` for a bad shortcut string.
+            let Ok(c) = beckon_core::shortcuts::Combo::parse(&combo) else {
+                return;
+            };
+            beckon_windows::hotkey::probe_chord(h, &c)
+        }
+    };
+    state.borrow_mut().probe = Some(ProbeResult { combo, verdict });
 }
 
 /// Read the config file into whichever of the window's two states it
@@ -991,6 +1070,14 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
         }
     }
     s.external_change = false;
+    // The probe is superseded the moment the file is saved: the watcher and
+    // the 1 Hz tick bring `reload` along in under a second, and
+    // `register_all` is the authority on whether a chord took -- an answer
+    // the window already receives through `registered`. Another process may
+    // also have claimed the chord since the probe ran (the TOCTOU §F.6 names),
+    // so a green "Available" that outlived the thing which would disprove it
+    // is exactly the claim beckon must not make.
+    s.probe = None;
     drop(s);
     refresh_settings(state);
     eprintln!("beckon serve: settings saved");
@@ -1168,6 +1255,13 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 }
             }
         )),
+        // Not `edit!`: this one must run OUTSIDE a `settings` borrow (it
+        // calls into the OS) and must not refresh (the model has not caught
+        // up with the chord yet). See `probe_shortcut`.
+        on_probe_shortcut: Box::new({
+            let st = Rc::clone(state);
+            move |t: String| probe_shortcut(&st, t)
+        }),
         on_edit_app: Box::new(edit!(
             state,
             |m: &mut beckon_core::settings::Model, t: String| {

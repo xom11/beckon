@@ -600,6 +600,28 @@ pub struct Callbacks {
     /// other.
     pub on_mark: Box<dyn FnMut(usize, bool)>,
     pub on_edit_combo: Box<dyn FnMut(String)>,
+    /// The five shortcut controls now spell a whole chord: find out whether
+    /// anything else already has it.
+    ///
+    /// Separate from `on_edit_combo`, and raised FIRST, for two reasons that
+    /// are both about not lying:
+    ///
+    /// 1. **It is a global OS mutation**, however brief -- one
+    ///    `RegisterHotKey` round trip -- so it must be raised by a change to
+    ///    the shortcut and by nothing else. `on_edit_combo` is also sent by
+    ///    `commit_fields` (an App-field focus loss, a Save), where the chord
+    ///    has not moved and there is nothing to find out; and `apply_state`
+    ///    pushes data on every keystroke, which `push_shortcut`'s
+    ///    `suppressed()` guard keeps out of here.
+    /// 2. **The model must still hold the row's PREVIOUS chord** when the
+    ///    caller decides. `probe_plan`'s "Unchanged - this row already uses
+    ///    it" compares the typed chord against the row's own, so a probe
+    ///    asked after `on_edit_combo` has written it would find every chord
+    ///    unchanged and never ask the OS anything.
+    ///
+    /// Nothing is sent while a key is not selected, exactly as
+    /// `on_edit_combo` is not -- see `shortcut_shown`.
+    pub on_probe_shortcut: Box<dyn FnMut(String)>,
     pub on_edit_app: Box<dyn FnMut(String)>,
     /// The filter box's text changed. Indices in `on_select` / `on_mark` are
     /// model rows either way -- the window maps them.
@@ -3823,12 +3845,26 @@ fn shortcut_shown(hwnd: HWND, combo: HWND) -> Option<String> {
 ///
 /// `suppressed()` for the reason every other notification here carries it:
 /// `apply_state`'s own `BM_SETCHECK` and `CB_SETCURSEL` writes must never
-/// come back as user edits.
+/// come back as user edits. **That guard is also what keeps the availability
+/// probe off the data path**: a probe asks the OS for a global registration,
+/// and `apply_state` runs on every keystroke.
+///
+/// The two sends are ordered, not merely adjacent: the probe goes first,
+/// while the model still holds the row's previous chord, and the edit second,
+/// so the push it triggers is the one that draws the verdict. See
+/// `Callbacks::on_probe_shortcut`.
+///
+/// Two `with_cb` calls rather than one, matching `commit_fields`'s own pair
+/// of sends. Either shape is sound -- `with_cb` takes the slot out and holds
+/// no borrow while a handler runs -- but taking it once per send keeps the
+/// take-then-run discipline local to each, and it is what the file already
+/// does everywhere two callbacks fire in a row.
 fn push_shortcut(hwnd: HWND, combo: HWND) {
     if suppressed() {
         return;
     }
     if let Some(s) = shortcut_shown(hwnd, combo) {
+        with_cb(|cb| (cb.on_probe_shortcut)(s.clone()));
         with_cb(|cb| (cb.on_edit_combo)(s));
     }
 }
