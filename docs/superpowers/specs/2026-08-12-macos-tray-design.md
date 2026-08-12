@@ -122,13 +122,21 @@ Windows-gated and belongs to the settings window, and all three
 
 **But the API must not be shaped around that.** The settings window (subsystem
 2) brings a catalog worker that has to hand results back to AppKit, and an API
-that demands a `MainThreadMarker` from its caller would have to change then,
-at every call site. So `set_menu` and `set_status` are specified as **safe to
-call from any thread**: each acquires the marker itself when already on the
-main thread, and otherwise hops via `dispatch_async` to the main queue. Today
-that hop never runs. It is cheaper to write it now than to retrofit it, and it
-matches the Windows contract, where `set_status` posts a message and is
-callable from anywhere.
+that demanded a `MainThreadMarker` *from its caller* would have to change then,
+at every call site. So the marker stays out of the public signatures:
+`set_menu` and `set_status` take plain arguments and acquire the marker
+themselves.
+
+What they do when it is absent is deliberately **not** a main-queue hop.
+`set_menu` returns `Err` and `set_status` logs under `verbose()` and returns.
+Building a `dispatch_async` trampoline now would be writing an untested path
+for a caller that does not exist — the hop lands with subsystem 2, and because
+the marker was never in the signature, it lands without touching a single call
+site. That is the whole point of keeping it out.
+
+`set_status` is also not the primary surface. The same string is the menu's
+first row, which is where it is actually readable; the tooltip is the
+redundant copy.
 
 ## 5. THE OPEN MEASUREMENT — which run loop
 
@@ -137,12 +145,15 @@ which pairs with Carbon's `RegisterEventHotKey`. `NSStatusItem` is Cocoa and
 needs `NSApplication`. Whether a status item is *drawn and interactive* under
 the Carbon loop is not documented anywhere trustworthy and must be measured.
 
-A probe answers it: create a status item titled `BKNPROBE`, then enter each
-loop in turn, screenshotting the menu bar each time with a baseline frame as
-the control. It exists as `tray_probe.m` + `run_tray_probe.sh` in the session
-scratchpad; if the answer turns out to be load-bearing enough to re-check
-later, it belongs in `crates/beckon-macos/examples/`, next to where the
-Windows probes live.
+`crates/beckon-macos/examples/tray_probe.rs`, driven by
+`testing/macos_tray_probe.sh`, answers it. The probe drives **the real
+`tray.rs`**, not a mock, so one run measures the loop question and exercises
+the implementation at the same time. It enters each loop in turn and the
+script screenshots the menu bar each time, with a baseline frame as the
+control.
+
+Both halves refuse rather than mislead when the bootstrap namespace is not
+`Aqua` — see §6 for why that guard exists and what it is protecting against.
 
 | Observation | Consequence |
 |---|---|

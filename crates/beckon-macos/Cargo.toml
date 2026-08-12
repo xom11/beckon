@@ -12,6 +12,16 @@ thiserror   = { workspace = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2            = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSDictionary", "NSError", "NSObject", "NSEnumerator", "NSValue"] }
-objc2-app-kit    = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-app-kit    = { version = "0.3", features = [
+    "NSWorkspace", "NSRunningApplication",
+    # The menu bar item (src/tray.rs). NSStatusBarButton is what
+    # `NSStatusItem::button` hands back, and NSResponder/NSControl/NSButton
+    # are its superclasses -- omitting any of them makes `button()` return a
+    # type that does not exist.
+    "NSStatusBar", "NSStatusItem", "NSStatusBarButton",
+    "NSMenu", "NSMenuItem", "NSApplication",
+    "NSResponder", "NSControl", "NSButton", "NSView", "NSCell", "NSButtonCell",
+    "NSImage", "NSGraphics",
+] }
 core-foundation  = "0.10"
 plist            = "1"

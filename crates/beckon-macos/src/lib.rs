@@ -28,6 +28,8 @@ pub mod hotkey;
 #[cfg(target_os = "macos")]
 mod state;
 #[cfg(target_os = "macos")]
+pub mod tray;
+#[cfg(target_os = "macos")]
 mod windows;
 
 #[cfg(target_os = "macos")]
