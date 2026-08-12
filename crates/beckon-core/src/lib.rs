@@ -71,6 +71,7 @@ pub trait Backend {
 }
 
 pub mod caps;
+pub mod capture;
 pub mod config_write;
 pub mod settings;
 pub mod shortcuts;
