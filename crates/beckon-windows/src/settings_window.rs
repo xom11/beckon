@@ -553,52 +553,16 @@ mod tok {
     pub const CTL: i32 = 32;
     /// A button is never narrower than this, nor than its own caption.
     pub const BTN: i32 = 88;
-    /// **Unused, and retired by the next commit in this landing.** It exists
-    /// for one more commit only so that the two-line recompose of band 4 can
-    /// be reverted on its own. Everything below describes the ONE-LINE editor
-    /// strip and is no longer a description of this window.
+    /// The right-aligned `Shortcut` column, the editor field under it, and
+    /// the key list's ceiling.
     ///
-    /// The floor for a button that lives INSIDE a band beside fields, rather
-    /// than in the command bar: the editor strip's `Record` and `Reset`.
-    ///
-    /// Lower than `BTN` on purpose, and the arithmetic is the reason rather
-    /// than the taste. Band 4 is the densest line in the window -- label,
-    /// App combo, label, four chips, the key list -- and it is the App combo
-    /// that absorbs whatever the others leave. At `BTN` the two new buttons
-    /// take 184 px of it at 96 DPI; at this floor they take 138. Neither
-    /// caption needs more than ~66 px including padding, so the 88 would have
-    /// been paid entirely in App-field width.
-    #[allow(dead_code)]
-    pub const BTN_SM: i32 = 64;
-    /// The right-aligned `Shortcut` column, and the editor field under it.
+    /// The key list used to have a token of its own (`KEY_COL`, 140),
+    /// derived rather than designed: band 4 was one line, the App combo
+    /// absorbed whatever the other six controls left, and 60 px had to come
+    /// from somewhere to pay for `Record` and `Reset` sharing that line.
+    /// With App on a line of its own there is nothing left to starve, so the
+    /// key list is back under this ceiling and the arithmetic is retired.
     pub const SHORTCUT_COL: i32 = 200;
-    /// **Unused, and retired by the next commit in this landing**, for the
-    /// reason `BTN_SM` above gives. Everything below argues about the fixed
-    /// part of a band 4 that was ONE line; the key list now shares its line
-    /// with nothing but the chips and the two commands, takes `SHORTCUT_COL`
-    /// like every other box in the window, and the ~613 px figure the last
-    /// paragraph cites no longer exists in `layout`.
-    ///
-    /// The key list's own ceiling, and the one control that does NOT share
-    /// `SHORTCUT_COL` with the filter box and the `Tap` combo.
-    ///
-    /// `SHORTCUT_COL` is sized for a whole chord (`ctrl+super+alt+shift+t`),
-    /// which is what the LIST column holds. This control holds ONE key name,
-    /// and the longest in the 81-key table is `bracketright` -- twelve
-    /// characters, comfortably inside this plus a drop-down button. It only
-    /// ever had 200 because it inherited the column's number.
-    ///
-    /// The 60 px this buys (`SHORTCUT_COL` 200 minus this 140) is what pays
-    /// for `Record` and `Reset` sharing its line. Put `key_w` back at
-    /// `SHORTCUT_COL`, everything else unchanged, and the fixed part of band
-    /// 4's line grows by exactly that 60 px -- from ~613 to ~673 px of
-    /// CLIENT width (see `layout`'s own comment on band 4 for where 613
-    /// comes from). The App combo would then hit zero at a WINDOW width of
-    /// about 720 -- `MIN_WIDTH` itself -- rather than the ~660 the current
-    /// tokens give it: no margin at all, instead of the ~60 px margin band 4
-    /// documents.
-    #[allow(dead_code)]
-    pub const KEY_COL: i32 = 140;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
     /// Widest a tooltip may draw before it wraps. Comfortably narrower than
