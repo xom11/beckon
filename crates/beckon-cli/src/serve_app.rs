@@ -149,9 +149,9 @@ pub fn starter_template() -> &'static str {
 # Check a file without starting anything:
 #   beckon check "%USERPROFILE%\.config\beckon\apps.toml"
 #
-# Prefer Caps Lock to the three-finger chord below? Tick "Use Caps Lock as
-# the beckon key" in Settings, or uncomment these two lines -- they are the
-# same setting. Holding Caps then becomes ctrl+super+alt.
+# Prefer Caps Lock to the three-finger chord below? Tick the Caps Lock box
+# in Settings, or uncomment these two lines -- they are the same setting.
+# Holding Caps then becomes ctrl+super+alt.
 #
 #   keyboard.caps = true
 #   keyboard.caps_tap = "capslock"   # or "escape", or "none"

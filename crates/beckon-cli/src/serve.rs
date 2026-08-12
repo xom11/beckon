@@ -1182,6 +1182,14 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         )),
         on_caps_tap: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, t| m
             .set_caps_tap(t))),
+        // The return value says whether the model took the chord, and it is
+        // deliberately dropped: `set_caps_hold` refuses one with no
+        // modifiers, so unticking the last chip leaves the previous chord in
+        // place and the `apply_state` that follows re-ticks the box. The
+        // window needs no separate answer to hear that.
+        on_caps_hold: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, c| {
+            m.set_caps_hold(c);
+        })),
         on_add: Box::new({
             let st = Rc::clone(state);
             move || {

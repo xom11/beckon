@@ -66,7 +66,7 @@
 
 use crate::shell;
 use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
-use beckon_core::shortcuts::CapsTap;
+use beckon_core::shortcuts::{CapsTap, Chord};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -193,9 +193,10 @@ const IDC_ADD: i32 = 1005;
 const IDC_REMOVE: i32 = 1006;
 const IDC_APPLY: i32 = 1007;
 const IDC_CAPS: i32 = 1008;
-const IDC_TAP_CAPSLOCK: i32 = 1009;
-const IDC_TAP_ESCAPE: i32 = 1010;
-const IDC_TAP_NONE: i32 = 1011;
+// 1009-1011 were the three `Tapping Caps alone` radios. They are free
+// again -- unlike 1001-1008, 1012 and 1013, which `examples/settings_probe.rs`
+// hard-codes -- but nothing should reclaim them: a probe built against an
+// older binary would find a control it thinks it recognises.
 const IDC_OPENFILE: i32 = 1012;
 const IDC_CLOSE: i32 = 1013;
 const IDC_BANNER: i32 = 1014;
@@ -212,6 +213,17 @@ const IDC_GRP_KEYBOARD: i32 = 1019;
 /// `examples/settings_probe.rs` and are fixed points.
 const IDC_LBL_SECTION: i32 = 1020;
 const IDC_FILTER: i32 = 1021;
+/// The keyboard row: three `Hold` chips, the `Tap` combo, and the two
+/// static words that name each half. `Hold` and `Tap` are the only two
+/// things Caps can do, so the row names both rather than making the second
+/// an afterthought of the first -- which is what the radios did, by gluing
+/// the question onto the first answer.
+const IDC_HOLD_CTRL: i32 = 1022;
+const IDC_HOLD_WIN: i32 = 1023;
+const IDC_HOLD_ALT: i32 = 1024;
+const IDC_TAP: i32 = 1025;
+const IDC_LBL_HOLD: i32 = 1026;
+const IDC_LBL_TAP: i32 = 1027;
 
 /// Every `BS_PUSHBUTTON`/`BS_DEFPUSHBUTTON` in the window. Three things key
 /// off exactly this set, which is why it is one list and not three:
@@ -224,9 +236,9 @@ const IDC_FILTER: i32 = 1021;
 ///    parent, and the per-id arms below match `(id, _)` -- ANY code -- so
 ///    without that filter merely tabbing onto Save would press it.
 ///
-/// The check box and the three radios are deliberately absent: they carry no
-/// `BS_NOTIFY`, they cannot be the default button, and a default ring on a
-/// radio is not a thing Windows draws.
+/// The four check boxes are deliberately absent: they carry no `BS_NOTIFY`,
+/// they cannot be the default button, and a default ring on a check box is
+/// not a thing Windows draws.
 const PUSH_BUTTONS: [i32; 7] = [
     IDC_ADD,
     IDC_REMOVE,
@@ -248,19 +260,29 @@ fn is_push_button(id: i32) -> bool {
 /// A literal repeated in both is a button that silently stops fitting its
 /// own caption the first time one of the two is edited.
 ///
-/// **No two mnemonics collide, and that is a property of this table.**
-/// Windows does not check, and a duplicate does not fail -- `Alt+R` simply
-/// cycles between the two claimants instead of pressing either, which reads
-/// as "the keyboard is broken" rather than as a conflict. The letters:
+/// **Mnemonics must not collide.** Windows does not check, and a duplicate
+/// does not fail -- `Alt+R` simply cycles focus between the claimants
+/// instead of pressing either, which reads as "the keyboard is broken"
+/// rather than as a conflict. The letters:
 ///
 /// | Key | Control | Key | Control |
 /// |---|---|---|---|
 /// | `A` | Add | `R` | Reload |
 /// | `M` | Re**m**ove | `K` | Keep mine |
-/// | `S` | Save | `U` | **U**se Caps Lock (check box) |
-/// | `C` | Close | `T` | Tapping Caps alone (radio) |
-/// | `O` | Open config file | `E` | Esc (radio) |
-/// |  |  | `N` | nothing (radio) |
+/// | `S` | Save | `C` | Use **C**aps Lock (check box) |
+/// | `C` | Close | `C` | **C**trl (hold chip) |
+/// | `O` | Open config file | `W` | **W**in (hold chip) |
+/// |  |  | `L` | A**l**t (hold chip) |
+///
+/// **`C` is claimed three times, and that is a known defect rather than a
+/// decision.** `Close`, the Caps check box and the `Ctrl` chip all take it,
+/// so `Alt+C` cycles focus between the three instead of pressing any of
+/// them. Both new claimants arrived with the Caps row -- the check box used
+/// to be `&Use`, i.e. `U` -- and the captions above are the ones the landing
+/// plan specified verbatim, so respelling them was not this pass's call to
+/// make. The fix costs nothing but the position of two ampersands, and both
+/// letters are free: `&Use Caps Lock as a shortcut key` (`U`) and `C&trl`
+/// (`T`).
 ///
 /// `Remove` cannot take `R` because `Reload` has it, and `Reload` is the
 /// one that appears without warning -- a banner the user did not ask for is
@@ -280,10 +302,16 @@ mod cap {
     pub const OPEN_FILE: &str = "&Open config file";
     pub const RELOAD: &str = "&Reload";
     pub const KEEP_MINE: &str = "&Keep mine";
-    pub const CAPS: &str = "&Use Caps Lock as the beckon key";
-    pub const TAP_CAPSLOCK: &str = "&Tapping Caps alone: Caps Lock";
-    pub const TAP_ESCAPE: &str = "&Esc";
-    pub const TAP_NONE: &str = "&nothing";
+    pub const CAPS: &str = "Use &Caps Lock as a shortcut key";
+    pub const HOLD: &str = "Hold";
+    pub const TAP: &str = "Tap";
+    pub const HOLD_CTRL: &str = "&Ctrl";
+    pub const HOLD_WIN: &str = "&Win";
+    pub const HOLD_ALT: &str = "A&lt";
+    /// The three `Tap` items, in `CB_ADDSTRING` order. Read back by INDEX
+    /// with `CB_GETCURSEL`, never by text: even a `DROPDOWNLIST` has
+    /// typeahead, which moves the selection.
+    pub const TAP_ITEMS: [&str; 3] = ["Caps Lock", "Esc", "Nothing"];
     /// The filter box's placeholder. ASCII, like every display string.
     pub const FILTER_CUE: &str = "Filter";
 }
@@ -451,9 +479,9 @@ fn role_of(id: i32) -> Role {
         // us, which is the least appropriate text in the window to shrink.
         IDC_NOTES => Role::Caption,
         // Everything the user reads or operates: the ListView, the shortcut
-        // EDIT, the App COMBOBOX, their labels, every BUTTON (push, check,
-        // radio, and the group box), the banner -- and anything added later
-        // that does not say otherwise.
+        // EDIT, the App and Tap COMBOBOXes, their labels, every BUTTON
+        // (push, check, and the group box), the banner -- and anything added
+        // later that does not say otherwise.
         _ => Role::Body,
     }
 }
@@ -533,6 +561,9 @@ pub struct Callbacks {
     pub on_apply: Box<dyn FnMut()>,
     pub on_caps: Box<dyn FnMut(bool)>,
     pub on_caps_tap: Box<dyn FnMut(CapsTap)>,
+    /// What holding Caps stands for. The window sends all three chips
+    /// together because they are one value.
+    pub on_caps_hold: Box<dyn FnMut(Chord)>,
     pub on_open_file: Box<dyn FnMut()>,
     /// The installed-app catalog finished scanning.
     pub on_catalog: Box<dyn FnMut(Vec<String>)>,
@@ -554,6 +585,11 @@ struct Ui {
     banner: HWND,
     reload: HWND,
     keep: HWND,
+    /// The keyboard row's `Tap` combo. Kept here rather than fetched with
+    /// `GetDlgItem` per use so `apply_state` and `handle_command` each read
+    /// it out of the ONE borrow they already take -- see `LayoutHandles` for
+    /// why a second borrow is not merely untidy.
+    tap: HWND,
     /// The three type roles, rebuilt on every `WM_DPICHANGED` and freed on
     /// `WM_DESTROY`. Which control uses which is `role_of`'s answer, never
     /// a decision taken at a call site.
@@ -846,6 +882,38 @@ fn enabled(parent: HWND, id: i32) -> bool {
     match unsafe { GetDlgItem(Some(parent), id) } {
         Ok(h) => unsafe { IsWindowEnabled(h) }.as_bool(),
         Err(_) => false,
+    }
+}
+
+/// Is this check box ticked? The mirror of `check`, and the only way
+/// `handle_command` learns what a click did: `BS_AUTOCHECKBOX` toggles
+/// itself before the `BN_CLICKED` arrives, so the control -- not the
+/// notification -- is what carries the new state.
+///
+/// A control that is missing reads as clear. That is the same answer
+/// `enabled` gives for the same reason: the alternative is an `Option` every
+/// call site would have to collapse to a bool anyway.
+fn is_checked(parent: HWND, id: i32) -> bool {
+    match unsafe { GetDlgItem(Some(parent), id) } {
+        Ok(h) => {
+            unsafe { SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0
+                == BST_CHECKED.0 as isize
+        }
+        Err(_) => false,
+    }
+}
+
+/// A combo box's selected index, or `None` when nothing is selected.
+///
+/// The `Tap` combo is read and written through this and never by text.
+/// `CB_ERR` is -1, which as an index would be a very large `usize`, so the
+/// sign test happens before the cast rather than after it.
+fn cur_sel(h: HWND) -> Option<usize> {
+    let i = unsafe { SendMessageW(h, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))) }.0;
+    if i < 0 {
+        None
+    } else {
+        Some(i as usize)
     }
 }
 
@@ -1705,9 +1773,15 @@ unsafe fn build_children(hwnd: HWND) {
     // contributes zero height. A placeholder would be a control to keep in
     // sync with a feature that does not exist yet.
 
-    // -- Band 6: the keyboard group, directly above the command bar. F.8
-    // replaces this with a one-line Caps row at the TOP of the window, but
-    // that is the next landing and it is gated on measurements not taken.
+    // -- Band 6: the keyboard group, directly above the command bar. ONE
+    // content line, naming the two things the key can do:
+    //
+    //   [x] Use Caps Lock ...   Hold [x]Ctrl [x]Win [x]Alt   Tap [ v ]
+    //
+    // It replaces a check box over three radios captioned `Tapping Caps
+    // alone: Caps Lock` / `Esc` / `nothing`, where the question governing
+    // the group was glued to the first option -- so the other two did not
+    // read as answers to it, and `Hold` had no representation at all.
     child(
         hwnd,
         w!("BUTTON"),
@@ -1726,28 +1800,72 @@ unsafe fn build_children(hwnd: HWND) {
     );
     child(
         hwnd,
+        w!("STATIC"),
+        cap::HOLD,
+        SS_CENTERIMAGE_STYLE,
+        IDC_LBL_HOLD,
+        &fonts,
+    );
+    // Three chips, not four: `Chord` has fields `ctrl` / `super_` / `alt`
+    // and deliberately no `shift`. The hook has to release whatever it
+    // presses, and releasing Shift under the user's fingers makes
+    // everything they type next lowercase -- see `Chord`'s own doc. A
+    // fourth chip here would have nowhere in the model to land.
+    child(
+        hwnd,
         w!("BUTTON"),
-        cap::TAP_CAPSLOCK,
-        WINDOW_STYLE(BS_AUTORADIOBUTTON as u32) | WS_GROUP | WS_TABSTOP,
-        IDC_TAP_CAPSLOCK,
+        cap::HOLD_CTRL,
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        IDC_HOLD_CTRL,
         &fonts,
     );
     child(
         hwnd,
         w!("BUTTON"),
-        cap::TAP_ESCAPE,
-        WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
-        IDC_TAP_ESCAPE,
+        cap::HOLD_WIN,
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        IDC_HOLD_WIN,
         &fonts,
     );
     child(
         hwnd,
         w!("BUTTON"),
-        cap::TAP_NONE,
-        WINDOW_STYLE(BS_AUTORADIOBUTTON as u32),
-        IDC_TAP_NONE,
+        cap::HOLD_ALT,
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        IDC_HOLD_ALT,
         &fonts,
     );
+    child(
+        hwnd,
+        w!("STATIC"),
+        cap::TAP,
+        SS_CENTERIMAGE_STYLE,
+        IDC_LBL_TAP,
+        &fonts,
+    );
+    // CBS_DROPDOWNLIST, not CBS_DROPDOWN: the three answers are the whole
+    // domain, so unlike the App field there is nothing to free-type here --
+    // and a list with no edit field cannot be left holding text that matches
+    // no item.
+    let tap = child(
+        hwnd,
+        w!("COMBOBOX"),
+        "",
+        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        IDC_TAP,
+        &fonts,
+    );
+    // Filled once, here, and never repopulated: the items are a constant,
+    // not data. Each buffer is bound to a local so it outlives its send.
+    for item in cap::TAP_ITEMS {
+        let t = wide(item);
+        SendMessageW(
+            tap,
+            CB_ADDSTRING,
+            Some(WPARAM(0)),
+            Some(LPARAM(t.as_ptr() as isize)),
+        );
+    }
 
     // -- Band 7: the command bar. `Open config file` far left, then Close
     // and Save on the right, Save outermost and default.
@@ -1759,10 +1877,12 @@ unsafe fn build_children(hwnd: HWND) {
     // does not save, and the save prompt on the way out became the real
     // save path.
     //
-    // WS_GROUP terminates the radio group above it. IDC_TAP_CAPSLOCK opens
-    // a group and nothing closed it, so Right/Down from `nothing` used to
-    // walk focus straight out of the group and into whatever was created
-    // next -- which, before this reordering, was the hidden banner.
+    // WS_GROUP starts a fresh arrow-key group at the command bar, so the
+    // bottom row is its own navigation unit rather than the tail of the
+    // keyboard row above it. It used to be described as terminating the
+    // radio group `IDC_TAP_CAPSLOCK` opened; there are no radios any more
+    // and no group left to close, but the boundary is still the right one
+    // to draw here.
     let openfile = child(
         hwnd,
         w!("BUTTON"),
@@ -1818,6 +1938,7 @@ unsafe fn build_children(hwnd: HWND) {
             banner,
             reload,
             keep,
+            tap,
             fonts,
             accel: build_accelerators(),
             // Matches the `BS_DEFPUSHBUTTON` handed to `IDC_APPLY` above.
@@ -2113,8 +2234,8 @@ unsafe fn layout(hwnd: HWND) {
 
     // Body, and only Body: every string measured in this function labels or
     // captions a Body control -- the three command-bar buttons, Add /
-    // Remove / Reload / Keep mine, the two field labels, the three radios,
-    // and the "Ag" that sizes the EDIT. The `Shortcuts` heading is the one
+    // Remove / Reload / Keep mine, the two field labels, the whole keyboard
+    // row, and the "Ag" that sizes the EDIT. The `Shortcuts` heading is the one
     // Subtitle in the window and its width is never measured; it takes
     // whatever Add and Remove leave it.
     //
@@ -2136,9 +2257,11 @@ unsafe fn layout(hwnd: HWND) {
     // The two bottom bands are anchored, not stacked, so the window's
     // bottom edge is where they stay however tall the content above is.
     let bar_y = clamp(h - pad - ctl);
-    // Caption inset, then two control lines with a gap, then a bottom
-    // inset the same size as the gap.
-    let kb_h = s(24) + ctl * 2 + gap * 2;
+    // Caption inset, ONE control line, then a bottom inset the same size as
+    // the gap. It was two lines while the group held a check box over three
+    // radios; the Caps row is one line, so the group is one `ctl + gap`
+    // shorter and the flexing notes band above it gets those pixels.
+    let kb_h = s(24) + ctl + gap;
     let kb_y = clamp(bar_y - band - kb_h);
 
     let mut y = pad;
@@ -2330,30 +2453,52 @@ unsafe fn layout(hwnd: HWND) {
 
     // -- Band 5: the suggestion row. No control, no height.
 
-    // -- Band 6: the keyboard group.
+    // -- Band 6: the keyboard group. ONE line, left to right: the check box,
+    // then `Hold` and its three chips, then `Tap` and its combo.
     place(IDC_GRP_KEYBOARD, cx, kb_y, cw, kb_h);
     let inner_x = cx + gap;
-    let caps_y = kb_y + s(24);
-    place(IDC_CAPS, inner_x, caps_y, clamp(cw - gap * 2), ctl);
-    // Radio widths come from the captions. The s(190)/s(70)/s(90) these
-    // replace were sized for one font at one DPI and clipped the moment
-    // either changed.
-    let ry = caps_y + ctl + gap;
-    let rx = inner_x + gap;
-    // The radio's own circle, plus the gap it leaves before its caption.
+    let ry = kb_y + s(24);
+    // Every width on this line comes from the caption it has to hold. The
+    // s(190)/s(70)/s(90) constants the radios used were sized for one font
+    // at one DPI and clipped the moment either changed.
+    //
+    // `glyph` is the check box's own square plus the gap it leaves before
+    // its caption; the two STATICs get a hair of slack instead, for the
+    // reason the editor strip's labels do -- SS_CENTERIMAGE clips rather
+    // than wraps.
     let glyph = s(24);
-    let w_caps = tw(cap::TAP_CAPSLOCK) + glyph;
-    let w_esc = tw(cap::TAP_ESCAPE) + glyph;
-    let w_none = tw(cap::TAP_NONE) + glyph;
-    place(IDC_TAP_CAPSLOCK, rx, ry, w_caps, ctl);
-    place(IDC_TAP_ESCAPE, rx + w_caps + gap, ry, w_esc, ctl);
-    place(
-        IDC_TAP_NONE,
-        rx + w_caps + gap + w_esc + gap,
-        ry,
-        w_none,
-        ctl,
-    );
+    let w_caps = tw(cap::CAPS) + glyph;
+    let w_hold = tw(cap::HOLD) + s(4);
+    let w_ctrl = tw(cap::HOLD_CTRL) + glyph;
+    let w_win = tw(cap::HOLD_WIN) + glyph;
+    let w_alt = tw(cap::HOLD_ALT) + glyph;
+    let w_tap = tw(cap::TAP) + s(4);
+    // `gap * 2` between the three sections of the line, `lblgap` between a
+    // word and what it names, `gap` between chips -- so the grouping is
+    // legible from the spacing rather than only from the words.
+    let mut kx = inner_x;
+    place(IDC_CAPS, kx, ry, w_caps, ctl);
+    kx += w_caps + gap * 2;
+    place(IDC_LBL_HOLD, kx, ry, w_hold, ctl);
+    kx += w_hold + lblgap;
+    place(IDC_HOLD_CTRL, kx, ry, w_ctrl, ctl);
+    kx += w_ctrl + gap;
+    place(IDC_HOLD_WIN, kx, ry, w_win, ctl);
+    kx += w_win + gap;
+    place(IDC_HOLD_ALT, kx, ry, w_alt, ctl);
+    kx += w_alt + gap * 2;
+    place(IDC_LBL_TAP, kx, ry, w_tap, ctl);
+    kx += w_tap + lblgap;
+    // Whatever the line has left, capped at the same width the filter box
+    // and the shortcut field take, so every box in the window narrows
+    // together. Clamped like every other subtraction here: a window dragged
+    // narrow must produce a combo with no width, never a negative one.
+    //
+    // The `cy` is the DROPPED-DOWN height, not the closed one -- see the App
+    // combo in band 4. Three items need far less than the eight that combo
+    // asks for, so there is no CB_SETMINVISIBLE to go with it.
+    let tap_w = s(tok::SHORTCUT_COL).min(clamp(cx + cw - gap - kx));
+    place(IDC_TAP, kx, ry + edit_dy, tap_w, field_h * 5);
 
     // -- Band 7: the command bar. Save is the outermost button on the right,
     // Close inboard of it, `Open config file` hard left -- as far from Save
@@ -2379,10 +2524,11 @@ unsafe fn layout(hwnd: HWND) {
 /// Push a snapshot into the controls. The only path that changes what is on
 /// screen; the window never reads the model.
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
-    let Some((hwnd, list, combo, app, notes, filter, banner, reload, keep)) = UI.with(|u| {
+    let Some((hwnd, list, combo, app, notes, filter, banner, reload, keep, tap)) = UI.with(|u| {
         u.borrow().as_ref().map(|x| {
             (
                 x.hwnd, x.list, x.combo, x.app, x.notes, x.filter, x.banner, x.reload, x.keep,
+                x.tap,
             )
         })
     }) else {
@@ -2534,12 +2680,42 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // These four `check` calls need no `suppressed()` guard, unlike every
         // text write above: `BM_SETCHECK` sets the state without raising
         // `BN_CLICKED`, so a push cannot feed itself back as a user click.
+        //
+        // The three chips are written unconditionally FROM THE MODEL, and
+        // that is what makes `Model::set_caps_hold` refusing an empty chord
+        // safe to ignore up here: unticking the last chip leaves the model
+        // holding the previous value, so this push re-ticks the box the user
+        // just cleared. The chord always has a modifier in it, on screen and
+        // in the file alike.
         check(hwnd, IDC_CAPS, st.caps_checked);
-        check(hwnd, IDC_TAP_CAPSLOCK, st.caps_tap == CapsTap::CapsLock);
-        check(hwnd, IDC_TAP_ESCAPE, st.caps_tap == CapsTap::Escape);
-        check(hwnd, IDC_TAP_NONE, st.caps_tap == CapsTap::None);
-        // The tap choice only means anything when Caps is on.
-        for id in [IDC_TAP_CAPSLOCK, IDC_TAP_ESCAPE, IDC_TAP_NONE] {
+        check(hwnd, IDC_HOLD_CTRL, st.caps_hold.ctrl);
+        check(hwnd, IDC_HOLD_WIN, st.caps_hold.super_);
+        check(hwnd, IDC_HOLD_ALT, st.caps_hold.alt);
+        // By INDEX. Even a DROPDOWNLIST has typeahead, which moves the
+        // selection, so reading or writing this control by TEXT would make
+        // the model follow whatever the user's last keystroke selected.
+        //
+        // Guarded by a read, like every other field write in this function:
+        // an unconditional `CB_SETCURSEL` is a write on every keystroke, and
+        // a control that is asked to change is a control that may answer.
+        let want = match st.caps_tap {
+            CapsTap::CapsLock => 0usize,
+            CapsTap::Escape => 1,
+            CapsTap::None => 2,
+        };
+        if cur_sel(tap) != Some(want) {
+            SendMessageW(tap, CB_SETCURSEL, Some(WPARAM(want)), Some(LPARAM(0)));
+        }
+        // What Caps stands for only means anything when Caps is on -- the
+        // two static words included, or the row would read as half greyed.
+        for id in [
+            IDC_LBL_HOLD,
+            IDC_HOLD_CTRL,
+            IDC_HOLD_WIN,
+            IDC_HOLD_ALT,
+            IDC_LBL_TAP,
+            IDC_TAP,
+        ] {
             enable(hwnd, id, st.editable && st.caps_checked);
         }
 
@@ -3342,10 +3518,11 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
     // One borrow, one tuple of `Copy` handles, dropped before the match --
     // `apply_state`'s house pattern. Two sequential reads worked but took the
     // borrow twice for no reason.
-    let (combo, filter) = match UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.filter))) {
-        Some(t) => t,
-        None => return,
-    };
+    let (combo, filter, tap) =
+        match UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.filter, x.tap))) {
+            Some(t) => t,
+            None => return,
+        };
     match (id, code) {
         // ---- The default ring follows focus. THESE ARMS MUST COME FIRST.
         //
@@ -3485,19 +3662,38 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             with_cb(|cb| (cb.on_apply)())
         }
         (IDC_CAPS, _) => {
-            let on = unsafe {
-                GetDlgItem(Some(hwnd), IDC_CAPS)
-                    .map(|h| {
-                        SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))).0
-                            == BST_CHECKED.0 as isize
-                    })
-                    .unwrap_or(false)
-            };
+            let on = is_checked(hwnd, IDC_CAPS);
             with_cb(|cb| (cb.on_caps)(on));
         }
-        (IDC_TAP_CAPSLOCK, _) => with_cb(|cb| (cb.on_caps_tap)(CapsTap::CapsLock)),
-        (IDC_TAP_ESCAPE, _) => with_cb(|cb| (cb.on_caps_tap)(CapsTap::Escape)),
-        (IDC_TAP_NONE, _) => with_cb(|cb| (cb.on_caps_tap)(CapsTap::None)),
+        (IDC_HOLD_CTRL, _) | (IDC_HOLD_WIN, _) | (IDC_HOLD_ALT, _) => {
+            // All three read together: the chord is one value, and a setter
+            // that took one flag at a time could not refuse "none ticked"
+            // without knowing the other two. `BS_AUTOCHECKBOX` toggles
+            // itself before the notification arrives, so reading all three
+            // back is reading the state the user now sees.
+            let c = Chord {
+                ctrl: is_checked(hwnd, IDC_HOLD_CTRL),
+                super_: is_checked(hwnd, IDC_HOLD_WIN),
+                alt: is_checked(hwnd, IDC_HOLD_ALT),
+            };
+            with_cb(|cb| (cb.on_caps_hold)(c));
+        }
+        // Read out of the LIST by index, never from text. The `suppressed()`
+        // guard is the same one every other combo notification here carries:
+        // it drops anything raised while `apply_state` is writing, so a push
+        // can never be read back as a pick.
+        (IDC_TAP, c) if c == CBN_SELCHANGE => {
+            if !suppressed() {
+                if let Some(i) = cur_sel(tap) {
+                    let t = match i {
+                        0 => CapsTap::CapsLock,
+                        1 => CapsTap::Escape,
+                        _ => CapsTap::None,
+                    };
+                    with_cb(|cb| (cb.on_caps_tap)(t));
+                }
+            }
+        }
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),
         (IDC_KEEPMINE, _) => with_cb(|cb| (cb.on_keep_mine)()),
@@ -3633,11 +3829,13 @@ mod tests {
         assert!(is_push_button(IDC_APPLY));
         assert!(is_push_button(IDC_RELOAD));
         assert!(is_push_button(IDC_CLOSE));
-        // The check box and radios must stay out: they are BUTTONs, they
-        // have no `BS_NOTIFY`, and their `(id, _)` arms in `handle_command`
-        // are what carries a click to `on_caps` / `on_caps_tap`.
+        // The four check boxes must stay out: they are BUTTONs, they have no
+        // `BS_NOTIFY`, and their `(id, _)` arms in `handle_command` are what
+        // carries a click to `on_caps` / `on_caps_hold`.
         assert!(!is_push_button(IDC_CAPS));
-        assert!(!is_push_button(IDC_TAP_CAPSLOCK));
+        assert!(!is_push_button(IDC_HOLD_CTRL));
+        assert!(!is_push_button(IDC_HOLD_WIN));
+        assert!(!is_push_button(IDC_HOLD_ALT));
         assert!(!is_push_button(IDC_LIST));
     }
 
