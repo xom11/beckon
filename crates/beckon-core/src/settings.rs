@@ -147,6 +147,10 @@ pub struct ControlState {
     pub filter: String,
     pub caps_checked: bool,
     pub caps_tap: CapsTap,
+    /// What holding Caps Lock stands for. The window shows it as three
+    /// chips; `Chord` has no `shift` field and must not grow one -- see its
+    /// own doc for why.
+    pub caps_hold: Chord,
     /// Are there unsaved edits? **Not the same question as
     /// `apply_enabled`**, which is `dirty && no errors` -- an invalid model
     /// is still dirty, and the title bar's `*` has to say so even while
@@ -454,6 +458,25 @@ impl Model {
             self.keyboard.caps_tap = t;
             self.dirty = true;
         }
+    }
+
+    /// Set what holding Caps stands for. Returns whether the model now holds
+    /// `c`.
+    ///
+    /// **Refuses a chord with no modifiers.** The window can reach that by
+    /// unticking the last chip, and `Chord::parse` rejects the same value on
+    /// the way back in -- so accepting it here would let the window write a
+    /// file beckon cannot read. Refusing at the setter keeps the unwritable
+    /// state out of the model rather than catching it at render time.
+    pub fn set_caps_hold(&mut self, c: Chord) -> bool {
+        if !(c.ctrl || c.super_ || c.alt) {
+            return false;
+        }
+        if self.keyboard.caps_hold != c {
+            self.keyboard.caps_hold = c;
+            self.dirty = true;
+        }
+        true
     }
 
     /// Every reason this model is not clean, one entry per offending row. A
@@ -790,6 +813,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         filter: m.filter().to_string(),
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
+        caps_hold: m.keyboard.caps_hold,
         dirty: m.dirty(),
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         // Either gesture arms the button, because either gesture is one
@@ -956,6 +980,7 @@ pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
         filter: String::new(),
         caps_checked: false,
         caps_tap: CapsTap::default(),
+        caps_hold: Chord::default(),
         dirty: false,
         apply_enabled: false,
         remove_enabled: false,
@@ -2373,5 +2398,76 @@ mod tests {
             Some(3),
             "the new row must be both visible and selected"
         );
+    }
+
+    // ---------- the Caps hold chord ----------
+
+    #[test]
+    fn the_hold_chord_reaches_the_window() {
+        let m = model();
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(
+            cs.caps_hold,
+            Chord::default(),
+            "an untouched file uses the default chord, and the window has to \
+             show it rather than guess"
+        );
+    }
+
+    #[test]
+    fn setting_the_hold_chord_is_a_file_change() {
+        let mut m = model();
+        assert!(m.set_caps_hold(Chord {
+            ctrl: true,
+            super_: false,
+            alt: false
+        }));
+        assert!(m.dirty());
+        assert_eq!(
+            control_state(&m, &status_all_ok()).caps_hold.canonical(),
+            "ctrl"
+        );
+    }
+
+    #[test]
+    fn setting_the_same_hold_chord_twice_is_not_a_change() {
+        let mut m = model();
+        assert!(m.set_caps_hold(Chord::default()));
+        assert!(
+            !m.dirty(),
+            "writing back what was already there is not an edit"
+        );
+    }
+
+    /// `Chord::parse` refuses an empty chord because the hook has to have
+    /// something to press. The window can reach that state by unticking the
+    /// last chip, so the model refuses it there too rather than letting an
+    /// unwritable value into itself.
+    #[test]
+    fn unticking_the_last_modifier_is_refused() {
+        let mut m = model();
+        let before = m.keyboard.caps_hold;
+        assert!(!m.set_caps_hold(Chord {
+            ctrl: false,
+            super_: false,
+            alt: false
+        }));
+        assert_eq!(m.keyboard.caps_hold, before, "the chord is unchanged");
+        assert!(!m.dirty());
+    }
+
+    /// The round trip that matters: whatever the window sets must come back
+    /// out of the file meaning the same thing.
+    #[test]
+    fn the_hold_chord_survives_a_save_and_reload() {
+        let mut m = model();
+        m.set_caps_hold(Chord {
+            ctrl: true,
+            super_: false,
+            alt: true,
+        });
+        let text = m.render().unwrap();
+        let back = Model::from_text(&text).unwrap();
+        assert_eq!(back.keyboard.caps_hold.canonical(), "ctrl+alt");
     }
 }
