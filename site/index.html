@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>beckon — one key per app, on every OS</title>
+
+<meta name="description" content="beckon is a cross-platform focus-or-launch app switcher. The same line, beckon Claude, works on macOS, Windows and Linux — ids resolve against the OS's own metadata, so there is nothing to keep in sync between machines.">
+
+<meta property="og:title" content="beckon — one key per app, on every OS">
+<meta property="og:description" content="A cross-platform focus-or-launch app switcher. The same line, beckon Claude, works on macOS, Windows and Linux.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://xom11.github.io/beckon/">
+<meta property="og:image" content="https://xom11.github.io/beckon/icon-512.png">
+<meta name="twitter:card" content="summary">
+
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon-512.png">
+<link rel="stylesheet" href="beckon.css">
+</head>
+<body id="top">
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <img src="favicon.png" alt="" width="22" height="22">
+      beckon
+    </a>
+    <a href="#install">Install</a>
+    <a href="#how">How it works</a>
+    <a href="https://github.com/xom11/beckon/blob/main/README.md">Docs</a>
+    <a href="https://github.com/xom11/beckon">GitHub</a>
+    <button id="theme" type="button" aria-label="Switch theme">Theme</button>
+  </div>
+</header>
+
+<main>
+
+  <!-- Placeholder. Task 4 writes this section; the nav anchor points here. -->
+  <section id="how">
+    <div class="wrap">
+      <h2>Focus is only the first press.</h2>
+      <div class="demo">
+        <p class="demo-steps">Five presses of the same key: window 1, window 2, window 3, back to Brave, hidden.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Placeholder. Task 8 restyles this section; it does not re-author the
+       commands, which are the ones tools/check-site.sh matches against
+       README.md byte for byte. -->
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+
+      <h3>Homebrew (macOS, Linux)</h3>
+<pre><code>brew install xom11/tap/beckon</code></pre>
+
+      <h3>Scoop (Windows)</h3>
+<pre><code>scoop bucket add xom11 https://github.com/xom11/scoop-bucket
+scoop install xom11/beckon</code></pre>
+
+      <h3>Cargo (from git)</h3>
+<pre><code>cargo install --git https://github.com/xom11/beckon</code></pre>
+
+      <h3>Nix</h3>
+<pre><code>nix run github:xom11/beckon -- list</code></pre>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>MIT OR Apache-2.0</span>
+    <span>v0.8.0</span>
+    <a href="https://github.com/xom11/beckon">Repository</a>
+    <a href="https://github.com/xom11/beckon/releases">Releases</a>
+    <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a>
+    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-MIT">LICENSE-MIT</a>
+    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-APACHE">LICENSE-APACHE</a>
+  </div>
+</footer>
+
+<script src="beckon.js" defer></script>
+</body>
+</html>

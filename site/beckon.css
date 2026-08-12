@@ -1,0 +1,75 @@
+/* beckon — landing page. No build step: this file is served as written. */
+
+:root {
+  --bg:         #FFFFFF;
+  --bg-raised:  #F6F7F9;
+  --fg:         #0B0D12;
+  --fg-dim:     #5A6072;
+  --rule:       #E3E6EC;
+  --accent:     #2563EB;   /* measured from assets/beckon.ico */
+  --accent-fg:  #FFFFFF;
+  --radius:     10px;
+  --maxw:       1080px;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Menlo,
+          Consolas, "Liberation Mono", monospace;
+}
+
+/* Only the tokens that differ are restated. Twice: once for the system
+   preference, once for the explicit toggle, so the toggle wins both ways. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
+    --fg-dim: #9AA1B4; --rule: #232936;
+    --accent: #5B8CFF;  /* #2563EB is 3.8:1 here and fails AA */
+    --accent-fg: #0B0D12;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
+  --fg-dim: #9AA1B4; --rule: #232936;
+  --accent: #5B8CFF; --accent-fg: #0B0D12;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);       /* explicit, never transparent */
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: 24px; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--rule);
+}
+.nav .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.nav a { color: var(--fg-dim); text-decoration: none; font-size: 15px; }
+.nav a:hover { color: var(--fg); }
+.brand {
+  display: flex; align-items: center; gap: 9px;
+  font-weight: 650; color: var(--fg) !important; margin-inline-end: auto;
+}
+.brand img { width: 22px; height: 22px; border-radius: 5px; }
+
+footer { border-top: 1px solid var(--rule); margin-top: 96px; padding-block: 40px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; color: var(--fg-dim); font-size: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
