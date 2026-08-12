@@ -80,6 +80,13 @@ pub struct RuntimeStatus {
     /// would read as "not registered yet" and the window would have nowhere
     /// at all that says beckon is paused.
     pub paused: bool,
+    /// The last probe verdict, and the combo it was about. `None` until one
+    /// has run -- **not-yet-probed is not the same as free**, the same
+    /// distinction `catalog` makes.
+    ///
+    /// The combo is carried so a verdict for a chord the user has since
+    /// changed can be ignored rather than shown against the new one.
+    pub probe: Option<ProbeResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,6 +639,232 @@ fn combo_is_caps_chord(c: &Combo, hold: &Chord) -> bool {
     c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt && !c.shift
 }
 
+// ---------------------------------------------------------------------------
+// The availability probe
+// ---------------------------------------------------------------------------
+
+/// Everything beckon can say about whether a chord is free to bind.
+///
+/// The variants are the rows of the spec's string table (§F.6) and there are
+/// no others, which is why they are matched exhaustively in `probe_notes` --
+/// a new outcome cannot be added without writing the sentence that goes with
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Availability {
+    /// The OS accepted a registration for this chord and nothing else is
+    /// holding it. **Not the same as "it works"** -- see `probe_notes`.
+    Free,
+    /// `Free`, and the chord carries the Windows key, which Windows reserves
+    /// and can reclaim on its own.
+    FreeWithWin,
+    /// The row being edited already means this chord, so there is nothing to
+    /// find out and nothing to collide with.
+    Unchanged,
+    /// Another row of this same file already means it. `app` is that row's
+    /// app, so the note can name where it went.
+    DuplicateInFile { app: String },
+    /// The OS refused the registration. It does not say who holds the chord,
+    /// and the note does not pretend otherwise.
+    Taken,
+    /// `f12` is somewhere in the chord.
+    F12,
+    /// Capture ran and no key-down arrived, so something above hotkey
+    /// dispatch consumed it.
+    ///
+    /// **Nothing produces this yet** -- capture is a later task. It is
+    /// defined here because it is one of §F.6's strings and the strings live
+    /// together.
+    CaptureSawNothing,
+}
+
+/// A verdict, and the chord it was about.
+///
+/// The chord rides along so a verdict can be *discarded* once the user types
+/// something else, rather than shown against a chord it was never about.
+/// `row_condition` is where that check happens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeResult {
+    pub combo: String,
+    pub verdict: Availability,
+}
+
+/// What `probe_plan` concluded: either an answer, or permission to ask the
+/// OS for one.
+///
+/// `AskTheOs` is deliberately not an `Availability` variant. It is the
+/// *absence* of a verdict, and making it one would let a caller store it in
+/// `RuntimeStatus::probe` and render it as though beckon had decided
+/// something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProbePlan {
+    Verdict(Availability),
+    AskTheOs,
+}
+
+/// Do two combo spellings mean the same chord?
+///
+/// `false` whenever either side fails to parse -- a string that names no
+/// chord cannot be equal to one, not even to a byte-identical string that
+/// also names none. That is what keeps a verdict about an unparseable combo
+/// off the screen entirely (see `probe_plan` step 1).
+fn same_chord(a: &str, b: &str) -> bool {
+    match (Combo::parse(a), Combo::parse(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Decide whether `combo` is free for row `row`, or whether only the OS can
+/// say.
+///
+/// **The order below is the whole design, and it is not a preference.** A
+/// live registration answers exactly one question -- *is anything else
+/// holding this chord at this instant* -- and it answers `yes, free` for a
+/// chord reserved for debuggers, for one this very file already binds two
+/// rows down, and for the row's own current chord. Every step ahead of
+/// `AskTheOs` is therefore a fact the OS cannot tell us, and asking first
+/// would mean the green answer had already been computed before anything
+/// noticed it was wrong.
+///
+/// Not every pair is order-sensitive, and claiming otherwise would be worse
+/// than useless: the F12 guard and the self-conflict checks are independent
+/// of each other and commute. What does not commute is `AskTheOs` against
+/// any of them.
+///
+/// **`RuntimeStatus::registered` is not consulted, ever.** `set_paused` and
+/// `reload` CLEAR that map, so a paused beckon would report its own bound
+/// chord as free. That map explains why a row is red; it never decides
+/// whether a chord is free.
+pub fn probe_plan(m: &Model, row: usize, combo: &str) -> ProbePlan {
+    // 1. Not a chord at all. The row's own `problems()` already quotes the
+    //    parser's reason verbatim, so the probe must add nothing: `Unchanged`
+    //    is the only verdict that asserts nothing about the world outside
+    //    this row. It cannot reach the screen either way -- `row_condition`
+    //    folds a verdict in only on a canonical match, and an unparseable
+    //    string has no canonical form -- so this is a fallback that says
+    //    nothing new in both senses.
+    let Ok(c) = Combo::parse(combo) else {
+        return ProbePlan::Verdict(Availability::Unchanged);
+    };
+
+    // 2. MSDN reserves VK_F12 for debuggers "at all times ... even when you
+    //    are not debugging". A registration on it therefore succeeds and
+    //    proves nothing, which is the one outcome worth refusing outright:
+    //    a green Available on a key documented never to arrive.
+    if c.key.name == "f12" {
+        return ProbePlan::Verdict(Availability::F12);
+    }
+
+    // Compared in canonical form so `alt+ctrl+t` and `ctrl+alt+t` are one
+    // chord, which is the same rule `problems()` uses for duplicates.
+    let want = c.canonical();
+
+    // 3. The row's own chord. A row is not in conflict with itself, and
+    //    there is nothing to find out about a chord that is already bound
+    //    to the thing being edited.
+    if m.rows.get(row).is_some_and(|r| same_chord(&r.combo, &want)) {
+        return ProbePlan::Verdict(Availability::Unchanged);
+    }
+
+    // 4. Any OTHER row of this same file. Read from the model in memory,
+    //    which is the only place that knows about edits the user has not
+    //    saved yet.
+    for (i, r) in m.rows.iter().enumerate() {
+        if i != row && same_chord(&r.combo, &want) {
+            return ProbePlan::Verdict(Availability::DuplicateInFile {
+                app: r.app.trim().to_string(),
+            });
+        }
+    }
+
+    // 5. Nothing beckon holds can decide this. Now, and only now, ask.
+    ProbePlan::AskTheOs
+}
+
+/// The sentences a verdict puts in the editor's notes strip.
+///
+/// The wording is §F.6's, verbatim and ASCII -- ASCII for the same reason
+/// the mark glyphs are: the window inherits the shell font, and a missing
+/// glyph reads as a defect. Nothing here names an API or an error code,
+/// because none of those are things the person editing a shortcut can act
+/// on.
+///
+/// **A registration is never reported as "this shortcut works."** The
+/// strongest claim it licenses is that nothing else is holding the chord,
+/// and that is what the `Free` strings say. A chord can still be swallowed
+/// above hotkey dispatch, where nobody registered it and the probe therefore
+/// succeeded, and another process may claim it between here and Save.
+///
+/// The paused sentence is *appended* rather than replacing the verdict, and
+/// it is a different claim from `row_condition`'s "beckon is paused, so no
+/// shortcut is active": that one is about the row, this one is about how far
+/// to trust the verdict above it. Both appearing at once is correct.
+pub fn probe_notes(r: &ProbeResult, paused: bool) -> Vec<Note> {
+    let (mark, text) = match &r.verdict {
+        Availability::Free => (
+            Mark::Ok,
+            "Available. Nothing else on this PC is using it.".to_string(),
+        ),
+        Availability::FreeWithWin => (
+            Mark::Ok,
+            "Available right now. Windows reserves Windows-key shortcuts and can take this one \
+             back after an update, so press it once after saving to be sure."
+                .to_string(),
+        ),
+        Availability::Unchanged => (
+            Mark::Ok,
+            "Unchanged - this row already uses it.".to_string(),
+        ),
+        Availability::DuplicateInFile { app } => (
+            Mark::Bad,
+            format!("Already used by \"{app}\" in this file. A shortcut can only mean one thing."),
+        ),
+        Availability::Taken => (
+            Mark::Bad,
+            "Another program already has this shortcut. Windows does not tell beckon which one, \
+             so beckon cannot name it. Saved as-is, it will not fire."
+                .to_string(),
+        ),
+        Availability::F12 => (
+            Mark::Bad,
+            "F12 is reserved for debugging tools and never reaches beckon. Pick a different key."
+                .to_string(),
+        ),
+        // §F.6 puts this in the `..` column, not `!!`. Within that column the
+        // shipped vocabulary splits `Unknown` ("beckon does not know yet":
+        // the catalog scan is running, the row has not been registered yet)
+        // from `Warn` ("beckon knows, and it is worth saying"). Capture
+        // having run and seen nothing is knowledge, so it is `Warn`.
+        Availability::CaptureSawNothing => (
+            Mark::Warn,
+            "Windows handled that shortcut itself, so beckon never saw it. A few shortcuts, like \
+             Win+L, cannot be reassigned by any program."
+                .to_string(),
+        ),
+    };
+    let mut out = vec![Note { mark, text }];
+
+    if paused {
+        out.push(Note {
+            mark: Mark::Warn,
+            text: "beckon is paused, so this shows what will happen when you resume.".into(),
+        });
+    }
+
+    // Ctrl+Alt with no Windows key IS Alt Gr on an international layout, so
+    // the chord fires while the user is typing an accented character. Worth
+    // saying, not worth refusing -- the chord is genuinely free.
+    if Combo::parse(&r.combo).is_ok_and(|c| c.ctrl && c.alt && !c.super_) {
+        out.push(Note {
+            mark: Mark::Warn,
+            text: "On international layouts this is Alt Gr, so typing an accented character will \
+                   fire it."
+                .into(),
+        });
+    }
+    out
+}
+
 /// The one place a row's condition is decided. Both the list flag and the
 /// editor's notes are derived from it, so they cannot contradict each other
 /// -- which they could when `items` read only the registration map and
@@ -703,6 +936,29 @@ fn row_condition(
     }
     // A combo that does not parse says so through its `Problem` below;
     // repeating it here would put the same sentence on screen twice.
+
+    // 1b. The availability probe. Unlike everything above, this is about the
+    //     chord as it stands in the editor RIGHT NOW rather than about the
+    //     last registration pass -- so it appears on the row being edited
+    //     and nowhere else, and only while it is still about that row's
+    //     chord. `ProbeResult` carries the chord it was about for exactly
+    //     this reason: the user types on, the verdict goes stale, and a
+    //     stale verdict has to vanish rather than be shown against the chord
+    //     that replaced it. `same_chord` refuses on either side failing to
+    //     parse, so a half-typed chord shows no verdict at all.
+    //
+    //     No `flag` is claimed. The flag is the list column's one word about
+    //     every row; a probe is about the one row being edited, and a word
+    //     that appeared and vanished as the selection moved would be worse
+    //     than none. `mark` still follows, because it is derived from the
+    //     notes at the end.
+    let probe = rt
+        .probe
+        .as_ref()
+        .filter(|p| m.selected == Some(i) && same_chord(&p.combo, &r.combo));
+    if let Some(p) = probe {
+        notes.extend(probe_notes(p, rt.paused));
+    }
 
     // 2. The app. Silent on success -- a healthy row says nothing.
     match &rt.catalog {
@@ -1265,6 +1521,7 @@ mod tests {
             registered: r,
             catalog: Some(vec!["Terminal".into(), "File Explorer".into()]),
             paused: false,
+            probe: None,
         }
     }
 
@@ -1295,6 +1552,7 @@ mod tests {
             registered: status_all_ok().registered,
             catalog: None,
             paused: false,
+            probe: None,
         };
         let mut m = model();
         m.selected = Some(0);
@@ -2469,5 +2727,156 @@ mod tests {
         let text = m.render().unwrap();
         let back = Model::from_text(&text).unwrap();
         assert_eq!(back.keyboard.caps_hold.canonical(), "ctrl+alt");
+    }
+
+    // ---------- the availability probe ----------
+
+    fn rows3() -> Model {
+        Model::from_text(
+            "\"ctrl+alt+a\"=\"Notepad\"\n\"ctrl+alt+b\"=\"Brave\"\n\"ctrl+alt+q\"=\"Weather\"\n",
+        )
+        .unwrap()
+    }
+
+    /// F12 is reserved for debuggers "at all times", so a successful
+    /// registration proves nothing. It has to be refused BEFORE the OS is
+    /// asked, or the probe reports a green Available on a key documented
+    /// never to arrive.
+    #[test]
+    fn f12_is_refused_before_the_os_is_asked() {
+        let m = rows3();
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+f12"),
+            ProbePlan::Verdict(Availability::F12)
+        );
+    }
+
+    #[test]
+    fn a_combo_already_in_this_file_is_a_self_conflict() {
+        let m = rows3();
+        // Row 0 is being edited to what row 1 already holds.
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+b"),
+            ProbePlan::Verdict(Availability::DuplicateInFile {
+                app: "Brave".into()
+            })
+        );
+    }
+
+    /// A row keeping its own combo is not a conflict with itself.
+    #[test]
+    fn a_row_keeping_its_own_combo_is_unchanged_not_a_duplicate() {
+        let m = rows3();
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+a"),
+            ProbePlan::Verdict(Availability::Unchanged)
+        );
+    }
+
+    /// Only when nothing above matched may the OS be asked. Getting this
+    /// order wrong is what makes a probe claim a reserved or duplicated
+    /// chord is free.
+    #[test]
+    fn a_clean_combo_reaches_the_os() {
+        let m = rows3();
+        assert_eq!(probe_plan(&m, 0, "ctrl+alt+z"), ProbePlan::AskTheOs);
+    }
+
+    #[test]
+    fn an_unparseable_combo_never_reaches_the_os() {
+        let m = rows3();
+        assert!(matches!(probe_plan(&m, 0, "banana"), ProbePlan::Verdict(_)));
+    }
+
+    /// The strings are the spec's, verbatim, and a free verdict must never
+    /// say the shortcut WORKS -- only that nothing else is holding it.
+    #[test]
+    fn a_free_verdict_does_not_claim_the_shortcut_works() {
+        let n = probe_notes(
+            &ProbeResult {
+                combo: "ctrl+alt+z".into(),
+                verdict: Availability::Free,
+            },
+            false,
+        );
+        assert_eq!(n[0].text, "Available. Nothing else on this PC is using it.");
+        assert!(
+            !n.iter().any(|x| x.text.to_lowercase().contains("works")),
+            "a registration proves nothing else holds the chord, not that it fires"
+        );
+    }
+
+    #[test]
+    fn a_windows_key_chord_says_windows_may_take_it_back() {
+        let n = probe_notes(
+            &ProbeResult {
+                combo: "super+z".into(),
+                verdict: Availability::FreeWithWin,
+            },
+            false,
+        );
+        assert_eq!(
+            n[0].text,
+            "Available right now. Windows reserves Windows-key shortcuts and can take this one back after an update, so press it once after saving to be sure."
+        );
+    }
+
+    #[test]
+    fn a_taken_chord_does_not_name_a_program_it_cannot_know() {
+        let n = probe_notes(
+            &ProbeResult {
+                combo: "ctrl+alt+z".into(),
+                verdict: Availability::Taken,
+            },
+            false,
+        );
+        assert_eq!(
+            n[0].text,
+            "Another program already has this shortcut. Windows does not tell beckon which one, so beckon cannot name it. Saved as-is, it will not fire."
+        );
+        assert_eq!(n[0].mark, Mark::Bad);
+    }
+
+    #[test]
+    fn probing_while_paused_says_so() {
+        let n = probe_notes(
+            &ProbeResult {
+                combo: "ctrl+alt+z".into(),
+                verdict: Availability::Free,
+            },
+            true,
+        );
+        assert!(
+            n.iter()
+                .any(|x| x.text
+                    == "beckon is paused, so this shows what will happen when you resume."),
+            "the verdict is about the future while paused, and must say so"
+        );
+    }
+
+    /// No string may leak an API name or an error code.
+    #[test]
+    fn no_string_names_an_api() {
+        for v in [
+            Availability::Free,
+            Availability::FreeWithWin,
+            Availability::Unchanged,
+            Availability::Taken,
+            Availability::F12,
+            Availability::CaptureSawNothing,
+            Availability::DuplicateInFile { app: "X".into() },
+        ] {
+            for n in probe_notes(
+                &ProbeResult {
+                    combo: "ctrl+alt+z".into(),
+                    verdict: v,
+                },
+                false,
+            ) {
+                for bad in ["RegisterHotKey", "UIPI", "0x", "HRESULT"] {
+                    assert!(!n.text.contains(bad), "{bad} leaked into {:?}", n.text);
+                }
+            }
+        }
     }
 }

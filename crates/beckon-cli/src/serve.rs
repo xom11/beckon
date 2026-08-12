@@ -883,6 +883,10 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
             // Pausing CLEARS `registered`, so without this the window would
             // show every row as "not registered yet" and never say why.
             paused: s.paused,
+            // Nothing probes yet -- task 2b-ii owns `probe_chord` and the
+            // `ServeState` field that feeds this. `None` is the honest
+            // value in the meantime: not-yet-probed, not free.
+            probe: None,
         };
         beckon_core::settings::control_state(model, &rt)
     } else if let Some(notes) = s.settings_unreadable.as_ref() {
