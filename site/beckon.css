@@ -1,4 +1,21 @@
-/* beckon — landing page. No build step: this file is served as written. */
+/* beckon — landing page. No build step: this file is served as written.
+
+   Order, and it is load-bearing:
+     1. tokens                    (bare :root, then the two dark restatements)
+     2. shell                     (container, nav, footer)
+     3. system                    (section rhythm, headings, prose, code)
+     4. one block per section     (hero, how, names, setups, serve — page order)
+     5. responsive                (exactly two breakpoints, for the whole page)
+     6. prefers-reduced-motion    (LAST, so it wins)
+
+   The five sections were drafted separately. Everything they had in common —
+   section padding, heading scale, panel padding, corner radii, prose measure,
+   inline code, keycap, and the breakpoints — is defined ONCE in §3 and §5 and
+   is never restated per section. A section block below may only add what is
+   genuinely its own. */
+
+
+/* --- 1. tokens ------------------------------------------------------------ */
 
 :root {
   --bg:         #FFFFFF;
@@ -8,8 +25,16 @@
   --rule:       #E3E6EC;
   --accent:     #2563EB;   /* measured from assets/beckon.ico */
   --accent-fg:  #FFFFFF;
-  --radius:     10px;
-  --maxw:       1080px;
+
+  --radius:     10px;      /* panels, cards, tiles, <pre> */
+  --radius-sm:  6px;       /* keycaps, inline code, the fake window rows */
+  --pad:        20px;      /* every panel, card and tile pays the same padding */
+  --maxw:       1080px;    /* the container, and the only page width there is */
+  --measure:    68ch;      /* body copy */
+  --measure-lead: 62ch;    /* the sentence under a heading */
+  --nav-h:      60px;
+  --section-y:  88px;      /* the vertical rhythm every <section> gets */
+
   --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
           "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Menlo,
@@ -32,6 +57,9 @@
   --accent: #5B8CFF; --accent-fg: #0B0D12;
 }
 
+
+/* --- 2. shell ------------------------------------------------------------- */
+
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body {
@@ -53,7 +81,7 @@ a { color: var(--accent); }
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--rule);
 }
-.nav .wrap { display: flex; align-items: center; gap: 24px; height: 60px; }
+.nav .wrap { display: flex; align-items: center; gap: 24px; height: var(--nav-h); }
 .nav a { color: var(--fg-dim); text-decoration: none; font-size: 15px; }
 .nav a:hover { color: var(--fg); }
 .brand {
@@ -62,9 +90,730 @@ a { color: var(--accent); }
 }
 .brand img { width: 22px; height: 22px; border-radius: 5px; }
 
-footer { border-top: 1px solid var(--rule); margin-top: 96px; padding-block: 40px; }
+/* The theme toggle is the page's only <button> outside a section, and it was
+   shipping as a default UA button next to designed hero buttons. It borrows
+   the outline button's vocabulary rather than inventing a third one. */
+.nav button {
+  padding: 6px 12px;
+  font: 600 14px var(--sans);
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.nav button:hover { color: var(--fg); border-color: var(--accent); }
+
+/* The last section already pays --section-y below itself, so the footer adds
+   no margin of its own; otherwise the page ends on a gap twice as tall as
+   every other. */
+footer { border-top: 1px solid var(--rule); margin-top: 0; padding-block: 40px; }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 16px; color: var(--fg-dim); font-size: 14px; }
 
+
+/* --- 3. system: rhythm, headings, prose and code -------------------------- */
+
+/* One rule sets the rhythm for every section, including the install
+   placeholder. scroll-margin keeps the sticky nav off a linked heading. */
+main > section {
+  padding-block: var(--section-y);
+  scroll-margin-top: calc(var(--nav-h) + 16px);
+}
+
+h2 {
+  margin: 0 0 16px;
+  font-size: clamp(1.9rem, 4.2vw, 3rem);
+  letter-spacing: -0.02em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+h3 { margin: 0 0 8px; font-size: 1.05rem; letter-spacing: -0.01em; }
+
+/* Three prose roles, and only three: the sentence under a heading, body copy,
+   and small print. Sections use these instead of a per-section paragraph
+   class, which is what made four sections read as four typefaces. */
+.lead {
+  max-width: var(--measure-lead);
+  margin: 0 0 40px;
+  color: var(--fg-dim);
+  font-size: clamp(1.02rem, 1.6vw, 1.15rem);
+}
+.prose { max-width: var(--measure); margin: 0 0 32px; color: var(--fg-dim); }
+.note {
+  max-width: var(--measure);
+  margin: 24px 0 0;
+  color: var(--fg-dim);
+  font-size: 15px;
+}
+.note:first-child { margin-top: 0; }
+
+code { font-family: var(--mono); font-size: .92em; }
+
+/* Inline code is boxed; code inside a <pre> is not, because a <pre> already
+   has its own ground and a second border inside it reads as a nested box. */
+p code, li code, td code, th code, figcaption code {
+  padding: .1em .38em;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+a code { color: inherit; }   /* a boxed <code> inside a link stays a link */
+
+/* Every command block on the page is this one panel: the discovery commands,
+   the TOML sample and all four install blocks. overflow-x lives here, so a
+   long line scrolls inside its own box and never widens <body>. */
+pre {
+  margin: 0;
+  padding: 18px var(--pad);
+  overflow-x: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: .95rem;
+  line-height: 1.7;
+  color: var(--fg);
+}
+pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap: normal; }
+
+
+/* --- 4a. section: hero ---------------------------------------------------- */
+
+/* Shared: the keycap.
+   CONTRACT — reused verbatim by the how demo, the letter table in setups and
+   the Caps Lock line in serve. Do not fork it.
+
+     <kbd class="key">C</kbd>                 one cap
+     <kbd class="key" data-down>C</kbd>       the pressed look, statically
+     <span class="chord">                     a row of caps
+       <kbd class="key">Ctrl</kbd> ... <span class="plus">+</span> ...
+     </span>
+
+   The cap sizes from its own font-size in em, so a section scales a whole
+   chord by setting font-size on the container (the hero does exactly that).
+   Colour and background come from tokens only, so it is correct in light,
+   dark and explicit-toggle without a second rule. Do NOT put aria-hidden on
+   .key itself: the letter table in #setups is content, not decoration.
+   aria-hidden belongs on the demo container. */
+
+.key {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 2.1em; padding: .3em .55em;
+  font: 600 .82em/1 var(--mono);
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 2px 0 var(--rule);
+  transform: translateY(0);
+}
+.key[data-down] { box-shadow: 0 1px 0 var(--rule); transform: translateY(1px); }
+.chord { display: inline-flex; align-items: center; gap: 6px; }
+.chord .plus { color: var(--fg-dim); font-size: .8em; }
+
+/* Shared: the demo panel.
+   CONTRACT for every demo on the page.
+
+     <div class="demo">
+       <div class="…-stage" aria-hidden="true"> …moving parts… </div>
+       <p class="demo-steps">…the same thing in words…</p>
+     </div>
+
+   .demo owns the frame and the padding, nothing else, so each section styles
+   only its own stage inside it. .demo-steps is the LAST child and is never
+   aria-hidden — it is what a reduced-motion reader reads, and it is visible
+   to everyone, not sr-only.
+
+   MOTION CONTRACT, and it is load-bearing. There is no per-section
+   prefers-reduced-motion block; the global one at the end of this file
+   (animation-duration: .01ms + animation-iteration-count: 1) does the work.
+   That only lands on the state worth seeing if BOTH of these hold, so any
+   new demo must honour them too:
+     1. every animation carries fill-mode `both`, so the 100% keyframe is held
+        after the 0.01ms run instead of snapping back to the base rule; and
+     2. the base rule IS the final keyframe, so the panel is still correct if
+        the animation never runs at all.
+   Authoring rule that follows: the LAST keyframe is the state worth holding. */
+
+.demo {
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+.demo-steps {
+  margin: 18px 0 0;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.demo-steps:first-child { margin-top: 0; }
+
+/* The hero itself. It pays less top padding than a mid-page section because
+   the nav sits directly above it, and none at the bottom because #how pays
+   the full rhythm on its own top edge. */
+.hero { padding-block: 64px 0; text-align: center; }
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2.75rem, 7vw, 5.5rem);
+  letter-spacing: -0.03em;
+  line-height: 1.02;
+  text-wrap: balance;
+  overflow-wrap: break-word;
+}
+
+.hero .lead { max-width: 60ch; margin: 22px auto 0; }
+.hero .lead code { font-weight: 600; white-space: nowrap; }
+
+.hero-cta {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 12px;
+  margin-top: 30px;
+}
+.hero-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 46px; padding: 0 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  font-size: 16px; font-weight: 600; text-decoration: none;
+}
+.hero-btn-solid { background: var(--accent); color: var(--accent-fg); }
+.hero-btn-solid:hover { background: color-mix(in srgb, var(--accent) 86%, var(--fg)); }
+.hero-btn-line { background: transparent; color: var(--fg); border-color: var(--rule); }
+.hero-btn-line:hover { border-color: var(--accent); color: var(--accent); }
+
+.hero-meta { margin: 18px 0 0; color: var(--fg-dim); font-size: 13px; }
+
+.hero-demo { margin-top: 48px; text-align: start; }
+.hero-stage { display: grid; justify-items: center; gap: 26px; }
+
+/* hero demo: the chord.
+   One timeline, 4.4s, shared by every animated part of this demo. Nothing
+   here declares animation-delay, so the caps and all three cards are
+   phase-locked by construction rather than by three delays that agree. */
+.hero-chord { font-size: 1.15rem; }
+.hero-chord .key { animation: hero-cap 4.4s linear infinite both; }
+
+@keyframes hero-cap {
+  /* 0-18% resting */
+  0%, 17%     { transform: translateY(0);   box-shadow: 0 2px 0 var(--rule); }
+  /* 18-26% pressed */
+  18%, 26%    { transform: translateY(1px); box-shadow: 0 1px 0 var(--rule); }
+  /* released, and held to the end */
+  27%, 100%   { transform: translateY(0);   box-shadow: 0 2px 0 var(--rule); }
+}
+
+/* hero demo: the three OS cards. They stay three across at every width —
+   stacking them would put the demo's whole point, three machines moving on
+   the same beat, below the fold on a phone. They only get tighter. */
+.os-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+  width: 100%;
+}
+.os-card {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-width: 0;
+}
+.os-label {
+  font: 600 12px/1 var(--sans);
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+/* The two fake windows overlap by 6px, so z-index has something to say and
+   the raise is a real change of stacking order rather than a hint. */
+.os-stack { position: relative; margin-top: 12px; }
+.os-win {
+  position: relative;                 /* z-index needs a positioned box */
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  height: 52px;
+  overflow: hidden;
+  min-width: 0;
+}
+.os-win + .os-win { margin-top: -6px; }
+.os-bar {
+  display: flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 8px;
+  border-bottom: 1px solid var(--rule);
+  font: 600 11px/1 var(--mono);
+  color: var(--fg);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.os-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
+}
+
+/* BASE = FINAL KEYFRAME. Read the three rules below as the end of the
+   timeline: Claude in front and accented, Brave dimmed behind it. The
+   keyframes rewind that to the resting look for the first 26% and put it
+   back by 46%, where it holds to 100%. With motion off, the base rule is
+   already the frame worth seeing and `both` pins it there. */
+
+.os-win.is-brave {
+  z-index: 2;
+  opacity: .5;
+  animation: hero-dim 4.4s linear infinite both;
+}
+@keyframes hero-dim {
+  0%, 26%   { opacity: 1; }
+  46%, 100% { opacity: .5; }
+}
+
+.os-win.is-claude {
+  z-index: 3;
+  transform: translateY(-6px);
+  border-color: var(--accent);
+  box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
+  animation: hero-raise 4.4s linear infinite both;
+}
+@keyframes hero-raise {
+  /* 0-26%: behind Brave, flat, unaccented */
+  0%, 26% {
+    z-index: 1;
+    transform: translateY(0);
+    border-color: var(--rule);
+    box-shadow: 0 10px 26px -12px transparent;
+  }
+  /* 26-46%: comes forward. 46-100%: holds. */
+  46%, 100% {
+    z-index: 3;
+    transform: translateY(-6px);
+    border-color: var(--accent);
+    box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
+  }
+}
+
+.os-win.is-claude .os-dot {
+  background: var(--accent);
+  animation: hero-dot 4.4s linear infinite both;
+}
+@keyframes hero-dot {
+  0%, 26%   { background: color-mix(in srgb, var(--fg-dim) 55%, transparent); }
+  46%, 100% { background: var(--accent); }
+}
+
+
+/* --- 4b. section: how ("Focus is only the first press.") ------------------- */
+
+/* Reduced motion: the base styles ARE the last keyframe of every animation
+   below (windows unhighlighted, stack dimmed, "hidden" flag showing, key up).
+   Authoring the base as the FINAL frame rather than the first is the whole
+   reason a reader with motion off still gets the step the section exists to
+   show. */
+
+.how-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 36px;
+  margin-top: 4px;
+}
+
+.how-tablewrap { overflow-x: auto; }   /* the page body must never scroll sideways */
+
+.how-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 15px;
+}
+.how-table th,
+.how-table td {
+  padding: 13px 16px 13px 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.how-table td:last-child { padding-right: 0; }
+.how-table thead th {
+  padding-top: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.how-table tbody th {
+  width: 45%;
+  font-weight: 400;
+  color: var(--fg-dim);
+}
+.how-table tbody td { color: var(--fg); font-weight: 600; }
+.how-table tbody tr:last-child th,
+.how-table tbody tr:last-child td { border-bottom: 0; }
+
+.how-keyrow { display: flex; justify-content: center; padding: 4px 0 20px; }
+
+/* One .key, five presses. Its period is 1.8s and the window stack's is 9s —
+   exactly five presses per lap. Changing one duration without the other pulls
+   the press off the step it is supposed to cause. */
+.how-key { animation: how-press 1.8s linear 0s infinite both; }
+
+@keyframes how-press {
+  0%, 5% {
+    transform: translateY(0);
+    box-shadow: 0 2px 0 var(--rule),
+                0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  9%, 14% {
+    transform: translateY(1px);
+    box-shadow: 0 1px 0 var(--rule),
+                0 0 0 5px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  34%, 100% {
+    transform: translateY(0);
+    box-shadow: 0 2px 0 var(--rule),
+                0 0 0 16px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+.how-windows {
+  display: grid;
+  gap: 8px;
+  opacity: .38;                 /* = the 100% frame: the hidden step */
+  animation: how-dim 9s linear 0s infinite both;
+}
+
+.how-win {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: var(--radius-sm);
+  color: var(--fg-dim);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  transform: translateX(0);
+}
+.how-dots { display: inline-flex; gap: 4px; flex: none; }
+.how-dots span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
+.how-title { font-weight: 600; }
+.how-count { margin-left: auto; font-family: var(--mono); font-size: 11px; opacity: .75; }
+
+/* Claude 1/3, 2/3, 3/3 share one shape offset by one press (1.8s). This is
+   only safe because the 0% and 100% frames are identical — under reduced
+   motion the delay is NOT overridden, so a delayed element sits in its 0%
+   backwards-fill before jumping to 100%, and both must read as "not focused". */
+.how-w1 { animation: how-on 9s linear 0s   infinite both; }
+.how-w2 { animation: how-on 9s linear 1.8s infinite both; }
+.how-w3 { animation: how-on 9s linear 3.6s infinite both; }
+
+@keyframes how-on {
+  0%,   2.9% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  4%,  22.9% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  24%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+}
+
+/* Brave is the app you came from, so it is lit at rest AND on the fourth
+   press. That is why it cannot share how-on. */
+.how-w4 { animation: how-on-brave 9s linear 0s infinite both; }
+
+@keyframes how-on-brave {
+  0%,   2.9% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  4%,  62.9% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+  64%, 82.9% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+  84%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
+}
+
+@keyframes how-dim {
+  0%,  82.9% { opacity: 1; }
+  84%, 100%  { opacity: .38; }
+}
+
+/* The fifth press. Always in flow, so nothing reflows when it appears — and
+   it is the frame reduced motion lands on, which is the point. */
+.how-flag {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 16px 0 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--accent);
+  opacity: 1;
+  animation: how-flag 9s linear 0s infinite both;
+}
+.how-flag::before { content: ""; width: 20px; height: 1px; background: var(--accent); flex: none; }
+
+@keyframes how-flag {
+  0%,  82.9% { opacity: 0; transform: translateY(3px); }
+  84%, 100%  { opacity: 1; transform: translateY(0); }
+}
+
+
+/* --- 4c. section: names ("Type the name, not the id.") -------------------- */
+
+/* Two stacked rows, good then bad. Each row is two columns — the code, then
+   its label — collapsing to one column on narrow screens so the 51-character
+   PWA id can never push the body into a horizontal scroll. */
+.compare {
+  display: grid;
+  gap: 1px;                    /* the gap IS the hairline between the rows */
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin: 0 0 32px;
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 24px;
+  padding: var(--pad);
+  background: var(--bg-raised);
+}
+
+/* The code is never dimmed and never struck through: a reader copies from
+   both lines, including the one they should not bind to. It scrolls inside
+   its own box rather than widening the grid — hence min-width: 0, without
+   which a grid item refuses to shrink below its content. It sheds the shared
+   <pre> panel because it already sits inside one. */
+.compare-code {
+  padding: 0;
+  min-width: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  font-size: .95rem;
+  line-height: 1.5;
+}
+
+.compare-label {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+
+/* The good row is marked with the accent down its edge; the bad row carries
+   the strike on its LABEL only. Keeping the two selectors apart is what makes
+   "never strike the code" a property of the stylesheet rather than a habit. */
+.compare-row.is-good { box-shadow: inset 3px 0 0 var(--accent); }
+.compare-row.is-bad .compare-label {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+
+/* --- 4d. section: setups ("Works with your setup.") ----------------------- */
+
+.tiles {
+  list-style: none;
+  margin: 0 0 48px;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+  /* min() keeps a 220px track from overflowing a 375px viewport. */
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+}
+.tile {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: var(--pad);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  /* Every tile carries the 3px edge so the marked one cannot shift layout. */
+  border-inline-start: 3px solid var(--rule);
+  border-radius: var(--radius);
+}
+.tile-name { font-weight: 650; }
+.tile-note {
+  flex-basis: 100%;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* GNOME (Wayland) is the only tile that does not work straight after a package
+   install — it needs the bundled shell extension and a re-login. So its note is
+   marked at full contrast instead of dimmed like the other seven, and the pill
+   says which kind of mark this is. Softening it is selling something beckon
+   does not do. */
+.tile-marked {
+  border-inline-start-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-raised));
+}
+.tile-marked .tile-note {
+  color: var(--fg);
+  font-weight: 600;
+}
+.tile-flag {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font: 600 11px/1 var(--sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 32px 48px;
+  align-items: start;
+}
+
+.keytable { width: 100%; border-collapse: collapse; }
+.keytable th,
+.keytable td {
+  padding: 10px 12px 10px 0;
+  text-align: start;
+  font-weight: 400;
+  border-bottom: 1px solid var(--rule);
+}
+.keytable thead th {
+  padding-block: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.keytable tbody th { width: 1%; white-space: nowrap; }
+.keytable tbody tr:last-child th,
+.keytable tbody tr:last-child td { border-bottom: 0; }
+
+.mods {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.mods li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.mod-os {
+  min-width: 84px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.mod-note { color: var(--fg-dim); font-size: 13px; }
+
+
+/* --- 4e. section: serve ("Or let beckon hold the keys.") ------------------ */
+
+/* The TOML sample. The <pre> panel and its overflow-x come from §3; only the
+   caption above it belongs to this section. */
+.toml-fig { margin: 0 0 40px; max-width: var(--measure-lead); }
+.toml-fig figcaption {
+  margin-bottom: 8px;
+  color: var(--fg-dim);
+  font: 600 .76rem/1 var(--mono);
+  letter-spacing: .05em;
+}
+
+/* Three cards: macOS, Windows, Linux. minmax(0, 1fr) rather than 1fr so a
+   long unbroken token in a card cannot push the grid past its track. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.card {
+  padding: var(--pad);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.card h3 {
+  margin: 0 0 10px;
+  color: var(--fg-dim);
+  font-size: .78rem;
+  font-weight: 650;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.card p { margin: 0; font-size: .97rem; }
+
+/* Linux is the card that says beckon does NOT do this. A dashed edge marks it
+   as deliberately outside the set without dimming the text, which would read
+   as "unfinished" rather than "not offered". */
+.card-linux { border-style: dashed; }
+
+/* Keycaps sit ~2.4em tall inside a small paragraph; the extra leading keeps
+   consecutive lines from touching when the line wraps. */
+.caps { line-height: 2.15; }
+.caps .chord { margin-inline: 2px; }
+
+
+/* --- 5. responsive: two breakpoints, for the whole page ------------------- */
+
+/* 900px is where a two-column section has room to be two columns. Below it
+   every section is a single column — which is also the JS-off, no-CSS-grid
+   order the markup already reads in. */
+@media (min-width: 900px) {
+  .how-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 48px; }
+  .keys { grid-template-columns: minmax(220px, 300px) 1fr; }
+}
+
+/* 720px is the phone compaction. One token carries the section rhythm, so the
+   whole page tightens together instead of five sections tightening by five
+   different amounts. */
+@media (max-width: 720px) {
+  :root { --section-y: 56px; --pad: 16px; }
+
+  /* The nav is four links plus the brand and a button, and cannot fit one row
+     at 375px; it wraps to brand + toggle, then the links. Overflowing it
+     instead would put a horizontal scroll bar on <body> for the whole page.
+     The ::after is a zero-height full-width flex item: without it the links
+     pack onto row one until it is full and only the overflow wraps. */
+  .nav .wrap { flex-wrap: wrap; height: auto; padding-block: 10px; gap: 8px 16px; }
+  .nav button { order: 1; }
+  .nav .wrap::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
+  .nav a:not(.brand) { order: 3; font-size: 14px; }
+
+  .hero { padding-block: 44px 0; }
+  .hero-demo { margin-top: 34px; }
+  .hero-stage { gap: 18px; }
+  .hero-chord { font-size: 1rem; }
+  .hero-btn { flex: 1 1 auto; }
+  .os-grid { gap: 8px; }
+  .os-card { padding: 8px; border-radius: 8px; }
+  .os-label { font-size: 10px; }
+  .os-win { height: 46px; }
+  .os-bar { height: 20px; padding: 0 6px; font-size: 10px; gap: 5px; }
+
+  .how-grid { gap: 28px; }
+
+  .compare-row { grid-template-columns: minmax(0, 1fr); }
+  .compare-label { white-space: normal; }
+
+  .cards { grid-template-columns: minmax(0, 1fr); }
+}
+
+
+/* --- 6. reduced motion ---------------------------------------------------- */
+
+/* LAST in the file, so it wins. animation-duration: .01ms with
+   iteration-count: 1 lands every demo on its FINAL keyframe and holds it —
+   which is only the right frame because every demo above authors its last
+   keyframe as the state worth seeing. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;

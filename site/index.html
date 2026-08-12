@@ -36,22 +36,316 @@
 
 <main>
 
-  <!-- Placeholder. Task 4 writes this section; the nav anchor points here. -->
-  <section id="how">
+  <!-- Hero + three-OS demo. Owns the shared .key / .chord / .demo /
+       .demo-steps components; see the matching block in beckon.css for their
+       contract. Everything decorative inside the demo is aria-hidden;
+       .demo-steps is the accessible transcript and is not. -->
+  <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
-      <h2>Focus is only the first press.</h2>
-      <div class="demo">
-        <p class="demo-steps">Five presses of the same key: window 1, window 2, window 3, back to Brave, hidden.</p>
+
+      <h1 id="hero-h">One key per app.<br>Every OS you use.</h1>
+
+      <p class="lead"><code>beckon Claude</code> is the same line on macOS, Windows and
+      Linux. It resolves against the OS's own metadata, so there is no id to keep in
+      sync between machines.</p>
+
+      <div class="hero-cta">
+        <a class="hero-btn hero-btn-solid" href="#install">Install</a>
+        <a class="hero-btn hero-btn-line" href="https://github.com/xom11/beckon">GitHub</a>
+      </div>
+
+      <p class="hero-meta">MIT OR Apache-2.0 &middot; v0.8.0 &middot; Rust, no runtime</p>
+
+      <div class="demo hero-demo">
+
+        <div class="hero-stage" aria-hidden="true">
+
+          <div class="chord hero-chord">
+            <kbd class="key">Ctrl</kbd>
+            <kbd class="key">Win</kbd>
+            <kbd class="key">Alt</kbd>
+            <span class="plus">+</span>
+            <kbd class="key">C</kbd>
+          </div>
+
+          <!-- Three cards, one animation, no per-card delay. Simultaneity is the
+               argument, so it is structural here rather than configured. -->
+          <div class="os-grid">
+
+            <div class="os-card">
+              <div class="os-label">macOS</div>
+              <div class="os-stack">
+                <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
+                <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
+              </div>
+            </div>
+
+            <div class="os-card">
+              <div class="os-label">Windows</div>
+              <div class="os-stack">
+                <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
+                <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
+              </div>
+            </div>
+
+            <div class="os-card">
+              <div class="os-label">Linux</div>
+              <div class="os-stack">
+                <div class="os-win is-brave"><span class="os-bar"><span class="os-dot"></span>Brave</span></div>
+                <div class="os-win is-claude"><span class="os-bar"><span class="os-dot"></span>Claude</span></div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <p class="demo-steps">Ctrl+Win+Alt+C, pressed once on each machine: Claude comes to the front on all three.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- "Focus is only the first press." Reuses .key, .demo and .demo-steps from
+       the hero; every other class is prefixed .how- so it cannot collide with a
+       sibling section. The whole stage is aria-hidden: .demo-steps is what a
+       screen reader and a reduced-motion reader get, and it is not sr-only. -->
+  <section id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <h2 id="how-h">Focus is only the first press.</h2>
+      <p class="lead">Most launchers stop at "bring it to the front". beckon keeps going, and which thing happens is decided for you — there is no flag and nothing to configure.</p>
+
+      <div class="how-grid">
+
+        <div class="how-tablewrap">
+          <table class="how-table">
+            <thead>
+              <tr>
+                <th scope="col">Press</th>
+                <th scope="col">What happens</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">App is not running</th><td>launch it</td></tr>
+              <tr><th scope="row">Running, not focused</th><td>focus it</td></tr>
+              <tr><th scope="row">Focused, has another window</th><td>focus the next window</td></tr>
+              <tr><th scope="row">No other window</th><td>switch back to the app you came from</td></tr>
+              <tr><th scope="row">Nothing else to go to</th><td>hide it</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="demo">
+          <div class="how-stage" aria-hidden="true">
+
+            <div class="how-keyrow"><kbd class="key how-key">C</kbd></div>
+
+            <div class="how-windows">
+              <div class="how-win how-w1">
+                <span class="how-dots"><span></span><span></span><span></span></span>
+                <span class="how-title">Claude</span>
+                <span class="how-count">1/3</span>
+              </div>
+              <div class="how-win how-w2">
+                <span class="how-dots"><span></span><span></span><span></span></span>
+                <span class="how-title">Claude</span>
+                <span class="how-count">2/3</span>
+              </div>
+              <div class="how-win how-w3">
+                <span class="how-dots"><span></span><span></span><span></span></span>
+                <span class="how-title">Claude</span>
+                <span class="how-count">3/3</span>
+              </div>
+              <div class="how-win how-w4">
+                <span class="how-dots"><span></span><span></span><span></span></span>
+                <span class="how-title">Brave</span>
+              </div>
+            </div>
+
+            <p class="how-flag">hidden</p>
+
+          </div>
+          <p class="demo-steps">Five presses of the same key: window 1, window 2, window 3, back to Brave, hidden.</p>
+        </div>
+
       </div>
     </div>
   </section>
 
-  <!-- Placeholder. Task 8 restyles this section; it does not re-author the
-       commands, which are the ones tools/check-site.sh matches against
-       README.md byte for byte. -->
-  <section id="install">
+  <!-- "Type the name, not the id." The strike-through lives on .compare-label
+       and must never reach .compare-code — the code stays selectable, full
+       contrast and copyable, including the one nobody should type. -->
+  <section id="names" aria-labelledby="names-h">
     <div class="wrap">
-      <h2>Install</h2>
+      <h2 id="names-h">Type the name, not the id.</h2>
+
+      <div class="compare">
+        <div class="compare-row is-good">
+<pre class="compare-code"><code>beckon Claude</code></pre>
+          <p class="compare-label">works on every machine you own</p>
+        </div>
+        <div class="compare-row is-bad">
+<pre class="compare-code"><code>beckon brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default</code></pre>
+          <p class="compare-label">works on exactly one</p>
+        </div>
+      </div>
+
+      <p class="prose">Brave and Chrome mint that hash locally when you install a PWA, so the canonical id differs on every machine — copying your dotfile to a second laptop silently stops working. The display name does not drift. beckon resolves it against <code>.desktop</code> files on Linux, LaunchServices on macOS and the Start menu on Windows, on every invocation. There is no cache to rebuild and no alias file to keep in sync.</p>
+
+<pre><code>beckon installed | grep -i claude
+beckon resolve Claude
+beckon doctor</code></pre>
+    </div>
+  </section>
+
+  <!-- "Works with your setup". Every tile note is sourced from the dispatch
+       table in CLAUDE.md and the status table in README.md; the letter table is
+       README.md's own. Uses .key / .chord / .plus from the hero, not a fork. -->
+  <section id="setups" aria-labelledby="setups-h">
+    <div class="wrap">
+      <h2 id="setups-h">Works with your setup.</h2>
+
+      <ul class="tiles">
+        <li class="tile">
+          <span class="tile-name">macOS</span>
+          <span class="tile-note">needs Accessibility permission</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">Windows</span>
+          <span class="tile-note">Start menu, MSIX/AppX and PWAs</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">sway</span>
+          <span class="tile-note">native i3-IPC</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">i3</span>
+          <span class="tile-note">same backend as sway</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">Hyprland</span>
+          <span class="tile-note">native socket IPC</span>
+        </li>
+        <li class="tile tile-marked">
+          <span class="tile-name">GNOME (Wayland)</span>
+          <span class="tile-flag">Setup required</span>
+          <span class="tile-note">needs the bundled shell extension</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">KDE (Wayland)</span>
+          <span class="tile-note">nothing to install &mdash; rides KWin scripting</span>
+        </li>
+        <li class="tile">
+          <span class="tile-name">XFCE &middot; openbox &middot; awesome &middot; fluxbox</span>
+          <span class="tile-note">any EWMH X11 desktop</span>
+        </li>
+      </ul>
+
+      <div class="keys">
+        <table class="keytable">
+          <thead>
+            <tr><th scope="col">Key</th><th scope="col">App</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row"><kbd class="key">Space</kbd></th><td>terminal</td></tr>
+            <tr><th scope="row"><kbd class="key">C</kbd></th><td>Claude</td></tr>
+            <tr><th scope="row"><kbd class="key">B</kbd></th><td>Brave</td></tr>
+            <tr><th scope="row"><kbd class="key">E</kbd></th><td>Cursor</td></tr>
+            <tr><th scope="row"><kbd class="key">D</kbd></th><td>Discord</td></tr>
+          </tbody>
+        </table>
+
+        <div class="keys-notes">
+          <p class="note">The examples wire the same five keys everywhere, so you remember the
+            letter and not the modifier.</p>
+
+          <ul class="mods">
+            <li>
+              <span class="mod-os">Linux</span>
+              <span class="chord"><kbd class="key">Super</kbd></span>
+            </li>
+            <li>
+              <span class="mod-os">macOS</span>
+              <span class="chord">
+                <kbd class="key">Cmd</kbd><span class="plus">+</span><kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Alt</kbd>
+              </span>
+              <span class="mod-note">Hyper</span>
+            </li>
+            <li>
+              <span class="mod-os">Windows</span>
+              <span class="chord">
+                <kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Win</kbd><span class="plus">+</span><kbd class="key">Alt</kbd>
+              </span>
+            </li>
+          </ul>
+
+          <p class="note">Drop-in configs for every setup live in
+            <a href="https://github.com/xom11/beckon/tree/main/examples"><code>examples/</code></a>.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- "Or let beckon hold the keys." Consumes .key / .chord / .plus from the
+       hero. Adds no JS: the whole section is static markup and reads
+       identically with JS disabled. -->
+  <section id="serve" aria-labelledby="serve-h">
+    <div class="wrap">
+      <h2 id="serve-h">Or let beckon hold the keys.</h2>
+
+      <p class="lead">On macOS and Windows nothing binds hotkeys for you, so beckon can do it
+      itself. <code>beckon serve</code> reads a flat TOML and registers every line.</p>
+
+      <figure class="toml-fig">
+        <figcaption>apps.toml</figcaption>
+<pre><code>"ctrl+super+alt+t" = "kitty"
+"ctrl+super+alt+shift+t" = "Telegram Web"</code></pre>
+      </figure>
+
+      <ul class="cards">
+        <li class="card">
+          <h3>macOS</h3>
+          <p><code>brew services start beckon</code> is the whole install; the formula ships
+          the LaunchAgent.</p>
+        </li>
+        <li class="card">
+          <h3>Windows</h3>
+          <p><code>beckon-serve.exe</code> is a tray app with no console window at any point.
+          Reload, pause, open the log, or open Settings from the tray; tick
+          <em>Start with Windows</em>.</p>
+        </li>
+        <li class="card card-linux">
+          <h3>Linux</h3>
+          <p>Deliberately not served here. Your compositor already binds keys better than
+          beckon could, so <code>bindsym $cap+c exec beckon Claude</code> is the
+          integration.</p>
+        </li>
+      </ul>
+
+      <p class="note">The Windows settings window lists every binding with whether it actually
+      registered, and writes back the same <code>apps.toml</code> you would edit by hand —
+      comments and key order survive.</p>
+
+      <p class="note caps">Windows can also fold that chord onto one key, off by default: tick
+      the Caps Lock box in Settings and holding Caps stands in for it, so
+      <span class="chord"><kbd class="key">Caps</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
+      does what
+      <span class="chord"><kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Win</kbd><span class="plus">+</span><kbd class="key">Alt</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
+      does and your bindings do not change. It installs a low-level keyboard hook, and the
+      three caveats that come with one are in the
+      <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a>.</p>
+
+      <p class="note">Ready-to-use setups, including the launchd agent and the Scheduled Task
+      definition: <a href="https://github.com/xom11/beckon/tree/main/examples/macos/serve">examples/macos/serve/</a>
+      and <a href="https://github.com/xom11/beckon/tree/main/examples/windows/serve">examples/windows/serve/</a>.</p>
+    </div>
+  </section>
+
+  <!-- Placeholder. A later task restyles this section; it does not re-author
+       the commands, which are the ones tools/check-site.sh matches against
+       README.md byte for byte. -->
+  <section id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <h2 id="install-h">Install</h2>
 
       <h3>Homebrew (macOS, Linux)</h3>
 <pre><code>brew install xom11/tap/beckon</code></pre>
