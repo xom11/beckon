@@ -198,6 +198,27 @@ pub const WM_CATALOG: u32 = WM_APP + 2;
 /// a stamp forged from outside would defeat the staleness check.
 const WM_APP_EDITED: u32 = WM_APP + 3;
 
+/// Posted by the `WH_KEYBOARD_LL` callback in `caps_hook.rs` for every
+/// capture outcome this window must react to — which is every outcome
+/// `beckon_core::capture::Outcome::post` returns true for, and no others:
+/// auto-repeat of a held modifier would otherwise wake this thread once per
+/// repeat.
+///
+/// The `WPARAM` is `Outcome::code()` and the `LPARAM` is unused. An integer
+/// rather than a pointer to anything, because the callback may not allocate
+/// (`LowLevelHooksTimeout`, and Windows unhooks a slow callback silently);
+/// every string is built here, on this thread, from `CaptureState`.
+///
+/// `WM_APP + 4`: `+ 1` is `hotkey.rs`'s tray callback, `+ 2` is `WM_CATALOG`
+/// and `+ 3` is `WM_APP_EDITED`. The tray message is on a different window,
+/// so sharing a number with it would be harmless — the numbering is kept
+/// global to this process anyway, because "harmless on the window it is
+/// posted to" is a fact that has to be re-checked every time a message moves.
+///
+/// `pub`, unlike `WM_APP_EDITED`, for the same reason `WM_CATALOG` is: it is
+/// posted from outside this file.
+pub const WM_CAPTURE: u32 = WM_APP + 4;
+
 const IDC_LIST: i32 = 1001;
 const IDC_COMBO: i32 = 1002;
 const IDC_APP: i32 = 1003;

@@ -12,9 +12,9 @@
 //! chord, and the real work happens later on the ordinary `WM_HOTKEY` path.
 
 use beckon_core::caps::{decide, Action, CapsState, Edge, KeyEvent};
-use beckon_core::capture::HookOwners;
+use beckon_core::capture::{CaptureState, HookOwners, Outcome};
 use beckon_core::shortcuts::{CapsTap, Chord};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 /// Why the hook is installed. Re-exported so callers name one thing:
@@ -46,6 +46,15 @@ thread_local! {
         hold: Chord::default(),
         tap: CapsTap::CapsLock,
     });
+    /// Whether a shortcut field is recording. A `Cell`, not a `RefCell`:
+    /// this is the first thing the callback reads on EVERY keystroke, and a
+    /// `Cell<bool>` cannot be borrowed and therefore cannot be the second
+    /// borrow that aborts the process.
+    static CAP_ARMED: Cell<bool> = const { Cell::new(false) };
+    /// The recording session. Meaningless while `CAP_ARMED` is false --
+    /// `arm_capture` replaces it wholesale, so nothing carries over from the
+    /// previous recording.
+    static CAP: RefCell<CaptureState> = RefCell::new(CaptureState::armed());
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -67,6 +76,66 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             // got around to it, so a slow hook cannot turn a tap into a hold.
             time_ms: kb.time,
         };
+        // Capture mode is consulted BEFORE `caps::decide`, and that order is
+        // the whole of spec F.2. A second `WH_KEYBOARD_LL` hook is not an
+        // option -- they chain -- so the one hook has two modes, and capture
+        // has to be the first of them: otherwise pressing `Caps+T` in order
+        // to BIND it is swallowed by the Caps arm and injected as
+        // `ctrl+super+alt+t`, and the field records the alias instead of the
+        // key the user pressed.
+        if capture_armed() {
+            // The per-event foreground gate: the third of spec F.4's three
+            // focus layers, and the only one that fires when a UAC prompt or
+            // an elevated window takes foreground WITHOUT sending
+            // `WM_KILLFOCUS` or `WM_ACTIVATE`. Per event, because that is the
+            // only granularity at which "the settings window is still
+            // frontmost" is a fact rather than a memory.
+            //
+            // Failing the gate falls through to `caps::decide` rather than
+            // cancelling: cancelling is a window-side decision, and posting
+            // one from here without stepping the state machine would leave
+            // `draining` disagreeing with what the window believes.
+            //
+            // `settings_window::hwnd()` takes a SHARED borrow of a
+            // `thread_local` owned by this same thread. Audited 2026-08-12:
+            // no `borrow_mut` of `UI` in that file is held across a call that
+            // pumps the message queue -- which is the only way this callback,
+            // dispatched as a sent message, could re-enter one.
+            let fg = GetForegroundWindow();
+            if let Some(hwnd) = crate::settings_window::hwnd().filter(|h| *h == fg) {
+                // The borrow ends with the closure, before `PostMessageW`: a
+                // second borrow taken across an `extern "system"` boundary
+                // aborts the process rather than unwinding, and nothing
+                // catches that.
+                let outcome = CAP.with(|c| beckon_core::capture::step(ev, &mut c.borrow_mut()));
+                // No trace here, deliberately, and not only for the budget:
+                // while recording, EVERY keystroke reaches this arm, so a
+                // per-event line would be the keylogger the trace below is
+                // written to avoid.
+                if outcome.post() {
+                    let _ = PostMessageW(
+                        Some(hwnd),
+                        crate::settings_window::WM_CAPTURE,
+                        WPARAM(outcome.code()),
+                        LPARAM(0),
+                    );
+                }
+                return match outcome {
+                    // The ONE outcome that must reach the system. Its
+                    // key-down was never swallowed -- the user was holding
+                    // the key before recording began, or the key was refused
+                    // and never entered the held set -- so swallowing its
+                    // key-up would leave the system believing a modifier is
+                    // held with no up ever coming. Nothing short of killing
+                    // beckon gets it back. See `Outcome::PassThrough`.
+                    Outcome::PassThrough => CallNextHookEx(None, code, wparam, lparam),
+                    // Everything else is swallowed, down and up alike: that
+                    // is what makes `alt+tab` recordable without the system
+                    // seeing a bare Alt-up.
+                    _ => LRESULT(1),
+                };
+            }
+        }
         let action = CONFIG.with(|c| {
             let c = c.borrow();
             STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.hold, c.tap))
@@ -226,6 +295,59 @@ pub fn uninstall_for(reason: HookReason) {
         }
         STATE.with(|s| *s.borrow_mut() = CapsState::default());
     }
+}
+
+/// Whether a shortcut field is recording, i.e. whether the capture arm of
+/// `hook_proc` runs at all. **Not** "is the hook installed": Caps may hold
+/// it while nothing is recording, and `arm_capture` refuses to set this when
+/// the install failed.
+pub fn capture_armed() -> bool {
+    CAP_ARMED.with(|a| a.get())
+}
+
+/// Start recording into a fresh `CaptureState`, taking the hook for as long
+/// as it lasts.
+///
+/// **Returns whether the hook is actually installed.** `false` means
+/// `SetWindowsHookExW` failed and nothing was armed, which the caller must
+/// surface (`capture::HINT_UNAVAILABLE`) rather than showing a recording
+/// field that can never record. Spec F.3 is explicit that there is no
+/// fallback to message-queue capture: that path cannot see the Windows key,
+/// so it would fail on precisely the chords beckon recommends, and it would
+/// fail by recording the WRONG chord rather than by refusing.
+///
+/// The order is load-bearing in both directions. The state is replaced
+/// *before* the install, so a hook that starts delivering the instant
+/// `SetWindowsHookExW` returns cannot be met with the previous session's
+/// held keys; and the flag is set *after* it, so a failed install leaves
+/// nothing armed over a hook that does not exist. The gap in between is the
+/// pre-arm behaviour -- events reach `caps::decide`, which is where they
+/// were going a moment ago anyway.
+pub fn arm_capture() -> bool {
+    CAP.with(|c| *c.borrow_mut() = CaptureState::armed());
+    if let Err(e) = install_for(HookReason::Capture) {
+        // The caller shows the user one fixed sentence; this is the only
+        // place the actual failure is ever named. ASCII, like every other
+        // `serve` log line -- see the `--log` notes in CLAUDE.md.
+        eprintln!("beckon serve: capture: cannot record: {e}");
+        return false;
+    }
+    CAP_ARMED.with(|a| a.set(true));
+    true
+}
+
+/// Stop recording and give the hook back. Caps keeps it if Caps wants it;
+/// `uninstall_for` is what decides, and only a real unhook resets
+/// `CapsState`.
+///
+/// The flag is cleared first so that no further keystroke can enter the
+/// capture arm while the hook is being torn down. Safe to call when nothing
+/// is armed -- `WM_CLOSE`, `WM_DESTROY` and the watchdog all call it without
+/// asking, which is what spec F.4 means by "there is no path where the
+/// window dies with the hook armed".
+pub fn disarm_capture() {
+    CAP_ARMED.with(|a| a.set(false));
+    uninstall_for(HookReason::Capture);
 }
 
 /// Whether an `HHOOK` is currently held. **Not** "does anyone want one":

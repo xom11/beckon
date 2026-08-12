@@ -90,6 +90,52 @@ impl Outcome {
     pub fn post(self) -> bool {
         !matches!(self, Outcome::Ignored | Outcome::PassThrough)
     }
+
+    /// The integer this outcome travels in, as a `WM_CAPTURE` `WPARAM`.
+    ///
+    /// A number rather than a boxed `Outcome`, because the hook callback
+    /// posts it and the hook callback may not allocate -- see the module
+    /// doc. The window rebuilds everything else from `CaptureState` when the
+    /// message arrives.
+    ///
+    /// Pure, and here rather than in `caps_hook.rs`, so the round trip is
+    /// tested on all three CI jobs: `caps_hook.rs` compiles on one job in
+    /// three, and a `code`/`from_code` pair that disagreed would be a window
+    /// silently reacting to the wrong outcome. The match is exhaustive on
+    /// purpose -- a new variant fails the build here rather than falling
+    /// through to a default and arriving as something else.
+    pub fn code(self) -> usize {
+        match self {
+            Outcome::Ignored => 0,
+            Outcome::Partial => 1,
+            Outcome::Captured => 2,
+            Outcome::Cancelled => 3,
+            Outcome::Disarmed => 4,
+            Outcome::PassThrough => 5,
+            Outcome::Refused(Refusal::NoModifier) => 6,
+            Outcome::Refused(Refusal::UnknownKey) => 7,
+            Outcome::Refused(Refusal::Reserved) => 8,
+        }
+    }
+
+    /// The inverse of `code`. `None` for anything this version did not
+    /// write, which a stray `WM_CAPTURE` from outside beckon could be: the
+    /// message id is `WM_APP`-relative and therefore only private by
+    /// convention.
+    pub fn from_code(code: usize) -> Option<Outcome> {
+        Some(match code {
+            0 => Outcome::Ignored,
+            1 => Outcome::Partial,
+            2 => Outcome::Captured,
+            3 => Outcome::Cancelled,
+            4 => Outcome::Disarmed,
+            5 => Outcome::PassThrough,
+            6 => Outcome::Refused(Refusal::NoModifier),
+            7 => Outcome::Refused(Refusal::UnknownKey),
+            8 => Outcome::Refused(Refusal::Reserved),
+            _ => return None,
+        })
+    }
 }
 
 /// The four modifiers a `Combo` can carry, as capture currently sees them.
@@ -999,5 +1045,46 @@ mod tests {
         assert!(Outcome::Cancelled.post());
         assert!(Outcome::Disarmed.post());
         assert!(Outcome::Refused(Refusal::NoModifier).post());
+    }
+
+    /// Every outcome survives the trip through a `WPARAM` and comes back as
+    /// itself. Listed rather than generated: the point is that no two share
+    /// a code, and a `for` loop over `code()` could not prove that.
+    #[test]
+    fn every_outcome_round_trips_through_its_code() {
+        let all = [
+            Outcome::Ignored,
+            Outcome::Partial,
+            Outcome::Captured,
+            Outcome::Cancelled,
+            Outcome::Disarmed,
+            Outcome::PassThrough,
+            Outcome::Refused(Refusal::NoModifier),
+            Outcome::Refused(Refusal::UnknownKey),
+            Outcome::Refused(Refusal::Reserved),
+        ];
+        for o in all {
+            assert_eq!(
+                Outcome::from_code(o.code()),
+                Some(o),
+                "{o:?} did not survive the trip"
+            );
+        }
+        let mut codes: Vec<usize> = all.iter().map(|o| o.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(
+            codes.len(),
+            all.len(),
+            "two outcomes share a code, so the window would react to the wrong one"
+        );
+    }
+
+    /// A code beckon never wrote decodes to nothing rather than to the first
+    /// variant. `WM_APP + n` is private by convention only.
+    #[test]
+    fn an_unknown_code_decodes_to_nothing() {
+        assert_eq!(Outcome::from_code(9), None);
+        assert_eq!(Outcome::from_code(usize::MAX), None);
     }
 }
