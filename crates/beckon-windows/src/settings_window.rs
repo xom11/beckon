@@ -299,6 +299,15 @@ const IDC_MOD_SHIFT: i32 = 1031;
 const IDC_RECORD: i32 = 1032;
 const IDC_RESET: i32 = 1033;
 
+/// The editor group box. Its caption says which row is being edited, so the
+/// two lines inside it read as one thing rather than as seven controls that
+/// happen to share a band.
+///
+/// 1034 because 1033 is the current maximum and 1001-1007 are pinned by
+/// `examples/settings_probe.rs`. A group box is not operable, so it carries
+/// no mnemonic and no entry in `mod cap`'s collision table.
+const IDC_GRP_EDITOR: i32 = 1034;
+
 /// The watchdog that bounds an armed capture (spec F.2/F.4).
 ///
 /// It is not belt-and-braces. `caps_hook::is_installed()` CAN LIE: past
@@ -460,6 +469,15 @@ mod cap {
     pub const TAP_ITEMS: [&str; 3] = ["Caps Lock", "Esc", "Nothing"];
     /// The filter box's placeholder. ASCII, like every display string.
     pub const FILTER_CUE: &str = "Filter";
+    /// The editor group's caption in its two states. `EDITOR_UNNAMED` is the
+    /// row before an app name is picked.
+    ///
+    /// **No `&` on either.** A group box caption's mnemonic moves focus to
+    /// the next control in tab order, which is the same reason the `App` and
+    /// `Shortcut` labels carry none -- and the collision table above has no
+    /// room to spare.
+    pub const EDITOR_NONE: &str = "No shortcut selected";
+    pub const EDITOR_UNNAMED: &str = "Editing this shortcut";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -1985,6 +2003,25 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
+    // -- Band 4: the editor group. The strip's two lines live inside it and
+    // its caption names the row, so seven controls read as one thing (spec
+    // A.1).
+    //
+    // Created BEFORE its children: a group box is a BUTTON that paints a
+    // frame, and creation order is z-order, so a group created afterwards
+    // paints over the controls it is supposed to surround.
+    //
+    // Not a tab stop, and deliberately no BS_NOTIFY: it is not operable, so
+    // it must not join PUSH_BUTTONS and must never take the default ring.
+    child(
+        hwnd,
+        w!("BUTTON"),
+        cap::EDITOR_NONE,
+        WINDOW_STYLE(BS_GROUPBOX as u32),
+        IDC_GRP_EDITOR,
+        &fonts,
+    );
+
     // -- Band 4: the editor strip. App first, then the shortcut, mirroring
     // the row above it (B.1: "laid out to mirror a row").
     child(
@@ -3131,6 +3168,18 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 );
             }
         }
+        // The group's caption, and it is a TEXT write, not a geometry one: it
+        // must never reach `layout`, because `layout` means `SetWindowPos` on
+        // the populated App combo -- the measured data-loss call (`Ui::shown_external`).
+        // A group box caption is never measured by `layout`, so there is no
+        // second path back in.
+        let editor_caption = match &st.detail {
+            None => cap::EDITOR_NONE.to_string(),
+            Some(d) if d.app.trim().is_empty() => cap::EDITOR_UNNAMED.to_string(),
+            Some(d) => format!("Editing \"{}\"", d.app.trim()),
+        };
+        set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
+
         // The editor strip's two commands. `Record` stays live while a
         // capture is armed even if the row went away underneath it: it reads
         // `Stop` then, and it is the only way to end a recording with the
