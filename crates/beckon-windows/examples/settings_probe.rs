@@ -34,8 +34,8 @@ mod win {
         OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
     };
     use windows::Win32::UI::Controls::{
-        BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE, LVM_GETHEADER,
-        LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
+        BCM_GETIDEALSIZE, BST_CHECKED, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE,
+        LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
     };
     use windows::Win32::UI::HiDpi::{
         GetAwarenessFromDpiAwarenessContext, GetDpiForSystem, GetDpiForWindow,
@@ -225,6 +225,11 @@ mod win {
     }
 
     const IDC_LIST: i32 = 1001;
+    /// The shortcut control. It kept this number when it stopped being an
+    /// EDIT and became the key `COMBOBOX` -- which is exactly why the id was
+    /// reused rather than retired: this probe pins 1002, so a renumber would
+    /// have left it reading a control that no longer exists while still
+    /// printing numbers.
     const IDC_COMBO: i32 = 1002;
     const IDC_APP: i32 = 1003;
     const IDC_ADD: i32 = 1005;
@@ -235,12 +240,114 @@ mod win {
     const IDC_CAPS: i32 = 1008;
     const IDC_OPENFILE: i32 = 1012;
     const IDC_CLOSE: i32 = 1013;
+    /// The four modifier check boxes that spell a shortcut alongside
+    /// `IDC_COMBO`. Driven, not merely read: `BM_CLICK` on one of these is
+    /// the real path a mouse takes, unlike the synthesised `WM_COMMAND`
+    /// `click` posts for a push button.
+    const IDC_MOD_CTRL: i32 = 1028;
+    const IDC_MOD_WIN: i32 = 1029;
+    const IDC_MOD_ALT: i32 = 1030;
+    const IDC_MOD_SHIFT: i32 = 1031;
+    /// `[(id, the word the config file spells it with)]`, in the canonical
+    /// order `Combo::canonical` prints. The probe reconstructs the whole
+    /// combo from the controls, so it needs its own copy of that order --
+    /// which is the point: a copy that agrees is a check, and one derived
+    /// from the window's own would only ever agree with itself.
+    const MODIFIERS: [(i32, &str); 4] = [
+        (IDC_MOD_CTRL, "ctrl"),
+        (IDC_MOD_WIN, "super"),
+        (IDC_MOD_ALT, "alt"),
+        (IDC_MOD_SHIFT, "shift"),
+    ];
+    /// How many keys `beckon_core::shortcuts::key_table()` holds, and the
+    /// order it holds them in at seven fixed points. The probe cannot link
+    /// the table (it drives another process), so this is the independent
+    /// copy that makes `CB_SETCURSEL i == key_table()[i]` a CHECKED claim on
+    /// hardware rather than a comment.
+    const KEY_COUNT: isize = 81;
+    const KEY_ORDER: [(isize, &str); 7] = [
+        (0, "a"),
+        (25, "z"),
+        (26, "0"),
+        (36, "f1"),
+        (55, "f20"),
+        (56, "comma"),
+        (80, "down"),
+    ];
 
     fn dlg_item(parent: HWND, id: i32) -> Option<HWND> {
         match unsafe { GetDlgItem(Some(parent), id) } {
             Ok(h) if !h.0.is_null() => Some(h),
             _ => None,
         }
+    }
+
+    /// Is this check box ticked, in the other process?
+    ///
+    /// A control that is missing reads as clear, which is the same answer
+    /// the window's own `is_checked` gives for the same reason -- an
+    /// `Option` here would only be collapsed to a bool by every caller.
+    fn checked(parent: HWND, id: i32) -> bool {
+        dlg_item(parent, id)
+            .map(|c| send(c, BM_GETCHECK, 0, 0) == BST_CHECKED.0 as isize)
+            .unwrap_or(false)
+    }
+
+    /// One item's text out of a combo box in ANOTHER process.
+    ///
+    /// `CB_GETLBTEXT` takes a pointer, and unlike the comctl32 messages
+    /// `Remote` exists for, it IS marshalled: a COMBOBOX is one of user32's
+    /// own controls, which is the same reason `WM_GETTEXT` works above and
+    /// `LVM_GETITEMTEXT` does not. `CB_ERR` (-1) comes back for an index the
+    /// list does not have, and is reported as `None` rather than folded into
+    /// an empty string -- an empty item and a failed read must not print the
+    /// same.
+    fn combo_item(combo: HWND, i: isize) -> Option<String> {
+        let mut buf = [0u16; 128];
+        let n = send(combo, CB_GETLBTEXT, i as usize, buf.as_mut_ptr() as isize);
+        if n < 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(
+            &buf[..(n as usize).min(buf.len())],
+        ))
+    }
+
+    /// What the key list has selected: `(index, name)`, or `None` for
+    /// nothing selected.
+    ///
+    /// **`CB_GETCURSEL` + `CB_GETLBTEXT`, never `WM_GETTEXT`.** A
+    /// `CBS_DROPDOWNLIST` answers `WM_GETTEXT` with the selected item's
+    /// text, which looks like the same answer and is not: it cannot tell
+    /// "nothing selected" from "an item whose text is empty", and it is
+    /// precisely the read the window itself is forbidden to make -- so a
+    /// probe making it would be checking a contract nobody has to keep.
+    fn key_sel(parent: HWND) -> Option<(isize, String)> {
+        let combo = dlg_item(parent, IDC_COMBO)?;
+        let i = send(combo, CB_GETCURSEL, 0, 0);
+        if i < 0 {
+            return None;
+        }
+        Some((i, combo_item(combo, i)?))
+    }
+
+    /// The whole shortcut the five controls currently show, spelled the way
+    /// the config file spells it.
+    ///
+    /// `""` when no key is selected -- which is a state the window is
+    /// entitled to be in, and the one in which it must send the model
+    /// nothing at all.
+    fn shortcut_shown(parent: HWND) -> String {
+        let Some((_, key)) = key_sel(parent) else {
+            return String::new();
+        };
+        let mut parts: Vec<&str> = MODIFIERS
+            .iter()
+            .filter(|(id, _)| checked(parent, *id))
+            .map(|(_, word)| *word)
+            .collect();
+        parts.push(&key);
+        parts.join("+")
     }
 
     /// A scratch buffer inside the window's OWN process.
@@ -515,10 +622,55 @@ mod win {
         }
 
         if let Some(ctl) = dlg_item(parent, IDC_COMBO) {
+            // Closed height, like IDC_APP below: under v6 the drop-down is a
+            // separate popup, so the control's own rect is what is on screen
+            // while it is shut.
             let (_, _, w, h) = box_in_client(parent, ctl);
-            println!("    EDIT     IDC_COMBO:   {}", fmt_wh(w, h));
+            let st = unsafe { GetWindowLongPtrW(ctl, GWL_STYLE) } as u32;
+            let count = send(ctl, CB_GETCOUNT, 0, 0);
+            println!(
+                "    COMBOBOX IDC_COMBO:   {} closed   CB_GETCOUNT {count}   style 0x{st:08X}",
+                fmt_wh(w, h)
+            );
+            // Three claims, none of them checkable anywhere else.
+            //
+            // CBS_DROPDOWNLIST is what makes the resize defect structurally
+            // impossible on this control: a CBS_DROPDOWN would have an edit
+            // field for `SetWindowPos` to re-synchronise, which is what cost
+            // this project a day. CBS_SORT absent, plus the fixed points
+            // below, ARE the index contract -- `CB_SETCURSEL i` means
+            // `key_table()[i]`, and that holds only while the list is in the
+            // table's own order. Sorted, `f10` would come before `f2` and
+            // every selection would name the wrong key, silently, and
+            // invisibly to every unit test.
+            println!(
+                "      CBS_DROPDOWNLIST: {}   CBS_SORT: {}",
+                if st & 0x3 == 3 { "yes" } else { "NO <<< FAIL" },
+                if st & 0x0100 == 0 {
+                    "absent"
+                } else {
+                    "PRESENT <<< FAIL, the index contract is broken"
+                },
+            );
+            println!(
+                "      CB_GETCOUNT == {KEY_COUNT}: {}",
+                if count == KEY_COUNT {
+                    "yes"
+                } else {
+                    "NO <<< FAIL"
+                }
+            );
+            for (i, want) in KEY_ORDER {
+                match combo_item(ctl, i) {
+                    Some(got) if got == want => println!("      item {i:>3}: {got:?} ok"),
+                    Some(got) => {
+                        println!("      item {i:>3}: {got:?} <<< FAIL, expected {want:?}")
+                    }
+                    None => println!("      item {i:>3}: CB_ERR <<< FAIL, expected {want:?}"),
+                }
+            }
         } else {
-            println!("    EDIT     IDC_COMBO:   MISSING");
+            println!("    COMBOBOX IDC_COMBO:   MISSING");
         }
 
         if let Some(ctl) = dlg_item(parent, IDC_APP) {
@@ -557,8 +709,8 @@ mod win {
     /// `WM_SETTEXT` alone is not enough and the difference is the point. An
     /// EDIT raises `EN_CHANGE` for a programmatic set, but a COMBOBOX only
     /// forwards `CBN_EDITCHANGE` for input it processed itself — so a
-    /// `WM_SETTEXT` test would pass on the Shortcut field and fail on the
-    /// App field for a reason that has nothing to do with beckon.
+    /// `WM_SETTEXT` test would pass on a plain EDIT and fail on the App
+    /// field for a reason that has nothing to do with beckon.
     ///
     /// `witness` is `(list, row, subitem)`: the list cell this field feeds.
     /// After every character the cell is read back and compared with the
@@ -570,9 +722,9 @@ mod win {
     ///
     /// Returns `(wrong, late)`: cells that never caught up, and cells that
     /// caught up only on the re-read. **The split exists because the
-    /// control cannot catch a too-short wait on this path.** The Shortcut
-    /// field is a plain EDIT and its read is synchronous, so it passes at
-    /// any sleep — only the App half is timing-sensitive, and a sleep that
+    /// control cannot catch a too-short wait on this path.** The shortcut
+    /// half's reads are synchronous, so `drive_the_shortcut` passes at any
+    /// sleep — only the App half is timing-sensitive, and a sleep that
     /// is simply too short therefore reads exactly like the defect. So every
     /// disagreement is re-read once after a further 300 ms and BOTH readings
     /// are printed: a cell that changes between them is the probe being
@@ -815,7 +967,10 @@ mod win {
     /// cheapest window into whether an event actually landed.
     fn dump(h: HWND, label: &str) {
         let notes = dlg_item(h, IDC_NOTES).map(ctl_text).unwrap_or_default();
-        let shortcut = dlg_item(h, IDC_COMBO).map(ctl_text).unwrap_or_default();
+        // Reconstructed from the five controls, because there is no longer a
+        // field to read. `""` means the key list has nothing selected, which
+        // is a legitimate state and not a failed read.
+        let shortcut = shortcut_shown(h);
         let appfld = dlg_item(h, IDC_APP).map(ctl_text).unwrap_or_default();
         let apply = dlg_item(h, IDC_APPLY)
             .map(|a| unsafe { IsWindowEnabled(a) }.as_bool())
@@ -884,6 +1039,188 @@ mod win {
         read_only
     }
 
+    /// Click a check box the way a mouse does.
+    ///
+    /// `BM_CLICK` reaches the control's OWN wndproc, so `BS_AUTOCHECKBOX`
+    /// toggles itself and then notifies the parent -- which is the order the
+    /// window depends on, because it reads the box rather than the
+    /// notification. Posting `WM_COMMAND` at the parent instead, the way
+    /// `click` does for a push button, would tell the window a box had been
+    /// ticked while the box still said otherwise.
+    fn tick(parent: HWND, id: i32) {
+        let Some(ctl) = dlg_item(parent, id) else {
+            println!("    (no control {id})");
+            return;
+        };
+        send(ctl, BM_CLICK, 0, 0);
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    fn cell_now(witness: Option<(HWND, i32, i32)>) -> Option<String> {
+        let (list, row, sub) = witness?;
+        list_cell(list, row, sub)
+    }
+
+    /// Does the witness cell say `want`?
+    ///
+    /// With `type_into`'s one re-read, and for its reason: a cell that
+    /// changes between the two readings is the probe being impatient, and
+    /// one that does not is the defect. Without the split the two are
+    /// indistinguishable in the output, which is how a broken detector gets
+    /// mistaken for a finding.
+    fn expect_cell(
+        witness: Option<(HWND, i32, i32)>,
+        step: &str,
+        want: Option<&str>,
+    ) -> (usize, usize) {
+        let Some(want) = want else {
+            println!("    {step}: no witness cell to check against");
+            return (0, 0);
+        };
+        match cell_now(witness) {
+            Some(cell) if cell_agrees(&cell, want) => {
+                println!("    {step}: list {cell:?} MATCH");
+                (0, 0)
+            }
+            Some(cell) => {
+                std::thread::sleep(Duration::from_millis(300));
+                match cell_now(witness) {
+                    Some(c2) if cell_agrees(&c2, want) => {
+                        println!(
+                            "    {step}: list {cell:?} <<< disagreed with {want:?}, then \
+                             {c2:?} AGREED after +300ms -- SLOW, not wrong"
+                        );
+                        (0, 1)
+                    }
+                    Some(c2) => {
+                        println!(
+                            "    {step}: list {cell:?} <<< DISAGREES with {want:?}, and \
+                             still {c2:?} after +300ms -- STILL WRONG, not slow"
+                        );
+                        (1, 0)
+                    }
+                    None => {
+                        println!("    {step}: list {cell:?} vs {want:?}; re-read UNREADABLE");
+                        (1, 0)
+                    }
+                }
+            }
+            None => {
+                println!("    {step}: list UNREADABLE");
+                (0, 0)
+            }
+        }
+    }
+
+    /// The controls' own reading is the expectation: whatever they show, the
+    /// model must carry.
+    fn expect_shown(h: HWND, witness: Option<(HWND, i32, i32)>, step: &str) -> (usize, usize) {
+        let shown = shortcut_shown(h);
+        println!("    controls now show {shown:?}");
+        expect_cell(witness, step, Some(&shown))
+    }
+
+    /// Drive the five shortcut controls and check the model followed.
+    ///
+    /// **This is the CONTROL for the App half**, the role typing
+    /// `ctrl+super+alt+j` into an EDIT used to have. Neither a check box nor
+    /// a `CBS_DROPDOWNLIST` rewrites itself, and every read here is
+    /// synchronous, so this half must agree at every step -- if it disagrees
+    /// too, the probe's own timing is wrong and the App result means
+    /// nothing.
+    ///
+    /// Returns `(wrong, late)` in `type_into`'s vocabulary, so the summary
+    /// line reads the same either side of this change.
+    ///
+    /// Step 0 is the one that cannot be phrased as "the controls agree with
+    /// the cell", and is the more interesting for it: with no key selected,
+    /// ticking a modifier must send NOTHING, because `ctrl+` alone is not a
+    /// combo and would flag the row for a mistake the user is halfway
+    /// through not making. So its expectation is the cell's PREVIOUS value,
+    /// not the controls' current one.
+    fn drive_the_shortcut(h: HWND, witness: Option<(HWND, i32, i32)>) -> (usize, usize) {
+        println!("  -- driving the shortcut: four check boxes and the key list --");
+        let Some(combo) = dlg_item(h, IDC_COMBO) else {
+            println!("    FAIL: no key list");
+            return (usize::MAX, 0);
+        };
+        let mut wrong = 0usize;
+        let mut late = 0usize;
+
+        // Step 0: a modifier with no key selected must change nothing.
+        match key_sel(h) {
+            Some((i, name)) => println!(
+                "    NOTE: the row already has key {i} = {name:?} selected, so the \
+                 'a modifier alone sends nothing' step is skipped -- it needs the \
+                 empty row Add makes"
+            ),
+            None => {
+                let was = cell_now(witness);
+                tick(h, IDC_MOD_SHIFT);
+                let (w, l) = expect_cell(witness, "Shift with no key", was.as_deref());
+                wrong += w;
+                late += l;
+                // Put it back, so the steps below start from the state Add
+                // left behind rather than from this one.
+                tick(h, IDC_MOD_SHIFT);
+            }
+        }
+
+        // Step 1: give it a key. VK_DOWN on a CLOSED list is the real path
+        // -- comctl32 moves the selection and raises CBN_SELCHANGE, with no
+        // dropdown to open and no focus to steal -- so WHICH key it lands on
+        // is the control's decision, and the expectation is read back rather
+        // than assumed.
+        send(combo, WM_KEYDOWN, VK_DOWN_CODE, 0);
+        send(combo, WM_KEYUP, VK_DOWN_CODE, 0);
+        std::thread::sleep(Duration::from_millis(250));
+        if key_sel(h).is_none() {
+            // Honest about being a fallback: `CB_SETCURSEL` is documented
+            // NOT to notify, so the parent has to be told separately --
+            // exactly the synthesis `click` performs for a push button, and
+            // just as unable to prove comctl32 would have sent it.
+            println!(
+                "    NOTE: VK_DOWN did not move the selection. Falling back to \
+                 CB_SETCURSEL plus a SYNTHESISED CBN_SELCHANGE -- the window's \
+                 handling is still under test, comctl32's is not."
+            );
+            send(combo, CB_SETCURSEL, 0, 0);
+            unsafe {
+                let _ = PostMessageW(
+                    Some(h),
+                    WM_COMMAND,
+                    WPARAM(((CBN_SELCHANGE as usize) << 16) | (IDC_COMBO as usize & 0xFFFF)),
+                    LPARAM(combo.0 as isize),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        match key_sel(h) {
+            Some((i, name)) => println!("    key list: index {i} = {name:?}"),
+            None => {
+                println!(
+                    "    INCONCLUSIVE: nothing ever selected in the key list, so the \
+                     steps below could not mean anything. A human must pick a key by \
+                     hand. This is a probe limitation, NOT a beckon result."
+                );
+                return (wrong, late);
+            }
+        }
+        let (w, l) = expect_shown(h, witness, "a key alone");
+        wrong += w;
+        late += l;
+
+        // Steps 2-5: one modifier at a time, in canonical order, so a
+        // disagreement names the chip that caused it.
+        for (id, word) in MODIFIERS {
+            tick(h, id);
+            let (w, l) = expect_shown(h, witness, &format!("+{word}"));
+            wrong += w;
+            late += l;
+        }
+        (wrong, late)
+    }
+
     fn drive_an_edit(h: HWND) {
         println!("  -- driving an edit --");
         dump(h, "start");
@@ -908,16 +1245,9 @@ mod win {
             _ => None,
         };
 
-        let Some(combo_edit) = dlg_item(h, IDC_COMBO) else {
-            println!("    FAIL: no shortcut field");
-            return;
-        };
-        // Column 1 is `Shortcut`; column 0 is `App`. A plain EDIT does not
-        // rewrite itself, so this half is the CONTROL for the App half: if
-        // it disagrees too, the probe's own timing is wrong and neither
-        // result means anything.
-        let (combo_lies, combo_late) = type_into(combo_edit, "ctrl+super+alt+j", witness(1));
-        dump(h, "after shortcut text");
+        // Column 1 is `Shortcut`; column 0 is `App`.
+        let (combo_lies, combo_late) = drive_the_shortcut(h, witness(1));
+        dump(h, "after the shortcut");
 
         // The App control is a COMBOBOX; its text lives in a child EDIT, and
         // only that child raises the change notification the window listens
@@ -966,22 +1296,22 @@ mod win {
         APP_COMBO.with(|c| *c.borrow_mut() = 0);
         dump(h, "after app text");
         println!(
-            "    per-keystroke agreement: Shortcut field {} ({combo_lies} wrong, \
+            "    per-step agreement: shortcut controls {} ({combo_lies} wrong, \
              {combo_late} slow), App field {} ({app_lies} wrong, {app_late} slow)",
             if combo_lies == 0 { "PASS" } else { "FAIL" },
             if app_lies == 0 { "PASS" } else { "FAIL" },
         );
         if combo_lies > 0 {
             println!(
-                "      the control field disagreed too -- suspect the probe's own \
+                "      the shortcut controls disagreed too -- suspect the probe's own \
                  timing before believing the App result"
             );
         }
         if combo_late + app_late > 0 {
             println!(
                 "      NOTE: {} cell(s) agreed only on the +300ms re-read. The model \
-                 did converge; the 120ms per-character wait is too short on this \
-                 machine. Raise it and re-run before reading anything else here.",
+                 did converge; the per-step wait is too short on this machine. Raise \
+                 it and re-run before reading anything else here.",
                 combo_late + app_late
             );
         }

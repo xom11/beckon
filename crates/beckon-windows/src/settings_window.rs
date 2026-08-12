@@ -58,15 +58,28 @@
 //! explanation arrives as ordinary notes. There is no "the file is broken"
 //! branch to find, because there is no such branch.
 //!
-//! A deliberate non-feature: there is no "press a key to capture the
+//! **The shortcut is five controls, not a text field.** Four modifier check
+//! boxes and a closed list of the 81 key names, so an invalid combo is
+//! unrepresentable rather than merely reported, and someone who cannot
+//! physically produce a chord can still author one. The window never spells
+//! a combo itself: `combo_view` turns the stored string into the five
+//! control values and `Combo::canonical` turns them back.
+//!
+//! That list is a `CBS_DROPDOWNLIST`, which has no edit control at all — so
+//! the resize defect described above, where a populated `CBS_DROPDOWN`
+//! re-synchronises its edit field the moment `SetWindowPos` reaches it, is
+//! structurally impossible on this control rather than guarded against. The
+//! App field next to it stays a `CBS_DROPDOWN` because beckon deliberately
+//! supports apps that are in no catalog; the key set has no such open end.
+//!
+//! A deliberate non-feature: there is still no "press a key to capture the
 //! shortcut" field. `msctls_hotkey32` cannot capture the Windows key and
 //! Explorer eats `Win+T` and its siblings before a normal window sees them,
-//! so combos are typed as text and validated by the same parser `serve`
-//! uses.
+//! so the typed path above is the whole of it.
 
 use crate::shell;
 use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
-use beckon_core::shortcuts::{CapsTap, Chord};
+use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, Combo};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -224,6 +237,30 @@ const IDC_HOLD_ALT: i32 = 1024;
 const IDC_TAP: i32 = 1025;
 const IDC_LBL_HOLD: i32 = 1026;
 const IDC_LBL_TAP: i32 = 1027;
+/// The editor strip's four modifier chips. `IDC_COMBO` (1002) keeps its
+/// number beside them and changes CLASS instead: it is the id
+/// `examples/settings_probe.rs` hard-codes for "the shortcut control", so
+/// reusing it is what keeps that probe pointed at the right thing, and
+/// retiring it would leave the probe reading a control that no longer
+/// exists.
+const IDC_MOD_CTRL: i32 = 1028;
+const IDC_MOD_WIN: i32 = 1029;
+const IDC_MOD_ALT: i32 = 1030;
+const IDC_MOD_SHIFT: i32 = 1031;
+
+/// The five controls that spell ONE shortcut: four modifier check boxes and
+/// the key list.
+///
+/// One list because `apply_state` enables and disables all five together --
+/// a combo the user can half-operate is not a combo, and a greyed key list
+/// beside a live `Shift` box would say the row is editable when it is not.
+const SHORTCUT_CONTROLS: [i32; 5] = [
+    IDC_MOD_CTRL,
+    IDC_MOD_WIN,
+    IDC_MOD_ALT,
+    IDC_MOD_SHIFT,
+    IDC_COMBO,
+];
 
 /// Every `BS_PUSHBUTTON`/`BS_DEFPUSHBUTTON` in the window. Three things key
 /// off exactly this set, which is why it is one list and not three:
@@ -236,9 +273,9 @@ const IDC_LBL_TAP: i32 = 1027;
 ///    parent, and the per-id arms below match `(id, _)` -- ANY code -- so
 ///    without that filter merely tabbing onto Save would press it.
 ///
-/// The four check boxes are deliberately absent: they carry no `BS_NOTIFY`,
-/// they cannot be the default button, and a default ring on a check box is
-/// not a thing Windows draws.
+/// Every check box in the window is deliberately absent: none carries
+/// `BS_NOTIFY`, none can be the default button, and a default ring on a
+/// check box is not a thing Windows draws.
 const PUSH_BUTTONS: [i32; 7] = [
     IDC_ADD,
     IDC_REMOVE,
@@ -284,6 +321,14 @@ fn is_push_button(id: i32) -> bool {
 /// (`App`, `Shortcut`) deliberately carry NO mnemonic: a STATIC's mnemonic
 /// moves focus to the next control in tab order, so each one would have to
 /// hold a letter for a control that is already one Tab away.
+///
+/// **The editor strip's four modifier chips carry no mnemonic either**, and
+/// that is this table's doing rather than an oversight. `Ctrl`, `Win` and
+/// `Alt` name the same three modifiers the `Hold` chips do, and those
+/// already hold `t`, `w` and `l` -- so the obvious letter is taken in every
+/// case, and `Shift`'s `s` is Save's. The four sit between two `WS_TABSTOP`
+/// controls on one line, which is one Tab each; a duplicate letter would
+/// have cost the keyboard route on Save or on the Caps row to save that.
 mod cap {
     pub const ADD: &str = "&Add";
     pub const REMOVE: &str = "Re&move";
@@ -302,6 +347,14 @@ mod cap {
     pub const HOLD_CTRL: &str = "C&trl";
     pub const HOLD_WIN: &str = "&Win";
     pub const HOLD_ALT: &str = "A&lt";
+    /// The editor strip's four modifier chips. NO `&` on any of them -- see
+    /// the mnemonic table above, which is the only guard there is against a
+    /// collision. `Win` rather than `Super`: the config file spells the key
+    /// `super`, but nothing on a Windows keyboard is labelled that.
+    pub const MOD_CTRL: &str = "Ctrl";
+    pub const MOD_WIN: &str = "Win";
+    pub const MOD_ALT: &str = "Alt";
+    pub const MOD_SHIFT: &str = "Shift";
     /// The three `Tap` items, in `CB_ADDSTRING` order. Read back by INDEX
     /// with `CB_GETCURSEL`, never by text: even a `DROPDOWNLIST` has
     /// typeahead, which moves the selection.
@@ -447,7 +500,8 @@ const MIN_HEIGHT: i32 = 460;
 
 /// One of §B.3's three type roles. There is no fourth: the `Keys` role the
 /// spec table also lists belongs to keycap rendering, which this window
-/// does not do -- combos are typed as text into an ordinary EDIT.
+/// does not do -- a combo is four check boxes and a list of plain key
+/// names, all of them Body.
 #[derive(Clone, Copy)]
 enum Role {
     Subtitle,
@@ -472,8 +526,8 @@ fn role_of(id: i32) -> Role {
         // is deliberately NOT here: it announces that the file moved under
         // us, which is the least appropriate text in the window to shrink.
         IDC_NOTES => Role::Caption,
-        // Everything the user reads or operates: the ListView, the shortcut
-        // EDIT, the App and Tap COMBOBOXes, their labels, every BUTTON
+        // Everything the user reads or operates: the ListView, the filter
+        // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
         // (push, check, and the group box), the banner -- and anything added
         // later that does not say otherwise.
         _ => Role::Body,
@@ -897,13 +951,24 @@ fn is_checked(parent: HWND, id: i32) -> bool {
     }
 }
 
+/// A combo box's selected index exactly as the control reports it: `CB_ERR`
+/// (-1) means nothing is selected.
+///
+/// The raw form exists because the key list has to WRITE that -1 as well as
+/// read it -- `CB_SETCURSEL` with -1 is how a selection is cleared, and the
+/// guard in front of it compares against the same integer. Squeezing that
+/// through an `Option` and back is two conversions to get the same number.
+fn cur_sel_raw(h: HWND) -> i32 {
+    unsafe { SendMessageW(h, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))) }.0 as i32
+}
+
 /// A combo box's selected index, or `None` when nothing is selected.
 ///
 /// The `Tap` combo is read and written through this and never by text.
 /// `CB_ERR` is -1, which as an index would be a very large `usize`, so the
 /// sign test happens before the cast rather than after it.
 fn cur_sel(h: HWND) -> Option<usize> {
-    let i = unsafe { SendMessageW(h, CB_GETCURSEL, Some(WPARAM(0)), Some(LPARAM(0))) }.0;
+    let i = cur_sel_raw(h);
     if i < 0 {
         None
     } else {
@@ -1743,14 +1808,77 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LBL_SHORTCUT,
         &fonts,
     );
+    // The four modifier chips, created BEFORE the key list, because
+    // creation order IS tab order: Ctrl -> Win -> Alt -> Shift -> key, left
+    // to right, which is also the order the canonical string prints them.
+    //
+    // FOUR here against the `Hold` row's three, and the extra one is
+    // `Shift`. `Combo` has a `shift` field and `Chord` deliberately does
+    // not: the Caps hook has to release whatever it presses, and releasing
+    // Shift under the user's fingers makes everything they type next
+    // lowercase. An individual binding presses nothing, so Shift belongs on
+    // this row and has nowhere to land on that one.
+    //
+    // No `&` on any of the four captions. See `mod cap`'s table -- it is
+    // the only guard against a mnemonic collision, and `Hold` already
+    // claimed `t`, `w` and `l`.
+    for (caption, id) in [
+        (cap::MOD_CTRL, IDC_MOD_CTRL),
+        (cap::MOD_WIN, IDC_MOD_WIN),
+        (cap::MOD_ALT, IDC_MOD_ALT),
+        (cap::MOD_SHIFT, IDC_MOD_SHIFT),
+    ] {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
+    // CBS_DROPDOWNLIST, not CBS_DROPDOWN -- and, just as deliberately, no
+    // CBS_SORT.
+    //
+    // The key set is closed: 81 names, and nothing else is a key. So unlike
+    // the App field there is nothing to free-type, a list with no edit
+    // control cannot be left holding text that matches no item, and there
+    // is no edit field for a `SetWindowPos` to re-synchronise -- the
+    // measured data-loss path in the module header cannot exist on this
+    // control.
+    //
+    // **CBS_SORT would break the index contract.** `ComboView::key` is an
+    // index into `key_table()`, `CB_SETCURSEL` takes the same integer, and
+    // that holds only while `CB_ADDSTRING` APPENDS in the order the loop
+    // below feeds it. A sorted combo box inserts by collation instead --
+    // which for this table puts `f10` ahead of `f2` and every digit ahead
+    // of every letter -- and every index in the window would then name the
+    // wrong key. Nothing reachable from a unit test can catch that, so the
+    // style bit is simply absent and this comment is the guard.
     let combo = child(
         hwnd,
-        w!("EDIT"),
+        w!("COMBOBOX"),
         "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
+        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_COMBO,
         &fonts,
     );
+    // Same reason the App combo has one: under comctl32 v6 the `cy` passed
+    // to SetWindowPos does not decide the dropped-down height, this does.
+    // Without it the 81 items open at comctl32's default 30-item guess.
+    SendMessageW(combo, CB_SETMINVISIBLE, Some(WPARAM(8)), Some(LPARAM(0)));
+    // Filled once, here, from `key_table()` IN ORDER, and never
+    // repopulated: the key list is a constant, not data. Each buffer is
+    // bound to a local so it outlives its send.
+    for k in key_table() {
+        let t = wide(&k.name);
+        SendMessageW(
+            combo,
+            CB_ADDSTRING,
+            Some(WPARAM(0)),
+            Some(LPARAM(t.as_ptr() as isize)),
+        );
+    }
     // On its own line directly beneath the strip, which is where B.1's
     // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE -- and, for
     // the same reason, no SS_ENDELLIPSIS either; see SS_NOPREFIX_STYLE.
@@ -2289,6 +2417,11 @@ unsafe fn layout(hwnd: HWND) {
         Some(ah) => (ah, clamp(ctl - ah) / 2),
         None => (field_h, clamp(ctl - field_h) / 2),
     };
+    // A check box's own square, plus the gap it leaves before its caption.
+    // Computed here rather than in a band because BOTH check-box rows need
+    // it -- band 4's four modifier chips and band 6's three `Hold` chips --
+    // and two copies of this number are two places for it to stop agreeing.
+    let glyph = s(24);
 
     // -- Band 1: the banner. Contributes NO height when hidden.
     if ui.external_change {
@@ -2306,7 +2439,7 @@ unsafe fn layout(hwnd: HWND) {
     let bw_add = btn(cap::ADD);
     let bw_remove = btn(cap::REMOVE);
     // Capped at a third of the width, the same ceiling band 4 puts on the
-    // Shortcut field, so the two text boxes narrow together. The HEADING
+    // key list, so the boxes narrow together. The HEADING
     // takes what is left, which makes it -- not the filter -- the first
     // thing to run out. At 96 DPI, with `Add`/`Remove` both pinned to
     // `tok::BTN` (88 px -- neither caption needs more), `heading_w` reduces
@@ -2404,26 +2537,45 @@ unsafe fn layout(hwnd: HWND) {
 
     // -- Band 4: the editor strip, one line, then the notes beneath it.
     //
+    //   App [ v ]   Shortcut [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]
+    //
+    // The shortcut is five controls rather than one text box -- see the
+    // module header. They sit where the single field used to, still under
+    // the list's `Shortcut` column, so the strip goes on mirroring a row.
+    //
     // A single-line EDIT draws its text at the TOP of its client rect --
-    // Win32 gives it no vertical centring at all -- so stretching one to
-    // the 32 px band line would park the text against the top edge. Neither
-    // text field takes the token, then: both are centred within the line,
-    // and both take the height the COMBOBOX's theme picked (see `combo_h`,
-    // computed above band 2 because the filter box needs it too). `field_h`
-    // is what the font alone justifies, and remains the fallback for when
-    // the combo cannot be measured -- plus the unit of the dropped-down
-    // list's height. The buttons do honour `cy` and look right at 32, so
-    // they take the token directly.
+    // Win32 gives it no vertical centring at all -- so stretching the band 2
+    // filter box to the 32 px band line would park its text against the top
+    // edge. It is centred within the line instead, and takes the height the
+    // COMBOBOX's theme picked (see `combo_h`, computed above band 2 because
+    // the filter box needs it there). `field_h` is what the font alone
+    // justifies, and remains the fallback for when the combo cannot be
+    // measured -- plus the unit of the dropped-down list's height. The
+    // buttons do honour `cy` and look right at 32, so they take the token
+    // directly.
     //
     // A hair of slack past the measured width: a STATIC clips to its rect,
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
     let lw_app = tw("App") + s(4);
     let lw_short = tw("Shortcut") + s(4);
-    // The shortcut field sits under the Shortcut column so the strip
-    // mirrors a row. A third of the width is its ceiling on a narrow one.
-    let field_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
-    let edit_x = cx + clamp(cw - field_w);
-    let lbl_short_x = (edit_x - lblgap - lw_short).max(cx);
+    // The key list takes what the line has left, under the same ceiling the
+    // single field had and the filter box still has, so every box in the
+    // window narrows together.
+    let key_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
+    let key_x = cx + clamp(cw - key_w);
+    // Each chip is its caption plus the check box's own square, exactly as
+    // band 6's `Hold` chips are sized -- same `glyph`, one rule.
+    let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
+    let w_mod_win = tw(cap::MOD_WIN) + glyph;
+    let w_mod_alt = tw(cap::MOD_ALT) + glyph;
+    let w_mod_shift = tw(cap::MOD_SHIFT) + glyph;
+    let mods_w = w_mod_ctrl + w_mod_win + w_mod_alt + w_mod_shift + gap * 3;
+    // `.max(cx)` rather than `clamp`, like `lbl_short_x` below: these are
+    // POSITIONS, and a position clamped to 0 puts a control outside the
+    // surface padding instead of merely narrowing it. Widths are what
+    // `clamp` guards, and every one of them below is clamped.
+    let mods_x = (key_x - gap - mods_w).max(cx);
+    let lbl_short_x = (mods_x - lblgap - lw_short).max(cx);
     let app_x = cx + lw_app + lblgap;
     let app_w = clamp(lbl_short_x - gap - app_x);
 
@@ -2435,13 +2587,26 @@ unsafe fn layout(hwnd: HWND) {
     // what it took rather than guessing a chrome delta the next font change
     // would invalidate.
     place_h(ui.app, app_x, y + edit_dy, app_w, field_h * 9);
-    // The Shortcut EDIT takes the combo's height, so the fields on this line
-    // are ONE box repeated rather than two boxes sharing a midline. Measured
-    // at 144 DPI before this: EDIT 43 px against the combo's 36, centres
-    // agreeing to within half a pixel -- concentric and unequal, which reads
-    // as a mistake rather than a pair.
     place(IDC_LBL_SHORTCUT, lbl_short_x, y, lw_short, ctl);
-    place_h(ui.combo, edit_x, y + edit_dy, field_w, edit_h);
+    // Chips and key list share the fields' midline (`edit_dy`) and their
+    // height, so App, the key list and the filter are ONE box repeated
+    // rather than three boxes that happen to be concentric. Measured at
+    // 144 DPI before the fields were unified: EDIT 43 px against the
+    // combo's 36, centres agreeing to within half a pixel -- which reads as
+    // a mistake rather than as a pair. A check box centres its glyph and
+    // caption inside whatever rect it is given, so `edit_h` needs no
+    // separate rule for the four of them.
+    let mut mx = mods_x;
+    place(IDC_MOD_CTRL, mx, y + edit_dy, w_mod_ctrl, edit_h);
+    mx += w_mod_ctrl + gap;
+    place(IDC_MOD_WIN, mx, y + edit_dy, w_mod_win, edit_h);
+    mx += w_mod_win + gap;
+    place(IDC_MOD_ALT, mx, y + edit_dy, w_mod_alt, edit_h);
+    mx += w_mod_alt + gap;
+    place(IDC_MOD_SHIFT, mx, y + edit_dy, w_mod_shift, edit_h);
+    // `cy` is the DROPPED-DOWN height here too, capped by the same
+    // CB_SETMINVISIBLE(8) the App combo carries.
+    place_h(ui.combo, key_x, y + edit_dy, key_w, field_h * 9);
     y += ctl + gap;
     place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
 
@@ -2456,11 +2621,11 @@ unsafe fn layout(hwnd: HWND) {
     // s(190)/s(70)/s(90) constants the radios used were sized for one font
     // at one DPI and clipped the moment either changed.
     //
-    // `glyph` is the check box's own square plus the gap it leaves before
-    // its caption; the two STATICs get a hair of slack instead, for the
-    // reason the editor strip's labels do -- SS_CENTERIMAGE clips rather
-    // than wraps.
-    let glyph = s(24);
+    // `glyph` -- the check box's own square plus the gap before its caption
+    // -- is declared above band 4, which sizes its four modifier chips by
+    // the same rule. The two STATICs get a hair of slack instead, for the
+    // reason the editor strip's labels do: SS_CENTERIMAGE clips rather than
+    // wraps.
     let w_caps = tw(cap::CAPS) + glyph;
     let w_hold = tw(cap::HOLD) + s(4);
     let w_ctrl = tw(cap::HOLD_CTRL) + glyph;
@@ -2484,7 +2649,7 @@ unsafe fn layout(hwnd: HWND) {
     place(IDC_LBL_TAP, kx, ry, w_tap, ctl);
     kx += w_tap + lblgap;
     // Whatever the line has left, capped at the same width the filter box
-    // and the shortcut field take, so every box in the window narrows
+    // and the key list take, so every box in the window narrows
     // together. Clamped like every other subtraction here: a window dragged
     // narrow must produce a combo with no width, never a negative one.
     //
@@ -2604,11 +2769,29 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // `st.editable`, not `true`: there is a row to show but the
                 // file it came from may be one beckon could not read. The
                 // window is not told which -- see `ControlState::editable`.
-                enable(hwnd, IDC_COMBO, st.editable);
-                enable(hwnd, IDC_APP, st.editable);
-                if text_of(combo) != d.combo {
-                    set_text(combo, &d.combo);
+                for id in SHORTCUT_CONTROLS {
+                    enable(hwnd, id, st.editable);
                 }
+                enable(hwnd, IDC_APP, st.editable);
+                // The shortcut, as the five controls that show it.
+                //
+                // The four `check` calls need no read guard, unlike every
+                // text write in this function: `BM_SETCHECK` sets the state
+                // without raising `BN_CLICKED`, so a push cannot feed itself
+                // back as a user click. `set_key_sel` carries its own guard,
+                // for the reason written on it.
+                //
+                // A string that does not parse arrives here as
+                // `ComboView::default()` -- nothing ticked, nothing selected
+                // -- rather than as an error. That is the right thing to
+                // SHOW: `Model::problems` is what says why, and it is
+                // already in the notes below.
+                let v = combo_view(&d.combo);
+                check(hwnd, IDC_MOD_CTRL, v.ctrl);
+                check(hwnd, IDC_MOD_WIN, v.super_);
+                check(hwnd, IDC_MOD_ALT, v.alt);
+                check(hwnd, IDC_MOD_SHIFT, v.shift);
+                set_key_sel(combo, v.key);
                 if text_of(app) != d.app {
                     set_text(app, &d.app);
                     wrote_app = true;
@@ -2621,16 +2804,24 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 set_text(notes, &body.join("\r\n"));
             }
             None => {
-                enable(hwnd, IDC_COMBO, false);
+                for id in SHORTCUT_CONTROLS {
+                    enable(hwnd, id, false);
+                }
                 enable(hwnd, IDC_APP, false);
+                // All five cleared, through the same two calls the `Some`
+                // arm sets them with -- so there is one description of what
+                // each control does with a value and no second one for the
+                // empty case to drift from.
+                check(hwnd, IDC_MOD_CTRL, false);
+                check(hwnd, IDC_MOD_WIN, false);
+                check(hwnd, IDC_MOD_ALT, false);
+                check(hwnd, IDC_MOD_SHIFT, false);
+                set_key_sel(combo, None);
                 // Conditional, like the `Some` arm above, and for the same
                 // two reasons: an unconditional `WM_SETTEXT` raises an
                 // `EN_CHANGE` / `CBN_EDITCHANGE` on every push, and clearing
                 // a field that is already clear must not invalidate a
                 // pending read of it.
-                if !text_of(combo).is_empty() {
-                    set_text(combo, "");
-                }
                 if !text_of(app).is_empty() {
                     set_text(app, "");
                     wrote_app = true;
@@ -2994,6 +3185,40 @@ unsafe fn set_item_state(list: HWND, i: usize, marked: bool, selected: bool) {
         Some(WPARAM(i)),
         Some(LPARAM(&it as *const _ as isize)),
     );
+}
+
+/// Show `key` in the key list -- BY INDEX, and only when it is not already
+/// what the control holds.
+///
+/// **By index, because the index IS the contract.** `ComboView::key` is a
+/// position in `key_table()`, `build_children` fills the list from that same
+/// slice in order and without `CBS_SORT`, so the two integers are the same
+/// integer. Writing this control by TEXT would throw that away, and reading
+/// it by text would follow the user's typeahead: even a `CBS_DROPDOWNLIST`
+/// searches its list as you type, which moves the selection.
+///
+/// **Guarded by a read**, like every other control write in `apply_state`.
+/// An unconditional `CB_SETCURSEL` is a write on every push, and a control
+/// asked to change is a control that may answer -- `CB_SETCURSEL` does not
+/// itself raise `CBN_SELCHANGE`, but that is comctl32's promise rather than
+/// this file's, and the guard costs one message.
+///
+/// `None` is written as -1, which is what clears a selection. A row that has
+/// never been given a shortcut, and one whose stored text does not parse,
+/// must both show nothing rather than the first key in the table.
+unsafe fn set_key_sel(combo: HWND, key: Option<usize>) {
+    let want = key.map(|i| i as i32).unwrap_or(-1);
+    if cur_sel_raw(combo) != want {
+        SendMessageW(
+            combo,
+            CB_SETCURSEL,
+            // `as isize as usize`, not `as usize`: sign-extended, so a
+            // 64-bit combo box is handed the C idiom's `(WPARAM)-1` rather
+            // than 0x00000000FFFFFFFF.
+            Some(WPARAM(want as isize as usize)),
+            Some(LPARAM(0)),
+        );
+    }
 }
 
 unsafe fn check(parent: HWND, id: i32, on: bool) {
@@ -3458,7 +3683,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     }
 }
 
-/// Push whatever the two edit fields currently show into the model.
+/// Push whatever the editor strip currently shows into the model.
 ///
 /// Separate from the per-keystroke notifications on purpose: those tell us
 /// *that* something changed, but a control is free to rewrite its own text
@@ -3493,17 +3718,71 @@ fn commit_fields() {
     if suppressed() {
         return;
     }
-    let Some((combo, app)) = UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.app))) else {
+    let Some((hwnd, combo, app)) =
+        UI.with(|u| u.borrow().as_ref().map(|x| (x.hwnd, x.combo, x.app)))
+    else {
         return;
     };
-    let c = text_of(combo);
+    // The shortcut half sends NOTHING when no key is selected, exactly as
+    // the notification path does -- see `shortcut_shown`. Save must not be
+    // the moment a half-finished chord becomes an invalid row.
+    let c = shortcut_shown(hwnd, combo);
     let a = text_of(app);
-    with_cb(|cb| (cb.on_edit_combo)(c));
+    if let Some(c) = c {
+        with_cb(|cb| (cb.on_edit_combo)(c));
+    }
     with_cb(|cb| (cb.on_edit_app)(a));
 }
 
+/// The combo the five shortcut controls currently spell, or `None` when the
+/// key list has no selection.
+///
+/// **`None` is not an error and must not be turned into one.** A modifier
+/// set with no main key is not a combo: writing `ctrl+` into the model would
+/// make the row invalid on a keystroke the user has not finished, and flag
+/// it for a mistake it is halfway through not making. Every caller sends
+/// nothing instead, so the row keeps whatever it had until a key is chosen.
+///
+/// Spelled through `Combo::canonical` rather than by joining strings here,
+/// so the order this window writes and the order the parser prints cannot
+/// drift apart.
+fn shortcut_shown(hwnd: HWND, combo: HWND) -> Option<String> {
+    let i = cur_sel_raw(combo);
+    if i < 0 {
+        return None;
+    }
+    // The index is a position in `key_table()` -- see `set_key_sel` for why
+    // that is true and what would break it. `get` rather than an index,
+    // because a control is not a proof.
+    let key = key_table().get(i as usize)?;
+    Some(
+        Combo {
+            ctrl: is_checked(hwnd, IDC_MOD_CTRL),
+            super_: is_checked(hwnd, IDC_MOD_WIN),
+            alt: is_checked(hwnd, IDC_MOD_ALT),
+            shift: is_checked(hwnd, IDC_MOD_SHIFT),
+            key,
+        }
+        .canonical(),
+    )
+}
+
+/// Send what the five shortcut controls now spell, if they spell anything.
+///
+/// `suppressed()` for the reason every other notification here carries it:
+/// `apply_state`'s own `BM_SETCHECK` and `CB_SETCURSEL` writes must never
+/// come back as user edits.
+fn push_shortcut(hwnd: HWND, combo: HWND) {
+    if suppressed() {
+        return;
+    }
+    if let Some(s) = shortcut_shown(hwnd, combo) {
+        with_cb(|cb| (cb.on_edit_combo)(s));
+    }
+}
+
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
-    // The shortcut EDIT and the filter EDIT, and nothing else. The App
+    // The shortcut key list and the filter EDIT, and nothing else. The App
     // COMBOBOX is deliberately absent: the one arm that still reads it
     // synchronously reads its LIST, not its edit field, and fetches the
     // handle itself through `app_handle()`. A handle in scope for every arm
@@ -3550,12 +3829,27 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // let a double-click Add twice, or a repaint Save. Only a real click
         // and the accelerator's own code get through.
         (_, c) if is_push_button(id) && c != BN_CLICKED && c != CMD_FROM_ACCELERATOR => {}
-        (IDC_COMBO, c) if c == EN_CHANGE => {
-            if !suppressed() {
-                let t = text_of(combo);
-                with_cb(|cb| (cb.on_edit_combo)(t));
-            }
+        // The five controls that spell one shortcut, in the two
+        // notifications that mean the user changed one: a check box reports
+        // `BN_CLICKED`, the key list reports `CBN_SELCHANGE`.
+        //
+        // Two arms rather than the one `(id, _)` the Caps row uses, and the
+        // narrowing is deliberate. A COMBOBOX also says `CBN_SETFOCUS`,
+        // `CBN_DROPDOWN`, `CBN_CLOSEUP`, `CBN_SELENDOK` and
+        // `CBN_KILLFOCUS`; none of those is an edit, and answering them
+        // would push the same value back through the model every time the
+        // list is merely opened or tabbed away from.
+        //
+        // `BS_AUTOCHECKBOX` toggles itself BEFORE the notification arrives,
+        // so `push_shortcut` reading all five controls back is reading the
+        // state the user now sees -- the same property the `Hold` chips
+        // rely on.
+        (IDC_MOD_CTRL, c) | (IDC_MOD_WIN, c) | (IDC_MOD_ALT, c) | (IDC_MOD_SHIFT, c)
+            if c == BN_CLICKED =>
+        {
+            push_shortcut(hwnd, combo);
         }
+        (IDC_COMBO, c) if c == CBN_SELCHANGE => push_shortcut(hwnd, combo),
         (IDC_FILTER, c) if c == EN_CHANGE => {
             if !suppressed() {
                 let t = text_of(filter);
@@ -3622,7 +3916,14 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // `apply_state` has already put it in the field, so this reads the
         // picked value rather than clobbering it with a stale one. Deferring
         // `CBN_SELCHANGE` would make this line undo the pick.
-        (IDC_COMBO, c) if c == EN_KILLFOCUS => commit_fields(),
+        //
+        // There is no `IDC_COMBO` counterpart any more, and its absence is
+        // the point rather than an omission: the old one existed because an
+        // EDIT can be left holding text nobody reported, and a
+        // `CBS_DROPDOWNLIST` holds an index that only `CBN_SELCHANGE` and
+        // `CB_SETCURSEL` can move. `commit_fields` still reads all five
+        // controls on Save, which is the backstop that was actually load
+        // bearing.
         (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
