@@ -1054,6 +1054,20 @@ OS metadata on every call.
   restarts on a file only a human can fix, then gives up — leaving no
   hotkeys and, before `4f82b94`, no tray to say so.
 
+  **The Caps Lock row is one line, and `Hold` has three chips, not four.**
+  `[x] Use Caps Lock as a shortcut key   Hold [Ctrl][Win][Alt]   Tap [v]`.
+  It replaced a check box plus three radios whose first caption embedded the
+  question governing all three, so the other two did not read as answers to
+  it. **There is no Shift chip and there must never be one**: `Chord` has
+  exactly `ctrl`/`super_`/`alt`, because the hook has to release whatever it
+  presses, and releasing Shift under the user's fingers makes everything they
+  type next arrive lowercase. Spec §F.8 sketches four chips; the type is
+  right and the sketch is wrong. `Tap` is a `CBS_DROPDOWNLIST` read and
+  written **by index**, never by text -- even a `DROPDOWNLIST` has typeahead,
+  which moves the selection. Enablement follows the check box, and note that
+  a **disabled `CBS_DROPDOWNLIST` still renders white with dark text**, so it
+  looks live beside greyed labels: measurements §56, and do not "fix" it.
+
   **Chord capture stays out.** Combos are typed as text. `msctls_hotkey32`
   cannot capture the Windows key, and `Win+T` and its siblings are shell
   hotkeys Explorer consumes before a normal window sees them — so a capture
