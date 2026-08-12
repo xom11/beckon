@@ -301,11 +301,18 @@ impl Model {
         self.rows[i].marked = on;
     }
 
-    /// How many rows are currently ticked. Feeds `ControlState::marked_count`,
-    /// which does NOT caption the remove button `Remove N` -- see that
-    /// field's doc for why the caption stays the constant `Remove`.
+    /// How many **visible** rows are ticked.
+    ///
+    /// Visible rather than all, because `remove_pressed` acts only on rows
+    /// the filter is showing -- a count that included hidden ticks would put
+    /// a number on screen that Remove does not honour. Feeds
+    /// `ControlState::marked_count`, which does NOT caption the remove button
+    /// `Remove N` -- see that field's doc for why the caption stays constant.
     pub fn marked_count(&self) -> usize {
-        self.rows.iter().filter(|r| r.marked).count()
+        self.visible()
+            .iter()
+            .filter(|&&i| self.rows[i].marked)
+            .count()
     }
 
     /// Remove every ticked row in one go.
@@ -320,13 +327,12 @@ impl Model {
     /// selected row itself survives (it keeps pointing at the same row) or
     /// was removed alongside the others (it lands where that row's slot
     /// now falls, then gets clamped like `remove_row` already does).
-    pub fn remove_marked(&mut self) {
-        let marked_indices: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| r.marked.then_some(i))
-            .collect();
+    ///
+    /// **`idx` must be ascending.** The reverse walk below removes the
+    /// highest index first precisely so that nothing still queued shifts
+    /// underneath it, and `Model::visible` returns model order, which
+    /// satisfies that.
+    pub fn remove_indices(&mut self, marked_indices: &[usize]) {
         if marked_indices.is_empty() {
             return;
         }
@@ -345,6 +351,16 @@ impl Model {
         self.dirty = true;
     }
 
+    /// Remove every ticked row the filter is currently showing.
+    pub fn remove_marked(&mut self) {
+        let idx: Vec<usize> = self
+            .visible()
+            .into_iter()
+            .filter(|&i| self.rows[i].marked)
+            .collect();
+        self.remove_indices(&idx);
+    }
+
     /// What the Remove button does -- the WHOLE of what it does.
     ///
     /// **Ticks win over the selection.** Clicking a tick box also moves the
@@ -357,10 +373,24 @@ impl Model {
     /// It lives here, not in the wndproc's `on_remove` closure, for the same
     /// reason `default_button_of` does: `beckon-windows` compiles on one of
     /// the three CI jobs, and this decision is worth a test on all three.
+    ///
+    /// **And it never touches a row the filter is hiding.** Ticks survive
+    /// being filtered out and come back when the filter is cleared, but they
+    /// are inert while off screen: the property that makes a no-confirm,
+    /// no-undo button acceptable is that its effect is visible.
     pub fn remove_pressed(&mut self) {
-        if self.marked_count() > 0 {
-            self.remove_marked();
-        } else if let Some(i) = self.selected {
+        let vis = self.visible();
+        let marked: Vec<usize> = vis
+            .iter()
+            .copied()
+            .filter(|&i| self.rows[i].marked)
+            .collect();
+        if !marked.is_empty() {
+            self.remove_indices(&marked);
+        } else if let Some(i) = self.selected.filter(|i| vis.contains(i)) {
+            // The `filter` is NOT redundant: `Model::selected` still points
+            // at a model row while the filter hides it, so without this the
+            // fallback would delete an invisible row.
             self.remove_row(i);
         }
     }
@@ -711,10 +741,9 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         dirty: m.dirty(),
         apply_enabled: m.dirty() && !problems.iter().any(|p| p.severity == Severity::Error),
         // Either gesture arms the button, because either gesture is one
-        // `remove_pressed` acts on. Selection-only left Remove greyed out on
-        // a window whose only ticks were made without ever landing the
-        // highlight on one of them.
-        remove_enabled: m.selected.is_some() || m.marked_count() > 0,
+        // `remove_pressed` acts on -- and both are scoped to what is on
+        // screen, so an armed Remove always has something visible to take.
+        remove_enabled: selected.is_some() || m.marked_count() > 0,
         marked_count: m.marked_count(),
         // There is a `Model`, therefore the file parsed, therefore it can be
         // edited. The only `false` in the program is `unreadable_state`.
@@ -2157,5 +2186,62 @@ mod tests {
              and clearing the App field before `layout` runs is what keeps a \
              filter keystroke off the combo-box data-loss path"
         );
+    }
+
+    #[test]
+    fn remove_takes_the_ticked_row_you_can_see() {
+        let mut m = three();
+        m.set_marked(1, true); // Brave
+        m.set_filter("brave");
+        m.remove_pressed();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
+        assert_eq!(apps, vec!["Notepad", "Weather"]);
+    }
+
+    /// The invariant the whole design turns on: a destructive button with no
+    /// confirm and no undo must not act on rows that are off screen.
+    #[test]
+    fn remove_leaves_a_ticked_row_the_filter_is_hiding() {
+        let mut m = three();
+        m.set_marked(0, true); // Notepad, about to be hidden
+        m.set_marked(1, true); // Brave, will stay visible
+        m.set_filter("brave");
+        m.remove_pressed();
+        let apps: Vec<&str> = m.rows.iter().map(|r| r.app.as_str()).collect();
+        assert_eq!(
+            apps,
+            vec!["Notepad", "Weather"],
+            "Brave was visible and ticked so it goes; Notepad was ticked but \
+             hidden, and Remove must never delete what is not on screen"
+        );
+        assert!(m.rows[0].marked, "the hidden tick survives to come back");
+    }
+
+    #[test]
+    fn remove_does_nothing_when_the_selected_row_is_filtered_out() {
+        let mut m = three();
+        m.selected = Some(0); // Notepad
+        m.set_filter("brave"); // hides it; nothing is ticked
+        m.remove_pressed();
+        assert_eq!(
+            m.rows.len(),
+            3,
+            "the selection fallback must check visibility -- Model::selected \
+             still points at a model row while that row is hidden"
+        );
+    }
+
+    #[test]
+    fn marked_count_and_remove_enabled_count_only_visible_rows() {
+        let mut m = three();
+        m.set_marked(0, true); // Notepad
+        m.set_filter("brave"); // hides it
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(
+            cs.marked_count, 0,
+            "a count that included hidden ticks would put a number on screen \
+             that Remove does not honour"
+        );
+        assert!(!cs.remove_enabled, "nothing visible is ticked or selected");
     }
 }
