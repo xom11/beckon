@@ -36,30 +36,54 @@ mapping that makes it safe:
 Band 2's layout reserves no gap for it, and no code assumes it exists, so adding
 it is additive rather than a rework.
 
-## 2. Needs a person at the screen — a probe cannot settle these
+## 2. Needs a person at the screen — RESOLVED 2026-08-12
 
-The display on a14 is at 150 %; changing it would disturb a live signed-in
-session, so nothing below was measured at 100 %.
+All five are settled, on branch `landing-2a-followups`. **Only two of them
+turned out to be aesthetic judgements**; the rest were answerable from the
+source or from a measurement, which is the reusable lesson here — "a probe
+cannot settle this" was true of two and assumed of five. Full numbers in
+`docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §36–§37.
 
-- **Row density.** comctl32 derives the ListView row height from the font;
-  measured 32 px physical at 144 DPI, while buttons scale to 48. Spec §B.2
-  tabulates 32 as a 96-DPI token, which the plan's Task 6 supersedes with "use
-  what Task 2 measured". If rows read too dense, the lever is a dummy
-  `LVSIL_SMALL` image list sized to the target height — and the thing to check
-  afterwards is whether the checkbox and the App text shifted right, because
-  that image list reserves icon width in column 0.
-- **`EDIT` vs `COMBOBOX` alignment** on the editor line: centres agree within
-  0.5 px but the heights are 43 vs 36. A single-line `EDIT` top-aligns its text,
-  which is why it was deliberately not stretched.
-- **Whether the Subtitle loses descenders** at any scale. Band 2's height is a
-  token and `SS_CENTERIMAGE` clips rather than grows. The ratio
-  `scale(20)`:`scale(32)` holds at every DPI, so one look at 100 % settles all
-  scales. Fix if needed: derive that band's height from its own `text_size`.
-- **`mark_glyph`'s `OK` prefix** leading the note text, and whether `OK` / `!!` /
-  `!` look aligned.
-- **The two long Caps captions** at Body 14 px.
+- **Row density** — *judged, kept*. The framing was wrong and worth
+  correcting: §22 read the row as "the tabulated 32 used **unscaled**",
+  against buttons that scale to 48. But `list_row_height` uses no token at
+  all while the list has rows — it asks comctl32 through `LVM_GETITEMRECT`,
+  and comctl32 derives the row from the Body font, which *is* DPI-scaled.
+  32 physical at 144 DPI is comctl32's answer, colliding numerically with
+  `tok::CTL = 32` by chance. §13 measured **29** at the same DPI before the
+  type ramp landed, and the row grew to 32 when the 14 px Body font was
+  applied — which is what "derived from the font" predicts. So there was no
+  asymmetry to fix, and no `LVSIL_SMALL` image list was needed.
+- **`EDIT` vs `COMBOBOX` alignment** — *fixed*. The `EDIT` now takes the
+  height the combo's theme picked, reusing the `GetWindowRect` `layout`
+  already made in order to centre the combo, so this adds no input to
+  `layout` and nothing new runs on a data push. A/B on hardware against a
+  deliberately-disabled build: 43/36 → 36/36. Descenders verified unclipped
+  at the smaller height.
+- **Subtitle descenders** — *moot, structurally*. The only `Role::Subtitle`
+  control is `IDC_LBL_SECTION`, whose text is the constant `"Shortcuts"` —
+  a string with no descender in it. The band is `ctl = s(32)` against an
+  `s(20)` font, so even one that had them would clear. Reopen only if that
+  heading ever becomes a variable string.
+- **`mark_glyph`'s `OK` prefix** — *was a false claim, not a matter of
+  taste*. The comment asserted all four marks were "two columns wide", which
+  is a monospace property; `OK` measured 15 px wider than `!!` at 144 DPI,
+  and the other three were 2 px apart rather than equal. `Mark::Ok` is now
+  two spaces.
+- **The two long Caps captions** — *moot, do not tune*. Spec §F.8 deletes
+  both strings in landing 2b: the three `IDC_TAP_*` radios go, and the
+  phrase "beckon key" leaves the window. Worth noting what the screenshot
+  shows in the meantime, because it is evidence §F.8 is right: radio 1's
+  caption is `"&Tapping Caps alone: Caps Lock"`, so the question governing
+  the group is glued to the first option — `Esc` and `nothing` do not read
+  as answers to it, and the mnemonic sits on "Tapping" rather than on the
+  option it selects.
 
 Screenshots from the hardware pass: `C:\Users\kln\hwpass\settings-{valid,readonly}.png`.
+Zoomed crops per question, and the after-shot of the repaired editor strip,
+were cut with a stdlib-only PNG cropper — **PIL and ImageMagick both fail to
+load on the mac**, their bundled dylibs refused by macOS system policy, and
+that is not something the Claude sandbox flag turns off.
 
 ## 3. Deferred defects — real, judged not to block
 
