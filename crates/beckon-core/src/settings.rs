@@ -96,6 +96,11 @@ pub struct ListItem {
     /// Mirrors `Row::marked` -- the ListView sets this row's check state
     /// from it.
     pub marked: bool,
+    /// This item's index in `Model.rows`. **Not** its position in `items`
+    /// once a filter is active. Every callback that reaches the model must
+    /// go through this: `on_select` and `on_mark` take model indices, and
+    /// the ListView only ever knows the view index.
+    pub row: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,9 +672,15 @@ fn row_condition(
 pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
     let problems = m.problems();
 
-    let mut items = Vec::with_capacity(m.rows.len());
+    let vis = m.visible();
+    let mut items = Vec::with_capacity(vis.len());
     let mut detail = None;
-    for (i, r) in m.rows.iter().enumerate() {
+    // The VIEW index of the selected row, which is what the ListView needs
+    // in order to put `LVIS_SELECTED` back after a rebuild. `None` when the
+    // filter is hiding the selected row -- see `ControlState::selected`.
+    let mut selected = None;
+    for (pos, &i) in vis.iter().enumerate() {
+        let r = &m.rows[i];
         let (mark, flag, notes) = row_condition(m, i, rt, &problems);
         items.push(ListItem {
             combo: r.combo.clone(),
@@ -677,10 +688,12 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
             mark,
             flag,
             marked: r.marked,
+            row: i,
         });
         // Same call, same answer: the editor cannot say something the list
         // does not.
         if m.selected == Some(i) {
+            selected = Some(pos);
             detail = Some(Detail {
                 combo: r.combo.clone(),
                 app: r.app.clone(),
@@ -691,7 +704,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
 
     ControlState {
         items,
-        selected: m.selected,
+        selected,
         detail,
         caps_checked: m.keyboard.caps,
         caps_tap: m.keyboard.caps_tap,
@@ -2091,5 +2104,58 @@ mod tests {
         m.set_filter("brave");
         assert!(!m.dirty(), "a filter changes nothing on disk");
         assert_eq!(m.render().unwrap(), before, "the filter is never written");
+    }
+
+    /// The defect this whole feature had to be designed around: with a
+    /// filter active, the list's own index is NOT the model's, so a callback
+    /// that passes it straight through ticks one binding and deletes
+    /// another.
+    #[test]
+    fn list_items_carry_their_model_row_not_their_position() {
+        let mut m = three();
+        m.set_filter("weather");
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items.len(), 1);
+        assert_eq!(cs.items[0].row, 2, "Weather is row 2 of the model");
+        assert_ne!(
+            cs.items[0].row, 0,
+            "if this ever passes by accident, the mapping has been dropped \
+             and position is being used as the model index again"
+        );
+    }
+
+    #[test]
+    fn selected_is_a_view_index_while_filtered() {
+        let mut m = three();
+        m.selected = Some(2); // Weather, model row 2
+        m.set_filter("e"); // Notepad, Brave and Weather all contain "e"
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items.len(), 3);
+        assert_eq!(cs.selected, Some(2));
+
+        m.set_filter("weather"); // now Weather is the ONLY visible row
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(
+            cs.selected,
+            Some(0),
+            "ControlState::selected indexes `items`, which the filter has \
+             shortened -- the ListView needs the line number, not the row"
+        );
+        assert_eq!(cs.detail.unwrap().app, "Weather");
+    }
+
+    #[test]
+    fn selected_is_none_when_its_row_is_filtered_out() {
+        let mut m = three();
+        m.selected = Some(0); // Notepad
+        m.set_filter("brave");
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.selected, None);
+        assert!(
+            cs.detail.is_none(),
+            "the editor strip must not describe a row that is not on screen -- \
+             and clearing the App field before `layout` runs is what keeps a \
+             filter keystroke off the combo-box data-loss path"
+        );
     }
 }
