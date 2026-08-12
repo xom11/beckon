@@ -24,6 +24,7 @@ const VK_RCONTROL: u32 = 0xA3;
 const VK_RMENU: u32 = 0xA5;
 
 const VK_L: u32 = 0x4C;
+const VK_DELETE: u32 = 0x2E;
 const VK_NUMLOCK: u32 = 0x90;
 const VK_SCROLL: u32 = 0x91;
 
@@ -60,14 +61,34 @@ pub enum Outcome {
     Cancelled,
     /// Every held key is up; the hook may be released.
     Disarmed,
+    /// Let it reach the system: we never swallowed its down, so swallowing
+    /// its up would strand it.
+    ///
+    /// **This is the ONE outcome for which the hook must not return 1.**
+    /// Recording starts on a click as readily as on a keystroke, so a key
+    /// can already be physically down when the field arms -- hold Ctrl,
+    /// click `Record` with the mouse, and the Ctrl-down was never seen. If
+    /// the matching up is swallowed anyway, the system believes Ctrl is
+    /// held with no up ever coming, and nothing short of killing beckon
+    /// gets it back. That is the stuck-modifier failure spec D.1 exists to
+    /// prevent, so this outcome is worth its own variant rather than being
+    /// folded into `Ignored`.
+    ///
+    /// It also covers the up of a key whose down was refused, since refused
+    /// keys never enter the held set -- see `step`'s doc. A stray key-up
+    /// for a character key latches nothing; a swallowed one for a modifier
+    /// is the failure above, and only the held set can tell them apart.
+    PassThrough,
 }
 
 impl Outcome {
     /// Whether the hook should `PostMessage` for this outcome. `Ignored` is
     /// the whole reason this exists: auto-repeat would otherwise wake the
-    /// UI thread once per repeat.
+    /// UI thread once per repeat. `PassThrough` is here for the same reason
+    /// -- it says something about the hook's return value, nothing about
+    /// what the window shows.
     pub fn post(self) -> bool {
-        !matches!(self, Outcome::Ignored)
+        !matches!(self, Outcome::Ignored | Outcome::PassThrough)
     }
 }
 
@@ -123,8 +144,17 @@ fn modifier_of(vk: u32) -> Option<Modifier> {
 /// The three lock keys are refused as main keys for a different reason,
 /// unchanged from spec F.5: the lock state toggles before the hook runs, so
 /// swallowing the key cannot undo the light.
+///
+/// `Ctrl+Alt+Del` is here on scope, not on mechanism. Spec F.5 records it as
+/// **unverified** and says to treat it as refused until it is measured; no
+/// explanation of what the hook would see is offered here, and none should
+/// be added without a measurement, because the story this family used to
+/// share was disproved for `Win+L` (measurements §48). `delete` is in the
+/// 81-key table, so without this arm the chord is recordable.
 fn is_reserved(vk: u32, mods: Mods) -> bool {
-    matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL) || (mods.super_ && vk == VK_L)
+    matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL)
+        || (mods.super_ && vk == VK_L)
+        || (mods.ctrl && mods.alt && vk == VK_DELETE)
 }
 
 /// Everything one recording session needs to remember.
@@ -159,8 +189,13 @@ impl CaptureState {
     }
 
     /// The key behind the most recent `Outcome::Refused`, when the 81-key
-    /// table can name it -- `None` for `Refusal::UnknownKey`, which is the
-    /// refusal that exists precisely because it cannot.
+    /// table can name it.
+    ///
+    /// `None` means only that the table could not name the key. It does NOT
+    /// identify which refusal happened: it is always `None` for
+    /// `Refusal::UnknownKey`, but a bare unnameable key -- numpad0, or Caps
+    /// Lock with nothing held -- is refused as `NoModifier` or `Reserved`
+    /// and leaves it `None` too. Read the `Refusal` to know which.
     ///
     /// Read when a `Refused` arrives, not otherwise: it deliberately keeps
     /// the last refusal rather than clearing itself on the next keystroke,
@@ -231,10 +266,17 @@ impl CaptureState {
         }
     }
 
-    fn release(&mut self, vk: u32) {
-        if let Some(i) = self.held[..self.held_len].iter().position(|&h| h == vk) {
-            self.held_len -= 1;
-            self.held[i] = self.held[self.held_len];
+    /// Drop `vk` from the held set, reporting whether it was actually in
+    /// there. The bool is what tells a key-up whose key-down we swallowed
+    /// apart from one we never saw -- see `Outcome::PassThrough`.
+    fn release(&mut self, vk: u32) -> bool {
+        match self.held[..self.held_len].iter().position(|&h| h == vk) {
+            Some(i) => {
+                self.held_len -= 1;
+                self.held[i] = self.held[self.held_len];
+                true
+            }
+            None => false,
         }
     }
 }
@@ -256,6 +298,21 @@ impl CaptureState {
 ///   gone a lock key comes back `Refused(UnknownKey)` -- true, but it sends
 ///   the user to the Key list for a key that is refused no matter how it is
 ///   spelled.
+///
+/// Two hazards the hook wiring inherits from this, neither fixable here:
+///
+/// - **A refused key is refused again on every auto-repeat.** Refused keys
+///   never enter the held set, so the already-held filter cannot see them:
+///   holding `a` down while armed yields one `Refused(NoModifier)` per
+///   repeat, each of which posts. Per F.3 a refusal beeps, so the hook must
+///   de-duplicate the beep **by vk** -- one beep while that key stays down
+///   -- and not per outcome.
+/// - **Admitting refused keys to the held set is the obvious fix and it is
+///   wrong.** It is a `[u32; HELD_MAX]`, and rolled-over bare keys would
+///   eat the slots: mash six unmodified keys and `hold` starts dropping,
+///   so the Ctrl the user presses next is silently absent from `mods()`
+///   and the chord commits without it. Losing a modifier is far worse than
+///   a repeated refusal, so the repeat is handled at the beep instead.
 pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
     // Our own injected strokes carry beckon's `dwExtraInfo` marker. The Caps
     // feature injects the CONFIGURED chord, so capturing one would record
@@ -270,7 +327,11 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
     // Alt-up and switches windows out from under the settings window.
     if st.draining {
         if ev.edge == Edge::Up {
-            st.release(ev.vk);
+            // A key we never swallowed the down for is not ours to swallow
+            // the up for either; see `Outcome::PassThrough`.
+            if !st.release(ev.vk) {
+                return Outcome::PassThrough;
+            }
             if st.held_len == 0 {
                 st.draining = false;
                 return Outcome::Disarmed;
@@ -280,7 +341,9 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
     }
 
     if ev.edge == Edge::Up {
-        st.release(ev.vk);
+        if !st.release(ev.vk) {
+            return Outcome::PassThrough;
+        }
         return if modifier_of(ev.vk).is_some() {
             // Releasing every modifier returns to Armed and is not an error:
             // a double-tap of Ctrl shows `ctrl+...` and then the prompt.
@@ -362,6 +425,7 @@ mod tests {
     const VK_ESCAPE: u32 = 0x1B;
     const VK_CAPITAL: u32 = 0x14;
     const VK_NUMPAD0: u32 = 0x60;
+    const VK_DELETE: u32 = 0x2E;
 
     fn ev(vk: u32, edge: Edge) -> KeyEvent {
         KeyEvent {
@@ -434,6 +498,21 @@ mod tests {
         let mut st = CaptureState::armed();
         down(&mut st, VK_LWIN);
         assert_eq!(down(&mut st, VK_L), Outcome::Refused(Refusal::Reserved));
+        assert!(st.captured().is_none());
+    }
+
+    /// Spec F.5 carries `Ctrl+Alt+Del` forward as **unverified**, and says
+    /// to treat it as refused until it is measured. `delete` is in the
+    /// 81-key table, so without an explicit arm this chord is recordable.
+    #[test]
+    fn ctrl_alt_del_is_refused() {
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_CONTROL);
+        down(&mut st, VK_MENU);
+        assert_eq!(
+            down(&mut st, VK_DELETE),
+            Outcome::Refused(Refusal::Reserved)
+        );
         assert!(st.captured().is_none());
     }
 
@@ -514,6 +593,45 @@ mod tests {
         assert!(!st.draining());
     }
 
+    /// A key-up whose key-down we never swallowed must reach the system.
+    ///
+    /// The user is physically holding Ctrl, starts recording by CLICKING
+    /// `Record` with the mouse -- so the Ctrl-down was never seen -- and
+    /// presses Alt+T. That commits and starts draining. Swallowing the
+    /// Ctrl-up that follows leaves the system believing Ctrl is held with
+    /// no up ever coming: every click becomes Ctrl+click and the user
+    /// cannot recover without killing beckon.
+    #[test]
+    fn a_key_up_we_never_swallowed_passes_through_while_draining() {
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_MENU);
+        assert_eq!(down(&mut st, VK_T), Outcome::Captured);
+        assert!(st.draining());
+        assert_eq!(
+            up(&mut st, VK_CONTROL),
+            Outcome::PassThrough,
+            "its down was never swallowed, so its up must not be either"
+        );
+        assert!(!Outcome::PassThrough.post(), "the window has nothing to do");
+        assert!(st.draining(), "alt and t are still down");
+        up(&mut st, VK_T);
+        assert_eq!(up(&mut st, VK_MENU), Outcome::Disarmed);
+    }
+
+    /// The same hazard before any commit: armed, nothing held, and an up
+    /// arrives for a key held since before recording started.
+    #[test]
+    fn a_key_up_we_never_swallowed_passes_through_while_armed() {
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_MENU);
+        assert_eq!(up(&mut st, VK_CONTROL), Outcome::PassThrough);
+        assert_eq!(
+            st.partial(),
+            Some("alt+...".to_string()),
+            "the stray up changed nothing we are holding"
+        );
+    }
+
     /// **Rewritten from the brief, which contradicted itself here.** As
     /// written this test pressed Ctrl before Esc -- byte for byte the same
     /// sequence as `escape_with_a_modifier_is_a_chord`, one expecting
@@ -545,13 +663,54 @@ mod tests {
 
     /// Left and right modifiers are normalised -- the TOML cannot express
     /// the distinction.
+    ///
+    /// All four are pressed on each side, because a single sided VK proves
+    /// only itself: with `VK_RSHIFT`, `VK_RMENU` or `VK_RWIN` missing from
+    /// `modifier_of` an `VK_RCONTROL`-only test still passes, while the
+    /// missing key is treated as a main key and the chord commits early.
     #[test]
     fn left_and_right_modifiers_are_the_same_modifier() {
-        const VK_RCONTROL: u32 = 0xA3;
+        let mut right = CaptureState::armed();
+        down(&mut right, VK_RCONTROL);
+        down(&mut right, VK_RWIN);
+        down(&mut right, VK_RMENU);
+        down(&mut right, VK_RSHIFT);
+        down(&mut right, VK_T);
+        assert_eq!(
+            right.captured().expect("a chord").canonical(),
+            "ctrl+super+alt+shift+t"
+        );
+
+        let mut left = CaptureState::armed();
+        down(&mut left, VK_LCONTROL);
+        down(&mut left, VK_LWIN);
+        down(&mut left, VK_LMENU);
+        down(&mut left, VK_LSHIFT);
+        down(&mut left, VK_T);
+        assert_eq!(
+            left.captured().expect("a chord").canonical(),
+            "ctrl+super+alt+shift+t"
+        );
+    }
+
+    /// The reason `modifier_of` normalises on READ rather than at insert,
+    /// stated as behaviour: two shift keys occupy two slots, so letting one
+    /// go while the other is still physically down must not drop `shift`.
+    /// Collapsing both onto one slot at insert time loses the second
+    /// release and the field would go blank under the user's hands.
+    #[test]
+    fn releasing_one_of_two_shifts_keeps_shift_held() {
         let mut st = CaptureState::armed();
-        down(&mut st, VK_RCONTROL);
-        down(&mut st, VK_T);
-        assert_eq!(st.captured().unwrap().canonical(), "ctrl+t");
+        down(&mut st, VK_LSHIFT);
+        down(&mut st, VK_RSHIFT);
+        assert_eq!(up(&mut st, VK_LSHIFT), Outcome::Partial);
+        assert_eq!(
+            st.partial(),
+            Some("shift+...".to_string()),
+            "the right shift is still down"
+        );
+        assert_eq!(up(&mut st, VK_RSHIFT), Outcome::Partial);
+        assert_eq!(st.partial(), None, "now both are up");
     }
 
     /// Our own injected strokes must never be captured -- the Caps feature
@@ -575,6 +734,10 @@ mod tests {
     #[test]
     fn only_outcomes_the_window_must_see_are_posted() {
         assert!(!Outcome::Ignored.post());
+        assert!(
+            !Outcome::PassThrough.post(),
+            "it decides the hook's return value, not what the window shows"
+        );
         assert!(Outcome::Partial.post());
         assert!(Outcome::Captured.post());
         assert!(Outcome::Cancelled.post());
