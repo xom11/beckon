@@ -1033,10 +1033,25 @@ In `apply_state`, beside the other text writes, add:
     let editor_caption = match &st.detail {
         None => cap::EDITOR_NONE.to_string(),
         Some(d) if d.app.trim().is_empty() => cap::EDITOR_UNNAMED.to_string(),
-        Some(d) => format!("Editing \"{}\"", d.app.trim()),
+        // `&&`, not `&`: a BS_GROUPBOX is a BUTTON and eats a lone ampersand
+        // as a mnemonic prefix. This is the ONE caption in the window fed
+        // from the catalog, and `SS_NOPREFIX_STYLE`'s own doc names
+        // `Notes & To Do` and `Arts & Crafts` as real Start Menu entries.
+        // Unescaped, the first draws `Editing "Notes  To Do"` with `T`
+        // underlined, colliding with the `Ctrl` hold chip in `mod cap`'s
+        // table. There is no NOPREFIX equivalent for a button.
+        //
+        // NOT `shown()` -- that helper STRIPS ampersands for measurement and
+        // is the exact inverse of what is needed here.
+        Some(d) => format!("Editing \"{}\"", d.app.trim().replace('&', "&&")),
     };
     set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
 ```
+
+**The `.replace` shipped late** — the plan omitted it, both the implementer and
+the task reviewer missed it, and the whole-branch review caught it. Recorded
+here so a re-run does not reproduce the bug. `set_text_if_changed`'s comparison
+stays correct because it compares the same escaped string it writes.
 
 `set_text_if_changed(parent: HWND, id: i32, s: &str)` already exists at
 `settings_window.rs:4289` — that exact signature. Use it; do not add a second
@@ -1699,7 +1714,10 @@ which does not build `[[bin]]` targets and will leave you testing a stale
 | **G3** | `customdraw_probe.exe` | the 3b plan's §B.6 scope | `CONTROL_INK` must be non-zero or the run is blind. |
 | **G5** | `settings_probe.exe`, **rebuilt** — it is no longer unchanged. Task 2 made the Shortcut column the display spelling, so the probe grew its own `key_cap` + `shortcut_caps` (its independent copy of `combo_display`, in the spirit of `KEY_ORDER`) and `expect_shown` now compares the cell against `Ctrl + Win + Alt + T`. | nothing in this plan; it is the regression check | Expect a clean run. The five `drive_the_shortcut` steps are the ones to read first: this row said *unchanged* while Task 2 was silently invalidating them, and against the old expectation every one of the five reported `STILL WRONG, not slow` on a correct window. Nothing here renumbers a pinned id or changes `IDC_COMBO`'s style — which is exactly why the rest of the run must be run rather than assumed. |
 | **G6** | Re-run `hwpass\GlyphWidth.cs` (§36 — already builds `Segoe UI Variable Small` at 96 DPI and calls `GetTextExtentPoint32W`, the exact call `text_size` makes) and additionally record `sz.cy`, not only `sz.cx`. No new probe needed. | `notes_height`'s 96-DPI line-height figure (see its doc comment in `settings_window.rs`) | §36's own table shows the face's 144→96 advance ratio is not a clean 1.5 (35→22, 20→14, 18→12, i.e. 1.43–1.59, integer rounding at small sizes), so read the ratio-derived 16 px as 15–17, not exact. Either way the disagreement is bounded, not alarming: `MIN_HEIGHT`'s doc shows any real line height up to 18 px is absorbed by the shipped +4 slack, and 19 px costs one list row and nothing else. |
-| **eye** | Open the rebuilt window at 96 DPI **and** 150 %: group caption tracks the selection; empty state on deselect; two lines never overlap at `MIN_WIDTH` 720; `Ctrl + Win + Alt + T` in the Shortcut column; the notes cap reads as "there is more," not as a rendering fault. | — | The two-line cap and the `MIN_WIDTH` floor are the two things unit tests structurally cannot see. |
+| **eye** | Open the rebuilt window at 96 DPI **and** 150 %: group caption tracks the selection; two lines never overlap at `MIN_WIDTH` 720; `Ctrl + Win + Alt + T` in the Shortcut column; the notes cap reads as "there is more," not as a rendering fault. **Not** the empty state — Task 8 was never built (see below). | — | The two-line cap and the `MIN_WIDTH` floor are the two things unit tests structurally cannot see. |
+| **eye3** | Select a row whose app **Name contains `&`** — `Notes & To Do` and `Arts & Crafts` are the two `SS_NOPREFIX_STYLE`'s doc names as real Start Menu entries. The group caption must read `Editing "Notes & To Do"` with no underline and no missing character. | — | A `BS_GROUPBOX` is a BUTTON and eats a lone `&` as a mnemonic. Shipped unescaped and was caught by the final review, not by any per-task one; `d.app.trim().replace('&', "&&")` is the fix. An underlined `T` here also collides with the `Ctrl` hold chip, which `mod cap`'s hand-maintained table exists to prevent. |
+| **eye4** | In the shortcut editor, pick a **punctuation key** from the key list by hand — item 56, `comma` — and read the Shortcut cell. It must say `,` and not `COMMA`. | — | `settings_probe`'s `key_cap` is a transcribed copy of `beckon-core`'s `key_label`, and an ordinary probe run selects exactly one key, so only the `other => to_uppercase()` fallthrough is ever exercised. A drift in any of the 25 special arms would be mirrored silently by the copy rather than caught. This one manual selection is what closes that gap. |
+| **eye5** | Raise the external-change banner (touch the config file on disk), then drag the window to `MIN_HEIGHT`. Confirm **4 list rows** and no overlap with the keyboard group. | — | The only one of the four simulated floor cases with no prior art on hardware. `MIN_HEIGHT` was raised 460 → 500 → 546 → 550 specifically so this state stays usable; at 500 it showed one row, which `MIN_HEIGHT`'s own doc calls broken. |
 | **eye2** | Select a row whose probe returns `Availability::CaptureSawNothing`, at `MIN_WIDTH` 720, with ≥3 notes on that row: does the note's own text wrap past two rendered lines, does a third note clip, and is `(+N more)` itself visible or clipped? | — | `IDC_NOTES` is `SS_LEFT` and word-wraps: the cap in `apply_state` bounds NOTES, not RENDERED lines, so one wide note can already overflow the two-line box on its own. This is the specific setup that exposes it — deliberately not left to whichever row happens to be selected. |
 
 **G4 is not in this table.** §F.4's `GetAsyncKeyState` union at commit — hold
@@ -1734,3 +1752,76 @@ days and is written up in `2026-08-12-landing-2b-followups.md` §5.
    the `Keys` role the spec table also lists belongs to keycap rendering,
    **which this window does not do**." Landing 3b makes that sentence false.
    It is correct today and must be amended there, not here.
+
+---
+
+## What this landing actually shipped, and what it parked
+
+Written after execution. Eight of the nine tasks landed; **Task 8 was never
+built**, and its absence is correct — the plan gates it on G2, which needs a
+person at a14.
+
+### Two plan defects the implementers caught
+
+Both were found by measurement rather than by reading, and both are load-bearing.
+
+1. **Band 3's `editor_min` was `ctl + gap + ctl` (72 px), sized for the old
+   flexing strip, against a 144 px group.** The editor group drew **58 px over
+   the keyboard group at `MIN_HEIGHT` itself** — the ordinary minimum drag
+   size, not a `WM_DPICHANGED` edge case — and `y.min(kb_y)` cannot catch it,
+   because `grp_y` is read before the group is placed. `editor_min` is now
+   `grp_h`. Do not revert it; the comment at the guard explains why the
+   obvious fix does not work.
+
+2. **The brief's `y += grp_h + band; y = y.min(kb_y)` tail is a dead store.**
+   `y` has exactly one reader after band 3 (`let grp_y = y`); band 5 places
+   nothing, band 6 anchors to `kb_y`, band 7 to `bar_y`. Dropped, with a
+   restore-if condition in the comment.
+
+### Three decisions a human made mid-flight
+
+- **`LVIR_ICON` is not the state-image rect** (§ Task 4's header). The plan
+  said it was. Refuted in review, ruled on, fixed.
+- **`MIN_HEIGHT` reserves band 1.** 460 → 500 → 546 → **550**. At 500 with the
+  banner up the list showed one row, which `MIN_HEIGHT`'s own doc calls broken.
+- **The notes wrap stays documented, not fixed.** The two-line cap bounds
+  *notes*, not *rendered lines*, and `IDC_NOTES` word-wraps — so one wide note
+  can overflow on its own and take `(+N more)` off the bottom with it. The real
+  fix is measure-and-truncate or `DT_WORDBREAK | DT_END_ELLIPSIS`; it makes the
+  notes the window's first owner-draw surface and belongs to a later landing.
+  **It is not the tooltip** — `TTM_ADDTOOLW` borrows its `lpszText` pointer and
+  the notes change on every selection.
+
+### The defect no per-task review could see
+
+**Task 2 silently invalidated `examples/settings_probe.rs`, the plan's own G5
+gate.** The probe compared the Shortcut cell against the *config* spelling;
+after Task 2 the cell says `Ctrl + Win + Alt + T`, so all five steps of
+`drive_the_shortcut` would have reported `STILL WRONG` — and that function
+documents itself as *"the CONTROL for the App half … if it disagrees too, the
+App result means nothing."* The operator would have discarded the App-half
+result, which is the measurement guarding `Ui::shown_external`.
+
+Why it was invisible task-by-task: **Task 2 Step 4's grep was scoped to one
+file**, and `examples/settings_probe.rs` is the only place in the repo that
+compares a cell to a config string. The step has since been widened to
+`grep -rn` across three directories. Scope a "did I break a reader of this?"
+grep to the crate, never to the file.
+
+### Parked, with rulings
+
+Neither is load-bearing; both are real. Fix them in the next session that
+touches these files.
+
+- **`settings_window.rs`, `Ui::shown_empty`'s doc** — the topic sentence
+  rewritten to fix a wrong comment is itself garbled ("the guard is what stops
+  mattering more, not less"). The three sentences after it state the mechanism
+  correctly, so nothing is misleading.
+- **`examples/settings_probe.rs`, `key_cap`'s doc** — overclaims twice. It says
+  the probe "cannot link the crate", but `beckon-core` is a path dependency and
+  examples inherit `[dependencies]`, so the independence is by **choice**, not
+  impossibility. And it says the copy catches `key_label` drifting, but an
+  ordinary run selects exactly one key, so only the `other => to_uppercase()`
+  fallthrough is ever exercised — a drift in any of the 25 special arms would
+  be mirrored silently. The tables were verified arm-for-arm as identical at
+  landing. Hardware row **eye4** is what closes the gap.
