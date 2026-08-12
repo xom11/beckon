@@ -3339,11 +3339,10 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
     // handle itself through `app_handle()`. A handle in scope for every arm
     // is an invitation to read the edit field from inside a notification
     // again -- which is the defect `WM_APP_EDITED` exists to prevent.
-    let combo = match UI.with(|u| u.borrow().as_ref().map(|x| x.combo)) {
-        Some(t) => t,
-        None => return,
-    };
-    let filter = match UI.with(|u| u.borrow().as_ref().map(|x| x.filter)) {
+    // One borrow, one tuple of `Copy` handles, dropped before the match --
+    // `apply_state`'s house pattern. Two sequential reads worked but took the
+    // borrow twice for no reason.
+    let (combo, filter) = match UI.with(|u| u.borrow().as_ref().map(|x| (x.combo, x.filter))) {
         Some(t) => t,
         None => return,
     };
