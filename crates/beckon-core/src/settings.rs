@@ -726,10 +726,17 @@ fn same_chord(a: &str, b: &str) -> bool {
 /// would mean the green answer had already been computed before anything
 /// noticed it was wrong.
 ///
-/// Not every pair is order-sensitive, and claiming otherwise would be worse
-/// than useless: the F12 guard and the self-conflict checks are independent
-/// of each other and commute. What does not commute is `AskTheOs` against
-/// any of them.
+/// **Every step before `AskTheOs` is load-bearing where it stands.** An
+/// earlier version of this comment claimed the F12 guard "commutes with the
+/// self-conflict checks", which is half true and therefore false: it does
+/// commute with step 4, where both orders refuse and both are `Mark::Bad`,
+/// and it does **not** commute with step 3. Nothing rejects a row bound to
+/// `ctrl+alt+f12` -- `problems()` has no f12 rule -- so with the guard below
+/// step 3 that row, probed against its own chord, answers `Unchanged`, which
+/// `probe_notes` renders `Mark::Ok`. That is a green OK on the one key this
+/// guard exists to keep from ever coming back green.
+/// `f12_outranks_the_rows_own_chord` pins it; the experiment that missed it
+/// used a fixture binding no f12 and so measured the fixture.
 ///
 /// **`RuntimeStatus::registered` is not consulted, ever.** `set_paused` and
 /// `reload` CLEAR that map, so a paused beckon would report its own bound
@@ -751,6 +758,10 @@ pub fn probe_plan(m: &Model, row: usize, combo: &str) -> ProbePlan {
     //    are not debugging". A registration on it therefore succeeds and
     //    proves nothing, which is the one outcome worth refusing outright:
     //    a green Available on a key documented never to arrive.
+    //
+    //    **Above step 3, and measured to be so.** See the doc comment: a row
+    //    bound to f12 probed against its own chord answers `Unchanged` --
+    //    `Mark::Ok` -- the moment this block moves below it.
     if c.key.name == "f12" {
         return ProbePlan::Verdict(Availability::F12);
     }
@@ -769,12 +780,51 @@ pub fn probe_plan(m: &Model, row: usize, combo: &str) -> ProbePlan {
     // 4. Any OTHER row of this same file. Read from the model in memory,
     //    which is the only place that knows about edits the user has not
     //    saved yet.
+    //
+    //    A half-typed new row is skipped for the same reason `problems()`
+    //    skips it: `render` DROPS it, so it can collide with nothing that
+    //    ever reaches the file. Blaming it produced
+    //    `Already used by "" in this file.` -- empty quotes, naming a row
+    //    that will never be written. The predicate is shared with
+    //    `problems()` rather than restated, so the two cannot drift.
     for (i, r) in m.rows.iter().enumerate() {
-        if i != row && same_chord(&r.combo, &want) {
+        if i != row && !is_unfinished_new_row(r) && same_chord(&r.combo, &want) {
             return ProbePlan::Verdict(Availability::DuplicateInFile {
                 app: r.app.trim().to_string(),
             });
         }
+    }
+
+    // 4b. The row's SAVED chord, which beckon itself is still holding.
+    //
+    //     `RegisterHotKey` refuses a chord registered anywhere on this
+    //     desktop, and that includes `serve`'s own live table: the separate
+    //     HWND rules out an `(hWnd, id)` identity collision, never a chord
+    //     collision. The live table is the SAVED file while everything above
+    //     reads the EDITED model, and the window raises the probe *before*
+    //     `on_edit_combo` (so step 3 has the row's previous chord to compare
+    //     against) -- so editing a row away from its saved chord and back
+    //     misses step 3, reaches the OS, and comes back `Taken`: "Another
+    //     program already has this shortcut", about beckon.
+    //
+    //     **Below step 4, not folded into step 3.** `Unchanged` is a
+    //     `Mark::Ok` sentence, and a saved chord that another row spells NOW
+    //     is a genuine conflict the user has to fix. Ranking this above the
+    //     duplicate check would answer green there -- the same failure as
+    //     moving the f12 guard below step 3. It only ever needs to outrank
+    //     `AskTheOs`.
+    //
+    //     This narrows the false alarm to the row that owns the chord; a
+    //     chord some OTHER row was saved with is still asked about, and
+    //     still answers `Taken`. Closing that needs the probe to read
+    //     `ServeState::shortcuts`, which is a policy §F.6 has no verdict or
+    //     string for -- so it stays disclosed rather than guessed at.
+    if m.rows
+        .get(row)
+        .and_then(|r| r.orig_key.as_deref())
+        .is_some_and(|k| same_chord(k, &want))
+    {
+        return ProbePlan::Verdict(Availability::Unchanged);
     }
 
     // 5. Nothing beckon holds can decide this. Now, and only now, ask.
@@ -2782,10 +2832,185 @@ mod tests {
         assert_eq!(probe_plan(&m, 0, "ctrl+alt+z"), ProbePlan::AskTheOs);
     }
 
+    /// `Verdict(_)` is not the assertion this test exists to make:
+    /// `Verdict(Free)` satisfies it, and a green Available on a string that
+    /// names no chord is the single worst thing the ordering prevents.
     #[test]
     fn an_unparseable_combo_never_reaches_the_os() {
         let m = rows3();
-        assert!(matches!(probe_plan(&m, 0, "banana"), ProbePlan::Verdict(_)));
+        assert_eq!(
+            probe_plan(&m, 0, "banana"),
+            ProbePlan::Verdict(Availability::Unchanged)
+        );
+    }
+
+    /// **The F12 guard does NOT commute with the own-row check**, which is
+    /// the claim `probe_plan`'s doc comment used to make. Nothing rejects a
+    /// row bound to `ctrl+alt+f12` -- `problems()` has no f12 rule -- so
+    /// such a row probed against its own chord reaches step 3 the moment
+    /// the guard is moved below it, and answers `Unchanged`, which
+    /// `probe_notes` renders as `Mark::Ok`: a green OK on the one key §F.6
+    /// exists to keep from ever coming back green.
+    ///
+    /// The fixture is the point. `rows3()` binds no f12, so the Step 5
+    /// half-A reorder experiment measured the fixture and not the property.
+    #[test]
+    fn f12_outranks_the_rows_own_chord() {
+        let m = Model::from_text("\"ctrl+alt+f12\"=\"Notepad\"\n").unwrap();
+        assert_eq!(m.rows[0].combo, "ctrl+alt+f12");
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+f12"),
+            ProbePlan::Verdict(Availability::F12),
+            "moving the f12 guard below step 3 makes this Unchanged, i.e. Mark::Ok"
+        );
+    }
+
+    /// `render` DROPS a half-typed new row, so it can collide with nothing
+    /// that ever reaches the file -- which is why `problems()` skips it for
+    /// duplicates. Step 4 used to blame it anyway, producing
+    /// `Already used by "" in this file.`: empty quotes, naming a row that
+    /// will never be written.
+    #[test]
+    fn a_half_typed_new_row_is_not_blamed_for_a_duplicate() {
+        let mut m = rows3();
+        m.add_row();
+        let new = m.rows.len() - 1;
+        m.set_combo(new, "ctrl+alt+z"); // app still blank
+        assert!(is_unfinished_new_row(&m.rows[new]));
+        assert_eq!(probe_plan(&m, 0, "ctrl+alt+z"), ProbePlan::AskTheOs);
+
+        // Finished, it counts -- the rule is "unfinished", not "new".
+        m.set_app(new, "Weather");
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+z"),
+            ProbePlan::Verdict(Availability::DuplicateInFile {
+                app: "Weather".into()
+            })
+        );
+    }
+
+    /// `RegisterHotKey` refuses a chord held anywhere on the desktop, and
+    /// that includes beckon's own live table -- which is the SAVED file,
+    /// while `probe_plan` reads the edited model. The window raises the
+    /// probe BEFORE `on_edit_combo` (deliberately, so step 3 has the row's
+    /// previous chord to compare against), so a row edited away from its
+    /// saved chord and back is not caught by step 3, reaches the OS, and
+    /// gets `Taken` -- "Another program already has this shortcut" -- about
+    /// beckon itself.
+    #[test]
+    fn a_rows_own_saved_chord_is_unchanged_not_taken() {
+        let mut m = rows3();
+        m.set_combo(0, "ctrl+alt+z");
+        assert_eq!(m.rows[0].orig_key.as_deref(), Some("ctrl+alt+a"));
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+a"),
+            ProbePlan::Verdict(Availability::Unchanged)
+        );
+    }
+
+    /// The saved-chord relaxation must not outrank step 4. Another row
+    /// spelling the chord NOW is a real conflict the user has to fix, and
+    /// answering `Unchanged` there would be the same green-on-a-bad-chord
+    /// failure as moving the f12 guard.
+    #[test]
+    fn a_saved_chord_another_row_now_spells_is_still_a_duplicate() {
+        let mut m = rows3();
+        m.set_combo(0, "ctrl+alt+z");
+        m.set_combo(1, "ctrl+alt+a"); // row 1 took row 0's saved chord
+        assert_eq!(
+            probe_plan(&m, 0, "ctrl+alt+a"),
+            ProbePlan::Verdict(Availability::DuplicateInFile {
+                app: "Brave".into()
+            })
+        );
+    }
+
+    // ---------- folding a verdict into a row's condition ----------
+
+    /// §F.6's `Free` sentence, verbatim. Asserted on by identity because a
+    /// substring would also match a sentence that had been reworded around
+    /// it.
+    const AVAILABLE: &str = "Available. Nothing else on this PC is using it.";
+
+    fn status_probing(combo: &str, verdict: Availability) -> RuntimeStatus {
+        RuntimeStatus {
+            registered: HashMap::new(),
+            catalog: Some(vec!["Notepad".into(), "Brave".into(), "Weather".into()]),
+            paused: false,
+            probe: Some(ProbeResult {
+                combo: combo.into(),
+                verdict,
+            }),
+        }
+    }
+
+    /// A verdict is about the row being EDITED. Folded into every row, one
+    /// row's answer would appear on another row's line -- and since `mark`
+    /// is derived from the notes, a `Bad` verdict would redden the wrong
+    /// row in the LIST too.
+    #[test]
+    fn a_verdict_shows_only_on_the_selected_row() {
+        let mut m = rows3();
+        let st = status_probing("ctrl+alt+b", Availability::Free);
+
+        m.selected = Some(0);
+        let (_, _, notes) = row_condition(&m, 1, &st, &m.problems());
+        assert!(
+            !notes.iter().any(|n| n.text == AVAILABLE),
+            "row 1 is not selected: {notes:?}"
+        );
+
+        m.selected = Some(1);
+        let (_, _, notes) = row_condition(&m, 1, &st, &m.problems());
+        assert!(
+            notes.iter().any(|n| n.text == AVAILABLE),
+            "row 1 is selected and spells the probed chord: {notes:?}"
+        );
+    }
+
+    /// The user types on and the verdict goes stale. A stale verdict has to
+    /// vanish rather than be shown against the chord that replaced it --
+    /// which is the entire reason `ProbeResult` carries a combo.
+    #[test]
+    fn a_verdict_about_a_chord_the_row_no_longer_spells_is_ignored() {
+        let mut m = rows3();
+        m.selected = Some(0);
+        let st = status_probing("ctrl+alt+z", Availability::Free);
+
+        let (_, _, notes) = row_condition(&m, 0, &st, &m.problems());
+        assert!(
+            !notes.iter().any(|n| n.text == AVAILABLE),
+            "the row means ctrl+alt+a, the verdict is about ctrl+alt+z: {notes:?}"
+        );
+
+        // Spelled differently is not stale: `same_chord` compares canonical
+        // forms, the same rule `problems()` uses for duplicates.
+        m.set_combo(0, "alt+ctrl+z");
+        let (_, _, notes) = row_condition(&m, 0, &st, &m.problems());
+        assert!(
+            notes.iter().any(|n| n.text == AVAILABLE),
+            "alt+ctrl+z and ctrl+alt+z are one chord: {notes:?}"
+        );
+    }
+
+    /// `probe_plan` answers `Unchanged` for a string that names no chord,
+    /// and `Unchanged` is a `Mark::Ok` sentence. It stays off the screen
+    /// only because `same_chord` refuses when EITHER side fails to parse --
+    /// so even a byte-identical pair matches nothing. That is load-bearing,
+    /// and until now it was argued rather than tested.
+    #[test]
+    fn a_verdict_about_an_unparseable_combo_never_renders() {
+        let mut m = rows3();
+        m.set_combo(0, "banana");
+        m.selected = Some(0);
+        let st = status_probing("banana", Availability::Unchanged);
+        let (_, _, notes) = row_condition(&m, 0, &st, &m.problems());
+        assert!(
+            !notes
+                .iter()
+                .any(|n| n.text == "Unchanged - this row already uses it."),
+            "{notes:?}"
+        );
     }
 
     /// The strings are the spec's, verbatim, and a free verdict must never

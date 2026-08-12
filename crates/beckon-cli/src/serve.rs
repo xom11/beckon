@@ -930,19 +930,23 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
 /// taken across an `extern "system"` boundary aborts the process rather than
 /// unwinding -- the rule this module's doc states for `backend.beckon()`.
 ///
-/// **Known false alarm, from reading MSDN rather than from hardware.**
-/// `RegisterHotKey` refuses a chord that is *already registered anywhere on
-/// this desktop*, and that includes beckon's own live table on `tray_hwnd`
-/// -- the separate HWND only rules out an `(hWnd, id)` identity collision,
-/// never a chord collision. `probe_plan` catches the ordinary case (a chord
-/// another row of the model still spells) before the OS is asked, but not
-/// this one: a row edited away from its saved chord and then edited back
-/// leaves that chord registered by `serve` and named by no model row, so the
-/// probe reports `Taken` -- "Another program already has this shortcut" --
-/// about beckon itself. Narrowing it means teaching the probe about
-/// `ServeState::shortcuts`, which is a policy §F.6 does not have a verdict or
-/// a string for; it is written up in the task 2 report rather than guessed at
-/// here.
+/// **Known false alarm, from reading MSDN rather than from hardware --
+/// narrowed, not gone.** `RegisterHotKey` refuses a chord that is *already
+/// registered anywhere on this desktop*, and that includes beckon's own live
+/// table on `tray_hwnd` -- the separate HWND only rules out an `(hWnd, id)`
+/// identity collision, never a chord collision. The live table is the SAVED
+/// file while `probe_plan` reads the EDITED model, so a chord `serve` holds
+/// and no model row currently spells reaches the OS and comes back `Taken` --
+/// "Another program already has this shortcut" -- about beckon itself.
+///
+/// `probe_plan` now settles two of the three cases without asking: a chord
+/// another row still spells (step 4) and the edited row's OWN saved chord
+/// (step 4b, which is what the edit-away-and-back sequence hits, since the
+/// probe runs before `on_edit_combo` and the row therefore still holds its
+/// previous chord). What remains is a chord some OTHER row was saved with and
+/// has since been edited away from. Closing that needs the probe to read
+/// `ServeState::shortcuts`, which is a policy §F.6 has no verdict or string
+/// for; it stays written up in the task 2 report rather than guessed at here.
 #[cfg(target_os = "windows")]
 fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
     use beckon_core::settings::{ProbePlan, ProbeResult};
