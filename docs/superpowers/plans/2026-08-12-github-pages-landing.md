@@ -491,27 +491,59 @@ Exactly this, no rewriting:
 
 - [ ] **Step 3: The hero demo**
 
-Markup: a `.chord` of `Ctrl` `Win` `Alt` `+` `C`, then three `.os-card`
-elements labelled `macOS`, `Windows`, `Linux`, each containing two stacked
-fake window bars — `Brave` and `Claude`.
+> **CORRECTED 2026-08-12, after this step shipped.** This step used to
+> prescribe ONE `.chord` of `Ctrl` `Win` `Alt` `+` `C` above the three cards.
+> That chord is the **Windows** default. `README.md:216` — *"Modifier defaults:
+> `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS, `Ctrl+Win+Alt` on
+> Windows"* — so the page claimed a Windows chord was pressed on a Mac and on
+> a Linux box. Two of the three cards were false. The agent that built it
+> flagged the contradiction rather than shipping it silently; the prescription
+> below is the fixed one. Do not collapse the three chords back into one.
+
+Markup: three `.os-card` elements labelled `macOS`, `Windows`, `Linux`, each
+containing its **own** `.chord` and then two stacked fake window bars —
+`Brave` and `Claude`. Only the letter is shared, and that is the actual claim:
+
+| Card | Chord |
+|---|---|
+| macOS | `Cmd` `Ctrl` `Alt` `+` `C` |
+| Windows | `Ctrl` `Win` `Alt` `+` `C` |
+| Linux | `Super` `+` `C` |
+
+Spell the modifiers. Do **not** use the glyphs `(Cmd)(Ctrl)(Alt)`: a reader
+who does not already know them learns nothing, and they read badly in the
+transcript.
 
 Animation, one shared 4.4s timeline, `infinite`:
 1. `0–18%` — resting.
-2. `18–26%` — every `.key` in the chord takes the pressed look.
+2. `18–26%` — every `.key` in all three chords takes the pressed look.
 3. `26–46%` — in all three cards at once, the `Claude` bar raises above
    `Brave` (z-index + a 6px translate) and takes `--accent` for its title dot.
 4. `46–100%` — hold.
 
-Simultaneity across the three cards is the whole argument; drive all three
-from the same `animation-delay`, not staggered.
+Simultaneity across the three cards is the whole argument and it survives the
+correction: declare **no** `animation-delay` anywhere in the demo, so every
+cap and every card is phase-locked by construction. Different key, same
+instant, same result.
+
+`.key` and `.chord` are shared components — do not fork or restyle them.
+Scope size and wrapping to the hero (`.os-chord`). The chord must be allowed
+to WRAP: three cards at a third of a 375px viewport cannot hold four
+spelled-out modifier caps on one line at any legible size. Pair that with
+`margin-block-start: auto` on `.os-stack` so the window stacks stay level
+across cards whatever each chord wrapped to.
 
 **The final keyframe must be state 4** — the focused state — because
 reduced-motion lands there and holds.
 
 - [ ] **Step 4: The transcript**
 
+> **CORRECTED 2026-08-12.** The old transcript read *"Ctrl+Win+Alt+C, pressed
+> once on each machine: Claude comes to the front on all three."* It named one
+> chord for three machines, which `README.md:216` contradicts (see Step 3).
+
 ```html
-<p class="demo-steps">Ctrl+Win+Alt+C, pressed once on each machine: Claude comes to the front on all three.</p>
+<p class="demo-steps">One line &mdash; beckon Claude &mdash; bound to each machine's own modifier. Pressed once on all three: Claude comes to the front on all three.</p>
 ```
 
 `.demo-steps { color: var(--fg-dim); font-size: 14px; }` — visible to
@@ -542,6 +574,20 @@ git add site && git commit -m "feat(site): keycap component, hero and the three-
 - Consumes: `.key`, `.demo`, `.demo-steps` from Task 3.
 - Produces: nothing later tasks depend on.
 
+> **CORRECTED 2026-08-12, after this task shipped.** Steps 1–3 used to
+> prescribe ONE demo of five presses walking
+> `Claude 1/3 → 2/3 → 3/3 → Brave → hidden`, and a table whose three
+> "focused" rows implied that single linear walk. **That sequence cannot
+> happen.** `CLAUDE.md`'s step 5 branches on a precondition, and its step-5a
+> note is explicit: the cycle ring is ordered by address and *"rotating over
+> them visits every window exactly once per lap. Verified live on sway: three
+> `foot` windows, seven presses, `35 → 36 → 37 → 35 → …`"*. With three Claude
+> windows open the ring never exits 5a, so press four returns to `1/3` and
+> both `Brave` (5b) and `hidden` (5c) are unreachable. The agent that built it
+> flagged the contradiction rather than quietly "improving" it. Steps 1–3
+> below are the fixed prescription: **two** demos, each naming its own
+> precondition.
+
 - [ ] **Step 1: The copy**
 
 Heading: **Focus is only the first press.**
@@ -550,30 +596,51 @@ Lead: *Most launchers stop at "bring it to the front". beckon keeps going, and
 which thing happens is decided for you — there is no flag and nothing to
 configure.*
 
-The five steps, verbatim from the focus algorithm in `CLAUDE.md`:
+The steps, from the focus algorithm in `CLAUDE.md`. Each row that depends on a
+precondition must SAY the precondition — a row reading "No other window" leaves
+the reader to guess which of 5a/5b/5c they are in:
 
 | Press | What happens |
 |---|---|
 | App is not running | launch it |
 | Running, not focused | focus it |
-| Focused, has another window | focus the next window |
-| No other window | switch back to the app you came from |
-| Nothing else to go to | hide it |
+| Focused, app has another window | focus the next one, wrapping round |
+| Focused, one window, another app open | switch back to the app you came from |
+| Focused, one window, nothing else open | hide it |
 
-- [ ] **Step 2: The demo**
+- [ ] **Step 2: The demos — two of them**
 
-One window column holding `Claude 1/3`, `Claude 2/3`, `Claude 3/3` and
-`Brave`. A `.key` labelled `C` pulses five times over a 9s `infinite`
-timeline; on each pulse the highlight moves
-`Claude 1/3 → 2/3 → 3/3 → Brave → (all dimmed, caption "hidden")`.
+Side by side from 900px up, stacked below it. Each is a `.demo` whose first
+child is a caption naming its precondition; `.demo-steps` stays the last child.
 
-Final keyframe = the hidden state, with the caption visible. That is the step
-readers least expect and the one worth holding under reduced motion.
+**Demo A — "Three windows open".** Rows `Claude 1/3`, `Claude 2/3`,
+`Claude 3/3` and no other app. The `C` key pulses **four** times over a 7.2s
+`infinite` timeline (the key's own period is 1.8s, so 7.2s is exactly four
+presses); the highlight walks `1/3 → 2/3 → 3/3 → 1/3`. Final keyframe = back
+on `1/3`, which is the honest surprise: it laps.
 
-- [ ] **Step 3: Transcript**
+**Demo B — "One window open".** Two rows, `Claude` (no count) and `Brave`. The
+`C` key pulses **twice** over 3.6s; press one focuses Claude, press two goes
+back to Brave. Final keyframe = Brave focused. 5c is carried by the transcript,
+not by a frame — a demo cannot show a window that is not there.
+
+Motion contract, unchanged and load-bearing: every animation carries
+`animation-fill-mode: both` and every base rule equals its own 100% keyframe,
+so the global reduced-motion block (`animation-duration: .01ms` +
+`animation-iteration-count: 1`) lands on the final frame and holds. Prefer
+**no `animation-delay` at all** — write one keyframe set per row. A positive
+delay is only safe if that element's 0% and 100% frames are identical, because
+reduced motion does not override the delay and a reader would sit in the
+backwards fill for seconds.
+
+- [ ] **Step 3: Transcripts**
 
 ```html
-<p class="demo-steps">Five presses of the same key: window 1, window 2, window 3, back to Brave, hidden.</p>
+<p class="demo-steps">Four presses with three Claude windows open: it walks the ring and comes back round to the first.</p>
+```
+
+```html
+<p class="demo-steps">With one Claude window and Brave also open: the first press focuses Claude, the second goes back to Brave. With nothing else open, that second press hides it instead.</p>
 ```
 
 - [ ] **Step 4: Test**

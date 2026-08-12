@@ -139,7 +139,7 @@ learning who reads the page. Hero is `clamp(2.75rem, 7vw, 5.5rem)` with
 border, a 2px bottom shadow that shortens by 1px under `.key[data-down]` so the
 cap visibly depresses.
 
-It is reused verbatim in four places: the hero chord, the algorithm demo, the
+It is reused verbatim in four places: the hero's three chords, the algorithm demos, the
 letter→app table in *Works with your setup*, and the Caps Lock line in
 *Or let beckon hold the keys*. That reuse is what makes the page read as one
 system rather than eight unrelated blocks, and it is cheaper than styling four
@@ -147,29 +147,63 @@ things that nearly match.
 
 ### 5. Motion
 
-Two demos, both pure CSS `@keyframes` on a fixed timeline, no JS, no
+**CORRECTED 2026-08-12.** Both demos described here were specified with copy
+the repository contradicts, and both were built, flagged and then fixed. The
+two errors, kept on the record because the reasoning that produced them is easy
+to repeat:
+
+1. *"the chord `[Ctrl][Win][Alt]+[C]` … three window chromes labelled macOS /
+   Windows / Linux"* — that chord is the **Windows** default. `README.md:216`:
+   *"Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
+   `Ctrl+Win+Alt` on Windows."* One chord over three OS cards is true on
+   exactly one of them.
+2. *"the same chord pressed five times … `focus → cycle 2/3 → cycle 3/3 → back
+   to Brave → hidden`"* — cannot happen. `CLAUDE.md`'s step 5a cycles a ring of
+   the app's own windows and *"rotating over them visits every window exactly
+   once per lap. Verified live on sway: three `foot` windows, seven presses,
+   `35 → 36 → 37 → 35 → …`"*. With three Claude windows open, press four
+   returns to `1/3`; 5b and 5c are unreachable from that precondition.
+
+**Three** demos, all pure CSS `@keyframes` on fixed timelines, no JS, no
 `Intersection Observer`:
 
-- **Hero** — the chord `[Ctrl][Win][Alt]+[C]` depresses; three window chromes
-  labelled macOS / Windows / Linux each raise a `Claude` window at the same
-  beat. The point is simultaneity: one line, three OSes.
-- **Algorithm** — the same chord pressed five times against a fixed window
-  set, stepping `focus → cycle 2/3 → cycle 3/3 → back to Brave → hidden`,
-  captioned with the step number from the focus algorithm.
+- **Hero** — each of the three OS cards carries **its own** chord:
+  `[Cmd][Ctrl][Alt]+[C]` on macOS, `[Ctrl][Win][Alt]+[C]` on Windows,
+  `[Super]+[C]` on Linux, modifiers spelled rather than glyphed. All three
+  depress on the same beat of one 4.4s timeline and each raises its `Claude`
+  window together. The point is still simultaneity, and it is stronger for
+  being honest: different key, same instant, same result. Simultaneity is
+  structural — **no `animation-delay` anywhere in the demo**.
+- **Algorithm A, "Three windows open"** — four presses over 7.2s against
+  `Claude 1/3`, `2/3`, `3/3`; the highlight walks `1/3 → 2/3 → 3/3 → 1/3` and
+  rests back on the first. The lap is the thing worth showing.
+- **Algorithm B, "One window open"** — two presses over 3.6s against `Claude`
+  and `Brave`: focus Claude, then back to Brave, resting on Brave. The
+  nothing-else-open case (5c, hide) lives in the transcript, because a demo
+  cannot show a window that is not there.
 
-Under `@media (prefers-reduced-motion: reduce)` both animations are set to
-`animation: none` and each demo's markup carries the *final* state as its
-static appearance, with the intermediate steps listed as text. A reader who
-turns motion off must not lose the argument, and on this page the animation
-*is* the argument.
+Every demo names its precondition in a caption, because step 5 branches on one
+and an unlabelled demo is a claim about all cases.
+
+Under `@media (prefers-reduced-motion: reduce)` a single global block pins
+`animation-duration: .01ms` and `animation-iteration-count: 1`, and each demo's
+markup and base CSS carry the *final* state as its static appearance, with the
+whole sequence also given as text. Two rules make that land rather than
+snapping back: every animation carries `animation-fill-mode: both`, and every
+base rule equals its own 100% keyframe. A positive `animation-delay` is only
+admissible when that element's 0% and 100% keyframes are identical — reduced
+motion does not override delays, so a delayed element sits in its backwards
+fill first. Preferring one keyframe set per element avoids the question. A
+reader who turns motion off must not lose the argument, and on this page the
+animation *is* the argument.
 
 ### 6. Sections
 
 | # | Section | Substance |
 |---|---|---|
 | 0 | Nav (sticky) | `b` mark · Install · How it works · Docs → README · GitHub · theme toggle |
-| 1 | Hero | *One key per app. Every OS you use.* Sub: the same `beckon Claude` on macOS, Windows, Linux. Chord demo. Two buttons: Install, GitHub. |
-| 2 | Focus is only the first press | The five-step algorithm as prose + the repeat-press demo. This is what separates beckon from a launcher. |
+| 1 | Hero | *One key per app. Every OS you use.* Sub: the same `beckon Claude` on macOS, Windows, Linux. Three cards, each with **its own** default chord (see §5). Two buttons: Install, GitHub. |
+| 2 | Focus is only the first press | The algorithm as a table whose rows carry their preconditions, plus **two** demos — the three-window ring and the one-window toggle (see §5). This is what separates beckon from a launcher. |
 | 3 | Type the name, not the id | `beckon Claude` beside `brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default`, and the reason: Brave/Chrome PWA hashes are minted at install time and differ per machine, so canonical ids cannot be synced through a dotfile. `Name=` can. |
 | 4 | Works with your setup | Eight tiles (below) + the letter→app table + the per-OS modifier defaults. |
 | 5 | Or let beckon hold the keys | `serve` on macOS and Windows: flat TOML, `brew services start beckon`, the Windows tray app and its settings window. States plainly that Linux is not served here and the compositor binds the key. |
