@@ -1054,6 +1054,29 @@ OS metadata on every call.
   restarts on a file only a human can fix, then gives up — leaving no
   hotkeys and, before `4f82b94`, no tray to say so.
 
+  **The shortcut is four check boxes and a closed key list, not a text
+  field.** Spec §C.4's typed path, which it calls primary: it makes an
+  invalid combo unrepresentable, it is the only path for someone who cannot
+  physically produce a chord, and a `CBS_DROPDOWNLIST` has no edit control,
+  so §7.15's resize defect is structurally impossible there. `IDC_COMBO`
+  **kept its number (1002) and changed class** -- the id `settings_probe`
+  pins still names the shortcut control.
+
+  Two things hold it together and neither is visible to a unit test.
+  **`ComboView::key` is an index into `shortcuts::key_table()` and the window
+  passes the same integer to `CB_SETCURSEL`** -- so the list must be filled
+  from `key_table()` in order and **`CBS_SORT` must never be set**; sorted,
+  `f10` moves ahead of `f2`, every index shifts, and the window writes a key
+  the user did not choose, silently. `examples/settings_probe.rs` reads the
+  style and the count on hardware because nothing in `beckon-core` can see
+  either. And **`commit_fields` compares `ComboView`s, not strings**:
+  `Combo::parse` accepts free modifier order while the window rebuilds
+  canonically, so a string compare made `"super+ctrl+alt+t"` look like an
+  edit and lit up Save on a file nobody had touched.
+
+  The four boxes carry **no `&` mnemonic** -- `Hold` already claimed `t`,
+  `w` and `l`, and the table in `mod cap` is the only guard there is.
+
   **The Caps Lock row is one line, and `Hold` has three chips, not four.**
   `[x] Use Caps Lock as a shortcut key   Hold [Ctrl][Win][Alt]   Tap [v]`.
   It replaced a check box plus three radios whose first caption embedded the
