@@ -1047,10 +1047,32 @@ fn mark_glyph(m: Mark) -> &'static str {
     // a missing glyph shows as a box that reads like a rendering bug rather
     // than a status. (Segoe Fluent Icons IS installed, measured on a14, but
     // spec B.5 defers those glyphs to the NM_CUSTOMDRAW pass that can give
-    // them their own font.) All four are two columns wide so the note lines
-    // line up -- the trailing space on `Warn` is load-bearing, not a typo.
+    // them their own font.)
+    //
+    // **`Ok` is blank, and this comment used to explain why it was not.** It
+    // said "All four are two columns wide so the note lines line up", which
+    // is a MONOSPACE property asserted about a proportional face -- measured
+    // on a14 and false. Each note is laid out as `glyph + "  " + text`, so
+    // the glyph's advance IS the x where the text starts:
+    //
+    // |            | 144 DPI | 96 DPI |
+    // |------------|---------|--------|
+    // | `OK` + 2sp | 35 px   | 22 px  |
+    // | `!!` + 2sp | 20 px   | 14 px  |
+    // | `! ` + 2sp | 20 px   | 13 px  |
+    // | `..` + 2sp | 18 px   | 12 px  |
+    // | 4 spaces   | 20 px   | 12 px  |
+    //
+    // So `OK` stood 15 px proud of `!!`, and the other three were never
+    // equal either -- just close enough not to be noticed. Two spaces put
+    // `Ok` inside the 2 px spread the shipped marks already had, and say
+    // the same thing spec B.5 says with the list flag: a healthy row is
+    // silent. Exact alignment needs a glyph column drawn at a fixed x,
+    // which is the NM_CUSTOMDRAW work B.5 defers.
+    //
+    // The trailing space on `Warn` is still load-bearing, not a typo.
     match m {
-        Mark::Ok => "OK",
+        Mark::Ok => "  ",
         Mark::Warn => "! ",
         Mark::Bad => "!!",
         Mark::Unknown => "..",
