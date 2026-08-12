@@ -150,6 +150,34 @@ footer .wrap a { display: inline-flex; align-items: center; min-height: 24px; }
 }
 .nav button:hover { color: var(--fg); border-color: var(--accent); }
 
+/* The OS switcher, sitting beside the theme button and borrowing the same
+   vocabulary for the same reason: an unstyled UA <select> next to a designed
+   outline button reads as a third widget system.
+
+   `appearance` is deliberately NOT reset. The native disclosure arrow is the
+   only thing distinguishing this control from the button next to it, and the
+   popup it opens is painted by the UA in the theme `color-scheme` on :root
+   already declares — both of which a custom arrow would cost. The global
+   :focus-visible ring in §2 covers it, so there is no focus rule here.
+
+   min-height on the select for the same WCAG 2.2 SC 2.5.8 reason the nav links
+   carry one: padding alone clears 24px today, and drops the target under it the
+   moment the phone breakpoint shrinks the font. It costs no layout where the
+   box is already taller. */
+.os-switch { display: inline-flex; align-items: center; gap: 8px; }
+.os-switch label { color: var(--fg-dim); font: 600 14px var(--sans); }
+.os-switch select {
+  min-height: 24px;
+  padding: 5px 8px;
+  font: 600 14px var(--sans);
+  color: var(--fg-dim);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.os-switch select:hover { color: var(--fg); border-color: var(--accent); }
+
 /* The last section already pays --section-y below itself, so the footer adds
    no margin of its own; otherwise the page ends on a gap twice as tall as
    every other. */
@@ -740,6 +768,50 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 
 /* --- 4d. section: setups ("Works with your setup.") ----------------------- */
 
+/* Shared: the OS marker.
+   CONTRACT — reused verbatim by the three serve cards in §4e. Do not fork it.
+
+     <li class="os-row" data-os="macos">   ... </li>
+     <h3 class="os-row" data-os="linux">   ... </h3>
+
+   The chip appears on exactly the one element whose data-os equals :root's,
+   and :root only carries data-os once the head bootstrap has run. So this is
+   decoration layered onto markup that is already complete: with JS off no
+   selector below matches, no chip exists, and every row reads as it did before
+   the marker was added. That is the same direction as everything else on this
+   page — JS only ever REDUCES — except that here it adds nothing to read and
+   only says which of the rows already on screen is the reader's.
+
+   Generated content rather than a shipped <span> is the whole reason it can
+   work that way. A shipped chip would have to say "yours" on all three rows
+   with JS off, which is nonsense, or ship `hidden` and wait for JS, which is
+   the pattern this page refuses everywhere except the two nav controls (which
+   change nothing that is not already visible; a chip is content).
+
+   The three pairs are written out because CSS cannot compare an ancestor's
+   attribute with a descendant's. Nothing here uses :has(), so it needs no
+   support floor beyond the rest of the file.
+
+   Colours are .tile-flag's, and for the reason recorded there: --accent on
+   --bg is 5.17:1 light and 6.15:1 dark, with no compositing to compute. Inside
+   a .card the --bg ground makes it a well in the raised panel, which is the
+   same figure/ground pair .panel pre uses. */
+:root[data-os="macos"]   .os-row[data-os="macos"]::after,
+:root[data-os="windows"] .os-row[data-os="windows"]::after,
+:root[data-os="linux"]   .os-row[data-os="linux"]::after {
+  content: "yours";
+  padding: 3px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  font: 600 11px/1 var(--sans);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--bg);
+}
+/* Both hosts are flex rows, so the chip is a flex item and the row's own gap
+   spaces it. .card h3 is made a flex row in §4e for exactly that. */
+
 .tiles {
   list-style: none;
   margin: 0 0 48px;
@@ -880,7 +952,15 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
+/* flex, so the "yours" chip from §4d lands beside the caption on the same
+   centre line and is spaced by this gap rather than by a margin of its own.
+   The caption is the only other child, so flex changes nothing when the chip
+   is absent. */
 .card h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   margin: 0 0 10px;
   color: var(--fg-dim);
   font-size: .78rem;
@@ -894,6 +974,15 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
    as deliberately outside the set without dimming the text, which would read
    as "unfinished" rather than "not offered". */
 .card-linux { border-style: dashed; }
+
+/* The reader's own card takes the accent edge as well as the chip, since the
+   cards are already bordered boxes and a chip alone is easy to miss in a row
+   of three. Border WIDTH and STYLE are untouched — .card-linux stays dashed
+   when it is also the marked one, because "not offered" and "yours" are
+   different facts and a Linux reader needs both. */
+:root[data-os="macos"]   .card[data-os="macos"],
+:root[data-os="windows"] .card[data-os="windows"],
+:root[data-os="linux"]   .card[data-os="linux"] { border-color: var(--accent); }
 
 /* Keycaps sit ~2.4em tall inside a small paragraph; the extra leading keeps
    consecutive lines from touching when the line wraps. Reused by the Caps Lock
@@ -1051,12 +1140,20 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 @media (max-width: 720px) {
   :root { --section-y: 56px; --pad: 16px; }
 
-  /* The nav is four links plus the brand and a button, and cannot fit one row
-     at 375px; it wraps to brand + toggle, then the links. Overflowing it
+  /* The nav is four links plus the brand and two controls, and cannot fit one
+     row at 375px; it wraps to brand + controls, then the links. Overflowing it
      instead would put a horizontal scroll bar on <body> for the whole page.
      The ::after is a zero-height full-width flex item: without it the links
-     pack onto row one until it is full and only the overflow wraps. */
+     pack onto row one until it is full and only the overflow wraps.
+
+     The switcher and the button share order 1, so source order keeps them
+     together and in that order; if row one ever runs out of width the two of
+     them wrap as a pair, ahead of the ::after, and the links still start a row
+     of their own. */
   .nav .wrap { flex-wrap: wrap; height: auto; padding-block: 10px; gap: 8px 16px; }
+  .os-switch { order: 1; gap: 6px; }
+  .os-switch label,
+  .os-switch select { font-size: 13px; }
   .nav button { order: 1; }
   .nav .wrap::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
   .nav a:not(.brand) { order: 3; font-size: 14px; }

@@ -3,9 +3,17 @@
 //
 // The rule this file keeps, and it is the same one stated on .copy in
 // beckon.css: nothing renders a control that silently does nothing. The theme
-// button and the install tablist both ship with the `hidden` attribute and are
-// revealed here; the copy buttons are created here and only when the clipboard
-// API exists.
+// button, the OS switcher and the install tablist all ship with the `hidden`
+// attribute and are revealed here; the copy buttons are created here and only
+// when the clipboard API exists.
+//
+// TWO pieces of shared state, both stamped on <html> by the inline script in
+// <head> before first paint, both remembered in localStorage, both overridable
+// by a control in the nav: `data-theme` and `data-os`. This file owns the
+// controls and nothing else. `data-os` changes are announced on document as a
+// `beckon:os` event so a consumer — today the install tablist, tomorrow
+// whatever else follows the reader's OS — can subscribe without this file
+// knowing about it.
 (() => {
   const root = document.documentElement;
   const btn = document.getElementById('theme');
@@ -33,6 +41,43 @@
     root.dataset.theme = isDark() ? 'light' : 'dark';
     localStorage.setItem('beckon-theme', root.dataset.theme);
     label();
+  });
+})();
+
+// The OS switcher, decision for decision the same shape as the theme button
+// above: the head bootstrap owns the value and applies it before first paint,
+// this owns the control.
+//
+// No label() equivalent is needed here and that is the point of choosing a
+// <select>: its accessible name is the fixed word "OS" and its accessible
+// VALUE is the current OS, so it announces the state the reader is in rather
+// than the one they would move to. A cycling button can only name the next
+// state, which is the bug the theme button's aria-label had before it was
+// resolved against matchMedia.
+(() => {
+  const root = document.documentElement;
+  const wrap = document.getElementById('os-switch');
+  const sel = document.getElementById('os-select');
+  if (!wrap || !sel) return;
+
+  // Normally already stamped by <head>. Restamped here because the bootstrap
+  // is inside a try/catch — a browser that throws on localStorage (Safari
+  // private mode used to) leaves `data-os` unset, and a switcher showing
+  // "macOS" over a page in no OS state at all is a control that lies. The
+  // fallback matches the bootstrap's: see the <head> comment for why linux.
+  const os = root.dataset.os || 'linux';
+  root.dataset.os = os;
+  sel.value = os;
+  wrap.hidden = false;
+
+  sel.addEventListener('change', () => {
+    root.dataset.os = sel.value;
+    // Wrapped, unlike the theme button's: a throw here would skip the dispatch
+    // below and leave the install tabs on the previous OS while the marker in
+    // #setups had already moved. Failing to remember is survivable; disagreeing
+    // with itself on the same page is not.
+    try { localStorage.setItem('beckon-os', sel.value); } catch (e) {}
+    document.dispatchEvent(new CustomEvent('beckon:os'));
   });
 })();
 
@@ -68,17 +113,20 @@
       show(n); tabs[n].focus();
     });
   });
-  // Android reports `Linux` in its user agent ("Linux; Android 14; Pixel 8"),
-  // so testing Linux before Android opened every Android reader on the Nix
-  // flake tab. Nothing is unreachable either way — the panels all ship visible
-  // and every tab is one click away — this only picks the first one shown.
-  const p = navigator.userAgent;
-  const i = /Android/i.test(p) ? 0
-    : /Mac/i.test(p) ? 0
-    : /Win/i.test(p) ? 1
-    : /Linux|X11/i.test(p) ? 3
-    : 0;
-  show(i);
+  // Which tab opens first follows `data-os`, the same state the nav's switcher
+  // writes and the head bootstrap detects. This used to sniff
+  // navigator.userAgent right here, privately, which made the guess
+  // uncorrectable: a reader on the wrong tab could click across but could not
+  // tell the page it had guessed wrong, and nothing else on the page moved
+  // with them. Cargo (index 2) is nobody's default — it is the from-source
+  // channel and needs a toolchain — so it is reachable only by clicking.
+  const order = { macos: 0, windows: 1, linux: 3 };
+  const pick = () => {
+    const i = order[document.documentElement.dataset.os];
+    return i === undefined ? 0 : i;
+  };
+  show(pick());
+  document.addEventListener('beckon:os', () => show(pick()));
 })();
 
 // Copy buttons. Hidden entirely when the clipboard API is absent, rather than

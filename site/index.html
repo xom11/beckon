@@ -18,16 +18,59 @@
 <link rel="apple-touch-icon" href="icon-512.png">
 <link rel="stylesheet" href="beckon.css">
 
-<!-- The saved theme, and nothing else, applied BEFORE first paint. beckon.js is
-     `defer`, so it runs after the document is parsed and can run after the first
-     paint: a reader whose stored choice differs from their OS preference got a
-     full paint of #0B0D12 and then a flip to #FFFFFF, the highest-delta flash
-     this palette can produce. Everything else about the toggle — the button, its
-     label, the click handler — stays in beckon.js. -->
+<!-- The page's two personalisation axes — theme and OS — resolved BEFORE first
+     paint, and nothing else. beckon.js is `defer`, so it runs after the document
+     is parsed and can run after the first paint: a reader whose stored choice
+     differs from their OS preference got a full paint of #0B0D12 and then a flip
+     to #FFFFFF, the highest-delta flash this palette can produce. `data-os` has
+     the same problem in a smaller form — the "yours" marker in #setups would
+     land on the wrong modifier line and then jump. Everything else about either
+     axis — the controls, their labels, the handlers — stays in beckon.js.
+
+     UNRECOGNISED PLATFORM -> linux, and that is a decision rather than a
+     leftover. Two arguments, and the second is the load-bearing one.
+
+     First, the two positive tests are broad: macOS and iOS user agents carry
+     "Macintosh" / "like Mac OS X" and Windows ones carry "Windows NT", and
+     `navigator.userAgentData.platform` reports the far tidier "macOS" /
+     "Windows". So the residue is much closer to "demonstrably neither of those
+     two" than to "could be anything" — which is what the Linux column already
+     means on this page: it is beckon's bucket for every EWMH X11 desktop and
+     every Wayland compositor rather than a named product.
+
+     Second, and this is the half that does not depend on guessing the shape of
+     the residue: linux is the CHEAPEST place to be wrong. macOS and Windows
+     each preselect an installer — `brew`, `scoop` — that cannot exist on a
+     machine that is not one of them, and mark a modifier chord the reader does
+     not have. Nothing is unreachable either way — all four install panels are
+     one click apart, all three modifier lines stay on screen, and the switcher
+     in the nav corrects it in one keystroke — so this only picks what is
+     preselected and what is marked.
+
+     ANDROID AND CHROME OS land in linux, and that is a change: the sniff this
+     replaced tested /Android/ first and sent those readers to the Homebrew
+     tab. Both destinations are equally unusable on a phone — beckon ships no
+     Android build and no Chrome OS build — so the old special case was
+     buying nothing, and folding it in keeps the whole mapping to two tests.
+     "Linux" in an Android user agent is now simply believed.
+
+     `&&` rather than `?.` on purpose: a SyntaxError in an inline script is not
+     catchable by the try/catch around it, and would take the theme bootstrap
+     down with it on any engine that predates optional chaining. -->
 <script>
   try {
+    var d = document.documentElement.dataset;
     var t = localStorage.getItem('beckon-theme');
-    if (t) document.documentElement.dataset.theme = t;
+    if (t) d.theme = t;
+    var o = localStorage.getItem('beckon-os');
+    if (!o) {
+      var p = (navigator.userAgentData && navigator.userAgentData.platform)
+              || navigator.userAgent;
+      // Linux|X11|Android|CrOS all land in the last branch, and so does
+      // everything unrecognised. See the comment above for why that is linux.
+      o = /Mac/i.test(p) ? 'macos' : /Win/i.test(p) ? 'windows' : 'linux';
+    }
+    d.os = o;
   } catch (e) {}
 </script>
 </head>
@@ -43,12 +86,30 @@
     <a href="#how">How it works</a>
     <a href="https://github.com/xom11/beckon/blob/main/README.md">Docs</a>
     <a href="https://github.com/xom11/beckon">GitHub</a>
-    <!-- Ships `hidden`; beckon.js removes it. Same shape as the install
-         tablist below, and for the same reason: this button does nothing at all
-         without JS, and the page's rule — stated on .copy in beckon.css — is
-         that there is never a control on screen that silently does nothing.
-         Its aria-label is set by beckon.js too, because the right label depends
-         on the resolved theme and only JS can resolve it. -->
+    <!-- Both controls ship `hidden`; beckon.js removes it. Same shape as the
+         install tablist below, and for the same reason: neither does anything
+         at all without JS, and the page's rule — stated on .copy in beckon.css
+         — is that there is never a control on screen that silently does
+         nothing. This is the ONE place where "ships hidden, JS reveals" is the
+         right inversion: everything these two controls change is already fully
+         on screen without them.
+
+         A <select> rather than a cycling <button>: there are three OSes, so a
+         button could only ever offer the next one, and its accessible name
+         would name a state the reader is not in. A select announces the state
+         it IS in ("OS, combo box, Windows") and is the shorter keyboard path to
+         any of the three. Its <label> is visible, and the native arrow is kept
+         so it reads as a menu rather than as a third button. The theme button's
+         aria-label is still set by beckon.js, because the right label there
+         depends on the resolved theme and only JS can resolve it. -->
+    <span class="os-switch" id="os-switch" hidden>
+      <label for="os-select">OS</label>
+      <select id="os-select">
+        <option value="macos">macOS</option>
+        <option value="windows">Windows</option>
+        <option value="linux">Linux</option>
+      </select>
+    </span>
     <button id="theme" type="button" hidden>Theme</button>
   </div>
 </header>
@@ -329,19 +390,29 @@ beckon doctor</code></pre>
           <p class="note">The examples wire the same five keys everywhere, so you remember the
             letter and not the modifier.</p>
 
+          <!-- All three defaults stay on screen at every setting of `data-os`,
+               because "the same letter on all three" is the claim this list
+               exists to make and hiding two of them would delete it. The
+               reader's own row is MARKED — see "Shared: the OS marker" in
+               beckon.css §4d. The marker is CSS generated content keyed on
+               :root[data-os], not a <span> in here: a shipped chip would have
+               to read "yours" on all three rows with JS off, which is nonsense,
+               or ship `hidden` and wait for JS, which is the defect this page
+               refuses everywhere else. With JS off `data-os` is absent, nothing
+               matches, and the list reads exactly as it did before. -->
           <ul class="mods">
-            <li>
+            <li class="os-row" data-os="linux">
               <span class="mod-os">Linux</span>
               <span class="chord"><kbd class="key">Super</kbd></span>
             </li>
-            <li>
+            <li class="os-row" data-os="macos">
               <span class="mod-os">macOS</span>
               <span class="chord">
                 <kbd class="key">Cmd</kbd><span class="plus">+</span><kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Alt</kbd>
               </span>
               <span class="mod-note">Hyper</span>
             </li>
-            <li>
+            <li class="os-row" data-os="windows">
               <span class="mod-os">Windows</span>
               <span class="chord">
                 <kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Win</kbd><span class="plus">+</span><kbd class="key">Alt</kbd>
@@ -373,20 +444,27 @@ beckon doctor</code></pre>
 "ctrl+super+alt+shift+t" = "Telegram Web"</code></pre>
       </figure>
 
+      <!-- The three cards are three different answers, not three copies of one,
+           and the Linux one is a "no". So all three stay visible at every
+           setting of `data-os` and only the reader's own is marked — the same
+           mechanism as the modifier list in #setups. Marking the Linux card is
+           the point rather than an awkwardness: a Linux reader should be told
+           which of these three paragraphs is the one about them, and it is the
+           one that says beckon does not do this. -->
       <ul class="cards">
-        <li class="card">
-          <h3>macOS</h3>
+        <li class="card" data-os="macos">
+          <h3 class="os-row" data-os="macos">macOS</h3>
           <p><code>brew services start beckon</code> is the whole install; the formula ships
           the LaunchAgent.</p>
         </li>
-        <li class="card">
-          <h3>Windows</h3>
+        <li class="card" data-os="windows">
+          <h3 class="os-row" data-os="windows">Windows</h3>
           <p><code>beckon-serve.exe</code> is a tray app with no console window at any point.
           Reload, pause, open the log, or open Settings from the tray; tick
           <em>Start with Windows</em>.</p>
         </li>
-        <li class="card card-linux">
-          <h3>Linux</h3>
+        <li class="card card-linux" data-os="linux">
+          <h3 class="os-row" data-os="linux">Linux</h3>
           <p>Deliberately not served here. Your compositor already binds keys better than
           beckon could, so <code>bindsym $mod+c exec beckon Claude</code> is the
           integration.</p>
@@ -433,7 +511,9 @@ beckon doctor</code></pre>
        what they are.
 
        Tab order is Homebrew, Scoop, Cargo, Nix, because beckon.js maps
-       macOS to 0, Windows to 1 and Linux to 3.
+       `data-os` — the shared state the nav's OS switcher writes — macos to 0,
+       windows to 1 and linux to 3. It used to sniff `navigator.userAgent`
+       privately in that IIFE, which meant the reader could not correct it.
 
        The command text is FIXED: tools/check-site.sh asserts these five lines
        byte-match README.md. Restyle freely; do not re-author them. -->
