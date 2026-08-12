@@ -1054,6 +1054,28 @@ OS metadata on every call.
   restarts on a file only a human can fix, then gives up — leaving no
   hotkeys and, before `4f82b94`, no tray to say so.
 
+  **The availability probe asks the OS last, and always gives the chord
+  back.** Order, from `beckon_core::settings::probe_plan`: parse, the F12
+  guard, the row's own chord, other rows in the file, the row's *saved*
+  chord, and only then `RegisterHotKey`. Every step before the last is a fact
+  the OS cannot report, and asking it first lets a reserved or already-
+  duplicated chord come back green. **`VK_F12` is reserved for debuggers at
+  all times**, so a successful registration on it proves nothing -- and the
+  F12 guard does **not** commute with the own-row check: below it, a row
+  bound to `ctrl+alt+f12` probing its own chord answers `Unchanged` with
+  `Mark::Ok`, a green tick on the one key the guard exists for.
+
+  The probe registers on the **settings window's** `HWND` with one fixed id,
+  never `tray_hwnd`: a hotkey is `(hWnd, id)`, and MSDN keeps a duplicate
+  pair *alongside* the original, after which `UnregisterHotKey` frees an
+  unspecified one of the two -- a silently dead hotkey. It unregisters on
+  every exit path; measurements §60 proves it does, with a control that shows
+  the test can see a held chord. The verdict rides on `RuntimeStatus`, never
+  `Model::problems`, which is what keeps `apply_enabled` testable on the two
+  CI jobs that are not Windows -- and **`RuntimeStatus.registered` never
+  decides availability**, because pausing clears it and beckon's own chord
+  would read as free.
+
   **The shortcut is four check boxes and a closed key list, not a text
   field.** Spec §C.4's typed path, which it calls primary: it makes an
   invalid combo unrepresentable, it is the only path for someone who cannot
