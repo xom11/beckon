@@ -29,6 +29,12 @@ pub struct Model {
     pub selected: Option<usize>,
     original: String,
     dirty: bool,
+    /// The list filter. **View state**: never written to disk, never makes
+    /// the model dirty. It lives here rather than in the window because
+    /// `remove_pressed`, `remove_enabled`, `marked_count` and `selected` all
+    /// depend on which rows are visible, and those decisions belong in the
+    /// crate all three CI jobs compile.
+    filter: String,
 }
 
 /// How much a `Problem` costs. `Error` refuses the write; `Warning` is
@@ -202,11 +208,49 @@ impl Model {
             selected: None,
             original: text.to_string(),
             dirty: false,
+            filter: String::new(),
         })
     }
 
     pub fn dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// Set the list filter. Deliberately does NOT set `dirty`, for the same
+    /// reason `set_marked` does not: `apply_enabled` is `dirty && valid`, so
+    /// a filter that dirtied the model would light up Save and rewrite the
+    /// file byte-identical.
+    pub fn set_filter(&mut self, v: &str) {
+        self.filter = v.to_string();
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    /// The indices in `rows` the filter is showing, in model order.
+    ///
+    /// Matched case-insensitively against BOTH columns -- the app name and
+    /// the combo -- which is the rule `beckon search` already uses, so the
+    /// program has no third matching dialect.
+    ///
+    /// Trimmed first: a trailing space left by typing would otherwise match
+    /// nothing and hide every row, which reads as a hang.
+    ///
+    /// Model order is a precondition of `remove_indices`, not a convenience.
+    fn visible(&self) -> Vec<usize> {
+        let f = self.filter.trim().to_lowercase();
+        if f.is_empty() {
+            return (0..self.rows.len()).collect();
+        }
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.app.to_lowercase().contains(&f) || r.combo.to_lowercase().contains(&f)
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     pub fn set_combo(&mut self, i: usize, v: &str) {
@@ -1985,5 +2029,67 @@ mod tests {
             "an invalid EDIT is not a read-only FILE: Save is greyed, the \
              fields stay live so it can be fixed"
         );
+    }
+
+    // ---------- the filter ----------
+
+    fn three() -> Model {
+        Model::from_text(
+            "\"ctrl+alt+a\"=\"Notepad\"\n\"ctrl+alt+b\"=\"Brave\"\n\"ctrl+alt+q\"=\"Weather\"\n",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_empty_filter_shows_every_row() {
+        let m = three();
+        assert_eq!(m.visible(), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn the_filter_matches_the_app_name_case_insensitively() {
+        let mut m = three();
+        m.set_filter("BRA");
+        assert_eq!(m.visible(), vec![1]);
+    }
+
+    #[test]
+    fn the_filter_matches_the_combo_too() {
+        let mut m = three();
+        m.set_filter("alt+q");
+        assert_eq!(
+            m.visible(),
+            vec![2],
+            "the question this file is usually opened to answer is what a key \
+             is already bound to"
+        );
+    }
+
+    #[test]
+    fn a_filter_matching_nothing_shows_no_rows() {
+        let mut m = three();
+        m.set_filter("zzz");
+        assert!(m.visible().is_empty());
+    }
+
+    #[test]
+    fn the_filter_is_trimmed_before_matching() {
+        let mut m = three();
+        m.set_filter("brave ");
+        assert_eq!(
+            m.visible(),
+            vec![1],
+            "a trailing space left by typing would otherwise hide every row, \
+             which reads as a hang"
+        );
+    }
+
+    #[test]
+    fn setting_a_filter_is_not_a_file_change() {
+        let mut m = three();
+        let before = m.render().unwrap();
+        m.set_filter("brave");
+        assert!(!m.dirty(), "a filter changes nothing on disk");
+        assert_eq!(m.render().unwrap(), before, "the filter is never written");
     }
 }
