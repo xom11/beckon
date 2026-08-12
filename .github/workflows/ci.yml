@@ -91,3 +91,10 @@ jobs:
           Write-Host "starts cleanly: $out"
       - name: Clippy
         run: cargo clippy --workspace ${{ matrix.exclude_flags }} --all-targets -- -D warnings
+
+  site:
+    name: Landing page checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./tools/check-site.sh
