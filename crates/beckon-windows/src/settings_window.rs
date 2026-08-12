@@ -136,9 +136,9 @@ const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
 /// force a static onto ONE line with no word wrap (documented on Static
 /// Control Styles, and the reason is that the control switches to a
 /// single-line DrawText path). `IDC_NOTES` is a multi-line strip -- several
-/// `\r\n`-joined note lines, and `layout` hands it every pixel the flex band
-/// has -- so adding the style would collapse the whole notes band to its
-/// first line. Ellipsised multi-line text needs an owner-draw `DrawText`
+/// `\r\n`-joined note lines, on the line `notes_height` sizes inside the
+/// editor group -- so adding the style would collapse the whole notes band to
+/// its first line. Ellipsised multi-line text needs an owner-draw `DrawText`
 /// with `DT_WORDBREAK | DT_END_ELLIPSIS`, which is not this landing.
 const SS_NOPREFIX_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0080);
 
@@ -553,6 +553,11 @@ mod tok {
     pub const CTL: i32 = 32;
     /// A button is never narrower than this, nor than its own caption.
     pub const BTN: i32 = 88;
+    /// **Unused, and retired by the next commit in this landing.** It exists
+    /// for one more commit only so that the two-line recompose of band 4 can
+    /// be reverted on its own. Everything below describes the ONE-LINE editor
+    /// strip and is no longer a description of this window.
+    ///
     /// The floor for a button that lives INSIDE a band beside fields, rather
     /// than in the command bar: the editor strip's `Record` and `Reset`.
     ///
@@ -563,9 +568,17 @@ mod tok {
     /// take 184 px of it at 96 DPI; at this floor they take 138. Neither
     /// caption needs more than ~66 px including padding, so the 88 would have
     /// been paid entirely in App-field width.
+    #[allow(dead_code)]
     pub const BTN_SM: i32 = 64;
     /// The right-aligned `Shortcut` column, and the editor field under it.
     pub const SHORTCUT_COL: i32 = 200;
+    /// **Unused, and retired by the next commit in this landing**, for the
+    /// reason `BTN_SM` above gives. Everything below argues about the fixed
+    /// part of a band 4 that was ONE line; the key list now shares its line
+    /// with nothing but the chips and the two commands, takes `SHORTCUT_COL`
+    /// like every other box in the window, and the ~613 px figure the last
+    /// paragraph cites no longer exists in `layout`.
+    ///
     /// The key list's own ceiling, and the one control that does NOT share
     /// `SHORTCUT_COL` with the filter box and the `Tap` combo.
     ///
@@ -584,6 +597,7 @@ mod tok {
     /// about 720 -- `MIN_WIDTH` itself -- rather than the ~660 the current
     /// tokens give it: no margin at all, instead of the ~60 px margin band 4
     /// documents.
+    #[allow(dead_code)]
     pub const KEY_COL: i32 = 140;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
@@ -630,20 +644,91 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
 /// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
 /// on the un-scaled size or the correction would resize to the wrong target.
-// 860 is spec B.2's stated width. 640 is the height raised from 560 so the
-// notes band (the flex band -- see `layout`) fits four lines at 96 DPI: the
-// band gets `kb_y`'s leftover directly, so every pixel added here becomes a
-// pixel of notes room. Worked through in the task-6 report, section on
-// fix 2: at the default size the notes band comes out to ~173 px against a
-// ~19-21 px line height, i.e. 8+ lines against a 4-line requirement.
+// 860 is spec B.2's stated width.
+//
+// **640's original justification is spent.** It was raised from 560 so the
+// notes band -- the flex band at the time -- would fit four lines at 96 DPI,
+// on the reasoning that the band took `kb_y`'s leftover directly and every
+// pixel added here became a pixel of notes room. The notes are a fixed line
+// inside the editor group now (`notes_height`), so the leftover no longer
+// lands on them: at 860x640 the list reaches its full `tok::ROWS` and the
+// surplus -- about 78 px at 96 DPI, 119 at 150 % -- is slack between the
+// editor group and the keyboard group. The number is left alone here because
+// re-picking it is a question about what the window should look like at rest,
+// not arithmetic, and nothing on this machine can see the answer.
 const WINDOW_WIDTH: i32 = 860;
 const WINDOW_HEIGHT: i32 = 640;
 
-/// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO`. Smaller
-/// than `WINDOW_WIDTH`/`WINDOW_HEIGHT` so the window can be shrunk, but not
-/// below the point where `layout` starts overlapping controls.
+/// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
+/// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
+/// included, never client ones.
+///
+/// **This is no longer "the point where `layout` starts overlapping
+/// controls".** That is what this comment used to say, and it stopped being
+/// true when band 4 became a fixed-height group: every subtraction in
+/// `layout` is clamped, and band 3 gives up its own height (`editor_min`)
+/// before anything below it moves, so a window dragged past this floor
+/// produces a list with fewer rows — eventually none — rather than two
+/// controls in the same place. What the floor buys is that **the list is
+/// still worth looking at**.
+///
+/// `MIN_WIDTH` is spec B.2's number and is hundreds of pixels clear of both
+/// zero points this file computes: band 2's heading at a raw client width of
+/// ~332, band 4's key list at ~519.
+///
+/// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
+/// which band 3 still shows **four** rows — half of `tok::ROWS`. Four is
+/// enough to see a selection with a row of context above and below it; a
+/// window whose list shows one row is not a smaller version of this window,
+/// it is a broken one.
+///
+/// ```text
+///   pad                                          16
+///   band 2  head, ctl                            32
+///           gap                                   8
+///   band 3  header  (list_header_height, 21)      21
+///           4 * row (list_row_height, 20)         80
+///           border  (2 * SM_CYBORDER)              2
+///   band                                         14
+///   band 4  caption inset s(24)                   24
+///           App line, ctl                         32
+///           gap                                    8
+///           Shortcut line, ctl                    32
+///           gap                                    8
+///           notes  (`notes_height`)               32
+///           bottom inset, gap                      8
+///   band                                         14
+///   band 6  kb_h = s(24) + ctl + gap              64
+///   band                                         14
+///   band 7  command bar, ctl                      32
+///   pad                                          16
+///                                              ----
+///   client                                      457
+///   caption + frame at 96 DPI (SM_CYCAPTION 23
+///     + 2*SM_CYSIZEFRAME + 2*SM_CXPADDEDBORDER)   39
+///                                              ----
+///   window                                     ~496
+/// ```
+///
+/// Shipped as 500. The four pixels are slack against a non-client area the
+/// OS sizes, not a fudge of the derivation — and the whole constant is scaled
+/// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
+/// was never exact at 150 % either. Erring high costs nothing; erring low
+/// costs list rows.
+///
+/// The two row figures are `list_row_height` / `list_header_height`'s own
+/// 96-DPI fallbacks. They are the honest numbers to derive from: comctl32
+/// picks the real ones from the live font at the live DPI, which is exactly
+/// why neither is a token.
+///
+/// **Band 1 is deliberately not in the table**, and that is a trade rather
+/// than an oversight: the banner contributes no height until the config file
+/// moves under us, and reserving its `ctl + band` permanently would raise the
+/// floor by 46 px for a state that is normally absent. The cost is that at
+/// this floor, with the banner up, the list drops from four rows to one until
+/// `Reload` or `Keep mine` dismisses it.
 const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 460;
+const MIN_HEIGHT: i32 = 500;
 
 /// One of §B.3's three type roles. There is no fourth: the `Keys` role the
 /// spec table also lists belongs to keycap rendering, which this window
@@ -2572,8 +2657,19 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
     );
 }
 
+/// Height of the notes line inside the editor group. Task 9 replaces this
+/// with the two-line cap; the strip's old behaviour is one line.
+///
+/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`, and
+/// `grp_h` is derived from this — change what a notes line costs and the
+/// floor moves with it.
+unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
+    let _ = (hwnd, ui);
+    32 * dpi as i32 / 96
+}
+
 /// Seven horizontal bands, top to bottom: the external-change banner (no
-/// height when hidden), the section head, the list, the editor strip, the
+/// height when hidden), the section head, the list, the editor group, the
 /// suggestion row (no control, no height, in this landing), the keyboard
 /// group and the command bar.
 ///
@@ -2583,10 +2679,18 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 ///
 /// **Vertical shape.** The command bar is anchored to the bottom and the
 /// keyboard group sits directly above it; the top bands stack downward.
-/// The one thing that flexes is the notes STATIC between them, so a resize
-/// lands there. The list wants `header + 8 rows` and gives that up rather
-/// than let anything overlap when the window is short — a shrunk list
-/// scrolls, an overlapped control is unreachable.
+///
+/// **The LIST is the one thing that flexes.** It wants `header + 8 rows` and
+/// gives that up rather than let anything overlap when the window is short —
+/// a shrunk list scrolls, an overlapped control is unreachable. Everything
+/// below it is fixed: band 4 is a group box of a computed height (`grp_h`),
+/// which band 3 reserves through `editor_min` before choosing its own.
+///
+/// The notes STATIC used to be the flexing band instead, which is what made
+/// it a 1220x177 control holding one 258 px line at the default size. It is
+/// now a fixed line inside the editor group — see `notes_height` — so a
+/// vertical resize lands on the list, and once the list is at its full 8 rows
+/// the surplus is simply slack above the keyboard group.
 unsafe fn layout(hwnd: HWND) {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
@@ -2649,9 +2753,12 @@ unsafe fn layout(hwnd: HWND) {
     // bottom edge is where they stay however tall the content above is.
     let bar_y = clamp(h - pad - ctl);
     // Caption inset, ONE control line, then a bottom inset the same size as
-    // the gap. It was two lines while the group held a check box over three
-    // radios; the Caps row is one line, so the group is one `ctl + gap`
-    // shorter and the flexing notes band above it gets those pixels.
+    // the gap -- the shape band 4's `grp_h` follows too, so the two group
+    // boxes in this window are one rule. It was two lines while the group
+    // held a check box over three radios; the Caps row is one line, so the
+    // group is one `ctl + gap` shorter. Those pixels used to go to the
+    // flexing notes band; now they raise `kb_y`, which is what band 3 sizes
+    // the list against.
     let kb_h = s(24) + ctl + gap;
     let kb_y = clamp(bar_y - band - kb_h);
 
@@ -2740,6 +2847,17 @@ unsafe fn layout(hwnd: HWND) {
     // below it, so the two read as one group.
     y += ctl + gap;
 
+    // Band 4's height, computed HERE because band 3 has to yield to it and
+    // the two must not each hold an opinion about how tall the editor is --
+    // the same reason `glyph` is computed above band 1 rather than twice.
+    //
+    // Caption inset, two content lines, the notes, then a bottom inset the
+    // size of the gap: the same shape band 6's `kb_h` uses, so the two group
+    // boxes in this window are one rule. Fixed, not flexing -- see
+    // `notes_height`.
+    let notes_h = notes_height(hwnd, &ui, dpi);
+    let grp_h = s(24) + ctl + gap + ctl + gap + notes_h + gap;
+
     // -- Band 3: the list.
     let row_h = list_row_height(ui.list, dpi);
     // `want` is a WINDOW height (it feeds SetWindowPos below), but the list
@@ -2749,9 +2867,16 @@ unsafe fn layout(hwnd: HWND) {
     // of a 9th.
     let border = 2 * GetSystemMetricsForDpi(SM_CYBORDER, dpi);
     let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS + border;
-    // The editor strip below needs its own line plus at least one line of
-    // notes; the list yields its fixed height before anything overlaps.
-    let editor_min = ctl + gap + ctl;
+    // The editor below is a fixed-height GROUP now, not a two-line strip, so
+    // the figure the list must yield to is the whole of `grp_h` -- caption
+    // inset, both lines, the notes and the bottom inset. It used to be
+    // `ctl + gap + ctl`, which was right when the notes flexed into whatever
+    // was left; against a fixed group that under-reserves by the caption
+    // inset plus a line, and the group draws over the keyboard group instead
+    // of the list giving up a row. **This is the guard**: `y.min(kb_y)` at
+    // the end of band 4 cannot help, because `grp_y` is bound before the
+    // group is placed and clamping `y` afterwards moves nothing.
+    let editor_min = grp_h;
     let room = clamp(kb_y - band - y);
     let list_h = clamp(want.min(clamp(room - band - editor_min)));
     place_h(ui.list, cx, y, cw, list_h);
@@ -2804,75 +2929,83 @@ unsafe fn layout(hwnd: HWND) {
     // draws over the keyboard group box.
     y = y.min(kb_y);
 
-    // -- Band 4: the editor strip, one line, then the notes beneath it.
+    // -- Band 4: the editor group. TWO lines inside a titled BS_GROUPBOX,
+    // then the notes on a third line inside the same group.
     //
-    //   App [ v ]   Shortcut [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]
+    //   +- Editing "Windows Terminal" ----------------------------------+
+    //   |  App       [ ..................................... v ]        |
+    //   |  Shortcut  [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]  [R] [R]  |
+    //   |  ok  Registered. Press Ctrl + Win + Alt + T to focus it.      |
+    //   +---------------------------------------------------------------+
     //
-    // The shortcut is five controls rather than one text box -- see the
-    // module header. They sit where the single field used to, still under
-    // the list's `Shortcut` column, so the strip goes on mirroring a row.
+    // **App gets a line of its own, and that is the whole point.** On one
+    // line it was the control that absorbed whatever the other six left --
+    // about 209 px at 860, and ~59 px at MIN_WIDTH. Two derived tokens
+    // (`tok::KEY_COL`, `tok::BTN_SM`) existed only to keep that figure above
+    // zero, and Task 7 retires both.
     //
-    // A single-line EDIT draws its text at the TOP of its client rect --
-    // Win32 gives it no vertical centring at all -- so stretching the band 2
-    // filter box to the 32 px band line would park its text against the top
-    // edge. It is centred within the line instead, and takes the height the
-    // COMBOBOX's theme picked (see `combo_h`, computed above band 2 because
-    // the filter box needs it there). `field_h` is what the font alone
-    // justifies, and remains the fallback for when the combo cannot be
-    // measured -- plus the unit of the dropped-down list's height. The
-    // buttons do honour `cy` and look right at 32, so they take the token
-    // directly.
+    // Bound once, and named rather than left as `y`, because the group's top
+    // edge is now a coordinate other controls are placed against -- the
+    // empty-state STATIC is the next reader. `y` is a running cursor that
+    // three bands above have already moved and a fourth may yet move; this is
+    // a fixed point, and the two must not be spelled the same.
+    let grp_y = y;
+    let grp_x = cx;
+    let grp_w = cw;
+    // Caption inset, then the content, then a bottom inset the size of the
+    // gap -- `grp_h` itself is computed above band 3, which has to yield its
+    // own height to it.
+    let ins_x = grp_x + gap;
+    let ins_w = clamp(grp_w - gap * 2);
+    place(IDC_GRP_EDITOR, grp_x, grp_y, grp_w, grp_h);
+
+    // Both lines share one label column, so `App` and `Shortcut` left-align
+    // with each other instead of each starting wherever its own line does.
     //
     // A hair of slack past the measured width: a STATIC clips to its rect,
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
-    let lw_app = tw("App") + s(4);
-    let lw_short = tw("Shortcut") + s(4);
-    // `Record` and `Reset` close the line, right-aligned like Add/Remove
-    // close band 2. Sized from `RECORD`, never from `STOP`: the armed
-    // caption is the narrower of the two, so a caption flip cannot clip and
-    // `layout` never has to run on the capture path -- which matters,
-    // because `layout` means `SetWindowPos` on the populated App combo, the
-    // measured data-loss call (`Ui::shown_external`).
-    let btn_sm = |t: &str| s(tok::BTN_SM).max(tw(t) + s(24));
-    let bw_record = btn_sm(cap::RECORD);
-    let bw_reset = btn_sm(cap::RESET);
-    let rec_x = cx + clamp(cw - bw_record - gap - bw_reset);
-    let res_x = cx + clamp(cw - bw_reset);
-    // The key list takes what the line has left, under its OWN ceiling --
-    // see `tok::KEY_COL`, which is the one control in the window that does
-    // not narrow with the filter box and the `Tap` combo, because it holds
-    // one key name rather than a whole chord.
-    //
-    // `.max(cx)` rather than `clamp`, like `mods_x` below: this is a
-    // POSITION, and a position clamped to 0 puts the control outside the
-    // surface padding instead of merely narrowing it.
-    let key_w = s(tok::KEY_COL).min(clamp(cw / 3));
-    let key_x = (rec_x - gap - key_w).max(cx);
-    // Each chip is its caption plus the check box's own square, exactly as
-    // band 6's `Hold` chips are sized -- same `glyph`, one rule.
-    let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
-    let w_mod_win = tw(cap::MOD_WIN) + glyph;
-    let w_mod_alt = tw(cap::MOD_ALT) + glyph;
-    let w_mod_shift = tw(cap::MOD_SHIFT) + glyph;
-    let mods_w = w_mod_ctrl + w_mod_win + w_mod_alt + w_mod_shift + gap * 3;
-    // `.max(cx)` rather than `clamp`, like `lbl_short_x` below: these are
-    // POSITIONS, and a position clamped to 0 puts a control outside the
-    // surface padding instead of merely narrowing it. Widths are what
-    // `clamp` guards, and every one of them below is clamped.
-    let mods_x = (key_x - gap - mods_w).max(cx);
-    let lbl_short_x = (mods_x - lblgap - lw_short).max(cx);
-    let app_x = cx + lw_app + lblgap;
-    let app_w = clamp(lbl_short_x - gap - app_x);
+    let lw_lbl = tw("Shortcut").max(tw("App")) + s(4);
+    let fld_x = ins_x + lw_lbl + lblgap;
+    let fld_w = clamp(ins_x + ins_w - fld_x);
 
-    place(IDC_LBL_APP, cx, y, lw_app, ctl);
+    // Line 1: App, full width.
+    let mut ly = grp_y + s(24);
+    place(IDC_LBL_APP, ins_x, ly, lw_lbl, ctl);
     // A COMBOBOX's `cy` is the height of its DROPPED-DOWN list, not of the
     // closed control -- and under comctl32 v6 even that is capped by
     // `build_children`'s CB_SETMINVISIBLE(8). The closed height is the
     // system's to choose from the font, which is why `combo_h` above asks
     // what it took rather than guessing a chrome delta the next font change
     // would invalidate.
-    place_h(ui.app, app_x, y + edit_dy, app_w, field_h * 9);
-    place(IDC_LBL_SHORTCUT, lbl_short_x, y, lw_short, ctl);
+    //
+    // A single-line EDIT draws its text at the TOP of its client rect --
+    // Win32 gives it no vertical centring at all -- so the fields are centred
+    // within their line (`edit_dy`) rather than stretched to it, and take the
+    // height the COMBOBOX's theme picked. `field_h` is what the font alone
+    // justifies, and remains the fallback for when the combo cannot be
+    // measured -- plus the unit of the dropped-down list's height.
+    place_h(ui.app, fld_x, ly + edit_dy, fld_w, field_h * 9);
+    ly += ctl + gap;
+
+    // Line 2: the shortcut. Chips left, then the key list, then the two
+    // commands right-aligned -- the same "commands close the line" rule band
+    // 2's Add/Remove follow.
+    place(IDC_LBL_SHORTCUT, ins_x, ly, lw_lbl, ctl);
+    // Sized from `RECORD`, never from `STOP`: the armed caption is the
+    // narrower of the two, so a caption flip cannot clip and `layout` never
+    // has to run on the capture path -- which matters, because `layout` means
+    // `SetWindowPos` on the populated App combo, the measured data-loss call
+    // (`Ui::shown_external`).
+    let bw_record = btn(cap::RECORD);
+    let bw_reset = btn(cap::RESET);
+    let res_x = ins_x + clamp(ins_w - bw_reset);
+    let rec_x = ins_x + clamp(ins_w - bw_reset - gap - bw_record);
+    // Each chip is its caption plus the check box's own square, exactly as
+    // band 6's `Hold` chips are sized -- same `glyph`, one rule.
+    let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
+    let w_mod_win = tw(cap::MOD_WIN) + glyph;
+    let w_mod_alt = tw(cap::MOD_ALT) + glyph;
+    let w_mod_shift = tw(cap::MOD_SHIFT) + glyph;
     // Chips and key list share the fields' midline (`edit_dy`) and their
     // height, so App, the key list and the filter are ONE box repeated
     // rather than three boxes that happen to be concentric. Measured at
@@ -2881,34 +3014,74 @@ unsafe fn layout(hwnd: HWND) {
     // a mistake rather than as a pair. A check box centres its glyph and
     // caption inside whatever rect it is given, so `edit_h` needs no
     // separate rule for the four of them.
-    let mut mx = mods_x;
-    place(IDC_MOD_CTRL, mx, y + edit_dy, w_mod_ctrl, edit_h);
+    let mut mx = fld_x;
+    place(IDC_MOD_CTRL, mx, ly + edit_dy, w_mod_ctrl, edit_h);
     mx += w_mod_ctrl + gap;
-    place(IDC_MOD_WIN, mx, y + edit_dy, w_mod_win, edit_h);
+    place(IDC_MOD_WIN, mx, ly + edit_dy, w_mod_win, edit_h);
     mx += w_mod_win + gap;
-    place(IDC_MOD_ALT, mx, y + edit_dy, w_mod_alt, edit_h);
+    place(IDC_MOD_ALT, mx, ly + edit_dy, w_mod_alt, edit_h);
     mx += w_mod_alt + gap;
-    place(IDC_MOD_SHIFT, mx, y + edit_dy, w_mod_shift, edit_h);
+    place(IDC_MOD_SHIFT, mx, ly + edit_dy, w_mod_shift, edit_h);
+    mx += w_mod_shift + gap;
+    // The key list takes what is between the chips and the commands, under
+    // the shortcut column's ceiling. It no longer needs a token of its own:
+    // with App on line 1 there is nothing left on this line for it to starve.
+    //
+    // **Where line 2 runs out.** The key list is now what this line leaves
+    // over, so it is the figure worth writing down -- the role `app_w` used
+    // to play. At 96 DPI, with `Record` and `Reset` both pinned to `tok::BTN`
+    // (88 px; neither caption needs more, which is what makes `tok::BTN_SM`
+    // redundant), the fixed part of the line is
+    //
+    //   lw_lbl(~54) + lblgap(12) + four chips(~181) + 6*gap(48)
+    //     + bw_record(88) + bw_reset(88)   =   ~471 px of `ins_w`
+    //
+    // -- SIX gaps, not five: three between the chips, one after `Shift`, one
+    // between the key list and `Record`, one between the two commands. The
+    // chip figure is `4 * glyph` (96 px) plus the four measured captions;
+    // `lw_lbl` is `tw("Shortcut") + 4`, the wider of the two labels.
+    //
+    // `ins_w` is `cw - 2*gap`, so `key_w` clamps to zero at a client width of
+    // ~487 -- a raw client `w`, before the PAD margins, of ~519. `MIN_WIDTH`
+    // is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
+    // `ptMinTrackSize.x`, which bounds the whole window including the OS's
+    // own frame, so its 720 does not translate into an exact `cw` this file
+    // computes -- only into "two hundred pixels clear of the 519 px zero
+    // point under any frame the OS adds," which is why a drag cannot reach
+    // it. Concretely, at `MIN_WIDTH` the key list is still ~185 px of its
+    // 200 px ceiling and the App combo on line 1 has ~590 px, where the old
+    // one-line strip left it 59. Every subtraction here is clamped
+    // regardless, because `WM_DPICHANGED` can suggest a rect below that floor
+    // without asking `WM_GETMINMAXINFO`.
+    let key_w = s(tok::SHORTCUT_COL).min(clamp(rec_x - gap - mx));
     // `cy` is the DROPPED-DOWN height here too, capped by the same
     // CB_SETMINVISIBLE(8) the App combo carries.
-    place_h(ui.combo, key_x, y + edit_dy, key_w, field_h * 9);
+    place_h(ui.combo, mx, ly + edit_dy, key_w, field_h * 9);
     // Buttons honour `cy` and look right at the band height, so they take
     // `ctl` directly and sit on the band line rather than on the fields'
     // midline -- the same rule the command bar's three follow.
+    place(IDC_RECORD, rec_x, ly, bw_record, ctl);
+    place(IDC_RESET, res_x, ly, bw_reset, ctl);
+    ly += ctl + gap;
+
+    // Line 3: the notes, inside the group and beside what they describe.
+    // Fixed height -- see `notes_height`. It used to take every pixel down to
+    // the keyboard group, which measured as a 1220x177 control holding one
+    // 258 px line.
+    place_h(ui.notes, ins_x, ly, ins_w, notes_h);
+
+    // **`y` deliberately stops here.** Band 5 has no control and bands 6 and
+    // 7 are anchored to `kb_y` / `bar_y`, so the `y += grp_h + band` that
+    // would close this band is a store nothing reads -- and the compiler says
+    // so (`unused_assignments`). Restore it, with its `y.min(kb_y)` guard, the
+    // moment band 5 grows a control.
     //
-    // The App combo is what absorbs everything this line leaves, so it is
-    // worth writing down where it runs out. At 96 DPI, with the tokens
-    // above, the fixed part of this line is about 613 px; `app_w` therefore
-    // clamps to zero at a client width of ~613, i.e. a window ~660 px wide.
-    // `MIN_WIDTH` is 720, and `WM_GETMINMAXINFO` bounds the whole window
-    // including the OS frame, so a drag cannot reach it -- the same argument
-    // band 2's heading makes about its own zero point. Every subtraction
-    // here is clamped regardless, because `WM_DPICHANGED` can suggest a rect
-    // below that floor without asking `WM_GETMINMAXINFO`.
-    place(IDC_RECORD, rec_x, y, bw_record, ctl);
-    place(IDC_RESET, res_x, y, bw_reset, ctl);
-    y += ctl + gap;
-    place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
+    // The guard that line used to carry -- against an intermediate resize
+    // below `MIN_HEIGHT`, which a `WM_DPICHANGED` suggested rect can hand us
+    // without ever asking `WM_GETMINMAXINFO` -- has moved to band 3's
+    // `editor_min`, which is the only place it can still do anything: `grp_y`
+    // is read before the group is placed, so clamping `y` afterwards moves
+    // nothing.
 
     // -- Band 5: the suggestion row. No control, no height.
 
