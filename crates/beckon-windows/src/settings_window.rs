@@ -508,9 +508,13 @@ fn scale(v: i32, dpi: u32) -> i32 {
 /// Everything the window reports back. The caller owns all policy: what an
 /// edit means, whether a close is allowed, what Apply writes.
 pub struct Callbacks {
+    /// A row became current. The index is a **model** row -- the window has
+    /// already mapped it through `ListItem::row`, because the ListView only
+    /// ever knows the position within the filtered list it was given.
     pub on_select: Box<dyn FnMut(usize)>,
-    /// A row's tick changed: `(index, ticked)`. Independent of `on_select`
-    /// -- one click can raise both, and neither implies the other.
+    /// A row's tick changed: `(model row, ticked)`. Independent of
+    /// `on_select` -- one click can raise both, and neither implies the
+    /// other.
     pub on_mark: Box<dyn FnMut(usize, bool)>,
     pub on_edit_combo: Box<dyn FnMut(String)>,
     pub on_edit_app: Box<dyn FnMut(String)>,
@@ -3133,6 +3137,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     // indexes straight into `rows`.
                     if lv.iItem >= 0 {
                         let i = lv.iItem as usize;
+                        // The MODEL row this view row stands for, copied out
+                        // and the borrow DROPPED before either callback runs.
+                        // Both re-enter `refresh_settings` -> `apply_state`,
+                        // which sends messages, and a `UI` borrow still open
+                        // across an `extern "system"` boundary ABORTS the
+                        // process instead of unwinding. Same discipline as
+                        // `layout`'s `LayoutHandles`.
+                        //
+                        // `get(i)`, not `[i]`: comctl32 can deliver an
+                        // LVN_ITEMCHANGED for a row that a just-pushed,
+                        // shorter `items` no longer has -- which a filter
+                        // makes routine rather than exotic.
+                        let row = UI.with(|u| {
+                            u.borrow()
+                                .as_ref()
+                                .and_then(|x| x.items.get(i).map(|it| it.row))
+                        });
+                        let Some(row) = row else {
+                            return LRESULT(0);
+                        };
                         // A tick and a selection both arrive as LVIF_STATE
                         // and `uChanged` cannot tell them apart, so the two
                         // bits are tested independently. Never `else if`:
@@ -3142,10 +3166,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         let changed = lv.uOldState ^ lv.uNewState;
                         if changed & LVIS_STATEIMAGEMASK.0 != 0 {
                             let on = (lv.uNewState & LVIS_STATEIMAGEMASK.0) == LVIS_CHECKED;
-                            with_cb(|cb| (cb.on_mark)(i, on));
+                            with_cb(|cb| (cb.on_mark)(row, on));
                         }
                         if changed & LVIS_SELECTED.0 != 0 && lv.uNewState & LVIS_SELECTED.0 != 0 {
-                            with_cb(|cb| (cb.on_select)(i));
+                            with_cb(|cb| (cb.on_select)(row));
                         }
                     }
                 }
