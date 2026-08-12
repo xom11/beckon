@@ -255,7 +255,10 @@ struct ServeState {
     /// The last availability probe, and the chord it was about. `None` until
     /// one runs -- not-yet-probed is not the same as free -- and `None` again
     /// after a save, because `register_all` is the authority from that moment
-    /// on and the window already hears its answer through `registered`.
+    /// on and the window already hears its answer through `registered`; also
+    /// `None` again the moment the selection moves to a different row, because
+    /// a verdict is about the row it was requested for and carrying it to
+    /// another row can only ever be wrong -- see `Callbacks::on_select`.
     ///
     /// Written by `probe_shortcut`, read by `refresh_settings`, and only ever
     /// on Windows: the settings window is the one thing that asks.
@@ -944,9 +947,11 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
 /// (step 4b, which is what the edit-away-and-back sequence hits, since the
 /// probe runs before `on_edit_combo` and the row therefore still holds its
 /// previous chord). What remains is a chord some OTHER row was saved with and
-/// has since been edited away from. Closing that needs the probe to read
-/// `ServeState::shortcuts`, which is a policy §F.6 has no verdict or string
-/// for; it stays written up in the task 2 report rather than guessed at here.
+/// has since been edited away from -- or whose row was deleted outright,
+/// which leaves no `orig_key` anywhere in `m.rows` for step 4b to find at
+/// all. Closing that needs the probe to read `ServeState::shortcuts`, which
+/// is a policy §F.6 has no verdict or string for; it stays written up in the
+/// task 2 report rather than guessed at here.
 #[cfg(target_os = "windows")]
 fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
     use beckon_core::settings::{ProbePlan, ProbeResult};
@@ -1229,9 +1234,26 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
     }
 
     let cb = win::Callbacks {
-        on_select: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, i| {
-            m.selected = Some(i);
-        })),
+        // Not `edit!`: a probe verdict is about the row it was requested
+        // for, and `row_condition` only re-checks the COMBO, not which row
+        // asked -- two rows sharing a chord means a verdict stored for row A
+        // still passes row B's `same_chord` gate once B is selected, and B
+        // would be told about its own chord as though it belonged to
+        // someone else. Clearing here, on every selection change, is what
+        // keeps a verdict from ever outliving the row it answered for.
+        on_select: Box::new({
+            let st = Rc::clone(state);
+            move |i: usize| {
+                {
+                    let mut s = st.borrow_mut();
+                    if let Some(m) = s.settings.as_mut() {
+                        m.selected = Some(i);
+                    }
+                    s.probe = None;
+                }
+                refresh_settings(&st);
+            }
+        }),
         // Two arguments, so not `edit!` -- same discipline written out:
         // mutate under a short borrow_mut, drop it, then refresh.
         on_mark: Box::new({

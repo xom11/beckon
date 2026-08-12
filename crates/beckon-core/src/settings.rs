@@ -728,9 +728,12 @@ fn same_chord(a: &str, b: &str) -> bool {
 ///
 /// **Every step before `AskTheOs` is load-bearing where it stands.** An
 /// earlier version of this comment claimed the F12 guard "commutes with the
-/// self-conflict checks", which is half true and therefore false: it does
-/// commute with step 4, where both orders refuse and both are `Mark::Bad`,
-/// and it does **not** commute with step 3. Nothing rejects a row bound to
+/// self-conflict checks", which is half true and therefore false: swapped
+/// with step 4, both orders still refuse and land on the same `Mark::Bad` --
+/// but not on the same verdict, since an f12 chord also duplicated in-file
+/// answers `DuplicateInFile` in one order and `F12` in the other, so
+/// "commutes" claims more than that. Swapped with step 3 the two are not
+/// even that close: nothing rejects a row bound to
 /// `ctrl+alt+f12` -- `problems()` has no f12 rule -- so with the guard below
 /// step 3 that row, probed against its own chord, answers `Unchanged`, which
 /// `probe_notes` renders `Mark::Ok`. That is a green OK on the one key this
@@ -815,8 +818,10 @@ pub fn probe_plan(m: &Model, row: usize, combo: &str) -> ProbePlan {
     //     `AskTheOs`.
     //
     //     This narrows the false alarm to the row that owns the chord; a
-    //     chord some OTHER row was saved with is still asked about, and
-    //     still answers `Taken`. Closing that needs the probe to read
+    //     chord some OTHER row was saved with -- and has since been edited
+    //     away from, or whose row was deleted outright, leaving no
+    //     `orig_key` anywhere in `m.rows` to find -- is still asked about,
+    //     and still answers `Taken`. Closing that needs the probe to read
     //     `ServeState::shortcuts`, which is a policy §F.6 has no verdict or
     //     string for -- so it stays disclosed rather than guessed at.
     if m.rows
