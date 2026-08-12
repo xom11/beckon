@@ -216,6 +216,7 @@ pub struct CaptureState {
     held_len: usize,
     captured: Option<Combo>,
     refused_keycap: Option<&'static KeyDef>,
+    refused_vk: Option<u32>,
     draining: bool,
 }
 
@@ -227,6 +228,7 @@ impl CaptureState {
             held_len: 0,
             captured: None,
             refused_keycap: None,
+            refused_vk: None,
             draining: false,
         }
     }
@@ -252,6 +254,23 @@ impl CaptureState {
     /// `captured()` and this can never both look meaningful at once.
     pub fn refused_keycap(&self) -> Option<&'static KeyDef> {
         self.refused_keycap
+    }
+
+    /// The virtual-key code behind the most recent `Outcome::Refused`.
+    ///
+    /// **This is what the beep is de-duplicated by, and `refused_keycap` is
+    /// not a substitute.** A refused key never enters the held set (see
+    /// `step`'s doc for why admitting it would be worse), so the auto-repeat
+    /// filter cannot see it and a held-down bare `a` yields one
+    /// `Refused(NoModifier)` per repeat, each of which posts. The window
+    /// beeps only when this changes. `refused_keycap` cannot carry that: it
+    /// is `None` for every key the 81-key table cannot name, so two different
+    /// unnameable keys -- and every repeat of one -- would look identical.
+    ///
+    /// Kept and cleared exactly as `refused_keycap` is, so the pair can never
+    /// describe different keystrokes.
+    pub fn refused_vk(&self) -> Option<u32> {
+        self.refused_vk
     }
 
     /// Whether the hook must keep swallowing. True from a commit or a cancel
@@ -431,18 +450,25 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
         // explain why it is not acceptable. Refusing silently reads as a
         // broken keyboard.
         st.refused_keycap = keycap;
+        st.refused_vk = Some(ev.vk);
         return Outcome::Refused(Refusal::NoModifier);
     }
     if is_reserved(ev.vk, mods) {
         st.refused_keycap = keycap;
+        st.refused_vk = Some(ev.vk);
         return Outcome::Refused(Refusal::Reserved);
     }
     let Some(key) = keycap else {
         st.refused_keycap = None;
+        // Set even though the keycap is not, because this is exactly the
+        // refusal the keycap cannot identify -- and the one whose auto-repeat
+        // the window has to de-duplicate.
+        st.refused_vk = Some(ev.vk);
         return Outcome::Refused(Refusal::UnknownKey);
     };
 
     st.refused_keycap = None;
+    st.refused_vk = None;
     st.captured = Some(Combo {
         ctrl: mods.ctrl,
         super_: mods.super_,
@@ -746,6 +772,50 @@ mod tests {
             down(&mut st, VK_CAPITAL),
             Outcome::Refused(Refusal::Reserved)
         );
+    }
+
+    /// The beep is de-duplicated by vk, and this is what makes that
+    /// possible. Three properties in one test because they are one rule:
+    /// every refusal names its key, including the two that leave
+    /// `refused_keycap` empty, and a commit clears it.
+    #[test]
+    fn every_refusal_names_the_key_it_refused() {
+        // Nameable, no modifier.
+        let mut bare = CaptureState::armed();
+        assert_eq!(down(&mut bare, VK_A), Outcome::Refused(Refusal::NoModifier));
+        assert_eq!(bare.refused_vk(), Some(VK_A));
+
+        // Unnameable: `refused_keycap` is None here, so it could not stand in.
+        let mut unknown = CaptureState::armed();
+        down(&mut unknown, VK_CONTROL);
+        assert_eq!(
+            down(&mut unknown, VK_NUMPAD0),
+            Outcome::Refused(Refusal::UnknownKey)
+        );
+        assert_eq!(unknown.refused_keycap().map(|k| k.name.as_str()), None);
+        assert_eq!(
+            unknown.refused_vk(),
+            Some(VK_NUMPAD0),
+            "the one refusal the keycap cannot identify must still be \
+             identifiable, or its auto-repeat beeps once per repeat"
+        );
+
+        // Reserved.
+        let mut reserved = CaptureState::armed();
+        down(&mut reserved, VK_LWIN);
+        assert_eq!(
+            down(&mut reserved, VK_L),
+            Outcome::Refused(Refusal::Reserved)
+        );
+        assert_eq!(reserved.refused_vk(), Some(VK_L));
+
+        // A commit clears it, so `captured()` and this can never both look
+        // meaningful at once -- the same rule `refused_keycap` follows.
+        let mut ok = CaptureState::armed();
+        down(&mut ok, VK_A); // refuse first, so there is something to clear
+        down(&mut ok, VK_CONTROL);
+        assert_eq!(down(&mut ok, VK_T), Outcome::Captured);
+        assert_eq!(ok.refused_vk(), None);
     }
 
     #[test]

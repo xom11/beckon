@@ -1167,6 +1167,14 @@ pub enum DefaultButton {
     /// the whole reason this module exists -- see `default_button`.
     Reload,
     KeepMine,
+    /// The editor strip's two. They are here for one reason: a push button
+    /// that is not in this set never gets `BS_NOTIFY`, so the ring cannot
+    /// follow focus onto it -- and `IsDialogMessageW` then asks
+    /// `DM_GETDEFID`, which still says Save. Enter on a focused `Record`
+    /// would SAVE. That is the defect this whole module was written for,
+    /// respelled one band higher.
+    Record,
+    Reset,
 }
 
 impl DefaultButton {
@@ -1174,7 +1182,7 @@ impl DefaultButton {
     /// and forgotten here weakens those tests silently, so the array is
     /// length-annotated: adding a variant without extending it fails to
     /// compile.
-    pub const ALL: [DefaultButton; 7] = [
+    pub const ALL: [DefaultButton; 9] = [
         DefaultButton::Save,
         DefaultButton::Add,
         DefaultButton::Remove,
@@ -1182,6 +1190,8 @@ impl DefaultButton {
         DefaultButton::Close,
         DefaultButton::Reload,
         DefaultButton::KeepMine,
+        DefaultButton::Record,
+        DefaultButton::Reset,
     ];
 
     /// Where the ring rests, and the one button `default_button` will fall
@@ -1213,6 +1223,22 @@ impl DefaultButton {
                 DefaultButton::Save => st.apply_enabled,
                 DefaultButton::Add => st.editable,
                 DefaultButton::Remove => st.remove_enabled,
+                // Both act on the row the editor strip is showing, so both
+                // read the same pair the window's own `enable` call reads --
+                // exactly as the comment above promises.
+                //
+                // **Neither knows a capture is armed, and that is not a
+                // hole.** While armed the window greys `Reset` (two writers
+                // on one value is what §C.4 forbids) while this still calls
+                // it pressable, so for those seconds the two disagree. It
+                // cannot be observed: the `WH_KEYBOARD_LL` hook swallows
+                // every keystroke while a capture is armed and the window is
+                // foreground, so no Enter reaches the dialog manager to ask;
+                // and if the window is NOT foreground, all three of spec
+                // F.4's focus layers have already disarmed. Modelling it here
+                // would mean `ControlState` carrying a runtime fact that
+                // exists for seconds at a time.
+                DefaultButton::Record | DefaultButton::Reset => st.editable && st.detail.is_some(),
                 // The two escape routes are enabled in every state,
                 // including read only -- that is what makes them escapes.
                 // The banner's two answers are enabled whenever the banner is
@@ -2400,6 +2426,37 @@ mod tests {
         let busy = busy_state();
         assert!(busy.apply_enabled, "precondition: a live edit exists");
         assert!(DefaultButton::Save.pressable(&busy, false));
+    }
+
+    /// The editor strip's two buttons act on the row it is showing, so they
+    /// are live exactly when there is one. `rest_state` has no selection, so
+    /// this separates them from the four that are pressable in every state.
+    #[test]
+    fn record_and_reset_need_a_row_to_act_on() {
+        let rest = rest_state();
+        assert!(rest.detail.is_none(), "precondition: nothing is selected");
+        assert!(!DefaultButton::Record.pressable(&rest, false));
+        assert!(!DefaultButton::Reset.pressable(&rest, false));
+        assert_eq!(
+            default_button(DefaultButton::Record, &rest, false),
+            DefaultButton::Save,
+            "Enter must not reach a greyed Record"
+        );
+
+        let busy = busy_state();
+        assert!(busy.detail.is_some(), "precondition: a row is selected");
+        assert!(DefaultButton::Record.pressable(&busy, false));
+        assert!(DefaultButton::Reset.pressable(&busy, false));
+        assert_eq!(
+            default_button(DefaultButton::Record, &busy, false),
+            DefaultButton::Record
+        );
+
+        // A file that did not parse has a Model behind neither, so both are
+        // off for the same reason every other mutating control is.
+        let ro = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
+        assert!(!DefaultButton::Record.pressable(&ro, false));
+        assert!(!DefaultButton::Reset.pressable(&ro, false));
     }
 
     #[test]

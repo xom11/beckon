@@ -581,6 +581,11 @@ impl HotkeyManager {
             match ret {
                 -1 => {
                     eprintln!("hotkey: GetMessageW failed - message queue is broken, exiting");
+                    // Same reason as the WM_QUIT arm below, and it matters
+                    // more here: this exit is not orderly, and a settings
+                    // window recording a chord when the queue broke is
+                    // holding a hook that swallows every keystroke.
+                    crate::caps_hook::disarm_capture();
                     std::process::exit(1);
                 }
                 0 => {
@@ -589,6 +594,18 @@ impl HotkeyManager {
                     // Scheduler-run daemon has, and std::process::exit
                     // skips Drop entirely, so the cleanup Drop would have
                     // done has to happen here explicitly.
+                    //
+                    // The capture hook is part of that cleanup, and this is
+                    // the one window-death path that never reaches a
+                    // `WM_DESTROY`: Quit from the tray posts WM_QUIT and
+                    // exits from right here, so the settings window is torn
+                    // down by process exit rather than by `DestroyWindow`.
+                    // Spec F.4 declines to CLAIM that win32k reclaims an
+                    // orphaned `WH_KEYBOARD_LL` -- MSDN does not promise it
+                    // -- so the one exit beckon controls does not rely on
+                    // the promise it does not have. A no-op unless a chord
+                    // was being recorded at that instant.
+                    crate::caps_hook::disarm_capture();
                     let tray_hwnd = TRAY_HWND.with(|c| c.get());
                     for id in REGISTERED_IDS.with(|c| std::mem::take(&mut *c.borrow_mut())) {
                         let _ = unsafe { UnregisterHotKey(Some(tray_hwnd), id as i32) };

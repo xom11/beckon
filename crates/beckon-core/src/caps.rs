@@ -101,6 +101,32 @@ pub struct CapsState {
     down_at: u32,
 }
 
+impl CapsState {
+    /// Is there nothing outstanding -- no Caps held, no chord injected whose
+    /// modifiers still have to be released, no swallowed key-down still owed
+    /// its swallowed key-up?
+    ///
+    /// **This is a permission to stop calling `decide`, and nothing else.**
+    /// The hook is shared: a chord capture installs it even on a machine
+    /// where `keyboard.caps` is off, and running the Caps arm there is not
+    /// harmless -- `decide` swallows a Caps-DOWN unconditionally and
+    /// re-injects on the up, so a Caps tap toggles the lock through a
+    /// synthesized stroke rather than the real one, and a hold past
+    /// `HOLD_TIMEOUT_MS` toggles nothing at all. The caller may skip the arm
+    /// when Caps is not wanted, but only once this is true: skipping while
+    /// `consumed` is non-empty leaks an unpaired key-up into whichever
+    /// application has focus, and skipping while `injected` is set abandons
+    /// the defensive `release_modifiers` burst. Both are the stuck-modifier
+    /// failure spec D.1 exists to prevent, arrived at from a new direction.
+    ///
+    /// `used` and `down_at` are deliberately not consulted: neither means
+    /// anything while `held` is false, and both are reinitialised by the next
+    /// Caps-down.
+    pub fn at_rest(&self) -> bool {
+        !self.held && self.injected.is_none() && self.consumed.is_empty()
+    }
+}
+
 /// Keys reachable through Caps: the main key of every binding that BOTH
 /// carries the configured chord AND actually registered.
 ///
@@ -381,6 +407,41 @@ mod tests {
 
     fn bound_t() -> HashSet<u32> {
         bound_keys(&reg(&[("ctrl+super+alt+t", true)]), Chord::default())
+    }
+
+    // ---------- at_rest ----------
+
+    /// The three ways `decide` can still be owed something, each asserted on
+    /// its own -- a caller that skips the arm while any of them holds strands
+    /// a key-up or a modifier.
+    #[test]
+    fn at_rest_is_false_while_decide_still_owes_something() {
+        let mut st = CapsState::default();
+        let bound = bound_t();
+        let go = |ev, st: &mut CapsState| {
+            decide(ev, st, &bound, Chord::default(), CapsTap::CapsLock);
+        };
+        assert!(st.at_rest(), "a fresh state owes nothing");
+
+        // 1. Caps physically held: its up still has to be swallowed.
+        go(down(VK_CAPITAL), &mut st);
+        assert!(!st.at_rest());
+
+        // 2. A chord injected: `release_modifiers` has not run yet.
+        go(down(VK_T), &mut st);
+        assert!(!st.at_rest());
+
+        // 3. Caps let go, so the chord is released -- but T is still
+        //    physically down and its up is still owed a swallow.
+        go(up(VK_CAPITAL), &mut st);
+        assert!(
+            !st.at_rest(),
+            "T's key-down was swallowed, so its key-up must be too; skipping \
+             `decide` here leaks an unpaired up into whatever has focus"
+        );
+
+        go(up(VK_T), &mut st);
+        assert!(st.at_rest(), "the keyboard is quiet again");
     }
 
     // ---------- bound_keys ----------

@@ -13,7 +13,7 @@
 
 use beckon_core::caps::{decide, Action, CapsState, Edge, KeyEvent};
 use beckon_core::capture::{CaptureState, HookOwners, Outcome};
-use beckon_core::shortcuts::{CapsTap, Chord};
+use beckon_core::shortcuts::{CapsTap, Chord, Combo, KeyDef};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
@@ -33,6 +33,23 @@ struct Config {
     bound: HashSet<u32>,
     hold: Chord,
     tap: CapsTap,
+    /// Whether the Caps feature is wanted at all -- `keyboard.caps && !paused`,
+    /// as `sync_caps_hook` computes it.
+    ///
+    /// **It rides on `set_bindings` / `clear_bindings` rather than being set
+    /// by a third function, and that is what keeps it honest.** Those two are
+    /// called on exactly the two branches of that decision and nowhere else,
+    /// so the flag cannot drift from the key set it travels with: there is no
+    /// ordering in which one is updated and the other is not.
+    ///
+    /// It exists because the hook is SHARED. A chord capture installs it on a
+    /// machine where the user deliberately left `keyboard.caps = false`, and
+    /// an empty `bound` is not enough to make `caps::decide` harmless there --
+    /// `decide` swallows a Caps-down unconditionally and re-injects on the
+    /// up, so a Caps tap would toggle the lock through a synthesized stroke
+    /// rather than the real one, and a hold past `HOLD_TIMEOUT_MS` would
+    /// toggle nothing at all.
+    wanted: bool,
 }
 
 impl Default for Config {
@@ -47,6 +64,7 @@ impl Default for Config {
             bound: HashSet::new(),
             hold: Chord::default(),
             tap: CapsTap::default(),
+            wanted: false,
         }
     }
 }
@@ -150,7 +168,30 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
         }
         let action = CONFIG.with(|c| {
             let c = c.borrow();
-            STATE.with(|s| decide(ev, &mut s.borrow_mut(), &c.bound, c.hold, c.tap))
+            STATE.with(|s| {
+                let mut st = s.borrow_mut();
+                // Caps is switched off (or paused) and the state machine is
+                // quiet: the hook is held by a capture alone, so `decide` has
+                // no business seeing this event at all.
+                //
+                // An empty `bound` is NOT enough. `decide` swallows a
+                // Caps-DOWN unconditionally and re-injects on the up, so
+                // without this arm a Caps tap taken while a shortcut is being
+                // recorded toggles the lock through a synthesized stroke
+                // rather than the real one, and a Caps HOLD past
+                // `HOLD_TIMEOUT_MS` toggles nothing at all.
+                //
+                // `at_rest` is the other half and is not optional: a reload
+                // or a pause can clear `wanted` between a Caps-down and its
+                // up, and skipping then would leak the unpaired key-up
+                // `set_bindings`' doc is about and abandon the defensive
+                // `release_modifiers` burst. `decide` keeps running until it
+                // has finished what it started, and only then goes quiet.
+                if !c.wanted && st.at_rest() {
+                    return Action::PassThrough;
+                }
+                decide(ev, &mut st, &c.bound, c.hold, c.tap)
+            })
         });
         // Trace only what beckon acted on, plus Caps itself. A trace of
         // every event that merely passed through would be a log of
@@ -241,7 +282,18 @@ fn debug() -> bool {
 /// Caps-down may clear the set. A reload arriving while a key is held is
 /// ordinary, not exceptional.
 pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
-    CONFIG.with(|c| *c.borrow_mut() = Config { bound, hold, tap });
+    CONFIG.with(|c| {
+        *c.borrow_mut() = Config {
+            bound,
+            hold,
+            tap,
+            // Calling this IS the statement that Caps is wanted -- see
+            // `Config::wanted`. `sync_caps_hook` reaches here only on the
+            // `keyboard.caps && !paused` branch, and reaches `clear_bindings`
+            // on the other.
+            wanted: true,
+        }
+    });
 }
 
 /// Forget the key set, chord and tap behaviour. **Call this whenever the
@@ -258,7 +310,9 @@ pub fn set_bindings(bound: HashSet<u32>, hold: Chord, tap: CapsTap) {
 ///
 /// Like `set_bindings`, this must NEVER touch `STATE`: a key-down already
 /// swallowed still needs its up swallowed, and only the next Caps-down may
-/// clear that set.
+/// clear that set. That is also why `Config::wanted` going false does not on
+/// its own stop `hook_proc` calling `decide` -- it stops only once
+/// `CapsState::at_rest` agrees there is nothing left owed.
 pub fn clear_bindings() {
     CONFIG.with(|c| *c.borrow_mut() = Config::default());
 }
@@ -408,6 +462,46 @@ pub fn arm_capture() -> bool {
     }
     CAP_ARMED.with(|a| a.set(true));
     true
+}
+
+/// Everything the settings window needs out of the live `CaptureState`, in
+/// one copy.
+///
+/// **The `RefCell` is borrowed only for the length of `snapshot()` and every
+/// field is owned by the time it returns**, which is the whole reason this
+/// type exists rather than a `with_capture_state(|st| ...)` closure. The
+/// window has to `SetWindowTextW`, `EnableWindow` and `MessageBeep` on what
+/// it reads, and every one of those can re-enter a wndproc -- where a second
+/// borrow taken across an `extern "system"` boundary ABORTS the process
+/// rather than unwinding. A closure would put those calls inside the borrow
+/// by default and leave "do not do that" as a comment; copying out first
+/// makes it unrepresentable.
+///
+/// `partial` is built here, on the UI thread, because it allocates -- see
+/// `CaptureState::partial`.
+pub struct CaptureSnapshot {
+    /// The finished combo, once `step` has answered `Captured`.
+    pub captured: Option<Combo>,
+    /// The modifiers held so far, canonically ordered: `ctrl+super+...`.
+    pub partial: Option<String>,
+    /// The key behind the most recent refusal, when it has a name.
+    pub refused_keycap: Option<&'static KeyDef>,
+    /// The vk behind it, which always exists. The beep is de-duplicated by
+    /// this and not by the keycap; see `CaptureState::refused_vk`.
+    pub refused_vk: Option<u32>,
+}
+
+/// Copy the recording session out. Meaningless unless `capture_armed()`.
+pub fn capture_snapshot() -> CaptureSnapshot {
+    CAP.with(|c| {
+        let st = c.borrow();
+        CaptureSnapshot {
+            captured: st.captured(),
+            partial: st.partial(),
+            refused_keycap: st.refused_keycap(),
+            refused_vk: st.refused_vk(),
+        }
+    })
 }
 
 /// Stop recording and give the hook back. Caps keeps it if Caps wants it;

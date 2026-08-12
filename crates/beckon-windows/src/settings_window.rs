@@ -72,18 +72,41 @@
 //! App field next to it stays a `CBS_DROPDOWN` because beckon deliberately
 //! supports apps that are in no catalog; the key set has no such open end.
 //!
-//! A deliberate non-feature: there is still no "press a key to capture the
-//! shortcut" field. `msctls_hotkey32` cannot capture the Windows key and
-//! Explorer eats `Win+T` and its siblings before a normal window sees them,
-//! so the typed path above is the whole of it.
+//! **There is now a `Record` button, and the sentence that used to stand
+//! here is retracted rather than deleted.** It read: *"A deliberate
+//! non-feature: there is still no 'press a key to capture the shortcut'
+//! field. `msctls_hotkey32` cannot capture the Windows key and Explorer eats
+//! `Win+T` and its siblings before a normal window sees them, so the typed
+//! path above is the whole of it."* Both facts are true and both are about
+//! **a window receiving `WM_KEYDOWN`** — which is not the layer capture uses.
+//! A `WH_KEYBOARD_LL` callback runs before the keystroke reaches any queue
+//! and before shell hotkey processing, sees `VK_LWIN` as an ordinary
+//! `vkCode`, and suppresses the key by returning 1. Measured on a14
+//! 2026-08-12: `Win+T`, `Win+X`, `Win+D`, `Win+E`, `Win+R`, `Win+Tab`,
+//! `Alt+Tab` and `Ctrl+Shift+Esc` all came back `SEEN=True SWALLOWED=True
+//! ACTED=False`. Spec §F.1 keeps the retraction so a later session does not
+//! re-derive the dropdown-only design as the safe option.
+//!
+//! **The typed path stays primary and capture is the accelerator.** The four
+//! check boxes and the key list are always present and always Tab-navigable;
+//! they are the only path that works for someone who cannot physically
+//! produce the chord. While a capture is armed they are `EnableWindow(false)`
+//! and `Ui::capture` is what says so — two writers on one value is the App
+//! field's measured defect in another costume.
 
+use crate::caps_hook;
 use crate::shell;
+use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
 use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, Combo, ComboView};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
+/// `MessageBeep` lives under Diagnostics::Debug, not WindowsAndMessaging --
+/// where the `MESSAGEBOX_STYLE` it takes is defined. Named rather than
+/// glob-imported so the surprise is written down once.
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{
@@ -268,6 +291,32 @@ const IDC_MOD_CTRL: i32 = 1028;
 const IDC_MOD_WIN: i32 = 1029;
 const IDC_MOD_ALT: i32 = 1030;
 const IDC_MOD_SHIFT: i32 = 1031;
+/// The editor strip's two commands. `Record` arms the `WH_KEYBOARD_LL`
+/// capture and reads `Stop` while it is armed; `Reset` clears the row's
+/// combo and leaves it without a shortcut.
+const IDC_RECORD: i32 = 1032;
+const IDC_RESET: i32 = 1033;
+
+/// The watchdog that bounds an armed capture (spec F.2/F.4).
+///
+/// It is not belt-and-braces. `caps_hook::is_installed()` CAN LIE: past
+/// `LowLevelHooksTimeout` Windows removes a `WH_KEYBOARD_LL` hook silently
+/// and there is no API to ask, so a capture can stop receiving events with
+/// nothing to notice it. Without this the window would sit showing `Stop`
+/// with the typed path greyed out and no way back except closing it.
+///
+/// The only timer this window owns, so the `WM_TIMER` arm can identify it by
+/// id alone.
+const IDT_CAPTURE: usize = 1;
+
+/// How long a capture may go without hearing anything before it gives up.
+///
+/// **The bound is on silence, not on the session.** Every `WM_CAPTURE`
+/// re-arms it, because silence is precisely the symptom of the failure above
+/// -- a hook Windows has quietly unhooked delivers nothing at all -- while a
+/// user who takes twenty seconds to decide on a chord is not a failure and
+/// should not be treated as one.
+const CAPTURE_TIMEOUT_MS: u32 = 10_000;
 
 /// The five controls that spell ONE shortcut: four modifier check boxes and
 /// the key list.
@@ -297,7 +346,7 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 /// Every check box in the window is deliberately absent: none carries
 /// `BS_NOTIFY`, none can be the default button, and a default ring on a
 /// check box is not a thing Windows draws.
-const PUSH_BUTTONS: [i32; 7] = [
+const PUSH_BUTTONS: [i32; 9] = [
     IDC_ADD,
     IDC_REMOVE,
     IDC_APPLY,
@@ -305,6 +354,8 @@ const PUSH_BUTTONS: [i32; 7] = [
     IDC_CLOSE,
     IDC_RELOAD,
     IDC_KEEPMINE,
+    IDC_RECORD,
+    IDC_RESET,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -331,10 +382,24 @@ fn is_push_button(id: i32) -> bool {
 /// | `U` | **U**se Caps Lock (check box) | `T` | C**t**rl (hold chip) |
 /// | `C` | Close | `W` | **W**in (hold chip) |
 /// | `O` | Open config file | `L` | A**l**t (hold chip) |
-/// | `S` | **S**ave | | |
+/// | `S` | **S**ave | `D` | Recor**d** |
+/// | `E` | R**e**set | | |
 ///
 /// **Mnemonic uniqueness is maintained by hand.** There is no test for it,
 /// so verify by inspection before adding new captions.
+///
+/// `Record` and `Reset` are why this table has an awkward corner. `R` is
+/// `Reload`'s, `S` is Save's, `T` is the Ctrl chip's, `O` is Open's and `C`
+/// is Close's -- so between them the two captions have exactly two letters
+/// left, `d` and `e`, and taking the obvious `e` for `Record` would leave
+/// `Reset` with nothing (`r`, `e`, `s`, `t` are then all spoken for). Hence
+/// `Recor&d` and `R&eset` rather than the other way round.
+///
+/// `Stop`, which `Record` reads while a capture is armed, deliberately
+/// carries NO mnemonic and needs none: while armed the `WH_KEYBOARD_LL` hook
+/// swallows every keystroke before it reaches a queue, so no `Alt`-anything
+/// can reach this window at all. Esc, the mouse, losing focus and the
+/// watchdog are the ways out.
 ///
 /// `Remove` cannot take `R` because `Reload` has it, and `Reload` is the
 /// one that appears without warning -- a banner the user did not ask for is
@@ -376,6 +441,17 @@ mod cap {
     pub const MOD_WIN: &str = "Win";
     pub const MOD_ALT: &str = "Alt";
     pub const MOD_SHIFT: &str = "Shift";
+    /// The editor strip's two commands. See the mnemonic table above for why
+    /// the letters are `d` and `e` rather than the obvious ones.
+    pub const RECORD: &str = "Recor&d";
+    pub const RESET: &str = "R&eset";
+    /// What `Record` reads while a capture is armed. No mnemonic -- see the
+    /// table -- and deliberately NARROWER than `Record`, which is what makes
+    /// it safe for `layout` to size the button once, from `RECORD`, and never
+    /// run again when the caption flips. A wider armed caption would need
+    /// `layout` on the capture path, and `layout` means `SetWindowPos` on the
+    /// populated App combo: the measured data-loss call (`Ui::shown_external`).
+    pub const STOP: &str = "Stop";
     /// The three `Tap` items, in `CB_ADDSTRING` order. Read back by INDEX
     /// with `CB_GETCURSEL`, never by text: even a `DROPDOWNLIST` has
     /// typeahead, which moves the selection.
@@ -457,8 +533,32 @@ mod tok {
     pub const CTL: i32 = 32;
     /// A button is never narrower than this, nor than its own caption.
     pub const BTN: i32 = 88;
+    /// The floor for a button that lives INSIDE a band beside fields, rather
+    /// than in the command bar: the editor strip's `Record` and `Reset`.
+    ///
+    /// Lower than `BTN` on purpose, and the arithmetic is the reason rather
+    /// than the taste. Band 4 is the densest line in the window -- label,
+    /// App combo, label, four chips, the key list -- and it is the App combo
+    /// that absorbs whatever the others leave. At `BTN` the two new buttons
+    /// take 184 px of it at 96 DPI; at this floor they take 138. Neither
+    /// caption needs more than ~66 px including padding, so the 88 would have
+    /// been paid entirely in App-field width.
+    pub const BTN_SM: i32 = 64;
     /// The right-aligned `Shortcut` column, and the editor field under it.
     pub const SHORTCUT_COL: i32 = 200;
+    /// The key list's own ceiling, and the one control that does NOT share
+    /// `SHORTCUT_COL` with the filter box and the `Tap` combo.
+    ///
+    /// `SHORTCUT_COL` is sized for a whole chord (`ctrl+super+alt+shift+t`),
+    /// which is what the LIST column holds. This control holds ONE key name,
+    /// and the longest in the 81-key table is `bracketright` -- twelve
+    /// characters, comfortably inside this plus a drop-down button. It only
+    /// ever had 200 because it inherited the column's number.
+    ///
+    /// The 60 px that buys is what pays for `Record` and `Reset` sharing its
+    /// line. Without it the App combo's width reaches zero at a window about
+    /// 707 px wide, which `MIN_WIDTH` (720) does not keep a drag out of.
+    pub const KEY_COL: i32 = 140;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
     /// Widest a tooltip may draw before it wraps. Comfortably narrower than
@@ -822,6 +922,53 @@ struct Ui {
     /// re-read five controls that still say what they were told to say".
     /// See `commit_fields` for why a string compare there is wrong.
     shown_combo: Option<String>,
+    /// The recording session, as far as DRAWING is concerned. `None` is
+    /// Idle.
+    ///
+    /// **This is not the same lifetime as the hook's.** `caps_hook` keeps
+    /// the hook past a commit or a cancel, draining until every physically
+    /// held key is up (spec F.3) -- that is what makes `alt+tab` recordable
+    /// without the system seeing a bare Alt-up. This field ends the moment
+    /// the chord is decided, because that is when the typed path comes back
+    /// and the strip stops saying `Stop`. `caps_hook::capture_armed()` is
+    /// the hook's answer; this one is the window's.
+    ///
+    /// `apply_state` reads it, which is what stops an unrelated push --
+    /// a file-watch tick, a catalog arriving -- from re-enabling the five
+    /// typed controls underneath a live capture. Two writers on one value is
+    /// exactly what spec C.4 forbids.
+    capture: Option<Capture>,
+}
+
+/// What a live capture has to say, rebuilt on every `WM_CAPTURE`.
+///
+/// Both strings are built HERE, on the UI thread, never in the hook
+/// callback: `CaptureState::partial` and `capture::hint` allocate, and a
+/// `WH_KEYBOARD_LL` callback that overruns `LowLevelHooksTimeout` is
+/// unhooked by Windows with no error anywhere.
+struct Capture {
+    /// The modifiers held so far, canonically ordered -- `ctrl+super+...` --
+    /// exactly as they would be written to the TOML. `None` when nothing is
+    /// held, which is the ordinary state right after arming.
+    partial: Option<String>,
+    /// The line under it: `HINT_ARMED` at rest, a refusal's sentence
+    /// otherwise. Never empty.
+    hint: String,
+    /// The vk the last beep was for.
+    ///
+    /// A refused key never enters `CaptureState`'s held set -- admitting it
+    /// would let rolled-over bare keys eat the twelve fixed slots and drop a
+    /// real modifier -- so the auto-repeat filter cannot see it, and holding
+    /// `a` down yields one `Refused` per repeat. This de-duplicates the
+    /// BEEP, which is the only part of that the user can hear.
+    ///
+    /// **Known under-beep, deliberate.** Nothing clears this on the refused
+    /// key's own key-up: that up answers `PassThrough`, which does not post,
+    /// so the window never hears about it. Press `a`, release, press `a`
+    /// again with nothing in between and the second press is silent. A
+    /// duplicated beep is worse than a missing one, and every other outcome
+    /// clears it.
+    beeped_vk: Option<u32>,
 }
 
 /// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
@@ -1079,6 +1226,8 @@ fn default_button_of(id: i32) -> DefaultButton {
         IDC_CLOSE => DefaultButton::Close,
         IDC_RELOAD => DefaultButton::Reload,
         IDC_KEEPMINE => DefaultButton::KeepMine,
+        IDC_RECORD => DefaultButton::Record,
+        IDC_RESET => DefaultButton::Reset,
         _ => DefaultButton::HOME,
     }
 }
@@ -1094,6 +1243,8 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::Close => IDC_CLOSE,
         DefaultButton::Reload => IDC_RELOAD,
         DefaultButton::KeepMine => IDC_KEEPMINE,
+        DefaultButton::Record => IDC_RECORD,
+        DefaultButton::Reset => IDC_RESET,
     }
 }
 
@@ -1930,6 +2081,26 @@ unsafe fn build_children(hwnd: HWND) {
             Some(LPARAM(t.as_ptr() as isize)),
         );
     }
+    // The two commands, created AFTER the key list because creation order is
+    // tab order and the strip reads left to right: App -> chips -> key ->
+    // Record -> Reset.
+    //
+    // `BS_NOTIFY` and membership in `PUSH_BUTTONS`, like every other push
+    // button here, and on this pair it is load-bearing rather than uniform:
+    // without the focus notifications the default ring cannot follow focus
+    // onto them, `IsDialogMessageW` falls through to `DM_GETDEFID`, and
+    // Enter on a focused `Record` would SAVE. That is the `Reload` defect
+    // one band higher.
+    for (caption, id) in [(cap::RECORD, IDC_RECORD), (cap::RESET, IDC_RESET)] {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
     // On its own line directly beneath the strip, which is where B.1's
     // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE -- and, for
     // the same reason, no SS_ENDELLIPSIS either; see SS_NOPREFIX_STYLE.
@@ -2131,6 +2302,7 @@ unsafe fn build_children(hwnd: HWND) {
             items: Vec::new(),
             app_epoch: 0,
             shown_combo: None,
+            capture: None,
         })
     });
 }
@@ -2610,11 +2782,27 @@ unsafe fn layout(hwnd: HWND) {
     // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
     let lw_app = tw("App") + s(4);
     let lw_short = tw("Shortcut") + s(4);
-    // The key list takes what the line has left, under the same ceiling the
-    // single field had and the filter box still has, so every box in the
-    // window narrows together.
-    let key_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
-    let key_x = cx + clamp(cw - key_w);
+    // `Record` and `Reset` close the line, right-aligned like Add/Remove
+    // close band 2. Sized from `RECORD`, never from `STOP`: the armed
+    // caption is the narrower of the two, so a caption flip cannot clip and
+    // `layout` never has to run on the capture path -- which matters,
+    // because `layout` means `SetWindowPos` on the populated App combo, the
+    // measured data-loss call (`Ui::shown_external`).
+    let btn_sm = |t: &str| s(tok::BTN_SM).max(tw(t) + s(24));
+    let bw_record = btn_sm(cap::RECORD);
+    let bw_reset = btn_sm(cap::RESET);
+    let rec_x = cx + clamp(cw - bw_record - gap - bw_reset);
+    let res_x = cx + clamp(cw - bw_reset);
+    // The key list takes what the line has left, under its OWN ceiling --
+    // see `tok::KEY_COL`, which is the one control in the window that does
+    // not narrow with the filter box and the `Tap` combo, because it holds
+    // one key name rather than a whole chord.
+    //
+    // `.max(cx)` rather than `clamp`, like `mods_x` below: this is a
+    // POSITION, and a position clamped to 0 puts the control outside the
+    // surface padding instead of merely narrowing it.
+    let key_w = s(tok::KEY_COL).min(clamp(cw / 3));
+    let key_x = (rec_x - gap - key_w).max(cx);
     // Each chip is its caption plus the check box's own square, exactly as
     // band 6's `Hold` chips are sized -- same `glyph`, one rule.
     let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
@@ -2659,6 +2847,21 @@ unsafe fn layout(hwnd: HWND) {
     // `cy` is the DROPPED-DOWN height here too, capped by the same
     // CB_SETMINVISIBLE(8) the App combo carries.
     place_h(ui.combo, key_x, y + edit_dy, key_w, field_h * 9);
+    // Buttons honour `cy` and look right at the band height, so they take
+    // `ctl` directly and sit on the band line rather than on the fields'
+    // midline -- the same rule the command bar's three follow.
+    //
+    // The App combo is what absorbs everything this line leaves, so it is
+    // worth writing down where it runs out. At 96 DPI, with the tokens
+    // above, the fixed part of this line is about 613 px; `app_w` therefore
+    // clamps to zero at a client width of ~613, i.e. a window ~660 px wide.
+    // `MIN_WIDTH` is 720, and `WM_GETMINMAXINFO` bounds the whole window
+    // including the OS frame, so a drag cannot reach it -- the same argument
+    // band 2's heading makes about its own zero point. Every subtraction
+    // here is clamped regardless, because `WM_DPICHANGED` can suggest a rect
+    // below that floor without asking `WM_GETMINMAXINFO`.
+    place(IDC_RECORD, rec_x, y, bw_record, ctl);
+    place(IDC_RESET, res_x, y, bw_reset, ctl);
     y += ctl + gap;
     place_h(ui.notes, cx, y, cw, clamp(kb_y - band - y));
 
@@ -2787,6 +2990,22 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         }
     });
 
+    // What a live capture wants on the notes strip, or `None` when the model
+    // owns it as usual. ONE borrow, dropped on this line; `capture_notes`
+    // allocates but makes no OS call.
+    //
+    // **This is what stops an unrelated push undoing a recording.** A
+    // file-watch tick or a catalog arriving lands here mid-capture, and
+    // without this it would re-enable the five typed controls and write the
+    // model's notes over the prompt -- two writers on one value, which is
+    // the defect spec C.4 forbids by name.
+    let cap_notes: Option<String> = UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .and_then(|x| x.capture.as_ref().map(capture_notes))
+    });
+    let capturing = cap_notes.is_some();
+
     // Did this push write the App field? Collected here and acted on in the
     // trailing block, which is equivalent to bumping at the write itself:
     // the stamp only has to be current before a POSTED message can be
@@ -2821,8 +3040,13 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // `st.editable`, not `true`: there is a row to show but the
                 // file it came from may be one beckon could not read. The
                 // window is not told which -- see `ControlState::editable`.
+                //
+                // `&& !capturing` for a different reason, and it is the one
+                // spec C.4 states: the five controls and the recording hook
+                // are two views of one value, and two writers on one value
+                // is the App field's measured defect in another costume.
                 for id in SHORTCUT_CONTROLS {
-                    enable(hwnd, id, st.editable);
+                    enable(hwnd, id, st.editable && !capturing);
                 }
                 enable(hwnd, IDC_APP, st.editable);
                 // The shortcut, as the five controls that show it.
@@ -2848,12 +3072,20 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                     set_text(app, &d.app);
                     wrote_app = true;
                 }
-                let body: Vec<String> = d
-                    .notes
-                    .iter()
-                    .map(|n| format!("{}  {}", mark_glyph(n.mark), n.text))
-                    .collect();
-                set_text(notes, &body.join("\r\n"));
+                // The capture prompt outranks the row's notes while one is
+                // live: it is the only thing on screen telling the user what
+                // beckon is doing with their keyboard.
+                match &cap_notes {
+                    Some(t) => set_text(notes, t),
+                    None => {
+                        let body: Vec<String> = d
+                            .notes
+                            .iter()
+                            .map(|n| format!("{}  {}", mark_glyph(n.mark), n.text))
+                            .collect();
+                        set_text(notes, &body.join("\r\n"));
+                    }
+                }
             }
             None => {
                 for id in SHORTCUT_CONTROLS {
@@ -2878,9 +3110,37 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                     set_text(app, "");
                     wrote_app = true;
                 }
-                set_text(notes, "Select a shortcut, or press Add.");
+                // Reachable while a capture is live: the file can change on
+                // disk mid-recording and take the selection with it. The
+                // prompt still outranks the placeholder, and the commit that
+                // follows simply lands nowhere -- `on_edit_combo` reaches a
+                // model with no `selected` and changes nothing.
+                set_text(
+                    notes,
+                    cap_notes
+                        .as_deref()
+                        .unwrap_or("Select a shortcut, or press Add."),
+                );
             }
         }
+        // The editor strip's two commands. `Record` stays live while a
+        // capture is armed even if the row went away underneath it: it reads
+        // `Stop` then, and it is the only way to end a recording with the
+        // mouse -- the hook is swallowing every keystroke, so there is no
+        // keyboard route to fall back on.
+        //
+        // `Reset` is greyed while armed for the same reason the five typed
+        // controls are: it writes the value the hook is in the middle of
+        // recording.
+        let row = st.detail.is_some();
+        enable(hwnd, IDC_RECORD, capturing || (st.editable && row));
+        enable(hwnd, IDC_RESET, st.editable && row && !capturing);
+        // Guarded by a read, like every other write in this function.
+        set_text_if_changed(
+            hwnd,
+            IDC_RECORD,
+            if capturing { cap::STOP } else { cap::RECORD },
+        );
 
         // Conditional, like every other field write here: an unconditional
         // WM_SETTEXT raises EN_CHANGE on every push, which for this control
@@ -3621,6 +3881,61 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 LRESULT(0)
             }
+            WM_CAPTURE => {
+                on_capture(hwnd, wp.0);
+                LRESULT(0)
+            }
+            WM_TIMER if wp.0 == IDT_CAPTURE => {
+                // The watchdog. Spec F.2: `is_installed()` can lie, because
+                // past `LowLevelHooksTimeout` Windows removes the hook
+                // silently and there is no API to ask -- so the only
+                // evidence a capture is still alive is that it keeps
+                // arriving, and this is what happens when it stops.
+                //
+                // It is also the backstop for every case in spec F.5's table
+                // that ends "the watchdog fires": an elevated window taking
+                // focus under UIPI, a secure desktop, another remapper
+                // sitting ahead of us in the chain.
+                end_capture(hwnd);
+                LRESULT(0)
+            }
+            WM_KILLFOCUS => {
+                // The first of spec F.4's three focus layers. It fires
+                // rarely -- focus normally lives on a CHILD, and a child's
+                // `WM_KILLFOCUS` goes to the child -- but the window itself
+                // does hold focus after `repair_default_button`'s
+                // `SetFocus(hwnd)` fallback, and this is what covers that.
+                // The layer that carries the ordinary case is `WM_ACTIVATE`
+                // below.
+                end_capture(hwnd);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_ACTIVATE => {
+                // The second layer, and the one that actually fires when the
+                // user clicks another window. LOWORD(wParam) is the
+                // activation state.
+                if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE {
+                    end_capture(hwnd);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_ACTIVATEAPP => {
+                // The third: this process as a whole lost the foreground.
+                // Not redundant with `WM_ACTIVATE` -- that one speaks for
+                // this window against its siblings, and beckon has more than
+                // one (the tray window, and whatever COM creates on this
+                // thread).
+                //
+                // The fourth layer is not here and cannot be: the per-event
+                // `GetForegroundWindow()` gate inside the hook itself, which
+                // is the only one that fires when a UAC prompt or an
+                // elevated window takes the foreground without sending
+                // either of these.
+                if wp.0 == 0 {
+                    end_capture(hwnd);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_CATALOG => {
                 // Reclaims what `post_catalog` leaked into the message.
                 let names = *Box::from_raw(lp.0 as *mut Vec<String>);
@@ -3697,6 +4012,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CLOSE => {
+                // BEFORE the save prompt, not after. `on_close_request` can
+                // put up a `MessageBoxW`, which runs a MODAL LOOP on this
+                // thread -- the same thread that dispatches the hook
+                // callback -- so a capture left armed across it would be
+                // swallowing every keystroke while the one dialog asking the
+                // user a question could not receive any. And if they answer
+                // Cancel, the window stays open with a hook that spent the
+                // dialog eating the keyboard.
+                //
+                // Cheap when nothing is armed, which is the overwhelmingly
+                // common case: `end_capture` is idempotent by construction.
+                end_capture(hwnd);
                 let mut may = true;
                 with_cb(|cb| may = (cb.on_close_request)());
                 if may {
@@ -3705,6 +4032,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_DESTROY => {
+                // FIRST, before `UI` is taken: `end_capture` reads it to
+                // take the overlay down, and after the take there is no
+                // window left for `caps_hook`'s foreground gate to match
+                // either. Skipping the drain is deliberate (spec F.3) --
+                // there is no window left to protect, and holding the hook
+                // one beat longer than the window leaves a swallowed
+                // keyboard.
+                //
+                // Reached on every death this window has, including the ones
+                // that do not go through `WM_CLOSE`: a `DestroyWindow` from
+                // anywhere, and the system's own teardown of a child of a
+                // dying thread.
+                end_capture(hwnd);
                 // Taken out of the `RefCell` first, so all three
                 // `DeleteObject` calls run with no borrow alive -- and so
                 // all three run at all. One `HFONT` per window open was
@@ -3890,6 +4230,326 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Capture (spec F.3)
+// ---------------------------------------------------------------------------
+//
+// The state machine itself is `beckon_core::capture::step`, run inside the
+// `WH_KEYBOARD_LL` callback in `caps_hook.rs`; everything here is drawing and
+// lifetime. Three rules govern the whole section and none of them is local:
+//
+// 1. **No `UI` borrow survives a send.** Every `EnableWindow`,
+//    `SetWindowTextW`, `SetTimer`, `KillTimer` and `MessageBeep` below can
+//    re-enter this wndproc, and a second `RefCell` borrow taken across an
+//    `extern "system"` boundary ABORTS the process rather than unwinding.
+//    Every function here copies out what it needs in one borrow and sends
+//    afterwards.
+// 2. **Nothing here blocks.** The hook callback is dispatched by THIS
+//    thread's message loop, so a modal dialog or a synchronous scan starves
+//    it exactly as a slow callback would -- and Windows unhooks a callback
+//    that overruns `LowLevelHooksTimeout` silently.
+// 3. **There is no path where the window dies with the hook armed.**
+//    `end_capture` is idempotent and every route out of this window calls it
+//    first: the `Stop` button, all three of spec F.4's focus layers, the
+//    watchdog, `WM_CLOSE` (before the save prompt) and `WM_DESTROY`.
+
+/// The notes strip's text while a capture is live: the partial combo, then
+/// the hint.
+///
+/// Indented through `mark_glyph(Mark::Ok)` -- the blank one -- so the two
+/// lines sit exactly where a healthy note sits. That is the only reason this
+/// goes through the glyph table rather than writing spaces: a second
+/// indentation rule is a second thing to keep in step with the first.
+fn capture_notes(c: &Capture) -> String {
+    let g = mark_glyph(Mark::Ok);
+    match &c.partial {
+        Some(p) => format!("{g}  {p}\r\n{g}  {}", c.hint),
+        None => format!("{g}  {}", c.hint),
+    }
+}
+
+/// Write a caption only when it would change.
+///
+/// `SetWindowTextW` on a control repaints it, and this runs from
+/// `apply_state`, which runs on every keystroke. The comparison is against
+/// the RAW caption, `&` and all: that is what `GetWindowTextW` gives back,
+/// and `shown` would report a difference on every call.
+unsafe fn set_text_if_changed(parent: HWND, id: i32, s: &str) {
+    if let Ok(h) = GetDlgItem(Some(parent), id) {
+        if text_of(h) != s {
+            set_text(h, s);
+        }
+    }
+}
+
+/// Is a capture live, as far as this window's drawing is concerned?
+///
+/// **Not `caps_hook::capture_armed()`**, which stays true through the drain
+/// after a commit or a cancel -- see `Ui::capture`.
+fn capture_showing() -> bool {
+    UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .map(|x| x.capture.is_some())
+            .unwrap_or(false)
+    })
+}
+
+/// One fixed sentence on the notes strip, with no state behind it.
+///
+/// It answers one button press, and the next `apply_state` -- the only other
+/// writer of that control -- is what ends it. A field would have to be
+/// cleared by something, and there is nothing sensible to clear it on.
+unsafe fn say_unavailable() {
+    if let Some(notes) = UI.with(|u| u.borrow().as_ref().map(|x| x.notes)) {
+        set_text(notes, HINT_UNAVAILABLE);
+    }
+}
+
+/// Draw the armed state: the two capture lines, the typed path off, the
+/// button reading `Stop`.
+///
+/// Reads `Ui::capture` and does nothing when it is `None`, so it is safe to
+/// call from anywhere.
+unsafe fn show_capture(hwnd: HWND) {
+    // ONE borrow, dropped on this line. `capture_notes` allocates but makes
+    // no OS call, so building the string inside it is sound; every send is
+    // below.
+    let Some((notes, body)) = UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .and_then(|x| x.capture.as_ref().map(|c| (x.notes, capture_notes(c))))
+    }) else {
+        return;
+    };
+    if text_of(notes) != body {
+        set_text(notes, &body);
+    }
+    // Two writers on one value is what spec C.4 forbids, and this is the
+    // half that enforces it: while the hook is recording, the five controls
+    // that spell the same chord cannot be operated.
+    for id in SHORTCUT_CONTROLS {
+        enable(hwnd, id, false);
+    }
+    enable(hwnd, IDC_RESET, false);
+    // `Stop` must never be out of reach: it is the only way to end a
+    // recording with the mouse, and while armed the hook swallows every
+    // keystroke, so there is no keyboard route to fall back on.
+    enable(hwnd, IDC_RECORD, true);
+    set_text_if_changed(hwnd, IDC_RECORD, cap::STOP);
+}
+
+/// Take the armed state down, leaving the hook alone.
+///
+/// **The overlay and the hook have different lifetimes**, and this is the
+/// difference: a commit or a cancel ends the overlay immediately, while
+/// `caps_hook` keeps the hook until every physically held key is up (spec
+/// F.3's draining state). That drain is what makes `alt+tab` recordable
+/// without the system ever seeing a bare Alt-up.
+///
+/// Idempotent -- the field is TAKEN -- which is what lets every caller call
+/// it without asking.
+///
+/// The five controls are restored to enabled rather than to a remembered
+/// value, because there is only one state they can have been in: `Record` is
+/// pressable exactly when they are (`DefaultButton::Record::pressable`), so
+/// arming from a state where they were greyed is unreachable. If the model
+/// moved underneath the capture -- the file changed on disk and the
+/// selection went away -- `apply_state` is authoritative and corrects them
+/// on its next push.
+unsafe fn end_overlay(hwnd: HWND) {
+    if UI
+        .with(|u| u.borrow_mut().as_mut().and_then(|x| x.capture.take()))
+        .is_none()
+    {
+        return;
+    }
+    set_text_if_changed(hwnd, IDC_RECORD, cap::RECORD);
+    for id in SHORTCUT_CONTROLS {
+        enable(hwnd, id, true);
+    }
+    enable(hwnd, IDC_RESET, true);
+}
+
+/// Give the hook back and take the armed state down. **Safe to call when
+/// nothing is armed**, which is the whole point: every route out of this
+/// window calls it without checking first.
+unsafe fn end_capture(hwnd: HWND) {
+    // The hook FIRST and unconditionally. Holding it one beat longer than
+    // the window leaves a swallowed keyboard with nothing left to give it
+    // back. `disarm_capture` clears the armed flag before it unhooks, so no
+    // further keystroke can enter the capture arm while it is being torn
+    // down, and it is a no-op when nothing is armed.
+    //
+    // Cutting a drain short this way is safe in the one direction that
+    // matters. The key-DOWNS this session swallowed never reached the
+    // system, so the key-ups that now get through are ups for keys nothing
+    // believes are held -- which latch nothing. The dangerous direction is
+    // the reverse, a swallowed up after a real down, and that is what
+    // `Outcome::PassThrough` covers inside the hook itself.
+    caps_hook::disarm_capture();
+    // `Err` when there is no such timer, which is the common case: every
+    // route out of this window calls this whether or not one was armed.
+    let _ = KillTimer(Some(hwnd), IDT_CAPTURE);
+    end_overlay(hwnd);
+}
+
+/// `Record` was pressed. Arm the hook, or say why not.
+unsafe fn start_capture(hwnd: HWND) {
+    if capture_showing() {
+        return;
+    }
+    if !caps_hook::arm_capture() {
+        // Spec F.3: do NOT enter Armed, and do NOT fall back to
+        // message-queue capture. That path cannot see the Windows key, so it
+        // fails on precisely the chords beckon recommends -- and it fails by
+        // recording the WRONG chord rather than by refusing, which is the
+        // worse of the two. `arm_capture` has already logged the underlying
+        // `SetWindowsHookExW` error; this is the only thing the user sees.
+        say_unavailable();
+        return;
+    }
+    if SetTimer(Some(hwnd), IDT_CAPTURE, CAPTURE_TIMEOUT_MS, None) == 0 {
+        // No watchdog, no capture. The watchdog is the ONLY thing that gets
+        // the keyboard back when the hook stops delivering without saying so
+        // -- `is_installed()` can lie, because past `LowLevelHooksTimeout`
+        // Windows removes the hook silently and there is no API to ask (spec
+        // F.2). A capture with no bound on it is a keyboard that may never
+        // come back, which is the worst outcome this feature has, so it is
+        // not entered at all.
+        caps_hook::disarm_capture();
+        say_unavailable();
+        return;
+    }
+    UI.with(|u| {
+        if let Some(x) = u.borrow_mut().as_mut() {
+            x.capture = Some(Capture {
+                partial: None,
+                hint: HINT_ARMED.to_string(),
+                beeped_vk: None,
+            });
+        }
+    });
+    show_capture(hwnd);
+}
+
+/// One outcome from the hook, decoded and drawn.
+///
+/// The `WPARAM` is `Outcome::code()`; everything else is rebuilt here from
+/// `CaptureState`, because the callback that posted this may not allocate.
+unsafe fn on_capture(hwnd: HWND, code: usize) {
+    // `WM_APP + n` is private by convention only, so a code this version
+    // never wrote decodes to nothing rather than to the first variant.
+    let Some(outcome) = Outcome::from_code(code) else {
+        return;
+    };
+    // A message posted an instant before a disarm can still be sitting in
+    // the queue; acting on it would re-arm a watchdog for a hook that is
+    // gone.
+    if !caps_hook::capture_armed() {
+        return;
+    }
+    // The watchdog bounds SILENCE rather than the session -- see
+    // `CAPTURE_TIMEOUT_MS`. Anything arriving here is proof the hook is
+    // still delivering, so the clock starts again. `SetTimer` with a live id
+    // replaces the timer rather than adding one.
+    let _ = SetTimer(Some(hwnd), IDT_CAPTURE, CAPTURE_TIMEOUT_MS, None);
+    match outcome {
+        // Every held key is up: the drain is over and the hook goes back.
+        // Reached with the overlay already down whenever a commit or a
+        // cancel came first, which `end_overlay`'s idempotence absorbs.
+        Outcome::Disarmed => end_capture(hwnd),
+        Outcome::Captured => {
+            let snap = caps_hook::capture_snapshot();
+            // The overlay comes down BEFORE the five controls are written.
+            // `push_shortcut` below re-enters the caller, which re-enters
+            // `apply_state`, which reads `Ui::capture` to decide whether the
+            // typed path is disabled -- so leaving it up would have that
+            // push grey out the controls this arm has just filled in.
+            end_overlay(hwnd);
+            let Some(c) = snap.captured else {
+                return;
+            };
+            let Some(combo) = UI.with(|u| u.borrow().as_ref().map(|x| x.combo)) else {
+                return;
+            };
+            // Through `Combo::canonical` and back through `combo_view`,
+            // rather than looking the key up in `key_table` here. That pair
+            // is the seam `apply_state` already uses to turn a stored combo
+            // into control values, so the captured chord cannot disagree
+            // with a typed one about which index a key is -- which is the
+            // whole of `set_key_sel`'s contract.
+            let v = combo_view(&c.canonical());
+            // No `suppressed()` guard and none wanted: `BM_SETCHECK` raises
+            // no `BN_CLICKED` and `CB_SETCURSEL` raises no `CBN_SELCHANGE`,
+            // so these writes cannot come back as user edits -- and
+            // `push_shortcut` below is itself suppression-guarded, so
+            // setting the flag here would silently drop the probe.
+            check(hwnd, IDC_MOD_CTRL, v.ctrl);
+            check(hwnd, IDC_MOD_WIN, v.super_);
+            check(hwnd, IDC_MOD_ALT, v.alt);
+            check(hwnd, IDC_MOD_SHIFT, v.shift);
+            set_key_sel(combo, v.key);
+            // Probe first, then the edit -- `push_shortcut` owns that order
+            // and the reason is `Callbacks::on_probe_shortcut`'s.
+            push_shortcut(hwnd, combo);
+        }
+        // Bare Esc. The hook swallowed it, so it never became a `MSG`,
+        // `IsDialogMessageW` never turned it into `IDCANCEL`, and the window
+        // does not close. The hook stays for the drain.
+        Outcome::Cancelled => end_overlay(hwnd),
+        Outcome::Partial => {
+            let snap = caps_hook::capture_snapshot();
+            UI.with(|u| {
+                if let Some(c) = u.borrow_mut().as_mut().and_then(|x| x.capture.as_mut()) {
+                    c.partial = snap.partial;
+                    // Holding modifiers is still the prompt, not an error:
+                    // releasing them all returns to Armed and spec F.3 calls
+                    // that "not an error".
+                    c.hint = HINT_ARMED.to_string();
+                    // A modifier moved, so a refusal that came before it is
+                    // history and the same key pressed again is a new one.
+                    c.beeped_vk = None;
+                }
+            });
+            show_capture(hwnd);
+        }
+        Outcome::Refused(_) => {
+            let snap = caps_hook::capture_snapshot();
+            // ONE borrow: update the overlay and decide about the beep
+            // inside it, then drop it. `MessageBeep` plays a sound
+            // asynchronously and is not a call to hold a borrow across.
+            let beep = UI
+                .with(|u| {
+                    u.borrow_mut()
+                        .as_mut()
+                        .and_then(|x| x.capture.as_mut())
+                        .map(|c| {
+                            let beep = snap.refused_vk != c.beeped_vk;
+                            c.beeped_vk = snap.refused_vk;
+                            c.partial = snap.partial;
+                            // Always `Some` for a refusal; the fallback is
+                            // for totality, not for a reachable case.
+                            c.hint = hint(outcome, snap.refused_keycap)
+                                .unwrap_or_else(|| HINT_ARMED.to_string());
+                            beep
+                        })
+                })
+                .unwrap_or(false);
+            if beep {
+                // Discarded on purpose: a beep that did not sound -- muted
+                // machine, no audio device -- is not a reason to do anything
+                // differently, and the hint carries the whole message anyway.
+                let _ = MessageBeep(MB_ICONWARNING);
+            }
+            show_capture(hwnd);
+        }
+        // Neither is ever posted -- `Outcome::post` is false for both -- and
+        // neither says anything about what the window shows.
+        Outcome::Ignored | Outcome::PassThrough => {}
+    }
+}
+
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
     // The shortcut key list and the filter EDIT, and nothing else. The App
     // COMBOBOX is deliberately absent: the one arm that still reads it
@@ -4036,6 +4696,33 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
+        // One button, two commands: `Record` while idle, `Stop` while armed.
+        // The caption is what the user is looking at, so it is the caption's
+        // meaning that is dispatched on -- read from `Ui::capture`, which is
+        // what wrote it.
+        //
+        // No `enabled()` guard, matching Add and Remove above and unlike
+        // `IDC_APPLY`: the dialog manager does not dispatch a command to a
+        // disabled control, a mnemonic on one beeps instead, and there is no
+        // accelerator pointed here for `TranslateAcceleratorW` to bypass
+        // that with.
+        (IDC_RECORD, _) => unsafe {
+            if capture_showing() {
+                end_capture(hwnd);
+            } else {
+                start_capture(hwnd);
+            }
+        },
+        // Spec F.3: `Reset` clears the combo and leaves the row without a
+        // shortcut. An empty string is exactly what `Model::add_row` gives a
+        // new row, so this is a state the model, the renderer and
+        // `combo_view` all already handle.
+        //
+        // No probe: `on_probe_shortcut` asks the OS whether a chord is free,
+        // and there is no chord here to ask about. That is also why this
+        // does not go through `push_shortcut`, which reads the five controls
+        // and sends NOTHING while no key is selected -- see `shortcut_shown`.
+        (IDC_RESET, _) => with_cb(|cb| (cb.on_edit_combo)(String::new())),
         (IDC_APPLY, _) => {
             // Ctrl+S reaches this arm too, and `TranslateAcceleratorW` does
             // not care whether the button it names is enabled -- it sends

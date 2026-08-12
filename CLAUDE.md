@@ -771,6 +771,14 @@ the decision recorded under *Open questions → 1* that beckon uses
 "RegisterEventHotKey / RegisterHotKey: no event tap, no LLHOOK". The reversal
 is deliberate and narrow: one opt-in feature, off by default, on one OS.
 
+**Since 2026-08-12 there are TWO reasons to hold that hook, not one**: Caps,
+and a settings-window chord capture (see *Out of scope → GUI/TUI*). There is
+still exactly one hook — `capture::HookOwners` refcounts the two reasons, and
+`hook_proc` consults the capture arm **first** — but the exception is now
+reachable on a machine where the user left `keyboard.caps = false`, for the
+seconds a recording lasts. Everything below still holds for the Caps arm; the
+capture arm's own rules are in the *Out of scope* entry.
+
 Caps is an **alias for the configured chord** — `ctrl+super+alt` by
 default, `keyboard.caps_hold` to change it — not a fifth modifier. The hook
 injects the chord `RegisterHotKey` already listens for, so `Combo`,
@@ -1113,12 +1121,56 @@ OS metadata on every call.
   a **disabled `CBS_DROPDOWNLIST` still renders white with dark text**, so it
   looks live beside greyed labels: measurements §56, and do not "fix" it.
 
-  **Chord capture stays out.** Combos are typed as text. `msctls_hotkey32`
-  cannot capture the Windows key, and `Win+T` and its siblings are shell
-  hotkeys Explorer consumes before a normal window sees them — so a capture
-  field would fail on precisely the chords beckon recommends. This is what
-  let the window ship without the hardware measurement the 2026-08-10 spec
-  demanded: the feature that needed it was not built.
+  **REVERSED 2026-08-12: chord capture is in, as `Record` / `Stop`.** This
+  entry used to read *"Chord capture stays out. Combos are typed as text.
+  `msctls_hotkey32` cannot capture the Windows key, and `Win+T` and its
+  siblings are shell hotkeys Explorer consumes before a normal window sees
+  them — so a capture field would fail on precisely the chords beckon
+  recommends."* **Both facts are true and both are about a window receiving
+  `WM_KEYDOWN`, which is not the layer capture uses.** A `WH_KEYBOARD_LL`
+  callback runs before the keystroke reaches any queue and before shell
+  hotkey processing, sees `VK_LWIN` as an ordinary `vkCode`, and suppresses
+  the key by returning 1 — and beckon already owns that hook for the Caps
+  feature. Measured on a14 2026-08-12 with a person at the keyboard: `Win+T`,
+  `Win+X`, `Win+D`, `Win+E`, `Win+R`, `Win+Tab`, `Alt+Tab` and
+  `Ctrl+Shift+Esc` all came back `SEEN=True SWALLOWED=True ACTED=False`, with
+  `Win+R` appearing twice in one run — passed through it opened the Run
+  dialog, swallowed it did not — as the control that carries the claim. Do
+  not re-add the old entry without re-running that probe.
+
+  **This widens the LLHOOK exception from one feature to two**, because
+  capture arms the hook on machines where the user deliberately left
+  `keyboard.caps = false`. Three things keep that narrow and none may be
+  "simplified" away: there is exactly **one** hook with a two-reason refcount
+  (`capture::HookOwners`) — a second `WH_KEYBOARD_LL` chains and would record
+  the alias `Caps+T` injects instead of the key pressed; the capture arm of
+  `hook_proc` is consulted **before** `caps::decide` for that same reason; and
+  the `caps::decide` arm is **skipped entirely** when Caps is not wanted and
+  `CapsState::at_rest()` agrees nothing is owed, so a capture on a Caps-off
+  machine cannot make a Caps tap toggle the lock through a synthesized stroke.
+  The `at_rest` half is not optional: skipping while a swallowed key-down is
+  still owed its swallowed key-up leaks an unpaired up into whatever has
+  focus.
+
+  **What is refused rather than recorded**, in `capture::is_reserved`:
+  `Win+L` and `Ctrl+Alt+Del`, and the three lock keys as main keys. `Win+L`
+  is a **block-list, not blindness** — measured, the hook *does* see it, and
+  returning 1 does not stop the lock, so without the list beckon would
+  cheerfully write a binding that can never fire.
+
+  **The hook must never outlive the window**, and it does not: `end_capture`
+  is idempotent and is called by the `Stop` button, all three of §F.4's focus
+  layers, a 10 s watchdog, `WM_CLOSE` (before the save prompt — that prompt
+  is a modal loop on the hook's own thread), `WM_DESTROY`, and both
+  `std::process::exit` arms of `hotkey::run_forever` (Quit from the tray
+  never reaches a `WM_DESTROY`). The watchdog is not belt-and-braces:
+  `is_installed()` can lie, because past `LowLevelHooksTimeout` Windows
+  removes the hook silently and there is no API to ask.
+
+  The typed path stays primary — capture is an accelerator, not a
+  replacement. Someone who cannot physically produce a chord still has the
+  four check boxes and the key list, and keys capture can never see (bare
+  `escape`, bare `tab`) remain selectable there.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound apps invoked by raw id. `search` is for ad-hoc id discovery during setup, not interactive launching.
 - **Window tiling / layout management** — beckon only focuses/launches, never moves or resizes.
 - **PWA install helper** — user installs PWAs manually via Brave/Chrome's "Install this site as an app". beckon does not wrap this.
