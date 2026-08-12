@@ -1001,11 +1001,18 @@ mod win {
         let read_only = !on(IDC_ADD);
         println!("  -- editing state --");
         println!(
-            "    enabled: Add={} List={} Caps={} Save={} | escape routes: OpenFile={} Close={}",
+            "    enabled: Add={} List={} Caps={} Save={} \
+             ModCtrl={} ModWin={} ModAlt={} ModShift={} KeyList={} \
+             | escape routes: OpenFile={} Close={}",
             on(IDC_ADD),
             on(IDC_LIST),
             on(IDC_CAPS),
             on(IDC_APPLY),
+            on(IDC_MOD_CTRL),
+            on(IDC_MOD_WIN),
+            on(IDC_MOD_ALT),
+            on(IDC_MOD_SHIFT),
+            on(IDC_COMBO),
             on(IDC_OPENFILE),
             on(IDC_CLOSE),
         );
@@ -1015,11 +1022,23 @@ mod win {
                 "      every mutating control off, both escape routes on, \
                  and the notes say why"
             );
+            // Five more mutating controls since the shortcut field became
+            // four check boxes and a key list -- all gated on `st.editable`
+            // exactly like Add/List/Caps/Save, so a read-only window that
+            // left any of them on is the same defect this block exists to
+            // catch. Naming only the original four here would print a
+            // stronger claim ("every mutating control off") than this
+            // block actually checks.
             let bad = [
                 ("Add", on(IDC_ADD)),
                 ("List", on(IDC_LIST)),
                 ("Caps", on(IDC_CAPS)),
                 ("Save", on(IDC_APPLY)),
+                ("ModCtrl", on(IDC_MOD_CTRL)),
+                ("ModWin", on(IDC_MOD_WIN)),
+                ("ModAlt", on(IDC_MOD_ALT)),
+                ("ModShift", on(IDC_MOD_SHIFT)),
+                ("KeyList", on(IDC_COMBO)),
             ]
             .iter()
             .filter(|(_, e)| *e)

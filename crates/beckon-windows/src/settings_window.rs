@@ -79,7 +79,7 @@
 
 use crate::shell;
 use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
-use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, Combo};
+use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, Combo, ComboView};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -771,6 +771,14 @@ struct Ui {
     /// keystroke -- where the model has already caught up and `apply_state`
     /// finds the text it wanted is already there -- keeps its pending read.
     app_epoch: u32,
+    /// The selected row's combo string exactly as `apply_state` last wrote
+    /// it to the five shortcut controls -- `st.detail.map(|d| d.combo)`,
+    /// `None` when there is no row. `commit_fields` compares this, as a
+    /// `ComboView`, against what the controls show now, so it can tell "the
+    /// user actually changed the shortcut" apart from "an unrelated commit
+    /// re-read five controls that still say what they were told to say".
+    /// See `commit_fields` for why a string compare there is wrong.
+    shown_combo: Option<String>,
 }
 
 /// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
@@ -2079,6 +2087,7 @@ unsafe fn build_children(hwnd: HWND) {
             external_change: false,
             items: Vec::new(),
             app_epoch: 0,
+            shown_combo: None,
         })
     });
 }
@@ -2954,6 +2963,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             // `shown_dirty` is recorded after the caption write.
             ui.shown_external = Some(external_change);
             ui.shown_empty = Some(st.items.is_empty());
+            // What the five shortcut controls now show, in model terms --
+            // see `Ui::shown_combo` and `commit_fields`.
+            ui.shown_combo = st.detail.as_ref().map(|d| d.combo.clone());
             // Any read of the App field posted before this push is now about
             // text WE wrote, not text the user typed. See `Ui::app_epoch`.
             if wrote_app {
@@ -3718,20 +3730,55 @@ fn commit_fields() {
     if suppressed() {
         return;
     }
-    let Some((hwnd, combo, app)) =
-        UI.with(|u| u.borrow().as_ref().map(|x| (x.hwnd, x.combo, x.app)))
-    else {
+    let Some((hwnd, combo, app, stored)) = UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .map(|x| (x.hwnd, x.combo, x.app, x.shown_combo.clone()))
+    }) else {
         return;
     };
     // The shortcut half sends NOTHING when no key is selected, exactly as
     // the notification path does -- see `shortcut_shown`. Save must not be
     // the moment a half-finished chord becomes an invalid row.
-    let c = shortcut_shown(hwnd, combo);
-    let a = text_of(app);
-    if let Some(c) = c {
+    //
+    // It also sends nothing when the five controls already agree with what
+    // is stored -- compared as `ComboView`s, not as the strings
+    // `shortcut_shown` and `Ui::shown_combo` hold. `Combo::parse` accepts
+    // modifiers in any order, but `Combo::canonical` always rebuilds
+    // ctrl -> super -> alt -> shift -> key, so a file written
+    // `"super+ctrl+alt+t"` reads back through these controls as
+    // `"ctrl+super+alt+t"` on EVERY call here -- an unrelated App-field
+    // focus loss, or Save with nothing touched -- even though no control
+    // changed. A string compare (`live == stored`) would see those two
+    // spellings as different and push the rewrite, and `Model::set_combo`
+    // would mark the row dirty for a change that was never made. Comparing
+    // `ComboView`s instead makes the reordering invisible, because
+    // `combo_view` -- like `Combo::parse` underneath it -- does not care
+    // what order the modifiers were written in.
+    if Some(combo_view_of(hwnd, combo)) == stored.as_deref().map(combo_view) {
+        with_cb(|cb| (cb.on_edit_app)(text_of(app)));
+        return;
+    }
+    if let Some(c) = shortcut_shown(hwnd, combo) {
         with_cb(|cb| (cb.on_edit_combo)(c));
     }
-    with_cb(|cb| (cb.on_edit_app)(a));
+    with_cb(|cb| (cb.on_edit_app)(text_of(app)));
+}
+
+/// The five shortcut controls' current values, as a `ComboView` -- the same
+/// shape `combo_view` derives from a stored string, so `commit_fields` can
+/// compare live controls against stored text without going through a
+/// string. `key` is `None` exactly when `CB_GETCURSEL` reports no
+/// selection, matching what `ComboView::key` already means.
+fn combo_view_of(hwnd: HWND, combo: HWND) -> ComboView {
+    let i = cur_sel_raw(combo);
+    ComboView {
+        ctrl: is_checked(hwnd, IDC_MOD_CTRL),
+        super_: is_checked(hwnd, IDC_MOD_WIN),
+        alt: is_checked(hwnd, IDC_MOD_ALT),
+        shift: is_checked(hwnd, IDC_MOD_SHIFT),
+        key: if i < 0 { None } else { Some(i as usize) },
+    }
 }
 
 /// The combo the five shortcut controls currently spell, or `None` when the
