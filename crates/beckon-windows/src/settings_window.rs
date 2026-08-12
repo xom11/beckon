@@ -260,10 +260,11 @@ fn is_push_button(id: i32) -> bool {
 /// A literal repeated in both is a button that silently stops fitting its
 /// own caption the first time one of the two is edited.
 ///
-/// **Mnemonics must not collide.** Windows does not check, and a duplicate
-/// does not fail -- `Alt+R` simply cycles focus between the claimants
-/// instead of pressing either, which reads as "the keyboard is broken"
-/// rather than as a conflict. The letters:
+/// **No two mnemonics collide, and that is a property of this table.**
+/// Windows does not check, and a duplicate does not fail -- `Alt+R` simply
+/// cycles focus between the claimants instead of pressing either, which
+/// reads as "the keyboard is broken" rather than as a conflict. The
+/// letters:
 ///
 /// | Key | Control | Key | Control |
 /// |---|---|---|---|
@@ -272,6 +273,7 @@ fn is_push_button(id: i32) -> bool {
 /// | `U` | **U**se Caps Lock (check box) | `T` | C**t**rl (hold chip) |
 /// | `C` | Close | `W` | **W**in (hold chip) |
 /// | `O` | Open config file | `L` | A**l**t (hold chip) |
+/// | `S` | **S**ave | | |
 ///
 /// **Mnemonic uniqueness is maintained by hand.** There is no test for it,
 /// so verify by inspection before adding new captions.

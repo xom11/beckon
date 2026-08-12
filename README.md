@@ -314,11 +314,11 @@ restart loop that never gets anywhere; the tray binary is the better host.
 
 ### Caps Lock as the beckon key (Windows, opt-in)
 
-`ctrl+super+alt+<key>` is a lot of fingers. Tick **Use Caps Lock as the
-beckon key** in Settings — or write `keyboard.caps = true` in the config,
-which is the same setting — and holding Caps stands in for that chord:
-`Caps+T` does what `ctrl+super+alt+T` does. Your bindings do not change, so
-the same file still works on a machine where the box is not ticked.
+`ctrl+super+alt+<key>` is a lot of fingers. Tick the Caps Lock check box in
+Settings — or write `keyboard.caps = true` in the config, which is the same
+setting — and holding Caps stands in for that chord: `Caps+T` does what
+`ctrl+super+alt+T` does. Your bindings do not change, so the same file still
+works on a machine where the box is not ticked.
 
 Tapping Caps on its own still toggles Caps Lock by default.
 `keyboard.caps_tap = "escape"` makes it Esc instead, and `"none"` makes it
@@ -328,7 +328,9 @@ By default the chord Caps stands in for is `ctrl+super+alt`.
 `keyboard.caps_hold = "ctrl+alt"` changes which one — only `ctrl`, `super`
 and `alt` are accepted; `shift` is refused, because releasing Shift while
 you are physically holding it makes everything you type next lowercase
-until you let go and press it again.
+until you let go and press it again. Settings shows the same three keys as
+Hold check boxes next to the Caps Lock box; ticking or clearing one there
+writes `keyboard.caps_hold` for you.
 
 One thing worth knowing if you edit the file by hand rather than through
 Settings: `keyboard.caps_hold` is written to `apps.toml` only when it
