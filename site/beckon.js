@@ -39,7 +39,13 @@
   btn.hidden = false;
   btn.addEventListener('click', () => {
     root.dataset.theme = isDark() ? 'light' : 'dark';
-    localStorage.setItem('beckon-theme', root.dataset.theme);
+    // Wrapped for the same reason the OS switcher's is, and it is not
+    // theoretical: a throw here (blocked storage, quota, Safari private mode)
+    // used to skip label() and leave the button offering to switch to the
+    // theme already on screen — the exact defect the isDark() resolution above
+    // exists to prevent, reintroduced one line later. Failing to REMEMBER the
+    // choice is survivable; announcing the wrong one is not.
+    try { localStorage.setItem('beckon-theme', root.dataset.theme); } catch (e) {}
     label();
   });
 })();
@@ -153,10 +159,19 @@
     const say = document.createElement('span');
     say.className = 'sr-only'; say.setAttribute('role', 'status');
 
+    // The API being PRESENT is not the same as the write being ALLOWED:
+    // `writeText` rejects under a restrictive permissions policy, in some
+    // Firefox configurations and in embedded contexts. Unhandled, that skipped
+    // both the label swap and the announcement — the same silently-inert
+    // button the `navigator.clipboard` guard above exists to avoid, just
+    // reached by a different route. So the rejection gets its own honest label
+    // and its own announcement.
     b.addEventListener('click', async () => {
-      await navigator.clipboard.writeText(text);
-      b.textContent = 'Copied';
-      say.textContent = 'Copied ' + first;
+      let ok = true;
+      try { await navigator.clipboard.writeText(text); } catch (e) { ok = false; }
+      b.textContent = ok ? 'Copied' : 'Copy failed';
+      say.textContent = ok ? 'Copied ' + first
+                           : 'Copy failed — select the command and copy it by hand.';
       setTimeout(() => { b.textContent = 'Copy'; say.textContent = ''; }, 1400);
     });
     pre.appendChild(b);
@@ -187,25 +202,56 @@ document.querySelectorAll('#faq details').forEach(d =>
    feature this size.
 
    THE STAND-IN KEY, and it is the honest half of the pitch rather than a
-   shortcut. A web page cannot have beckon's chord. On Windows the shell takes
-   `Win` before any ordinary window is offered the keystroke — that is the same
-   fact CLAUDE.md records about beckon's own chord capture, which is why beckon
-   needs a WH_KEYBOARD_LL hook and not a window message. On Linux the
-   compositor keeps `Super` for itself, which is why beckon does not register
-   Linux hotkeys at all. And on every OS a page only receives keys while the
-   browser is in front, which is the one moment nobody needs a hotkey. So the
-   demos below listen for a bare `C` — the letter README's own example table
-   binds to Claude — and say so, in the reader's own chord, before the first
-   press.
+   shortcut. A web page cannot have beckon's chord, and the reason is not one
+   reason stretched over three OSes — see WHY below, which is where the three
+   are written out and where the repo citation for each one lives. What is
+   common to all three is smaller and is stated everywhere the stand-in is:
+   a page only receives keys while the browser is in front, which is the one
+   moment nobody needs a hotkey.
+
+   So both demos listen for a bare `C` — the letter README's own example table
+   binds to Claude — and BOTH say so, in the reader's own chord, before the
+   first press. "Both" is load-bearing: the hero taps ten caps across three
+   cards on a press, so a hero without that line shows five modifiers going
+   down that the reader did not touch and explains it a section and a half
+   later.
    ========================================================================== */
 
 const beckonKey = 'C';
+
+// The reader's own chord, per OS, and the ONE copy of it in this file: the
+// hero's note and the playground's constraint paragraph both spell it out, and
+// two copies would drift. README.md's modifier defaults — `Super` on Linux,
+// Hyper on macOS, `Ctrl+Win+Alt` on Windows — with the letter from README's own
+// letter table. Same values as the three hero cards in index.html, which are
+// markup because they must survive JS being off.
+const beckonChord = {
+  macos:   ['Cmd', 'Ctrl', 'Alt', beckonKey],
+  windows: ['Ctrl', 'Win', 'Alt', beckonKey],
+  linux:   ['Super', beckonKey],
+};
 
 const beckonEl = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text != null) n.textContent = text;
   return n;
+};
+
+const beckonChordEl = os => {
+  const ch = beckonEl('span', 'chord');
+  beckonChord[os].forEach((k, i) => {
+    if (i) ch.appendChild(beckonEl('span', 'plus', '+'));
+    ch.appendChild(beckonEl('kbd', 'key', k));
+  });
+  return ch;
+};
+
+// Falls back to linux for the same reason the <head> bootstrap does: it is the
+// bucket, not a product. See the comment there.
+const beckonOs = () => {
+  const os = document.documentElement.dataset.os;
+  return os in beckonChord ? os : 'linux';
 };
 
 // The pressed look is the shared .key contract's own `data-down`, held long
@@ -222,10 +268,19 @@ const beckonTap = caps => {
 //
 // 1. It refuses to act on a keystroke that belongs to something else: any
 //    modifier held, a repeat, an IME composition, or a target that is a text
-//    field, a select, contenteditable, or any button other than one of ours.
-//    `[data-press]` is the exemption — those buttons have no native `C`
-//    behaviour to collide with, and excluding them would mean that clicking
-//    the key once (which leaves it focused) silently stopped `C` working.
+//    field, contenteditable, or a `<select>` (where a letter is typeahead).
+//
+//    A `<button>` IS NOT ON THAT LIST, and the list used to hold every button
+//    but the two keycaps, which was a trap rather than caution. Chromium
+//    focuses a button on mousedown, so the focus outlives the click: after
+//    clicking a scenario pick or `Reset` — the first two things this page asks
+//    a reader to do — the keydown target was an excluded button and `C` went
+//    dead, while the hint beside it kept saying "or press C". The exemption
+//    list was the bug: it had to be extended by hand for every button anyone
+//    added near a demo, and it was not. A button has no native `C` behaviour
+//    to protect, so there is nothing here to exclude, and the visibility gate
+//    below is what keeps a keystroke aimed at the far side of the page from
+//    reaching a demo.
 // 2. It only reaches a demo the reader can actually SEE. Without that, `C`
 //    typed while reading the FAQ would walk a ring three sections up the page
 //    and the reader would find it moved when they scrolled back. The measure
@@ -246,7 +301,7 @@ document.addEventListener('keydown', e => {
   if (e.repeat || e.isComposing) return;
   const t = e.target;
   if (t && t.closest && t.closest(
-    'input, textarea, select, [contenteditable=""], [contenteditable="true"], button:not([data-press])'
+    'input, textarea, select, [contenteditable=""], [contenteditable="true"]'
   )) return;
 
   let best = null, seen = 0.4;
@@ -267,7 +322,6 @@ const beckonTryRow = (label, onPress, onReset) => {
 
   const btn = beckonEl('button', 'try-press');
   btn.type = 'button';
-  btn.dataset.press = '';
   btn.setAttribute('aria-label', label);
   const cap = beckonEl('kbd', 'key', beckonKey);
   cap.setAttribute('aria-hidden', 'true');
@@ -283,6 +337,29 @@ const beckonTryRow = (label, onPress, onReset) => {
     row.appendChild(r);
   }
   return { row: row, cap: cap };
+};
+
+// The readout, and it is ONE component used twice — the hero's and the
+// playground's are the same panel, the same two-line split, the same live
+// region. They were not: the hero shipped a bare <p> at 15px sitting one pixel
+// and one token away from the static transcript below it, so the line that
+// changes on every press and the line that never changes read as one
+// paragraph. The changing surface has to LOOK like the changing surface in
+// both places, or the hero teaches the reader that nothing moved.
+//
+// role=status + aria-live=polite, never assertive: a reader pressing the key
+// repeatedly must not have every other announcement cut off. Callers must fill
+// it BEFORE it enters the document — a live region populated after insertion
+// announces itself at page load, which is three unsolicited announcements
+// before the reader has done anything.
+const beckonReadout = () => {
+  const el   = beckonEl('div', 'readout');
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  const step = beckonEl('p', 'readout-step');
+  const said = beckonEl('p', 'readout-said');
+  el.append(step, said);
+  return { el: el, step: step, said: said };
 };
 
 
@@ -303,19 +380,30 @@ const beckonTryRow = (label, onPress, onReset) => {
   const caps = [...stage.querySelectorAll('.os-chord .key')];
   if (!caps.length) return;
 
-  const out = beckonEl('p', 'try-out');
-  out.setAttribute('role', 'status');
-  out.setAttribute('aria-live', 'polite');
+  const out = beckonReadout();
 
   let front = 'brave';
   let pressed = false;
 
+  // NO STEP NUMBERS HERE, and that is a deliberate difference from the
+  // playground's readout rather than an oversight. This is the first
+  // interactive feedback on the page, and `5b` is CLAUDE.md's internal
+  // numbering — a citation the reader has not been given a referent for yet.
+  // The table in #how introduces the numbers (its last column) and the
+  // playground under it quotes them; up here the branch is named in the
+  // table's own words instead.
   const say = () => {
-    out.textContent = !pressed
-      ? 'Claude is running behind Brave on all three. Press to focus it.'
+    const s = !pressed
+      ? ['Ready', 'Claude is running behind Brave on all three. Press to focus it.']
       : front === 'claude'
-        ? 'step 5 — running but not focused, so beckon focuses it. One press, three different chords, the same instant.'
-        : 'step 5b — one window, already focused, and Brave is open, so beckon switches back to the app you came from.';
+        ? ['Focus it',
+           'Running but not focused, so beckon focuses it. One press, three different ' +
+           'chords, the same instant.']
+        : ['Switch back',
+           'One window, already focused, and Brave is open — so beckon switches back to ' +
+           'the app you came from.'];
+    out.step.textContent = s[0];
+    out.said.textContent = s[1];
   };
 
   const fire = () => {
@@ -328,11 +416,39 @@ const beckonTryRow = (label, onPress, onReset) => {
 
   const t = beckonTryRow('Press ' + beckonKey + ' — run beckon Claude on all three', fire);
 
+  // A press taps every cap in all three chords at once, which is the whole
+  // point — and without this line the reader's first press on the page
+  // depresses Cmd, Ctrl, Alt, Win and Super untouched, and is not told why
+  // until a section and a half further down. Same claim as the playground's,
+  // one sentence long, and rebuilt with the reader's own chord when the OS
+  // axis moves.
+  const note = beckonEl('p', 'try-note caps');
+  const drawNote = () => {
+    note.textContent = '';
+    note.append(
+      document.createTextNode('A page cannot hold your real chord — yours is '),
+      beckonChordEl(beckonOs()),
+      document.createTextNode(' — so a bare '),
+      beckonEl('kbd', 'key', beckonKey),
+      document.createTextNode(' stands in for it here.'));
+  };
+  drawNote();
+  document.addEventListener('beckon:os', drawNote);
+
+  // The shipped transcript ends "Claude comes to the front on all three",
+  // which is true of the loop it describes and false on every other press once
+  // the reader has the wheel. Live, it drops the outcome and keeps the
+  // precondition; the readout above is the thing that names what just
+  // happened. With JS off the sentence in index.html is untouched.
+  steps.textContent = 'One line — beckon Claude — bound to each machine’s own ' +
+    'modifier. One press, and all three machines move at the same instant.';
+
   stage.dataset.front = front;
-  demo.classList.add('is-live');
-  demo.insertBefore(t.row, steps);
-  demo.insertBefore(out, steps);
   say();
+  demo.classList.add('is-live');
+  demo.insertBefore(note, steps);
+  demo.insertBefore(t.row, steps);
+  demo.insertBefore(out.el, steps);
 
   beckonPressables.push({ el: demo, fire: fire });
 })();
@@ -355,21 +471,38 @@ const beckonTryRow = (label, onPress, onReset) => {
 (() => {
   const host = document.querySelector('#how .how-demos');
   if (!host) return;
-  const root = document.documentElement;
 
-  const CHORD = {
-    macos:   ['Cmd', 'Ctrl', 'Alt', beckonKey],
-    windows: ['Ctrl', 'Win', 'Alt', beckonKey],
-    linux:   ['Super', beckonKey],
-  };
-  // Each is the true reason for THAT OS, not one reason stretched over three.
+  // Each is the true reason for THAT OS, not one reason stretched over three —
+  // and each is held to what the repo actually says, which cost all three of
+  // them a clause:
+  //
+  //   macOS   — the first draft asserted that macOS awards a system-wide chord
+  //             to whoever registered it first. Nothing in README.md,
+  //             CLAUDE.md or examples/macos/ says that. What the repo does say
+  //             is that `serve` takes the chord with RegisterEventHotKey.
+  //   Windows — the first draft said "Windows gives Win to the shell", which
+  //             is stronger than CLAUDE.md's fact and false for the very chord
+  //             the sentence names: the shell eats Win-key SHELL hotkeys
+  //             (Win+T, Win+X, Win+D … , measured on a14), while
+  //             `ctrl+super+alt+c` — examples/windows/serve/apps.toml:22 — is
+  //             delivered to beckon because beckon registered it, and
+  //             RegisterHotKey is not even subject to UIPI.
+  //   Linux   — the first draft ended "which is why beckon leaves the binding
+  //             to your own bindsym line". CLAUDE.md's *Wayland hotkey* entry
+  //             was rewritten specifically to retire that causal story; its
+  //             three reasons are no single API, the portal model cannot carry
+  //             the shortcuts TOML, and negative value, and the FAQ on this
+  //             page already states them. Why the PAGE cannot see the key is a
+  //             different question and is all this sentence may answer.
   const WHY = {
-    macos: 'macOS gives a system-wide chord to whatever registered it first ' +
-           '(beckon serve uses RegisterEventHotKey), and a web page has no way to ask.',
-    windows: 'Windows gives Win to the shell before any ordinary window is offered it — ' +
-             'the same wall that makes beckon reach for a low-level keyboard hook.',
-    linux: 'your compositor keeps Super for itself, which is why beckon leaves the binding ' +
-           'to your own bindsym line.',
+    macos: 'beckon serve holds it through RegisterEventHotKey — a web page has no way to ask ' +
+           'for a system-wide hotkey at all.',
+    windows: 'a chord beckon has registered with RegisterHotKey is delivered to beckon rather ' +
+             'than to whatever window you are looking at — and Windows hands the shell its own ' +
+             'Win-key shortcuts before any ordinary window is offered them, which is the wall ' +
+             'that makes beckon reach for a low-level keyboard hook.',
+    linux: 'your compositor takes that chord before any client sees it — a browser is just ' +
+           'another client.',
   };
 
   const TAG = {
@@ -407,16 +540,27 @@ const beckonTryRow = (label, onPress, onReset) => {
       ],
       init: { running: true, cur: null, hidden: false, other: true },
       ready: 'Three Claude windows; Brave is in front.',
-      steps: 'Three Claude windows and Brave. Once Claude has focus the ring never exits step ' +
-             '5a: 1/3 to 2/3 to 3/3 and back to 1/3, one window per press, every window exactly ' +
-             'once per lap. Brave and hide are both out of reach until Claude is down to a single ' +
-             'window. Verified live on sway with three foot windows.',
+      // The readout narrates the ring on every press, so this says the one
+      // thing the readout cannot: that the behaviour was measured. It used to
+      // repeat "every window exactly once per lap" and "Brave and hide are out
+      // of reach" back at the reader while the readout was saying both, 40px
+      // apart on the same panel.
+      steps: 'Three Claude windows and Brave, with Brave in front. Verified live on sway: ' +
+             'three foot windows, seven presses, 35 → 36 → 37 → 35.',
     },
     {
       pick: 'One window, nothing else open',
       slots: [{ app: 'Claude' }],
-      init: { running: true, cur: null, hidden: true, other: false },
-      ready: 'One Claude window, hidden, and nothing else is running.',
+      // FOCUSED at rest, and that is the only starting state that makes this
+      // scenario worth having. It shipped `{ cur: null, hidden: true }`, so
+      // press 1 was step 5 (focus) and the 5c this scenario exists to isolate
+      // only arrived on press 2 — while its own transcript promised 5c first.
+      // Worse, from press 2 on it was byte-identical to scenario 1 after that
+      // scenario's launch, so it demonstrated nothing scenario 1 did not.
+      // `cur: 0` is also the only state coherent with `other: false`: Claude
+      // is the only app running, so something of Claude's has the focus.
+      init: { running: true, cur: 0, hidden: false, other: false },
+      ready: 'One Claude window, focused, and nothing else is running.',
       steps: 'One Claude window and nothing else running. The press that would switch back to ' +
              'another app has nowhere to go, so it hides Claude instead — and the next press ' +
              'brings it back.',
@@ -436,8 +580,15 @@ const beckonTryRow = (label, onPress, onReset) => {
     }
     if (s.hidden || s.cur === null) {
       s.hidden = false; s.cur = 0;
+      // "its first window", not "its most recent". CLAUDE.md's step 5 is
+      // "focus first window", `algorithm.rs` picks the minimum of
+      // recency-then-address, and on sway and i3 every recency is 0 so the
+      // address alone decides — the test block there is literally headed
+      // "sway-style: every recency=0, ties broken by address". "Most recent"
+      // also contradicted the 5a line one press later, which says the ring is
+      // ordered by address. MRU belongs to 5b, and only 5b.
       return ['step 5',
-        'Claude is running but not focused, so beckon focuses its most recent window.'];
+        'Claude is running but not focused, so beckon focuses its first window.'];
     }
     if (s.wins > 1) {
       s.cur = (s.cur + 1) % s.wins;
@@ -461,7 +612,11 @@ const beckonTryRow = (label, onPress, onReset) => {
 
   // --- the subtree ---------------------------------------------------------
   const demo  = beckonEl('div', 'demo pg');
-  const why   = beckonEl('p', 'pg-why');
+  // `caps` is not decoration: it is the page's existing solution for keycaps
+  // set inside running prose (extra leading so wrapped lines do not touch),
+  // and this paragraph is that exact shape. It used to fork it with its own
+  // line-height and its own .chord margin.
+  const why   = beckonEl('p', 'pg-why caps');
   const picks = beckonEl('div', 'pg-picks');
   picks.setAttribute('role', 'group');
   picks.setAttribute('aria-label', 'Scenario');
@@ -472,15 +627,11 @@ const beckonTryRow = (label, onPress, onReset) => {
   stage.setAttribute('aria-hidden', 'true');
 
   // The readout is the thing that actually teaches, so it is a panel of its
-  // own beside the drawing rather than a caption under it. role=status +
-  // aria-live=polite, never assertive: a reader pressing the key repeatedly
-  // must not have every other announcement cut off.
-  const out    = beckonEl('div', 'pg-readout');
-  out.setAttribute('role', 'status');
-  out.setAttribute('aria-live', 'polite');
-  const stepEl = beckonEl('p', 'pg-step');
-  const saidEl = beckonEl('p', 'pg-said');
-  out.append(stepEl, saidEl);
+  // own beside the drawing rather than a caption under it — the same component
+  // the hero uses, built by the same function.
+  const out    = beckonReadout();
+  const stepEl = out.step;
+  const saidEl = out.said;
 
   const steps = beckonEl('p', 'demo-steps');
 
@@ -549,7 +700,13 @@ const beckonTryRow = (label, onPress, onReset) => {
     const b = beckonEl('button', 'pg-pick', sc.pick);
     b.type = 'button';
     b.setAttribute('aria-pressed', 'false');
-    b.addEventListener('click', () => select(i));
+    // Re-activating the scenario already chosen is INERT, not a reset. It ran
+    // `select(i)` unconditionally, so clicking the button that already read
+    // aria-pressed="true" threw away a lap in progress and jumped the readout
+    // back to "Ready" with nothing on screen saying why. A pressed toggle that
+    // does neither of the two things a pressed toggle can do — toggle off, or
+    // nothing — is the one behaviour it must not have.
+    b.addEventListener('click', () => { if (i !== idx) select(i); });
     picks.appendChild(b);
   });
 
@@ -570,41 +727,44 @@ const beckonTryRow = (label, onPress, onReset) => {
   // chord in it is the reader's own and so is the reason beside it. The window
   // chrome needs no rebuild — it is CSS keyed on :root[data-os].
   const drawWhy = () => {
-    const os = root.dataset.os in CHORD ? root.dataset.os : 'linux';
+    const os = beckonOs();
     why.textContent = '';
     why.append(
       beckonEl('strong', null, 'This page cannot see your real chord.'),
-      document.createTextNode(' Yours is '));
-
-    const ch = beckonEl('span', 'chord');
-    CHORD[os].forEach((k, i) => {
-      if (i) ch.appendChild(beckonEl('span', 'plus', '+'));
-      ch.appendChild(beckonEl('kbd', 'key', k));
-    });
-    why.appendChild(ch);
-
-    why.appendChild(document.createTextNode(
-      ', and ' + WHY[os] + ' A page also only gets keys while the browser is in front, ' +
-      'which is the one moment nobody needs a hotkey. So below, a bare '));
-    why.appendChild(beckonEl('kbd', 'key', beckonKey));
-    why.appendChild(document.createTextNode(
-      ' stands in for it — the letter beckon’s own examples bind to Claude.'));
+      document.createTextNode(' Yours is '),
+      beckonChordEl(os),
+      document.createTextNode(
+        ', and ' + WHY[os] + ' A page also only gets keys while the browser is in front, ' +
+        'which is the one moment nobody needs a hotkey. So here, a bare '),
+      beckonEl('kbd', 'key', beckonKey),
+      document.createTextNode(
+        ' stands in for it — the letter beckon’s own examples bind to Claude.'));
   };
 
+  // ORDER: the affordance first, the caveat after it. `.pg-why` used to sit
+  // between the caption and the controls, which put five lines of grey prose
+  // about what the page CANNOT do — 143px of it — between "Try it" and the
+  // first thing a reader can click, and the keycap itself 578px below the only
+  // label that says this block is interactive. The caveat is still above the
+  // transcript and still at prose size; it is simply no longer the thing
+  // standing in the doorway.
   left.append(stage, t.row);
-  main.append(left, out);
-  demo.append(beckonEl('h3', 'demo-cap', 'Try it'), why, picks, main, steps);
+  main.append(left, out.el);
+  demo.append(beckonEl('h3', 'demo-cap', 'Try it'), picks, main, why, steps);
 
   drawWhy();
   document.addEventListener('beckon:os', drawWhy);
 
-  // Only now is the working, JS-off content taken away. Everything above this
-  // line is construction; if any of it had thrown, the reader would still have
-  // the two looping demos.
+  // BEFORE the subtree enters the document, so the readout's first words are
+  // its initial state rather than a live-region announcement fired at page
+  // load. (And still before the JS-off content is taken away: everything up to
+  // `host.textContent = ''` is construction, so a throw anywhere in it leaves
+  // the reader with the two looping demos.)
+  select(0);
+
   host.textContent = '';
   host.classList.add('is-live');
   host.appendChild(demo);
-  select(0);
 
   beckonPressables.push({ el: demo, fire: fire });
 })();

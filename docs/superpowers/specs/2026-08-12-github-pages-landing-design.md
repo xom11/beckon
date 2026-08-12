@@ -311,7 +311,12 @@ covering every branch of step 5:
 | Claude is not running | launch (4), then the one-window case: hide (5c), focus (5), … |
 | One window, Brave also open | focus (5) → back to Brave (5b) → focus (5) → … |
 | Three windows open | focus 1/3 (5) → 2/3 (5a) → 3/3 (5a) → 1/3 (5a) → … |
-| One window, nothing else open | focus (5) → hide (5c) → focus (5) → … |
+| One window, nothing else open | hide (5c) → focus (5) → hide (5c) → … |
+
+Scenario 4 starts **focused**, which is the only start that earns it a place:
+started unfocused it opened on step 5 while its own transcript promised 5c, and
+from press 2 on it was byte-identical to scenario 1 after that scenario's
+launch. It is also the only state coherent with nothing else running.
 
 The branch is **not scripted per scenario**. One function is the algorithm from
 `CLAUDE.md`'s *Focus algorithm*, run against a small model of the desk, and the
@@ -323,25 +328,67 @@ while Claude has more than one window, Brave and hide are unreachable.
 The readout carries `role="status"` + `aria-live="polite"` (never `assertive`:
 a reader pressing the key repeatedly must not have every other announcement cut
 off) and is a panel beside the drawing, not a caption under it — it is the part
-that actually teaches.
+that actually teaches. It is filled **before** it enters the document, or the
+live region announces itself at page load instead of announcing presses.
+
+**One readout component, used by both demos.** The hero's was a bare paragraph
+one point of size and one token of colour away from the static transcript below
+it, so the line that changes on every press and the line that never changes
+read as a single paragraph. Same panel, same accent edge, same two-line split
+in both places. They differ only in vocabulary: the playground names the branch
+as `step 5a`, which is `CLAUDE.md`'s numbering and is introduced by the Step
+column on the `#how` table one screen above; the hero, which comes *before* that
+table, names it in the table's own words ("Focus it", "Switch back").
+
+**`#how`'s table carries a Step column** for that reason — the numbers used to
+exist only at runtime, so the first one a reader met was a citation to a scheme
+the page had never shown them. Its rows are in the order the algorithm tests
+them, which is also what makes scenario 3 true.
+
+**Order inside the playground: affordance first, caveat after.** The
+constraint paragraph sat between the caption and the controls, putting 143px of
+grey prose about what the page *cannot* do between "Try it" and the first thing
+a reader could click.
 
 **The stand-in key, which is also the pitch.** A browser cannot have beckon's
-chord: Windows gives `Win` to the shell before any ordinary window is offered
-the keystroke — the same fact `CLAUDE.md` records about beckon's own chord
-capture, and why that needs a `WH_KEYBOARD_LL` hook rather than a window
-message — a Linux compositor keeps `Super`, and on every OS a page only
-receives keys while the browser is in front, which is the one moment nobody
-needs a hotkey. So the demos listen for a bare `C`, the letter README's own
-example table binds to Claude, and say so in the reader's own chord before the
-first press.
+chord, and the reason is per-OS rather than one reason stretched over three.
+Each is held to what the repo says, which is narrower than the first draft of
+all three:
+
+- **macOS** — `serve` holds the chord through `RegisterEventHotKey`, and a page
+  has no way to ask for a system-wide hotkey. (The first draft added that macOS
+  awards a chord to whoever registered it first. Nothing in the repo says that.)
+- **Windows** — a chord beckon has registered with `RegisterHotKey` is
+  delivered to beckon rather than to the focused window, and the shell takes
+  its own `Win`-key shortcuts before any ordinary window is offered them, which
+  is why chord *capture* needs a `WH_KEYBOARD_LL` hook. Not "Windows gives
+  `Win` to the shell": `CLAUDE.md` scopes that to shell hotkeys (`Win+T`,
+  `Win+X`, …, measured on a14), and `ctrl+super+alt+c` —
+  `examples/windows/serve/apps.toml` — is not one of them.
+- **Linux** — the compositor takes the chord before any client sees it, and a
+  browser is just another client. Why beckon does not *register* Linux hotkeys
+  is a different question with three different answers, and the FAQ carries
+  them; `CLAUDE.md`'s *Wayland hotkey* entry exists to retire the shorter story.
+
+On every OS a page only receives keys while the browser is in front, which is
+the one moment nobody needs a hotkey. So both demos listen for a bare `C`, the
+letter README's own example table binds to Claude, and **both** say so in the
+reader's own chord before the first press — the hero in one line above its try
+row, the playground at length. The hero's is not optional: a press there taps
+every cap in all three chords at once.
 
 **Input.** Click or tap the keycap (the primary path; touch has no keyboard at
 all), or press `C`. One document-level listener serves both demos and refuses a
 keystroke that belongs to something else: any modifier, a repeat, an IME
-composition, a text field, a `<select>`, contenteditable, or any button other
-than the two press buttons — those carry `data-press` and are exempt, because
-clicking one leaves it focused and excluding it would silently stop `C`
-working. It also acts only on a demo the reader can SEE, measured from
+composition, a text field, a `<select>` (where a letter is typeahead) or
+contenteditable. **Buttons are not on that list.** They were, with the two
+keycaps exempted by a `data-press` attribute, and that was the trap rather than
+the caution: a `<button>` takes focus on mousedown and keeps it, so after
+clicking a scenario pick or `Reset` — the first two things this page asks a
+reader to do — `C` was dead while the hint beside it still said to press it. An
+exemption list has to be extended by hand for every button anyone adds near a
+demo, and was not. A button has no native `C` behaviour to protect, so there is
+nothing to exclude. It also acts only on a demo the reader can SEE, measured from
 `getBoundingClientRect` at keypress time — no observer, nothing running when
 nobody is typing — so `C` typed while reading the FAQ cannot walk a ring three
 sections up the page.

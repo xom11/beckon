@@ -47,6 +47,19 @@
      in the nav corrects it in one keystroke — so this only picks what is
      preselected and what is marked.
 
+     IOS AND IPADOS ARE SHOWN THE MACOS COLUMN, deliberately, and it is the one
+     branch here that is positively wrong about the device in the reader's hand:
+     an iPhone user agent carries "like Mac OS X" and iPadOS in desktop mode
+     reports "Macintosh", so both test true on /Mac/i. They are left there.
+     beckon ships no iOS build — there is no correct column for an iPhone — so
+     the question is only which of the three is the most useful thing to show
+     someone reading about a tool for their computer, and for an Apple reader
+     that is the Apple column: Homebrew, the Hyper chord, the Accessibility
+     note. Sending them to linux instead would be picking a wrong answer over a
+     probably-right one. What this does cost is a `Press C` hint on a device
+     with no keyboard; the keycap is a button and is tappable, which is why the
+     demos are built click-first with the key as the alternative.
+
      ANDROID AND CHROME OS land in linux, and that is a change: the sniff this
      replaced tested /Android/ first and sent those readers to the Homebrew
      tab. Both destinations are equally unusable on a phone — beckon ships no
@@ -122,9 +135,18 @@
        .demo-steps is the accessible transcript and is not.
 
        WITH JS ON THIS DEMO BECOMES PRESSABLE. beckon.js adds `.is-live` to
-       .hero-demo, which cancels the 4.4s loop, and inserts a keycap button and
-       a readout above .demo-steps; `data-front` on .hero-stage then decides
-       what is drawn. Nothing below changes: the three cards, their three
+       .hero-demo, which cancels the 4.4s loop, and inserts three things above
+       .demo-steps: a one-line note saying the page cannot hold the reader's
+       real chord (a press taps every cap in all three chords at once, so that
+       cannot wait for the section below), a keycap button, and the same
+       .readout panel the playground uses. `data-front` on .hero-stage then
+       decides what is drawn. It also rewrites .demo-steps to drop its closing
+       "Claude comes to the front on all three" — true of the loop, false on
+       every other press once the reader has the wheel. With JS off the
+       sentence below stands exactly as written, which is the only reason it
+       may be rewritten at all.
+
+       Nothing else below changes: the three cards, their three
        different chords and the window stacks are the markup either way, and
        with JS off the loop runs exactly as it always has. The three OS cards
        are the page's cross-platform claim, so they are never reduced to the
@@ -251,19 +273,34 @@
       <div class="how-grid">
 
         <div class="how-tablewrap">
+          <!-- THE STEP COLUMN IS WHY THE NUMBERS MEAN ANYTHING. The playground
+               below names the branch that fired as "step 5a", "step 5c" and so
+               on, which is CLAUDE.md's own numbering in its *Focus algorithm*
+               section — and before this column existed those numbers appeared
+               at runtime and nowhere else, so the first one a reader met was a
+               citation to a scheme the page had never shown them. The rows are
+               in the order the algorithm tests them, which is also what makes
+               scenario 3 in the playground true: 5a is tested before 5b and
+               5c. -->
           <table class="how-table">
+            <!-- The caption has to be true with JS off too, so it does not
+                 promise a playground: without beckon.js the two looping demos
+                 are what sits below this table. -->
+            <caption class="how-cap">The order beckon tests them in, with the step numbers the
+            algorithm itself uses.</caption>
             <thead>
               <tr>
                 <th scope="col">Situation</th>
                 <th scope="col">What happens</th>
+                <th scope="col">Step</th>
               </tr>
             </thead>
             <tbody>
-              <tr><th scope="row">App is not running</th><td>launch it</td></tr>
-              <tr><th scope="row">Running, not focused</th><td>focus it</td></tr>
-              <tr><th scope="row">Focused, app has another window</th><td>focus the next one, wrapping round</td></tr>
-              <tr><th scope="row">Focused, one window, another app open</th><td>switch back to the app you came from</td></tr>
-              <tr><th scope="row">Focused, one window, nothing else open</th><td>hide it</td></tr>
+              <tr><th scope="row">App is not running</th><td>launch it</td><td class="how-step">4</td></tr>
+              <tr><th scope="row">Running, not focused</th><td>focus it</td><td class="how-step">5</td></tr>
+              <tr><th scope="row">Focused, app has another window</th><td>focus the next one, wrapping round</td><td class="how-step">5a</td></tr>
+              <tr><th scope="row">Focused, one window, another app open</th><td>switch back to the app you came from</td><td class="how-step">5b</td></tr>
+              <tr><th scope="row">Focused, one window, nothing else open</th><td>hide it</td><td class="how-step">5c</td></tr>
             </tbody>
           </table>
         </div>

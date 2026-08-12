@@ -439,14 +439,18 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   height: 52px;
   overflow: hidden;
   min-width: 0;
+  color: var(--fg);                   /* the state lives here; see .is-brave */
 }
 .os-win + .os-win { margin-top: -6px; }
+/* `color: inherit`, so the window owns the lit/dim state and the bar just
+   renders it. The bar is the only text inside a window, so this is what lets
+   the dim be a colour change instead of an opacity. */
 .os-bar {
   display: flex; align-items: center; gap: 6px;
   height: 22px; padding: 0 8px;
   border-bottom: 1px solid var(--rule);
   font: 600 11px/1 var(--mono);
-  color: var(--fg);
+  color: inherit;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .os-dot {
@@ -460,14 +464,25 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
    back by 46%, where it holds to 100%. With motion off, the base rule is
    already the frame worth seeing and `both` pins it there. */
 
+/* NO OPACITY ON THE UNFOCUSED WINDOW, and this is the third place on the page
+   that has to say so — see .how-count in §4b and the playground block's header.
+   This one was the counterexample: at `opacity: .5` the bar's `600 11px/1`
+   label composited to 3.52:1 in the light palette and 4.44:1 in dark, both
+   under the 4.5:1 that 11px bold needs, and JS made it the state a press parks
+   on rather than a frame the loop passes through. --fg-dim is the page's own
+   vocabulary for "not the lit one" (.how-win uses exactly this pair) and it
+   measures 5.85:1 / 6.87:1 on --bg-raised.
+
+   Everything else that says "behind" is untouched and is doing the work
+   anyway: Claude is raised 6px, accented, and carries the glow. */
 .os-win.is-brave {
   z-index: 2;
-  opacity: .5;
+  color: var(--fg-dim);
   animation: hero-dim 4.4s linear infinite both;
 }
 @keyframes hero-dim {
-  0%, 26%   { opacity: 1; }
-  46%, 100% { opacity: .5; }
+  0%, 26%   { color: var(--fg); }
+  46%, 100% { color: var(--fg-dim); }
 }
 
 .os-win.is-claude {
@@ -507,7 +522,7 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
    CONTRACT — built by beckon.js, once in the hero and once in the playground.
 
      <div class="try">
-       <button class="try-press" type="button" data-press>
+       <button class="try-press" type="button">
          <kbd class="key" aria-hidden="true">C</kbd>       <- the real .key
        </button>
        <span class="try-hint">Click the key, or press C.</span>
@@ -517,9 +532,10 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
    The button is a TRANSPARENT WRAPPER around a real `.key`, not a second
    keycap style — .key's contract above says do not fork it, and this does not:
    the button owns the hit target and the font-size that scales the cap, and
-   the pressed look is still `.key[data-down]`. `data-press` is the attribute
-   the document-level `C` handler exempts from its "ignore keys aimed at a
-   button" rule; see beckon.js.
+   the pressed look is still `.key[data-down]`. Nothing here is exempted from
+   the document-level `C` handler by name any more; it stopped excluding
+   buttons outright, which is what used to kill the key after a click. See the
+   comment on that listener in beckon.js.
 
    Nothing here animates, and that is deliberate rather than incidental: the
    reduced-motion block at the end of the file pins animation-duration, and a
@@ -552,6 +568,48 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 .try-reset:hover { color: var(--accent); border-color: var(--accent); }
 
+/* The note that admits the stand-in key, above the try row in the hero. Same
+   claim the playground's .pg-why makes at length, in one sentence, because the
+   hero is where the first press happens: a press taps every cap in all three
+   chords, and a reader who has not been told why sees five modifiers they did
+   not touch go down. `.caps` is the shared leading for keycaps set in prose. */
+.try-note {
+  margin: 16px 0 0;
+  max-width: var(--measure);
+  color: var(--fg-dim);
+  font-size: 14px;
+}
+
+/* Shared: the readout. ONE component, built once by beckon.js and used by both
+   pressable demos — the hero's and the playground's.
+
+   Why it is a bordered panel and not a paragraph: it is the only thing on
+   screen that changes when the reader presses, and it sits directly above
+   .demo-steps, which never changes. As a bare 15px line it differed from the
+   transcript by one point of size and one token of colour, so the two read as
+   one two-sentence paragraph and the press appeared to do nothing to the text.
+   The accent edge and the small uppercase step line are what make the changing
+   surface look like the changing surface.
+
+   The hero names its branch in the words of the #how table ("Focus it",
+   "Switch back"); the playground names it "step 5a" and so on, which is
+   CLAUDE.md's numbering and is introduced by that table's own Step column one
+   screen above. */
+.readout {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-inline-start: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+.readout-step {
+  margin: 0;
+  font: 700 12px/1 var(--mono);
+  letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent);
+}
+.readout-said { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.55; }
+
 /* The hero, once JS has the wheel.
 
    `.is-live` cancels every animation inside the demo — chord caps, both fake
@@ -569,11 +627,11 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .hero-demo.is-live .os-win .os-dot { animation: none; }
 
 .hero-demo.is-live .os-win {
-  transition: opacity .2s, transform .2s, border-color .2s, box-shadow .2s;
+  transition: color .2s, transform .2s, border-color .2s, box-shadow .2s;
 }
 .hero-demo.is-live .os-win .os-dot { transition: background .2s; }
 
-.hero-stage[data-front="brave"] .os-win.is-brave { opacity: 1; }
+.hero-stage[data-front="brave"] .os-win.is-brave { color: var(--fg); }
 .hero-stage[data-front="brave"] .os-win.is-claude {
   z-index: 1;
   transform: translateY(0);
@@ -584,7 +642,10 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
 }
 
-.try-out { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.5; }
+/* The hero's readout is the shared .readout above, so there is nothing to
+   write here. It is inserted between the try row and the transcript, and gets
+   the same margin every panel in a demo gets. */
+.hero-demo .readout { margin-top: 16px; }
 
 
 /* --- 4b. section: how ("Focus is only the first press.") ------------------- */
@@ -646,6 +707,31 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   vertical-align: top;
 }
 .how-table td:last-child { padding-right: 0; }
+/* The caption is the referent for the Step column, so it reads as prose above
+   the table rather than as a label on it. */
+.how-cap {
+  text-align: left;
+  max-width: var(--measure);
+  margin-bottom: 12px;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1.5;
+}
+/* Mono because the values are 4 / 5 / 5a and the playground quotes them back
+   in mono. --fg-dim, not the tbody td weight above: the step is the citation,
+   not the answer. */
+.how-table tbody td.how-step {
+  width: 1%;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  /* Every cell is `vertical-align: top`, so a smaller font would sit above the
+     row's own baseline and read as a superscript. 25px is the line box that
+     puts 13px on the same baseline as the row's 15px at line-height 1.6. */
+  line-height: 25px;
+}
 .how-table thead th {
   padding-top: 0;
   font-size: 11px;
@@ -820,19 +906,22 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 /* The honest constraint, and it is also the pitch, so it reads at prose size
    above the controls rather than as a footnote below them. The chord inside it
    is the reader's own, rebuilt by beckon.js whenever `data-os` moves. */
+/* Leading and the chord's own margin come from `.caps` in §4e — the page's one
+   solution for keycaps set inside running prose. This block used to restate
+   both with its own numbers. */
 .pg-why {
   margin: 0;
   max-width: var(--measure);
   color: var(--fg-dim);
   font-size: 14px;
-  line-height: 2.05;          /* keycaps run ~2.4em tall inside a paragraph */
 }
 .pg-why strong { color: var(--fg); }
-.pg-why .chord { flex-wrap: wrap; margin-inline: 2px; }
 
 .pg-picks { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Same box as `.try-reset`, which is its sibling 200px away inside the same
+   panel: one secondary button, one size. They were 34px and 32px. */
 .pg-pick {
-  min-height: 34px; padding: 8px 12px;
+  min-height: 32px; padding: 6px 12px;
   font: 600 13px/1.2 var(--sans);
   color: var(--fg-dim);
   background: var(--bg);
@@ -893,6 +982,14 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 .pg-tag { margin-inline-start: auto; letter-spacing: .06em; text-transform: uppercase; }
 
+/* The ring position, and in the three-window scenario it IS the payload — the
+   thing that walks 1/3 -> 2/3 -> 3/3. It had no rule at all and rendered
+   identical to the state word beside it, so the one number that moves looked
+   like part of the label that does not. It takes the lit colour with the
+   window, like .pg-tag does. No opacity: see the block header. */
+.pg-count { font-weight: 700; letter-spacing: .04em; }
+.pg-win[data-state="focused"] .pg-count { color: var(--accent); }
+
 /* Both gutters are the same 34px (3x8px + 2x5px gap) and both are `display:
    none` until an OS asks for one, so a gutter that is not drawn costs no width
    AND no flex gap — a collapsed-but-present item would still take the bar's
@@ -920,7 +1017,9 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .pg-close::before { transform: rotate(45deg); }
 .pg-close::after  { transform: rotate(-45deg); }
 
-:root[data-os="macos"] .pg-win  { border-radius: 9px; }
+/* --radius, not a hand-picked 9px: the scale is two values (§1) and the file's
+   header says it is defined once and never restated per section. */
+:root[data-os="macos"] .pg-win  { border-radius: var(--radius); }
 :root[data-os="macos"] .pg-dots { display: flex; }
 :root[data-os="macos"] .pg-ctl  { display: flex; visibility: hidden; }
 :root[data-os="macos"] .pg-name { text-align: center; }
@@ -947,20 +1046,7 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 .pg-win[data-state="hidden"] .pg-bar,
 .pg-win[data-state="absent"] .pg-bar { border-bottom-style: dashed; }
 
-.pg-readout {
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-inline-start: 3px solid var(--accent);
-  border-radius: var(--radius);
-  padding: var(--pad);
-}
-.pg-step {
-  margin: 0;
-  font: 700 12px/1 var(--mono);
-  letter-spacing: .1em; text-transform: uppercase;
-  color: var(--accent);
-}
-.pg-said { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.55; }
+/* The readout is the shared `.readout` in §4a — the hero uses the same one. */
 
 
 /* --- 4c. section: names ("Type the name, not the id.") -------------------- */
@@ -1239,10 +1325,13 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 :root[data-os="linux"]   .card[data-os="linux"] { border-color: var(--accent); }
 
 /* Keycaps sit ~2.4em tall inside a small paragraph; the extra leading keeps
-   consecutive lines from touching when the line wraps. Reused by the Caps Lock
-   FAQ answer, which is the same shape — a chord set inside running prose. */
+   consecutive lines from touching when the line wraps. Reused three times: the
+   Caps Lock FAQ answer, the playground's constraint paragraph and the hero's
+   one-line version of it — all the same shape, a chord set in running prose.
+   `flex-wrap` belongs here for the same reason the leading does: a chord set
+   in prose has to be able to break. */
 .caps { line-height: 2.15; }
-.caps .chord { margin-inline: 2px; }
+.caps .chord { flex-wrap: wrap; margin-inline: 2px; }
 
 
 /* --- 4f. section: install ------------------------------------------------- */
