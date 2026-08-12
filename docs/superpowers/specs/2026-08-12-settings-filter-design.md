@@ -200,6 +200,22 @@ a new one.
 
 ## 8. The risk this feature reaches, which is not in the follow-ups note
 
+> **SUPERSEDED, and by something this section did not anticipate.** The
+> argument below was measured and held (measurements §40), but the final
+> whole-branch review found a defect it never considered: this section only
+> asked what happens when the **filter box** is the input. When the **App
+> field** is the input — the user edits a row until it stops matching — the
+> same "drop it from the view" rule pulls the row out from under the editor
+> mid-word, and `apply_state`'s `None` arm disables the control that has
+> keyboard focus and blanks it.
+>
+> `Model::visible` now exempts the selected row from the filter, which fixes
+> that *and* closes this section's risk outright: with a row selected the list
+> cannot reach zero rows, so `Ui::shown_empty` cannot flip, so `layout` never
+> runs on a filter keystroke at all. Measurements §42–§44. The reasoning below
+> is kept because it is what the design argued at the time, and because the
+> gate it produced is what proved the replacement.
+
 Filtering down to zero rows empties `st.items`, which flips `Ui::shown_empty`,
 which makes `apply_state` call `layout`, which `SetWindowPos`es the App
 `COMBOBOX`. **That is the exact path that silently replaced what the user

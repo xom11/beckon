@@ -965,9 +965,9 @@ OS metadata on every call.
 
   **Shape: bands stacked top to bottom, not a split pane** (landing 2a,
   `settings_window.rs::layout`). Banner (external change; contributes no
-  height when hidden) / `Shortcuts` head with Remove + Add / the list /
-  editor strip / suggestion row (nothing built for it yet) / keyboard group
-  / command bar. The 45/55 column split it replaced put 561 px of fixed
+  height when hidden) / `Shortcuts` head with the filter, Remove and Add /
+  the list / editor strip / suggestion row (nothing built for it yet) /
+  keyboard group / command bar. The 45/55 column split it replaced put 561 px of fixed
   columns inside a 482 px pane, so beckon shipped a horizontal scroll bar
   and a clipped App column; widths are now a proportion of the live list
   width, which is why that cannot recur. **App leads, Shortcut follows** —
@@ -997,6 +997,31 @@ OS metadata on every call.
   point of two earlier fixes: Enter on a focused `Reload` used to save and
   overwrite the external change the banner existed to protect. **Only
   `Ctrl+S` is unconditional.**
+
+  **The filter box is a view, and the mapping is the feature.** `IDC_FILTER`
+  (1021, cue banner `Filter`, no label) matches case-insensitively against
+  both columns. It lives in `Model`, not in `Ui`, because
+  `Model::remove_pressed`, `marked_count`, `ControlState::selected` and
+  `remove_enabled` all depend on what is visible — decisions that belong in
+  the crate all three CI jobs compile. **`ListItem` carries its model row,
+  and `LVN_ITEMCHANGED` maps `items[i].row` before calling `on_select` /
+  `on_mark`** — those callbacks take model indices, and a ListView only ever
+  knows view positions. Without that, one filtered keystroke ticks one
+  binding and deletes another.
+
+  Two rules keep it safe, and both are functions rather than discipline.
+  **Remove never deletes a row you cannot see:** ticks survive being
+  filtered out but are inert while off screen, and `marked_count` /
+  `remove_enabled` are scoped to the visible set too — otherwise the window
+  says four are ticked while Remove takes one. **`visible()` exempts the
+  selected row from the filter:** without it, editing a row until it stops
+  matching drops it from the view, and `apply_state`'s `None` arm then
+  disables the field that has keyboard focus and blanks it, mid-word. That
+  exemption also means the list cannot empty while a row is selected, so
+  `Ui::shown_empty` never flips on a filter keystroke and `layout` never
+  resizes the App combo there — the §7.15 path, closed rather than argued
+  about. `Add` still clears the filter, which is a different question: a new
+  row is empty and would match nothing.
 
   **The status vocabulary is four words, and a healthy row says nothing.**
   `paused` > `key in use` > `not installed` > `custom`, and that order IS
