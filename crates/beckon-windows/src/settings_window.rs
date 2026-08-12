@@ -2191,11 +2191,20 @@ unsafe fn layout(hwnd: HWND) {
     // Capped at a third of the width, the same ceiling band 4 puts on the
     // Shortcut field, so the two text boxes narrow together. The HEADING
     // takes what is left, which makes it -- not the filter -- the first
-    // thing to run out: 288 px of heading beside 200 px of filter at
-    // MIN_WIDTH, and the heading reaches zero around a 400 px client, which
-    // `WM_GETMINMAXINFO` keeps out of reach of a drag. Every subtraction is
-    // clamped, so the intermediate rects `WM_DPICHANGED` can suggest below
-    // that floor produce a hidden heading rather than a negative width.
+    // thing to run out. At 96 DPI, with `Add`/`Remove` both pinned to
+    // `tok::BTN` (88 px -- neither caption needs more), `heading_w` reduces
+    // to `clamp(cw - 200 - filter_w)`. Below `cw = 600` (where `filter_w` is
+    // itself `floor(cw / 3)`, not the 200 px cap) that clamps to zero at
+    // `cw = 300` -- the raw client width `w` this comes from, before the
+    // PAD margins, is 332. `MIN_WIDTH` is a WINDOW floor, not a `cw` one:
+    // `WM_GETMINMAXINFO` sets `ptMinTrackSize.x`, which bounds the whole
+    // window including the OS's own frame, so its 720 does not translate
+    // into an exact `cw` this file computes -- only into "hundreds of
+    // pixels clear of the 332 px zero point under any frame the OS adds,"
+    // which is the actual reason a drag can never reach it. Every
+    // subtraction is clamped, so the intermediate rects `WM_DPICHANGED` can
+    // suggest below that floor produce a hidden heading rather than a
+    // negative width.
     let filter_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
     let filter_x = cx + clamp(cw - bw_add - gap - bw_remove - gap - filter_w);
     place(IDC_ADD, cx + clamp(cw - bw_add), y, bw_add, ctl);
@@ -2502,13 +2511,24 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         enable(hwnd, IDC_REMOVE, st.remove_enabled);
         // The rest of what can change the file. `apply_enabled` and
         // `remove_enabled` already carry `editable` inside them (both are
-        // false in a state with no model); these three have no other input,
+        // false in a state with no model); these four have no other input,
         // so they read the flag directly.
         //
         // The list is disabled rather than merely empty: its tick boxes
         // mutate, and a control that cannot be operated says "read only" in
         // a way an empty control does not.
+        //
+        // The filter belongs here too, not beside `IDC_COMBO`/`IDC_APP`
+        // above: it is not gated on `st.detail` (there is no row to filter
+        // without a model either way), it is gated on the same `editable`
+        // flag as Add/List/Caps. Left un-greyed, it stayed clickable in the
+        // read-only state that `unreadable_state` produces, and every
+        // keystroke there was silently erased on the next `apply_state`
+        // pass -- `on_filter` reaches a `None` model and changes nothing,
+        // so `st.filter` stays `""` and the conditional write above puts it
+        // back.
         enable(hwnd, IDC_ADD, st.editable);
+        enable(hwnd, IDC_FILTER, st.editable);
         enable(hwnd, IDC_LIST, st.editable);
         enable(hwnd, IDC_CAPS, st.editable);
         // These four `check` calls need no `suppressed()` guard, unlike every
@@ -3293,12 +3313,12 @@ fn commit_fields() {
 }
 
 fn handle_command(hwnd: HWND, id: i32, code: u32) {
-    // The shortcut EDIT only. The App COMBOBOX is deliberately absent: the
-    // one arm that still reads it synchronously reads its LIST, not its edit
-    // field, and fetches the handle itself through `app_handle()`. A handle
-    // in scope for every arm is an invitation to read the edit field from
-    // inside a notification again -- which is the defect `WM_APP_EDITED`
-    // exists to prevent.
+    // The shortcut EDIT and the filter EDIT, and nothing else. The App
+    // COMBOBOX is deliberately absent: the one arm that still reads it
+    // synchronously reads its LIST, not its edit field, and fetches the
+    // handle itself through `app_handle()`. A handle in scope for every arm
+    // is an invitation to read the edit field from inside a notification
+    // again -- which is the defect `WM_APP_EDITED` exists to prevent.
     let combo = match UI.with(|u| u.borrow().as_ref().map(|x| x.combo)) {
         Some(t) => t,
         None => return,
