@@ -1423,20 +1423,36 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* --- the readout --- */
 
+/* ONE LINE, NOT TWO STACKED, and the reason is column alignment rather than
+   taste. In #how the readout is the only thing under the desk, so its height is
+   the whole of the right column's overhang: measured at 1440, the table ran
+   200-486 and the desk 200-475 — tops identical, bottoms 11px apart, the two
+   genuinely aligned — while the readout carried the right column on down to
+   582, hanging 96px below the left. Stacked, it spent an 11px label line plus a
+   7px gap saying a word that fits beside the sentence. On one baseline the box
+   is ~46px instead of 89 and the overhang halves.
+
+   `align-items: baseline` rather than `center`: the label is 11px mono uppercase
+   and the sentence 15px sans, so centring them would leave two different
+   x-heights floating at two different offsets. `min-width: 0` on the sentence
+   is what lets a long branch line wrap inside its own flex item instead of
+   pushing the box wider than the desk above it. */
 .readout {
-  margin-top: 18px;
+  display: flex; align-items: baseline; gap: 11px;
+  margin-top: 12px;
   max-width: var(--measure);
   border-left: 2px solid var(--accent);
   background: var(--bg-raised);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  padding: 11px 15px;
+  padding: 10px 15px;
 }
 .readout-step {
+  flex: 0 0 auto;
   font: 600 11px/1 var(--mono);
   letter-spacing: .1em; text-transform: uppercase;
   color: var(--accent);
 }
-.readout-say { margin: 7px 0 0; font-size: 15px; }
+.readout-say { margin: 0; min-width: 0; font-size: 15px; }
 
 /* The transcript. Not sr-only: it is the sentence the demo is making, and a
    reader who never looks at the stage should still get it. Left-aligned with
