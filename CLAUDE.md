@@ -1212,20 +1212,27 @@ than shipping a stale command.
 
 The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Renewal procedure is documented in the tap repo's README. **Rotated 2026-08-11; expires 2027-08-12.**
 
-**`Bump packagers` does NOT fire on its own.** It listens for
-`release: published`, but the release is created by `release.yml` using
-`GITHUB_TOKEN`, and GitHub deliberately raises no workflow events for actions
-taken with that token — the recursion guard. Measured at v0.8.0: the release
-job went green, the release was published, and the last `Bump packagers` run
-was still months old. Dispatch it by hand after every release:
+**CORRECTED 2026-08-13: `Bump packagers` DOES fire on its own, and has since
+the `workflow_call` fix landed.** `release.yml` ends with a job that does
+`needs: release` and `uses: ./.github/workflows/bump-packagers.yml`, so the
+bump is a step of the release rather than a reaction to it. Verified from the
+bucket rather than from the workflow file: `xom11/scoop-bucket` carries
+`beckon 0.9.0` at 2026-08-12T22:38Z and `beckon 0.9.1` at 2026-08-13T02:41Z,
+both minutes after their tags and neither dispatched by hand. **No manual
+`gh workflow run` is needed.**
+
+This entry used to say the opposite, and the reasoning was sound for the code
+at the time: `bump-packagers.yml` also listens for `release: published`, the
+release is created by `release.yml` with `GITHUB_TOKEN`, and GitHub raises no
+workflow events for that token — the recursion guard. That was measured at
+v0.8.0, when the last `Bump packagers` run really was months old. The
+`workflow_call` chain was the fix named there and it was taken; the entry was
+not updated. If a release ever does go out without a bump, that path is still
+the fallback:
 
 ```sh
 gh workflow run "Bump packagers" -f tag=vX.Y.Z
 ```
-
-The permanent fix, if it is ever wanted, is for `release.yml` to invoke it
-through `workflow_call` — `bump-packagers.yml` already declares that trigger
-and its `tag` input — or to create the release with a PAT instead.
 
 **Re-running the bump does not test the token.** Both packager repos are
 public, so `git clone` with a dead token still succeeds, and both push
