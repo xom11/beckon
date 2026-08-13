@@ -142,12 +142,15 @@ impl Outcome {
 }
 
 /// The four modifiers a `Combo` can carry, as capture currently sees them.
+///
+/// Public because `step` takes one: the hook supplies the modifiers the user
+/// is *physically* holding, which the held set cannot know about on its own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Mods {
-    ctrl: bool,
-    super_: bool,
-    alt: bool,
-    shift: bool,
+pub struct Mods {
+    pub ctrl: bool,
+    pub super_: bool,
+    pub alt: bool,
+    pub shift: bool,
 }
 
 impl Mods {
@@ -214,6 +217,15 @@ fn is_reserved(vk: u32, mods: Mods) -> bool {
 pub struct CaptureState {
     held: [u32; HELD_MAX],
     held_len: usize,
+    /// The modifiers the user is physically holding, as of the last `step`.
+    ///
+    /// **Not part of the held set, and that is the whole point.** A modifier
+    /// pressed before recording began was never swallowed by the hook, so its
+    /// key-up must not be swallowed either -- putting it in `held` would make
+    /// `release` claim it and leave the system believing a modifier is down
+    /// with no up ever coming. It is unioned into `mods()` instead, which
+    /// reaches the commit and the live field but never the drain.
+    live: Mods,
     captured: Option<Combo>,
     refused_keycap: Option<&'static KeyDef>,
     refused_vk: Option<u32>,
@@ -226,6 +238,7 @@ impl CaptureState {
         CaptureState {
             held: [0; HELD_MAX],
             held_len: 0,
+            live: Mods::default(),
             captured: None,
             refused_keycap: None,
             refused_vk: None,
@@ -306,11 +319,16 @@ impl CaptureState {
         Some(s)
     }
 
-    /// The four flags, derived from the held set on every read rather than
-    /// stored alongside it. One source of truth: a cached copy would be a
-    /// second one to keep in sync, and the scan is twelve comparisons.
+    /// The four flags: the held set, unioned with what the user is physically
+    /// holding.
+    ///
+    /// Derived on every read rather than stored: a cached copy would be a
+    /// second source of truth, and the scan is twelve comparisons. The union
+    /// is what makes "hold Ctrl, click Record with the mouse, press Alt+T"
+    /// record `ctrl+alt+t` rather than `alt+t` -- the hook never saw the
+    /// Ctrl-down, so only the caller can say it is down.
     fn mods(&self) -> Mods {
-        let mut m = Mods::default();
+        let mut m = self.live;
         for &vk in &self.held[..self.held_len] {
             match modifier_of(vk) {
                 Some(Modifier::Ctrl) => m.ctrl = true,
@@ -381,7 +399,12 @@ impl CaptureState {
 ///   so the Ctrl the user presses next is silently absent from `mods()`
 ///   and the chord commits without it. Losing a modifier is far worse than
 ///   a repeated refusal, so the repeat is handled at the beep instead.
-pub fn step(ev: KeyEvent, st: &mut CaptureState) -> Outcome {
+pub fn step(ev: KeyEvent, st: &mut CaptureState, live: Mods) -> Outcome {
+    // Sampled by the caller on every event, so a modifier RELEASED after
+    // recording began stops counting the moment it is let go -- which is why
+    // this is a parameter rather than a snapshot taken when the hook armed.
+    st.live = live;
+
     // Our own injected strokes carry beckon's `dwExtraInfo` marker. The Caps
     // feature injects the CONFIGURED chord, so capturing one would record
     // the alias instead of the key the user actually pressed.
@@ -683,10 +706,84 @@ mod tests {
     }
 
     fn down(st: &mut CaptureState, vk: u32) -> Outcome {
-        step(ev(vk, Edge::Down), st)
+        step(ev(vk, Edge::Down), st, Mods::default())
     }
     fn up(st: &mut CaptureState, vk: u32) -> Outcome {
-        step(ev(vk, Edge::Up), st)
+        step(ev(vk, Edge::Up), st, Mods::default())
+    }
+    /// The same, with modifiers the user is physically holding that the hook
+    /// never saw go down.
+    fn down_live(st: &mut CaptureState, vk: u32, live: Mods) -> Outcome {
+        step(ev(vk, Edge::Down), st, live)
+    }
+    fn up_live(st: &mut CaptureState, vk: u32, live: Mods) -> Outcome {
+        step(ev(vk, Edge::Up), st, live)
+    }
+    fn ctrl_live() -> Mods {
+        Mods {
+            ctrl: true,
+            ..Mods::default()
+        }
+    }
+
+    /// The defect this parameter exists for: hold Ctrl, click `Record` with
+    /// the MOUSE, then press Alt+T. The hook never saw the Ctrl-down, so the
+    /// held set does not contain it -- and before the union this recorded
+    /// `alt+t`, silently dropping a modifier the user was holding. A wrong
+    /// chord is worse than a refusal, because nothing says it happened.
+    #[test]
+    fn a_modifier_held_before_recording_reaches_the_commit() {
+        let mut st = CaptureState::armed();
+        assert_eq!(down_live(&mut st, VK_MENU, ctrl_live()), Outcome::Partial);
+        assert_eq!(down_live(&mut st, VK_T, ctrl_live()), Outcome::Captured);
+        assert_eq!(st.captured().expect("a chord").canonical(), "ctrl+alt+t");
+    }
+
+    /// The same modifier alone is enough to make a main key acceptable. Before
+    /// the union this was `Refused(NoModifier)` -- beckon telling the user to
+    /// hold a modifier they were already holding.
+    #[test]
+    fn a_live_modifier_alone_is_not_a_bare_key() {
+        let mut st = CaptureState::armed();
+        assert_eq!(down_live(&mut st, VK_T, ctrl_live()), Outcome::Captured);
+        assert_eq!(st.captured().expect("a chord").canonical(), "ctrl+t");
+    }
+
+    /// Sampled per event, so letting go before the main key drops it. This is
+    /// why `live` is a parameter and not a snapshot taken when the hook armed.
+    #[test]
+    fn releasing_the_live_modifier_before_the_key_drops_it() {
+        let mut st = CaptureState::armed();
+        assert_eq!(down_live(&mut st, VK_MENU, ctrl_live()), Outcome::Partial);
+        assert_eq!(down(&mut st, VK_T), Outcome::Captured);
+        assert_eq!(st.captured().expect("a chord").canonical(), "alt+t");
+    }
+
+    /// **The safety property.** A live modifier must never enter the held set:
+    /// its key-down was never swallowed, so its key-up must reach the system
+    /// or Windows is left believing a modifier is down with no up coming, and
+    /// nothing short of killing beckon gets it back.
+    #[test]
+    fn a_live_modifier_never_joins_the_held_set() {
+        let mut st = CaptureState::armed();
+        assert_eq!(down_live(&mut st, VK_T, ctrl_live()), Outcome::Captured);
+        // The Ctrl the hook never saw go down: its up is not ours to swallow.
+        assert_eq!(
+            up_live(&mut st, VK_CONTROL, ctrl_live()),
+            Outcome::PassThrough
+        );
+        // The main key IS ours -- it joined the held set at commit so the
+        // drain outlives it.
+        assert_eq!(up(&mut st, VK_T), Outcome::Disarmed);
+    }
+
+    /// The live field shows what will be recorded, rather than disagreeing
+    /// with it until the moment of commit.
+    #[test]
+    fn the_live_field_shows_a_physically_held_modifier() {
+        let mut st = CaptureState::armed();
+        assert_eq!(down_live(&mut st, VK_MENU, ctrl_live()), Outcome::Partial);
+        assert_eq!(st.partial().as_deref(), Some("ctrl+alt+..."));
     }
 
     #[test]
@@ -1015,7 +1112,7 @@ mod tests {
             injected_by_us: true,
             time_ms: 0,
         };
-        assert_eq!(step(injected, &mut st), Outcome::Ignored);
+        assert_eq!(step(injected, &mut st, Mods::default()), Outcome::Ignored);
         assert_eq!(st.partial(), None);
     }
 

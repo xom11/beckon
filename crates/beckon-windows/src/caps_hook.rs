@@ -87,6 +87,38 @@ thread_local! {
     static CAP: RefCell<CaptureState> = RefCell::new(CaptureState::armed());
 }
 
+/// The modifiers the user is physically holding, right now.
+///
+/// **Sampled per event, and the reason `capture::step` takes a parameter.**
+/// A modifier pressed BEFORE `Record` was clicked never reached the hook, so
+/// the held set cannot know about it: hold Ctrl, click `Record` with the
+/// mouse, press Alt+T, and beckon recorded `alt+t` -- a silently wrong chord,
+/// which is worse than a refusal. Sampling here rather than when the hook
+/// armed is what makes releasing the modifier before the main key drop it
+/// again.
+///
+/// Four `GetAsyncKeyState` calls on the hook's own thread. That budget is not
+/// free -- a callback slower than `LowLevelHooksTimeout` (300 ms) is silently
+/// unhooked with no error anywhere -- but these are register reads against a
+/// kernel-maintained table, not round trips, and they only run while a
+/// capture is armed and the settings window is frontmost.
+///
+/// `VK_CONTROL` / `VK_MENU` / `VK_SHIFT` are the merged left-and-right keys,
+/// which is what `Combo` carries; `VK_LWIN` and `VK_RWIN` have no merged form
+/// and are asked for separately.
+fn live_mods() -> beckon_core::capture::Mods {
+    // The high bit is "currently down". The low bit means "pressed since the
+    // last call" and must NOT be consulted: it would report a key the user
+    // has already let go of.
+    let down = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000 != 0 };
+    beckon_core::capture::Mods {
+        ctrl: down(VK_CONTROL),
+        super_: down(VK_LWIN) || down(VK_RWIN),
+        alt: down(VK_MENU),
+        shift: down(VK_SHIFT),
+    }
+}
+
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // MSDN: when code < 0 the hook must pass the message on without
     // inspecting it.
@@ -137,7 +169,8 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 // second borrow taken across an `extern "system"` boundary
                 // aborts the process rather than unwinding, and nothing
                 // catches that.
-                let outcome = CAP.with(|c| beckon_core::capture::step(ev, &mut c.borrow_mut()));
+                let outcome =
+                    CAP.with(|c| beckon_core::capture::step(ev, &mut c.borrow_mut(), live_mods()));
                 // No trace here, deliberately, and not only for the budget:
                 // while recording, EVERY keystroke reaches this arm, so a
                 // per-event line would be the keylogger the trace below is
