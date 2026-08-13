@@ -134,23 +134,31 @@
        contract. Everything decorative inside the demo is aria-hidden;
        .demo-steps is the accessible transcript and is not.
 
-       WITH JS ON THIS DEMO BECOMES PRESSABLE. beckon.js adds `.is-live` to
+       WITH JS ON THIS DEMO BECOMES PRESSABLE, and the trigger is beckon's own
+       gesture: Caps Lock on, then a letter. beckon.js adds `.is-live` to
        .hero-demo, which cancels the 4.4s loop, and inserts three things above
-       .demo-steps: a one-line note saying the page cannot hold the reader's
-       real chord (a press taps every cap in all three chords at once, so that
-       cannot wait for the section below), a keycap button, and the same
-       .readout panel the playground uses. `data-front` on .hero-stage then
-       decides what is drawn. It also rewrites .demo-steps to drop its closing
-       "Claude comes to the front on all three" — true of the loop, false on
-       every other press once the reader has the wheel. With JS off the
-       sentence below stands exactly as written, which is the only reason it
-       may be rewritten at all.
+       .demo-steps: a two-sentence note (the chord in the cards is one a page
+       never sees; pressing Caps here really does turn the reader's Caps Lock
+       on — neither can wait for the section below, because a press taps every
+       cap in all three chords at once and flips the lock), the press control,
+       and the same .readout panel the playground uses. `data-front` on
+       .hero-stage then decides what is drawn. It also rewrites .demo-steps to
+       drop its closing "Claude comes to the front on all three" — true of the
+       loop, false on every other press once the reader has the wheel. With JS
+       off the sentence below stands exactly as written, which is the only
+       reason it may be rewritten at all.
 
-       Nothing else below changes: the three cards, their three
-       different chords and the window stacks are the markup either way, and
-       with JS off the loop runs exactly as it always has. The three OS cards
-       are the page's cross-platform claim, so they are never reduced to the
-       reader's own OS — only #setups and #serve mark it. -->
+       ONE THING BELOW IS REWRITTEN LIVE: the LAST cap of each chord, which is
+       the letter. Press `B` and all three read Brave's letter at once, which
+       is this demo's actual claim happening — same letter, three different
+       chords. The modifiers are never touched, and with JS off all three read
+       `C`, the letter README's table binds to Claude.
+
+       Nothing else below changes: the three cards, their three different
+       chords and the window stacks are the markup either way, and with JS off
+       the loop runs exactly as it always has. The three OS cards are the
+       page's cross-platform claim, so they are never reduced to the reader's
+       own OS — only #setups and #serve mark it. -->
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
 
@@ -254,9 +262,13 @@
        demo B is the one-window case, and each names its precondition.
 
        WITH JS ON, BOTH ARE REPLACED BY THE PLAYGROUND — four scenarios the
-       reader steps through with a real keypress, covering every branch of the
-       algorithm, with a readout that names the branch that fired. beckon.js
-       builds it and empties .how-demos into it.
+       reader steps through with beckon's own gesture (Caps Lock on, then one
+       of the five letters from the table in #setups), covering every branch of
+       the algorithm, with a readout that names the branch that fired.
+       beckon.js builds it and empties .how-demos into it. All five letters
+       work there and the desk is modelled per app, so pressing the letter of
+       the app already in front walks step 5 while a different app's letter
+       focuses it — or launches it, step 4, if nothing of it is running.
 
        That direction is the requirement, not a preference. The two demos and
        the table below ship VISIBLE and JS takes them away; written the other
@@ -708,7 +720,11 @@ scoop install xom11/beckon</code></pre>
           stands in for <code>ctrl+super+alt</code>, so
           <span class="chord"><kbd class="key">Caps</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
           does what <code>ctrl+super+alt+T</code> does &mdash; your bindings do not change, and the
-          same file still works on a machine where the box is not ticked. Three caveats, all real: it
+          same file still works on a machine where the box is not ticked. The hook swallows the Caps
+          key itself and sends the chord on as one burst, so the lock does not flip while you use it;
+          tapping Caps on its own still toggles Caps Lock, because beckon puts that keystroke back.
+          <code>keyboard.caps_tap = "escape"</code> makes the tap Esc instead, and
+          <code>"none"</code> makes it do nothing. Three caveats, all real: it
           does nothing while an elevated window has focus, though typing the chord by hand still works
           there; any other remapper that already claims Caps &mdash; kanata, PowerToys Keyboard
           Manager, an AutoHotkey script &mdash; wins, so use one or the other and not both; and it
