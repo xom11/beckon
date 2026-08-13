@@ -163,6 +163,36 @@ pub fn app_cell(app: &str, flag: Option<&str>) -> String {
 /// grow a flag, and would silently colour whatever followed. Testing the
 /// suffix against the closed vocabulary means the worst case is an app
 /// genuinely named `... key in use`, which is not a name.
+/// How a flag is COLOURED. Not the same question as `Mark`, and that is the
+/// whole reason it exists.
+///
+/// `key in use` and `not installed` are both `Mark::Bad` -- each pushes a
+/// `Bad` note and the row's mark is the worst of them -- so severity cannot
+/// tell them apart, while the design deliberately does: a chord another
+/// program has taken is red, an app beckon cannot find is amber. Severity
+/// answers "how bad"; this answers "which of the four words is it", which is
+/// a property of the closed vocabulary rather than a second opinion about
+/// how serious anything is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagTone {
+    /// Something else owns the key. Nothing beckon can do from here.
+    Bad,
+    /// Worth saying, not worth stopping for.
+    Warn,
+    /// True, and not a problem. No pill at all.
+    Neutral,
+}
+
+/// The tone for one flag word. Unknown words are `Neutral`, which is the safe
+/// direction: a word nobody assigned a colour to must not shout.
+pub fn flag_tone(flag: &str) -> FlagTone {
+    match flag {
+        "key in use" => FlagTone::Bad,
+        "not installed" | "paused" => FlagTone::Warn,
+        _ => FlagTone::Neutral,
+    }
+}
+
 pub fn split_app_cell(cell: &str) -> (&str, Option<&str>) {
     for f in FLAGS {
         if let Some(rest) = cell.strip_suffix(f) {
@@ -3244,6 +3274,26 @@ mod tests {
         for f in ["paused", "key in use", "not installed", "custom"] {
             assert!(FLAGS.contains(&f), "{f:?} missing from FLAGS");
         }
+    }
+
+    /// **The two `Mark::Bad` flags must not share a tone.** This is the whole
+    /// reason `flag_tone` is not derived from `Mark`: `key in use` and
+    /// `not installed` are both `Bad`, and the design draws one red and the
+    /// other amber. A refactor that "simplifies" the tone away to severity
+    /// makes them identical and this test goes red.
+    #[test]
+    fn the_two_bad_flags_are_told_apart_by_tone() {
+        assert_eq!(flag_tone("key in use"), FlagTone::Bad);
+        assert_eq!(flag_tone("not installed"), FlagTone::Warn);
+        assert_ne!(flag_tone("key in use"), flag_tone("not installed"));
+    }
+
+    /// An unknown word must be silent rather than shout in a colour nobody
+    /// chose for it.
+    #[test]
+    fn an_unknown_flag_word_is_neutral() {
+        assert_eq!(flag_tone("something new"), FlagTone::Neutral);
+        assert_eq!(flag_tone("custom"), FlagTone::Neutral);
     }
 
     /// An app name that merely CONTAINS a flag word keeps it. Only a whole
