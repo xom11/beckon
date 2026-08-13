@@ -98,35 +98,45 @@ fn button_rects(right: i32, top: i32, dpi: u32) -> [(RECT, u32); 2] {
 /// The maximized correction every other implementation of this needs is
 /// absent because the state is unreachable: `WS_MAXIMIZEBOX` is off, so
 /// neither the button nor Win+Up can produce it.
-/// **Never hold a `&mut` to `NCCALCSIZE_PARAMS` across the `DefWindowProcW`
-/// call.** This function was written that way, compiled clean, passed every
-/// review, and did nothing at all on hardware — measured on a14 2026-08-13,
-/// where the settings window showed the system caption AND its own bar, with
+/// **This window receives `WM_NCCALCSIZE` with `wParam == FALSE`, and only
+/// that form.** Measured on a14 2026-08-13 by logging the first line of this
+/// function: exactly one call, `wparam=0`. Handling only the `TRUE` form —
+/// which every published sample of this technique does, and which this
+/// function did — means the caption is never reclaimed: the settings window
+/// showed the system caption AND its own drawn bar underneath, with
 /// `ClientToScreen(0,0).y - GetWindowRect().top == 45` (= `SM_CYCAPTION` 34 +
-/// `SM_CYSIZEFRAME` 5 + `SM_CXPADDEDBORDER` 6, i.e. the untouched default)
-/// where a working handler gives 0.
+/// `SM_CYSIZEFRAME` 5 + `SM_CXPADDEDBORDER` 6, the untouched default) where a
+/// working handler gives 0.
 ///
-/// The cause is aliasing, not Win32. `DefWindowProcW` rewrites `rgrc[0]`
-/// through the raw pointer it was handed, while a live `&mut` promises the
-/// compiler that nothing else can touch that memory across the call. It is
-/// therefore entitled to believe `rgrc[0]` still equals the `before` copy —
-/// and the store `rgrc[0].top = before.top` becomes a write of a value it
-/// thinks is already there, i.e. dead, and is dropped.
+/// **CORRECTED: an earlier fix blamed aliasing and was wrong.** The reasoning
+/// was that holding a `&mut NCCALCSIZE_PARAMS` across `DefWindowProcW` lets
+/// the compiler treat the read-back as dead. Plausible, and it is still why
+/// this function uses raw pointers throughout — but it was not the cause.
+/// Rewriting it that way changed nothing on hardware, which is how the real
+/// cause was found. Do not re-derive the aliasing story and stop there.
 ///
-/// Raw pointers throughout, with no reference ever materialised, is what makes
-/// the read-back real. Keep it that way.
+/// The two forms differ only in how `lParam` is shaped: `FALSE` gives a bare
+/// `RECT`, `TRUE` gives `NCCALCSIZE_PARAMS` whose `rgrc[0]` plays the same
+/// role. Both are window-rect-in, client-rect-out.
 pub(super) fn nccalcsize(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if wparam.0 == 0 {
-        return unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
-    }
-    let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
-    // `rgrc[0]` on entry is the proposed WINDOW rect; `DefWindowProcW`
-    // rewrites it in place into the proposed CLIENT rect.
-    let before_top = unsafe { std::ptr::addr_of!((*params).rgrc[0].top).read() };
+    // BOTH forms, and that is the whole fix. Every sample of this technique
+    // handles only `wParam == TRUE` and passes `FALSE` to `DefWindowProcW`,
+    // which is what this function did -- so the caption-reclaiming branch
+    // never ran and the window wore two title bars.
+    let top: *mut i32 = unsafe {
+        if wparam.0 == 0 {
+            // A single RECT: proposed window rect in, client rect out.
+            std::ptr::addr_of_mut!((*(lparam.0 as *mut RECT)).top)
+        } else {
+            // `rgrc[0]`: same contract, inside NCCALCSIZE_PARAMS.
+            std::ptr::addr_of_mut!((*(lparam.0 as *mut NCCALCSIZE_PARAMS)).rgrc[0].top)
+        }
+    };
+    let before_top = unsafe { top.read() };
     let _ = unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
     // Give the caption band back to the client. The side and bottom borders
     // stay whatever DefWindowProc made them, so resizing is untouched.
-    unsafe { std::ptr::addr_of_mut!((*params).rgrc[0].top).write(before_top) };
+    unsafe { top.write(before_top) };
     LRESULT(0)
 }
 
