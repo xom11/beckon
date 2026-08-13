@@ -4668,11 +4668,28 @@ unsafe fn theme_list(hwnd: HWND, dark: bool) {
     // `WM_DRAWITEM` -- which is why the `CBS_OWNERDRAWFIXED` added for the
     // drop-down ITEMS left the closed control untouched.
     //
-    // Same family as the scrollbar call above, and the same caveat: these
-    // class names are undocumented and the call degrades silently, so nothing
-    // may depend on it having worked. It is the difference between a window
-    // that reads as dark and one with three white bars in it, which is worth
-    // an undocumented name.
+    // **MEASURED INEFFECTIVE on a14 2026-08-13. These calls change nothing
+    // today, and the reason is a constraint this window cannot satisfy.**
+    // Screenshot after adding them is pixel-identical in the header and all
+    // four fields: still white.
+    //
+    // `DarkMode_*` theme classes are inert until the PROCESS opts into dark
+    // mode through uxtheme's undocumented ordinals (`SetPreferredAppMode` #135
+    // / `AllowDarkModeForWindow` #133), and the 2026-08-11 spec rejected
+    // uxtheme ordinals outright. So the class name is accepted, silently does
+    // nothing, and the visual style keeps painting these parts light.
+    //
+    // Kept rather than deleted because the calls are harmless, they are
+    // already correct for the day the ordinal question is reopened, and
+    // deleting them would delete the measurement with them. Nothing depends
+    // on them having worked -- see the caller's own note. The scrollbar call
+    // above is in the same position: it may or may not be doing anything.
+    //
+    // What this leaves: in dark mode the ListView header and the three combo
+    // faces render light. Fixing it needs one of — owner-drawing the header
+    // (possible, and the NM_CUSTOMDRAW path meant to do it is not firing),
+    // replacing the combos with owner-drawn controls, or reopening the
+    // ordinals decision. That is a design call, not a code one.
     let header = header_of(list);
     if !header.is_invalid() {
         let hname = if dark {
