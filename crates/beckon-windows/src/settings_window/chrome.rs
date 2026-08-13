@@ -98,16 +98,35 @@ fn button_rects(right: i32, top: i32, dpi: u32) -> [(RECT, u32); 2] {
 /// The maximized correction every other implementation of this needs is
 /// absent because the state is unreachable: `WS_MAXIMIZEBOX` is off, so
 /// neither the button nor Win+Up can produce it.
+/// **Never hold a `&mut` to `NCCALCSIZE_PARAMS` across the `DefWindowProcW`
+/// call.** This function was written that way, compiled clean, passed every
+/// review, and did nothing at all on hardware — measured on a14 2026-08-13,
+/// where the settings window showed the system caption AND its own bar, with
+/// `ClientToScreen(0,0).y - GetWindowRect().top == 45` (= `SM_CYCAPTION` 34 +
+/// `SM_CYSIZEFRAME` 5 + `SM_CXPADDEDBORDER` 6, i.e. the untouched default)
+/// where a working handler gives 0.
+///
+/// The cause is aliasing, not Win32. `DefWindowProcW` rewrites `rgrc[0]`
+/// through the raw pointer it was handed, while a live `&mut` promises the
+/// compiler that nothing else can touch that memory across the call. It is
+/// therefore entitled to believe `rgrc[0]` still equals the `before` copy —
+/// and the store `rgrc[0].top = before.top` becomes a write of a value it
+/// thinks is already there, i.e. dead, and is dropped.
+///
+/// Raw pointers throughout, with no reference ever materialised, is what makes
+/// the read-back real. Keep it that way.
 pub(super) fn nccalcsize(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if wparam.0 == 0 {
         return unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
     }
-    let params = unsafe { &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS) };
-    let before = params.rgrc[0];
+    let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+    // `rgrc[0]` on entry is the proposed WINDOW rect; `DefWindowProcW`
+    // rewrites it in place into the proposed CLIENT rect.
+    let before_top = unsafe { std::ptr::addr_of!((*params).rgrc[0].top).read() };
     let _ = unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
     // Give the caption band back to the client. The side and bottom borders
     // stay whatever DefWindowProc made them, so resizing is untouched.
-    params.rgrc[0].top = before.top;
+    unsafe { std::ptr::addr_of_mut!((*params).rgrc[0].top).write(before_top) };
     LRESULT(0)
 }
 
