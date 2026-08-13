@@ -669,12 +669,26 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     let ry = kb_y + s(24);
     // Every width on this line comes from the caption it has to hold.
     //
-    // `glyph` -- the check box's own square plus the gap before its caption
-    // -- is declared above, which sizes the editor card's four modifier
-    // chips by the same rule. The two STATICs get a hair of slack instead,
-    // for the reason the editor strip's labels do: SS_CENTERIMAGE clips
-    // rather than wraps.
-    let w_caps = tw(cap::CAPS) + glyph;
+    // `IDC_CAPS` gets its OWN budget, not `glyph` (`glyph` stays exactly as
+    // declared above -- the four modifier chips still need the old `s(24)`).
+    // `paint::toggle` draws a 40 px track inset `off` (2 px) from the
+    // control's own left edge -- so the focus ring it draws around the
+    // track can grow outward without its left edge and arcs falling outside
+    // `NM_CUSTOMDRAW`'s clip rect, see the track-rect comment in `paint.rs`
+    // -- then `tok::GAP` (8 px) before the caption. `off`, the 40 px track
+    // and `gap` are each their own `scale()` call in `paint.rs` (`off` and
+    // `track_w` in the track-rect block, `gap` in the caption block), so a
+    // single `s(50)` call here is provably never short of their sum: floor
+    // is subadditive (`floor(a)+floor(b)+floor(c) <= floor(a+b+c)` for any
+    // a/b/c >= 0), so `s(2)+s(40)+gap <= s(50)` at every DPI. Checked
+    // exactly at every standard Windows scale step too (100/125/150/175/
+    // 200/225/250/300%, i.e. dpi 96/120/144/168/192/216/240/288): all eight
+    // land on equality, so this does not over-allocate in practice either.
+    // The two STATICs below get a hair of slack instead of this budget, for
+    // the reason the editor strip's labels do: SS_CENTERIMAGE clips rather
+    // than wraps.
+    let toggle_glyph = s(50);
+    let w_caps = tw(cap::CAPS) + toggle_glyph;
     let w_hold = tw(cap::HOLD) + s(4);
     // `chip_kc`, not `chip`: the `Hold` chips draw in `Role::Keycap` (Task
     // 8's role_of change), so they must be MEASURED in it too, or each chip

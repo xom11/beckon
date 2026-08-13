@@ -1299,15 +1299,15 @@ pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut Them
 /// **No `0`/`1` in the knob.** VKey draws one; the knob's own position --
 /// left when off, right when on -- already says everything a digit would.
 ///
-/// **Geometry is NOT this function's to fix.** `layout` sizes `IDC_CAPS` at
-/// `tw(cap::CAPS) + glyph` (`glyph` = `s(24)`, the old check box square plus
-/// its gap) -- a budget built for a ~13 px glyph, not a 40 px track. Drawing
-/// the spec's own 40x20 track costs 16 px more than that budget on its own,
-/// before the gap to the caption is even counted; the shortfall is reported
-/// rather than fixed here, per this task's own constraint against a `layout`
-/// edit. `DT_END_ELLIPSIS` below is the same graceful-narrow fallback
-/// `list_custom_draw`'s Shortcut column and `draw_chip`'s empty-cap path
-/// both already take, not a new idea.
+/// **Geometry: `layout` gives `IDC_CAPS` its own budget, not `glyph`.**
+/// `w_caps = tw(cap::CAPS) + toggle_glyph`, where `toggle_glyph` (`layout.rs`,
+/// `s(50)`) covers exactly what this function draws before the caption: the
+/// track's own left inset (`off`, 2 px -- see the track-rect comment above),
+/// the 40 px track itself, and `tok::GAP` (8 px) before the text -- so the
+/// caption's `DrawTextW` box is never narrower than its own measured width
+/// and `DT_END_ELLIPSIS` below is a true fallback (matching `list_custom_draw`'s
+/// Shortcut column and `draw_chip`'s empty-cap path), not the guaranteed
+/// truncation an earlier pass through this task left in place.
 pub(super) unsafe fn toggle(
     nm: &NMCUSTOMDRAW,
     on: bool,
@@ -1331,10 +1331,22 @@ pub(super) unsafe fn toggle(
     let track_w = scale(40, dpi);
     let track_h = scale(20, dpi);
     let top = rc.top + (rc.bottom - rc.top - track_h) / 2;
+    // `off` is the focus ring's own outset below (2 px) -- the ring grows
+    // OUTWARD from the track by `off` on every side, and `NM_CUSTOMDRAW`'s
+    // `hdc` is clipped to this control's own `rc`. A track flush against
+    // `rc.left` left the ring's left edge (and both left arcs) `off` px
+    // past `rc.left` with nothing to clip into -- cut off. Inset the track
+    // by `off` on the left instead, so `ring_rc.left` (`track.left - off`)
+    // lands back exactly on `rc.left`. This mirrors `button`'s own ring
+    // painter (`paint.rs:1224`), which computes its ring as an INSET from
+    // the full `rc` rather than an outset from an inner shape -- `button`
+    // has margin on every side to shrink into; this track does not, so it
+    // has to make its own margin on the one side (left) that had none.
+    let off = scale(2, dpi);
     let track = RECT {
-        left: rc.left,
+        left: rc.left + off,
         top,
-        right: rc.left + track_w,
+        right: rc.left + off + track_w,
         bottom: top + track_h,
     };
 
@@ -1468,10 +1480,11 @@ pub(super) unsafe fn toggle(
     // Focus ring, LAST, per `button`'s own rule -- so it never fights the
     // knob or the caption for the same pixels. 2 px `accent`, offset 2,
     // around the TRACK alone: a ring around the whole control would run
-    // through the caption's own baseline.
+    // through the caption's own baseline. Reuses the same `off` the track
+    // rect inset by above -- both the inset and this outset have to be the
+    // identical value, or the ring's left edge stops landing on `rc.left`.
     if enabled && focused {
         let ring = cache.col(|p| p.accent, COLOR_HIGHLIGHT);
-        let off = scale(2, dpi);
         let ring_rc = RECT {
             left: track.left - off,
             top: track.top - off,
