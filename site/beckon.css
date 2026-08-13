@@ -352,9 +352,18 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .desks { display: grid; gap: 22px; }
 .desk-slot { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
+/* THE DESK IS A CONTAINER, and the chrome inside it is sized in `cqw`. Two
+   desks on this page differ by nearly 2:1 in width — 860px in the hero, ~500px
+   beside the table in #how — and fixed pixel chrome cannot serve both: a 22px
+   title bar that reads correctly at 500px looks like a hairline on a window
+   twice that size, which is exactly how the hero looked once it went to one
+   big desk. Every rule below states a plain px value first and the container
+   version second, so a browser without container query units gets the middle
+   size rather than nothing. */
 .desk {
   position: relative;
-  aspect-ratio: 16 / 10;
+  container-type: inline-size;
+  aspect-ratio: 16 / 9;
   border-radius: var(--radius);
   overflow: hidden;
   background: var(--sky);
@@ -383,6 +392,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   width: 62%; height: 60%;
   border-radius: 9px;
   overflow: hidden;
+  /* A column, so the body takes whatever the title bar leaves. It used to be
+     `height: calc(100% - 22px)`, which pinned the body to one bar height and
+     broke the moment the bar started scaling with the desk. */
+  display: flex; flex-direction: column;
   background: var(--win-paper);
   color: var(--win-ink);
   /* transform, not left/top: the cascade offset is what animates, and moving a
@@ -399,16 +412,25 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 .win-bar {
   display: flex; align-items: center; gap: 6px;
-  height: 22px; padding: 0 7px;
+  height: 24px; padding: 0 8px;
   background: var(--win-bar);
   border-bottom: 1px solid var(--win-line);
-  font: 500 9.5px/1 var(--sans);
+  font: 500 10px/1 var(--sans);
   color: var(--win-bar-ink);
   letter-spacing: .01em;
 }
+.win-bar {
+  height: clamp(20px, 3.4cqw, 34px);
+  padding-inline: clamp(6px, 1.1cqw, 12px);
+  gap: clamp(4px, .8cqw, 9px);
+  font-size: clamp(8.5px, 1.35cqw, 13px);
+}
 .win-lights { display: none; gap: 4px; }
+.win-lights { gap: clamp(3px, .55cqw, 6px); }
 .win-lights i { width: 7px; height: 7px; border-radius: 50%; background: #C8C8CC; }
+.win-lights i { width: clamp(5px, .95cqw, 11px); height: clamp(5px, .95cqw, 11px); }
 .win-ctl { display: none; gap: 7px; margin-left: auto; font-size: 8px; }
+.win-ctl { gap: clamp(5px, 1.1cqw, 12px); font-size: clamp(7px, 1.15cqw, 12px); }
 .win-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* The window's interior: a sidebar tinted with the app's hue, and three lines
@@ -416,7 +438,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    `--app` is set per data-app below and falls back to the graphite on :root. */
 .win-body {
   position: relative;
-  height: calc(100% - 22px);
+  flex: 1; min-height: 0;
   background:
     linear-gradient(var(--app), var(--app)) left / 24% 100% no-repeat,
     var(--win-paper);
@@ -427,6 +449,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   height: 5px; border-radius: 3px;
   background: var(--win-line);
   box-shadow: 0 11px 0 var(--win-line), 0 22px 0 var(--win-line);
+}
+.win-body::before {
+  height: clamp(4px, .75cqw, 8px);
+  box-shadow: 0 clamp(9px, 1.7cqw, 18px) 0 var(--win-line),
+              0 clamp(18px, 3.4cqw, 36px) 0 var(--win-line);
 }
 
 .win[data-app="terminal"] { --app: var(--app-terminal); }
@@ -474,6 +501,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   display: flex; gap: 7px;
   inset: 26px 8px 8px;
 }
+/* The top inset clears the bar, so it has to track the bar's own height. */
+.desk[data-os="linux"] .desk-wins {
+  gap: clamp(5px, 1cqw, 11px);
+  inset: calc(clamp(16px, 2.9cqw, 30px) + clamp(5px, 1cqw, 11px))
+         clamp(6px, 1.1cqw, 12px) clamp(6px, 1.1cqw, 12px);
+}
 .desk[data-os="linux"] .win {
   position: static;
   flex: 1 1 0; min-width: 0;
@@ -502,11 +535,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   position: absolute; z-index: 5;
   display: flex; align-items: center; gap: 6px;
 }
+.desk-bar { gap: clamp(4px, .9cqw, 10px); }
 .desk-bar .dock-app {
   width: 13px; height: 13px; border-radius: 4px;
   background: var(--app);
   opacity: .28;
   transition: opacity .3s ease, transform .3s ease;
+}
+.desk-bar .dock-app {
+  width: clamp(11px, 1.9cqw, 22px);
+  height: clamp(11px, 1.9cqw, 22px);
+  border-radius: clamp(3px, .55cqw, 6px);
 }
 .desk-bar .dock-app.is-up { opacity: 1; }
 .dock-app[data-app="terminal"] { --app: var(--app-terminal); }
@@ -529,40 +568,101 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   background: rgba(20, 22, 30, .58);
   backdrop-filter: blur(6px);
 }
+.desk[data-os="windows"] .desk-bar { height: clamp(20px, 3.6cqw, 38px); }
 /* sway: a thin status bar at the TOP, icons left — waybar, not a dock. */
 .desk[data-os="linux"] .desk-bar {
   left: 0; right: 0; top: 0; height: 18px;
   padding-inline: 7px;
   background: #282828;
-  gap: 5px;
+}
+.desk[data-os="linux"] .desk-bar {
+  height: clamp(16px, 2.9cqw, 30px);
+  padding-inline: clamp(6px, 1.1cqw, 12px);
 }
 .desk[data-os="linux"] .dock-app { width: 10px; height: 10px; border-radius: 2px; }
-
-/* --- what sits under a desk --- */
-
-.desk-foot {
-  display: flex; align-items: center; gap: 10px;
-  flex-wrap: wrap;
-  min-height: 27px;
+.desk[data-os="linux"] .dock-app {
+  width: clamp(8px, 1.5cqw, 16px); height: clamp(8px, 1.5cqw, 16px);
+  border-radius: clamp(2px, .35cqw, 4px);
 }
-.desk-os {
-  font: 500 12px/1 var(--sans);
-  letter-spacing: .04em; text-transform: uppercase;
-  color: var(--fg-dim);
-  margin-right: auto;
+
+/* --- the OS strip --- */
+
+/* Three buttons over the desk's top edge. This is where the cross-platform
+   claim lives now that the hero draws one machine instead of three: pressing
+   Windows redraws the same desk in Windows chrome with the same gesture, which
+   is a thing the reader does rather than a sentence they are asked to believe.
+   It writes the same `data-os` the nav switcher writes, so the two never
+   disagree. */
+.os-seg {
+  display: inline-flex; gap: 3px;
+  padding: 3px;
+  margin-bottom: 12px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  background: var(--bg-raised);
 }
+.os-seg button {
+  font: inherit; font-size: 13px; cursor: pointer;
+  color: var(--fg-dim); background: none;
+  border: 0; border-radius: 7px;
+  padding: 6px 13px; min-height: 30px;
+}
+.os-seg button:hover { color: var(--fg); }
+.os-seg button[aria-pressed="true"] {
+  color: var(--fg); background: var(--bg);
+  box-shadow: var(--shadow-soft);
+  font-weight: 560;
+}
+
+/* --- what sits under the desk --- */
+
+/* The three real chords. All three ship; once `data-os` is resolved — which
+   happens in the <head>, before first paint — CSS keeps the reader's. With JS
+   off nothing matches, all three stay, and the hero still says "every OS you
+   use" with its own markup rather than with an adjective. */
+.hero-chords { justify-content: center; margin: 20px 0 0; }
+.hero-chords li { justify-content: center; }
+:root[data-os="macos"]   .hero-chords .os-row:not([data-os="macos"]),
+:root[data-os="windows"] .hero-chords .os-row:not([data-os="windows"]),
+:root[data-os="linux"]   .hero-chords .os-row:not([data-os="linux"]) { display: none; }
 
 /* --- the press row --- */
 
 .press {
   display: flex; align-items: center; justify-content: center;
-  flex-wrap: wrap; gap: 9px;
-  margin-top: 22px;
+  flex-wrap: wrap; gap: 8px;
+  margin-bottom: 14px;
 }
-.press .key { cursor: pointer; min-width: 34px; height: 34px; font-size: 13.5px; }
-.press .key:hover { background: var(--bg-raised); }
-.press .key:active, .press .key.is-hit { transform: translateY(1px); border-bottom-width: 1px; }
-.press-hint { font-size: 14px; color: var(--fg-dim); margin-left: 4px; }
+.press-lead { display: inline-flex; align-items: center; gap: 8px; }
+.press-lead .key { min-width: 34px; height: 34px; font-size: 13.5px; }
+.press-plus { color: var(--fg-dim); font-size: 14px; }
+.press-key {
+  font: inherit; background: none; border: 0; padding: 0;
+  cursor: pointer; border-radius: 8px;
+}
+.press-key .key { pointer-events: none; min-width: 34px; height: 34px; font-size: 13.5px; }
+.press-key:hover .key { background: var(--bg-raised); }
+.press-key:active .key, .press-key.is-hit .key {
+  transform: translateY(1px); border-bottom-width: 1px;
+}
+.press-hint {
+  flex-basis: 100%;
+  font-size: 14px; color: var(--fg-dim);
+  margin: 2px 0 0;
+}
+/* The lock's own state, which the page can read from any key or pointer event
+   — so it stops saying "unknown" the moment the reader moves the mouse. */
+.caps-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 12px/1 var(--mono);
+  color: var(--fg-dim);
+}
+.caps-state::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--rule);
+}
+.caps-state.is-on { color: var(--fg); }
+.caps-state.is-on::before { background: var(--sway-focus); }
 
 /* --- the readout --- */
 
@@ -599,13 +699,37 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    tuned to one requirement: THE DESKS HAVE TO BE ON SCREEN WITHOUT SCROLLING
    at a 900px viewport, which is the shortest laptop worth designing for. The
    demo is the argument; a demo below the fold is a screenshot of an argument. */
-.hero { padding-top: 62px; text-align: center; }
-.hero h1 { font-size: clamp(42px, 6.6vw, 84px); }
-.hero .lead { margin-inline: auto; margin-bottom: 26px; }
+.hero { padding-top: 44px; text-align: center; }
+.hero h1 { font-size: clamp(40px, 5.6vw, 72px); margin-bottom: 18px; }
+.hero .lead { margin-inline: auto; margin-bottom: 24px; }
 .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 .hero-meta { margin: 16px 0 0; font-size: 14px; color: var(--fg-dim); }
-.hero-demo { margin-top: 40px; }
-.hero-demo .desks { grid-template-columns: repeat(3, 1fr); }
+.hero-demo { margin-top: 34px; }
+/* ONE desk, at the size a desktop has to be to read as one. 340px across —
+   what three side by side came to — was a thumbnail of a desktop; this is a
+   desktop. */
+.hero-demo .desks { grid-template-columns: 1fr; justify-items: center; }
+.hero-demo .desk-slot { max-width: 860px; width: 100%; }
+
+/* THE WHOLE DESK HAS TO FIT ON SCREEN, and 860px at 16:9 is 484px tall, which
+   on a 900px laptop lands the bottom edge — the dock — below the fold. The
+   dock is not decoration: it is the only thing that distinguishes step 4 from
+   step 5, because launching an app and focusing one end with the same window
+   in the same place and differ only in a slot lighting up.
+   So the slot is capped by whichever is smaller: its own 860px, or the width
+   at which a 16:9 desk still fits the height the copy above it leaves. The
+   420px floor keeps a very short window from collapsing it to nothing.
+   Desktop widths only — below 760px the page stacks and scrolling is the
+   expected way through it. */
+@media (min-width: 761px) {
+  .hero-demo .desk-slot {
+    /* 560px is what sits above the desk — measured at 1440 wide, not guessed:
+       nav, headline, one-line lead, the buttons, the press row and the OS
+       strip — plus a little air under it. */
+    max-width: min(860px, max(380px, calc((100vh - 560px) * 1.7778)));
+    max-width: min(860px, max(380px, calc((100svh - 560px) * 1.7778)));
+  }
+}
 .hero-demo .demo-steps { text-align: center; margin-inline: auto; }
 
 /* THE LOOP, and it only exists for readers without JS.
@@ -666,7 +790,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Brave"] .win-lights {
   animation: lightsOff 6s infinite;
 }
-.hero-demo:not(.is-live) .desk-foot .key.is-letter {
+.hero-demo:not(.is-live) .hero-chords .key.is-letter {
   animation: capPress 6s infinite;
 }
 
@@ -922,17 +1046,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    Space. Sized to the cap rather than to a letter: at 30px the Space cap
    overflowed its own column and printed across the app name beside it. */
 .hud button {
-  display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 10px;
+  display: grid; grid-template-columns: 104px 1fr; align-items: center; gap: 10px;
   font: inherit; font-size: 13px; text-align: left;
   color: var(--fg); background: none; border: 0;
   padding: 4px 7px; border-radius: 7px; cursor: pointer;
   min-height: 32px;
 }
 .hud button:hover { background: var(--bg-raised); }
+.hud button .chord { justify-self: start; }
 .hud button .key {
   pointer-events: none;
   height: 24px; min-width: 24px; font-size: 11.5px;
-  justify-self: start;
 }
 
 

@@ -24,15 +24,22 @@
     return n;
   }
 
-  /* How much of an element is on screen, 0..1. Used to decide which demo a
-     keypress belongs to. Cheap enough to run per keydown, which is why there is
-     no IntersectionObserver here. */
+  /* How much OF THE VIEWPORT an element fills, 0..1. Used to decide which demo
+     a keypress belongs to. Cheap enough to run per keydown, which is why there
+     is no IntersectionObserver here.
+   *
+   * THE DENOMINATOR IS THE VIEWPORT, NOT THE ELEMENT, and that is a fix rather
+   * than a preference. Measuring the visible FRACTION OF THE DEMO meant a demo
+   * only counted once it was more than half on screen — and when the hero's
+   * desk grew to full width the demo became 841px tall against a 900px
+   * viewport, so at the top of the page it scored 0.481 and the hero was deaf
+   * to every key. A reader landed, read "turn Caps Lock on, then a letter",
+   * pressed, and nothing happened. Measured, not reasoned. */
   function share(node) {
     var r = node.getBoundingClientRect();
     var h = window.innerHeight || root.clientHeight;
-    if (!r.height) return 0;
-    var vis = Math.max(0, Math.min(r.bottom, h) - Math.max(r.top, 0));
-    return vis / Math.min(r.height, h);
+    if (!r.height || !h) return 0;
+    return Math.max(0, Math.min(r.bottom, h) - Math.max(r.top, 0)) / h;
   }
 
 
@@ -71,20 +78,29 @@
      first, and the desk in #how. The hero never does: its three desks are the
      cross-platform claim and are always all three. */
   var osSubs = [];
+  var osSelect = null;
+
   function onOs(fn) { osSubs.push(fn); fn(root.dataset.os || 'linux'); }
+
+  /* The one writer. Two controls set the OS — the nav's switcher and the strip
+     over the hero desk — and they must never disagree, so neither of them
+     touches `data-os` itself. */
+  function setOs(os) {
+    if (root.dataset.os === os) return;
+    root.dataset.os = os;
+    try { localStorage.setItem('beckon-os', os); } catch (e) {}
+    if (osSelect) osSelect.value = os;
+    osSubs.forEach(function (fn) { fn(os); });
+  }
 
   (function () {
     var wrap = document.getElementById('os-switch');
     var sel = document.getElementById('os-select');
     if (!wrap || !sel) return;
-
+    osSelect = sel;
     sel.value = root.dataset.os || 'linux';
     wrap.hidden = false;
-    sel.addEventListener('change', function () {
-      root.dataset.os = sel.value;
-      try { localStorage.setItem('beckon-os', sel.value); } catch (e) {}
-      osSubs.forEach(function (fn) { fn(sel.value); });
-    });
+    sel.addEventListener('change', function () { setOs(sel.value); });
   }());
 
 
@@ -180,6 +196,75 @@
   }());
 
 
+  /* --- the Caps Lock gate -------------------------------------------------- */
+
+  /* The demos ask for beckon's own gesture — Caps Lock and a letter — rather
+   * than a bare letter, because a lone `C` does not read as a shortcut and the
+   * whole point of the page is that beckon is one.
+   *
+   * A page cannot see a HELD Caps Lock. There is no `capsKey` on a keyboard
+   * event the way there is `shiftKey`. So there are exactly two observable
+   * signals, and this accepts either:
+   *
+   *   1. THE LOCK IS ON — `getModifierState('CapsLock')`. Measured 2026-08-13:
+   *      it is available on KeyboardEvent AND on MouseEvent/PointerEvent, so
+   *      the state becomes known the moment the reader moves the mouse. The
+   *      previous version of this page could only learn it from a keypress and
+   *      therefore shipped a readout saying `Caps Lock: unknown` — a control
+   *      admitting it does not know its own state, on first sight.
+   *   2. THE CAPS KEY WAS JUST TOUCHED — a `keydown`/`keyup` whose key is
+   *      `CapsLock`, within ARM_MS. macOS fires only keydown on the way on and
+   *      only keyup on the way off, which is why both arm it. This is also the
+   *      only half a synthetic-event test can reach: Chrome does not flip its
+   *      caps modifier for injected keys, measured with the same probe.
+   *
+   * AND A REMAPPED CAPS LOCK SATISFIES NEITHER. kanata, PowerToys and a Hyper
+   * remap all swallow the key before the browser sees anything — and that is
+   * disproportionately the audience for a keyboard-driven app switcher. So two
+   * misses open the gate permanently and the hint says why. A demo that cannot
+   * be operated is worse than a demo that teaches its gesture loosely. */
+  var CAPS_ARM_MS = 1500;
+  var capsOn = null;         /* null until the first event that can tell us */
+  var capsArmed = 0;
+  var capsOpen = false;      /* the escape hatch, once earned */
+  var capsMiss = 0;
+  var capsSubs = [];
+  var capsMoved = 0;
+
+  function capsRead(e) {
+    if (typeof e.getModifierState !== 'function') return;
+    var v;
+    try { v = e.getModifierState('CapsLock'); } catch (err) { return; }
+    if (v === capsOn) return;
+    capsOn = v;
+    capsSubs.forEach(function (fn) { fn(capsOn); });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'CapsLock') capsArmed = Date.now();
+    capsRead(e);
+  }, true);
+  document.addEventListener('keyup', function (e) {
+    if (e.key === 'CapsLock') capsArmed = Date.now();
+    capsRead(e);
+  }, true);
+  document.addEventListener('pointerdown', capsRead, true);
+  document.addEventListener('pointermove', function (e) {
+    /* Throttled: this runs on every mouse move for the life of the page, and
+       all it is here to do is notice a lock that changed while the reader was
+       not typing. */
+    var t = Date.now();
+    if (t - capsMoved < 250) return;
+    capsMoved = t;
+    capsRead(e);
+  }, { capture: true, passive: true });
+
+  function capsHeld() {
+    return capsOpen || capsOn === true || (Date.now() - capsArmed) < CAPS_ARM_MS;
+  }
+  function onCaps(fn) { capsSubs.push(fn); fn(capsOn); }
+
+
   /* --- the desks ---------------------------------------------------------- */
 
   /* Everything below needs site/desk.js. If that script failed to load, the
@@ -254,35 +339,71 @@
     });
   }
 
-  /* A press row, and the HUD, are the same five buttons twice. Both are how a
-     reader with no keyboard — or on a phone — takes part at all, so neither is
-     decoration and neither is aria-hidden. */
-  function keyButton(app, onKey) {
-    var b = el('button', 'key', app.label);
-    b.type = 'button';
-    b.setAttribute('aria-label', app.key + ', ' + app.name);
-    b.addEventListener('click', function () { onKey(app.key); });
-    return b;
-  }
+  var HINT_ASK = 'Turn Caps Lock on, or tap it — then a letter. Or click a key.';
+  var HINT_NUDGE = 'Caps Lock first, then the letter.';
+  var HINT_OPEN = 'Caps Lock is not reaching this page — some setups remap it. ' +
+                  'The letters work on their own now.';
 
+  /* A press row, and the HUD, are how a reader with no keyboard — or on a
+     phone, or with Caps remapped — takes part at all. So neither is
+     decoration, neither is aria-hidden, and CLICKING NEVER GOES THROUGH THE
+     CAPS GATE: requiring a lock key from a pointer would be asking for a
+     gesture the device may not have. */
   function buildPress(host, onKey) {
     if (!host) return null;
     var caps = {};
+
+    /* ONE `Caps` cap, then the five letters — not five `Caps + letter` pairs.
+       Five pairs in a row rendered as ten keycaps with identical gaps, and read
+       as ten keys to press rather than five chords sharing a modifier. This
+       shape says the thing the gesture actually is: hold one key, pick a
+       letter. The single cap is decorative — every letter is the button, and
+       each carries the whole chord in its accessible name. */
+    var lead = el('span', 'press-lead');
+    lead.setAttribute('aria-hidden', 'true');
+    lead.appendChild(el('kbd', 'key', 'Caps'));
+    lead.appendChild(el('span', 'press-plus', '+'));
+    host.appendChild(lead);
+
     APPS.forEach(function (a) {
-      var b = keyButton(a, onKey);
+      var b = el('button', 'press-key');
+      b.type = 'button';
+      b.setAttribute('aria-label', 'Caps Lock and ' + a.key + ' — ' + a.name);
+      b.appendChild(el('kbd', 'key', a.label));
+      b.addEventListener('click', function () { onKey(a.key, true); });
       caps[a.key] = b;
       host.appendChild(b);
     });
-    host.appendChild(el('span', 'press-hint', 'Press a key — or click one'));
-    host.hidden = false;
-    return caps;
-  }
 
-  function flash(caps, key) {
-    var b = caps && caps[key];
-    if (!b) return;
-    b.classList.add('is-hit');
-    setTimeout(function () { b.classList.remove('is-hit'); }, 160);
+    var hint = el('p', 'press-hint');
+    var words = document.createTextNode(HINT_ASK + ' ');
+    var state = el('span', 'caps-state');
+    hint.appendChild(words);
+    hint.appendChild(state);
+    host.appendChild(hint);
+    host.hidden = false;
+
+    onCaps(function (on) {
+      state.textContent = 'Caps Lock: ' + (on === null ? '—' : on ? 'on' : 'off');
+      state.classList.toggle('is-on', on === true);
+    });
+
+    return {
+      flash: function (key) {
+        var b = caps[key];
+        if (!b) return;
+        b.classList.add('is-hit');
+        setTimeout(function () { b.classList.remove('is-hit'); }, 160);
+        if (words.nodeValue !== HINT_OPEN + ' ') {
+          words.nodeValue = (capsOpen ? HINT_OPEN : HINT_ASK) + ' ';
+        }
+      },
+      miss: function () {
+        capsMiss++;
+        if (capsMiss >= 2) capsOpen = true;
+        words.nodeValue = (capsOpen ? HINT_OPEN : HINT_NUDGE) + ' ';
+      }
+    };
   }
 
   function readout(host, step, say) {
@@ -295,56 +416,76 @@
 
   var demos = [];
 
-  /* --- hero: three machines, one letter --- */
+  /* The OS strip over the hero desk. Three buttons rather than a <select>,
+     because unlike the nav's copy this one is part of the picture: all three
+     options stay legible at once, which is the cross-platform claim. */
+  function buildOsSeg(host) {
+    if (!host) return;
+    var btns = {};
+    [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux · sway']]
+      .forEach(function (n) {
+        var b = el('button', null, n[1]);
+        b.type = 'button';
+        b.setAttribute('aria-pressed', 'false');
+        b.addEventListener('click', function () { setOs(n[0]); });
+        btns[n[0]] = b;
+        host.appendChild(b);
+      });
+    onOs(function (os) {
+      Object.keys(btns).forEach(function (k) {
+        btns[k].setAttribute('aria-pressed', k === os ? 'true' : 'false');
+      });
+    });
+    host.hidden = false;
+  }
+
+  /* --- hero: one machine, the reader's --- */
 
   (function () {
     var demo = document.getElementById('hero-demo');
-    if (!demo) return;
-    var slots = [].slice.call(demo.querySelectorAll('.desk-slot'));
-    if (!slots.length) return;
-
-    var machines = slots.map(function (slot) {
-      var host = slot.querySelector('.desk');
-      return {
-        host: host,
-        letter: slot.querySelector('.key.is-letter'),
-        desk: deskMake(host.getAttribute('data-os'), DESK_SCENES.hero)
-      };
-    });
+    var host = document.getElementById('hero-desk');
+    if (!demo || !host) return;
 
     var steps = demo.querySelector('.demo-steps');
-    var caps = null;
+    var letters = [].slice.call(demo.querySelectorAll('.hero-chords .key.is-letter'));
+    var desk = null;
+    var ui = null;
 
-    function press(key) {
-      var app = deskAppOf(key);
-      if (!app) return;
-      var last = null;
-      machines.forEach(function (m) {
-        var r = deskPress(m.desk, key);
-        m.desk = r.desk;
-        renderDesk(m.host, m.desk);
-        /* Only the LAST cap of each chord is rewritten — the letter. The
-           modifiers are never touched, because "three different chords, one
-           shared letter" is the sentence the hero is drawing. */
-        if (m.letter) m.letter.textContent = app.label;
-        last = r;
-      });
-      flash(caps, app.key);
-      if (steps && last) {
-        steps.textContent = 'All three machines, one press. ' + deskSay(last);
-      }
+    /* A new OS is a new machine, not the same desk repainted: the chrome, the
+       window arrangement and the chord all change together. Keeping the
+       reader's window stack across the switch would leave sway showing a
+       cascade it cannot produce. */
+    function reset(os) {
+      desk = deskMake(os, DESK_SCENES.hero);
+      host.setAttribute('data-os', os);
+      host._pool = {};
+      host.querySelector('.desk-wins').replaceChildren();
+      renderDesk(host, desk);
     }
 
-    caps = buildPress(document.getElementById('hero-press'), press);
+    function press(key, pointer) {
+      var app = deskAppOf(key);
+      if (!app || !desk) return false;
+      if (!pointer && !capsHeld()) { if (ui) ui.miss(); return false; }
+      var r = deskPress(desk, key);
+      desk = r.desk;
+      renderDesk(host, desk);
+      if (ui) ui.flash(app.key);
+      /* Only the LAST cap of each chord is rewritten — the letter. The
+         modifiers are never touched: "one letter, whatever your modifier is"
+         is the sentence these rows are drawing. */
+      letters.forEach(function (l) { l.textContent = app.label; });
+      if (steps) steps.textContent = deskSay(r);
+      return true;
+    }
+
+    ui = buildPress(document.getElementById('hero-press'), press);
+    buildOsSeg(document.getElementById('hero-os'));
     demo.classList.add('is-live');
-    /* The static windows in the markup are the JS-off picture. They are cleared
-       rather than adopted: renderDesk pools by window id, so leaving them in
-       place would draw every window twice. The rebuilt picture is identical, so
-       nothing moves at the swap. */
-    machines.forEach(function (m) {
-      m.host.querySelector('.desk-wins').replaceChildren();
-      renderDesk(m.host, m.desk);
-    });
+    /* The static windows in the markup are the JS-off picture. reset() clears
+       them rather than adopting them: renderDesk pools by window id, so leaving
+       them in place would draw every window twice. */
+    onOs(reset);
     demos.push({ node: demo, press: press });
   }());
 
@@ -359,7 +500,7 @@
     var out = document.getElementById('how-readout');
     var rows = [].slice.call(table.querySelectorAll('tbody tr'));
     var desk = null;
-    var caps = null;
+    var ui = null;
 
     function mark(cls, step) {
       rows.forEach(function (r) {
@@ -384,16 +525,18 @@
       readout(out, 'Ready', (th ? th.textContent.trim() : 'Ready') + '. Press a key.');
     }
 
-    function press(key) {
+    function press(key, pointer) {
       var app = deskAppOf(key);
-      if (!app || !desk) return;
+      if (!app || !desk) return false;
+      if (!pointer && !capsHeld()) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
       renderDesk(host, desk);
-      flash(caps, app.key);
+      if (ui) ui.flash(app.key);
       mark('is-on', null);
       mark('is-hit', r.step);
       readout(out, 'Step ' + r.step, deskSay(r));
+      return true;
     }
 
     /* The row headers ship as plain text and become buttons here. A disabled
@@ -410,7 +553,7 @@
       th.replaceChildren(b);
     });
 
-    caps = buildPress(document.getElementById('how-press'), press);
+    ui = buildPress(document.getElementById('how-press'), press);
     demo.classList.add('is-live');
 
     /* The shipped transcript describes the LOOP, which is what a JS-off reader
@@ -421,8 +564,8 @@
        for everyone who never gets here. */
     var steps = demo.querySelector('.demo-steps');
     if (steps) {
-      steps.textContent = 'Pick a row above to set the desk up, then press a key. ' +
-        'The readout names the step that fired, and the row it came from lights up.';
+      steps.textContent = 'Pick a row above to set the desk up, then press Caps Lock and a ' +
+        'letter. The readout names the step that fired, and the row it came from lights up.';
     }
 
     onOs(function () { scene(desk ? currentStep() : '5a'); });
@@ -442,8 +585,11 @@
 
   if (!demos.length) return;
 
+  /* A quarter of the screen, or nobody gets the key. Low enough that a demo
+     the reader is plainly looking at always answers, high enough that one
+     peeking over the fold does not swallow anything. */
   function active() {
-    var best = null, score = 0.5;      /* half on screen, or nobody gets it */
+    var best = null, score = 0.25;
     demos.forEach(function (d) {
       var s = share(d.node);
       if (s > score) { score = s; best = d; }
@@ -469,10 +615,11 @@
 
     var d = active();
     if (!d) return;
-    /* Only swallowed once a demo owns more than half the viewport, which is
-       what keeps Space usable for scrolling everywhere else on the page. */
-    e.preventDefault();
-    d.press(name);
+    /* The key is only swallowed when it actually drove a demo. A press the
+       Caps gate turned away must NOT be swallowed: otherwise a reader with a
+       remapped Caps Lock loses Space as a scroll key and gets nothing back
+       for it. */
+    if (d.press(name, false)) e.preventDefault();
   });
 
 
@@ -485,14 +632,18 @@
     APPS.forEach(function (a) {
       var b = el('button');
       b.type = 'button';
-      b.setAttribute('aria-label', a.key + ', ' + a.name);
-      var cap = el('kbd', 'key', a.label);
-      b.appendChild(cap);
+      b.setAttribute('aria-label', 'Caps Lock and ' + a.key + ' — ' + a.name);
+      var chord = el('span', 'chord');
+      chord.appendChild(el('kbd', 'key', 'Caps'));
+      chord.appendChild(el('kbd', 'key', a.label));
+      b.appendChild(chord);
       b.appendChild(el('span', null, a.name));
       b.addEventListener('click', function () {
         var d = active() || demos[0];
         d.node.scrollIntoView({ block: 'center' });
-        d.press(a.key);
+        /* `true`: a click is a pointer, and the caps gate is about teaching a
+           keyboard gesture, not about gatekeeping the mouse. */
+        d.press(a.key, true);
       });
       hud.appendChild(b);
     });

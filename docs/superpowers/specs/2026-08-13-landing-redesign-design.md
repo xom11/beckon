@@ -37,28 +37,65 @@ a card-and-shadow system that reads as generated rather than designed.
 | # | Decision |
 |---|---|
 | 1 | Hero is a **simulated desktop with real window chrome**, driven by real keypresses — not a diagram. |
-| 2 | Trigger is the **bare letter** (`C` `B` `E` `D` `Space`). No modifier, no lock state. |
-| 3 | Visual identity is **three authentic desktops**; the page itself is near-colourless. |
+| 2 | Trigger is **Caps Lock and a letter**. |
+| 3 | Visual identity is **authentic desktops**; the page itself is near-colourless. |
 | 4 | Copy is **cut hard**; everything removed moves verbatim into the FAQ. Nothing is deleted. |
 | 5 | `site/` is **rewritten**, keeping six named contracts (below). |
+| 6 | The hero draws **one desk, the reader's**, at full size — not three side by side. |
 
-### Why the bare letter, and not beckon's real chord
+Decisions 2 and 6 were taken after seeing the first build. Both reverse an
+earlier choice, and the reversals are recorded rather than tidied away because
+the reasoning that produced the first version is still the reasoning that
+constrains this one.
 
-A browser cannot observe beckon's actual gesture on two of three platforms.
-`Super` is grabbed by every Wayland compositor and by most X11 WMs before the
-browser sees it; `Win` opens the Start menu; `Caps Lock` exposes only its
-*lock state* through `getModifierState`, never a press. Only macOS Hyper
-(`Cmd+Ctrl+Alt+C`) is genuinely observable.
+### One desk, not three
 
-So a page that insists on the real chord either lies, or degrades to "press
-this other thing instead" on two platforms out of three. The page states the
-real chord in the caption under each desk and asks for the letter alone:
+Three desks made the cross-platform claim by drawing it, and each came out
+340px wide — a thumbnail of a desktop rather than a desktop. The hero has one
+job, which is to look like the machine the reader is sitting at, and 340px
+does not do it.
 
-> On your machine this is `Cmd+Ctrl+Alt+C`. A web page never sees that
-> chord, so here the letter is enough.
+**The claim moved to a control, not to the copy.** An OS strip sits over the
+desk: pressing *Windows* redraws the same desk in Windows chrome, with the same
+gesture, and the nav's switcher follows. So "the same key on every OS" is
+something the reader does. Under the desk, all three real chords ship in the
+markup and CSS keeps the reader's own — which means a JS-off reader, who has no
+strip to press, keeps all three and loses nothing.
 
-The page has no text input, so a bare letter listener cannot swallow anyone's
-typing.
+### Caps Lock and a letter, not a bare letter
+
+A bare letter is frictionless and reads as nothing. `C` is not a shortcut; a
+page that teaches beckon by asking for `C` has taught the wrong shape.
+
+**A page cannot see a *held* Caps Lock** — there is no `capsKey` on a keyboard
+event the way there is `shiftKey`. Measured 2026-08-13, there are exactly two
+observable signals, and the gate accepts either:
+
+1. **The lock is on** — `getModifierState('CapsLock')`. It is available on
+   `MouseEvent` and `PointerEvent` as well as `KeyboardEvent`, so the state
+   becomes known as soon as the reader moves the mouse. The earlier version of
+   this page could only learn it from a keypress, which is why it shipped a
+   readout reading `Caps Lock: unknown` on first sight.
+2. **The Caps key was just touched** — a `keydown`/`keyup` whose `key` is
+   `CapsLock`, within 1.5s. macOS fires only keydown on the way on and only
+   keyup on the way off, so both arm it. This is also the only half a
+   synthetic-event test can reach: Chrome does not flip its caps modifier for
+   injected keys, measured with the same probe.
+
+**A remapped Caps Lock satisfies neither**, and kanata / PowerToys / a Hyper
+remap are disproportionately common among the people who would want this tool.
+So **two refused presses open the gate permanently** and the hint says why. A
+demo that cannot be operated is worse than one that teaches its gesture
+loosely.
+
+Clicking a key never goes through the gate: requiring a lock key from a pointer
+would be asking for a gesture the device may not have.
+
+Why Caps and not each platform's real chord: the browser cannot see those
+either. `Super` is grabbed by every Wayland compositor and most X11 WMs, and
+`Win` opens the Start menu. Only macOS Hyper is observable. Caps is beckon's
+own gesture on Windows, and here it stands in for whatever the reader's real
+chord is — which the rows under the desk name.
 
 ## Architecture
 
@@ -196,6 +233,30 @@ were coloured by the `.is-focused` class, and a `@keyframes` rule cannot add a
 class — so the JS-off loop raised a window that sat full-opacity and on top
 with three grey dots. The lights are now coloured unconditionally and unfocus
 is a `filter: grayscale(1)`, which a keyframe *can* reach.
+
+Three more, all of them consequences of the hero going to one big desk, and all
+found by driving the page rather than by reading it:
+
+- **The hero went deaf.** Key routing scored a demo by *how much of the demo was
+  visible*, so a demo taller than the viewport could never reach the 0.5
+  threshold: at 841px against 900px it scored 0.481 and the hero answered
+  nothing. A reader landed, read the instruction, pressed, and got silence. The
+  denominator is the viewport now, and the floor is a quarter of it.
+- **A refused press is no longer swallowed.** `preventDefault` ran before the
+  Caps gate, so a reader whose Caps is remapped lost Space as a scroll key and
+  got nothing back for it. `press()` returns whether it consumed the key.
+- **Window chrome scales with the desk.** The two desks on the page differ by
+  nearly 2:1 in width, and a 22px title bar that reads correctly at 500px is a
+  hairline at 860px. The chrome is sized in `cqw` against the desk as a
+  container, each rule stating a plain px value first so a browser without
+  container query units gets the middle size rather than none.
+
+And one layout rule that is a correctness rule in disguise: the hero desk's
+width is capped by the height the copy above it leaves, so the whole desk —
+including the dock along its bottom edge — is on screen without scrolling. The
+dock is not decoration. It is the only thing that distinguishes step 4 from
+step 5, because launching an app and focusing one end with the same window in
+the same place and differ only in a slot lighting up.
 
 ## Copy budget
 

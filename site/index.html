@@ -98,117 +98,70 @@
 
 <main>
 
-  <!-- HERO — three machines, one letter.
+  <!-- HERO — one machine, the reader's, at full size.
        ================================================================
-       The claim is "the same key on every OS you own", so the argument has to
-       be three DIFFERENT machines doing the same thing at the same instant, not
-       one machine described three times. Everything below the headline is that
-       sentence drawn: three desks with three different window chromes, three
-       different chords underneath, and one shared letter.
+       This was three desks side by side and is now one. Three made the
+       cross-platform claim by drawing it, but each machine came out 340px wide
+       — too small to read as a desktop, which is the one thing the hero has to
+       do. One desk at full width is a machine; three are a diagram of three
+       machines, which is what the redesign set out to stop drawing.
 
-       THE DESKS ARE aria-hidden AND .demo-steps IS THE TRANSCRIPT. That
+       THE CLAIM DID NOT MOVE TO THE COPY, IT MOVED TO A CONTROL. The OS strip
+       above the desk redraws it in another machine's chrome with the gesture
+       unchanged, so "the same key on every OS" is something the reader does
+       rather than reads — and the three chords under the desk name what that
+       key really is on each one.
+
+       THE DESK IS aria-hidden AND .demo-steps IS THE TRANSCRIPT. That
        paragraph is not sr-only; it is the sentence a reader gets whether or not
        any of this paints.
 
-       WITHOUT JS the desks run a 6s loop: the letter depresses in all three
-       chords, and Claude takes focus in all three desks, in sync. There is no
-       per-element animation-delay anywhere in the CSS, which is what makes
-       "at the same instant" structural rather than a claim.
+       WITHOUT JS the desk runs a 6s loop, the OS strip stays hidden (it is
+       inert without JS) and ALL THREE chord rows stay on screen — which is the
+       cross-platform claim surviving in the one mode that cannot switch. With
+       JS, `.is-live` cancels the loop, the strip appears, and CSS keeps only
+       the reader's own chord row.
 
-       WITH JS beckon.js adds `.is-live`, which cancels the loop, reveals the
-       .press row and hands the reader the wheel. It re-renders each desk from
-       the model in site/desk.js on every press. Note the direction: the loop
-       ships VISIBLE and JS takes it away. Written the other way round a reader
-       with JS off gets three empty rectangles where the argument was.
+       On Linux the desk is drawn TILED, with no title bars and no overlap,
+       because sway does not stack windows. That is why the transcript says
+       Claude "takes focus" rather than "comes to the front": there is no front
+       on a tiling compositor. -->
 
-       Linux is drawn TILED, with no title bars and no overlap, because sway
-       does not stack windows. That is why the transcript says Claude "takes
-       focus" rather than "comes to the front": there is no front on a tiling
-       compositor, and the sentence has to be true on all three. -->
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
 
       <h1 id="hero-h">One key per app.<br>Every OS you use.</h1>
 
-      <p class="lead"><code>beckon Claude</code> is the same line on macOS, Windows and Linux
-      — ids resolve against the OS's own metadata, so there is nothing to keep in sync
-      between machines.</p>
+      <!-- One line, kept to one line. The demo is the argument and every
+           sentence above it pushes the desk further past the fold; the
+           resolution detail this used to carry is in #names and in the FAQ. -->
+      <p class="lead"><code>beckon Claude</code> is the same line on every machine you own.</p>
 
       <div class="hero-cta">
         <a class="btn btn-solid" href="#install">Install</a>
         <a class="btn btn-line" href="https://github.com/xom11/beckon">GitHub</a>
       </div>
 
-      <p class="hero-meta">MIT OR Apache-2.0 &middot; v0.9.1 &middot; Rust, no runtime</p>
-
       <div class="demo hero-demo" id="hero-demo">
+
+        <!-- Above the desk, not below it. The instruction is what a reader
+             needs first, and a 940px desk pushes anything under it past the
+             fold on a 900px screen. Ships hidden because it is inert without
+             JS; the chord rows under the desk are what a JS-off reader gets,
+             and they carry more (the real chord on all three machines). -->
+        <div class="press" id="hero-press" hidden></div>
 
         <div class="desks" aria-hidden="true">
 
-          <div class="desk-slot">
-            <div class="desk" data-os="macos" data-scene="hero">
-              <div class="desk-sky"></div>
-              <div class="desk-wins">
-                <div class="win is-focused" data-app="Brave" style="--slot:0; z-index:3">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Brave</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-                <div class="win" data-app="Claude" style="--slot:1; z-index:2">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Claude</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-                <div class="win" data-app="terminal" style="--slot:2; z-index:1">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">terminal</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-              </div>
-              <div class="desk-bar">
-                <span class="dock-app is-up" data-app="terminal"></span>
-                <span class="dock-app is-up" data-app="Claude"></span>
-                <span class="dock-app is-up" data-app="Brave"></span>
-                <span class="dock-app" data-app="Cursor"></span>
-                <span class="dock-app" data-app="Discord"></span>
-              </div>
-            </div>
-            <div class="desk-foot">
-              <span class="desk-os">macOS</span>
-              <span class="chord"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
-            </div>
-          </div>
+          <!-- The OS strip. Ships hidden — it is inert without JS — and
+               beckon.js fills it with three buttons that write the same
+               `data-os` the nav switcher writes, so the two stay in step. It
+               sits ON the desk's top edge rather than beside a label, because
+               it is a control over the picture below it, not a caption. -->
+          <div class="os-seg" id="hero-os" hidden></div>
 
-          <div class="desk-slot">
-            <div class="desk" data-os="windows" data-scene="hero">
-              <div class="desk-sky"></div>
-              <div class="desk-wins">
-                <div class="win is-focused" data-app="Brave" style="--slot:0; z-index:3">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Brave</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-                <div class="win" data-app="Claude" style="--slot:1; z-index:2">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Claude</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-                <div class="win" data-app="terminal" style="--slot:2; z-index:1">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">terminal</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
-                  <div class="win-body"></div>
-                </div>
-              </div>
-              <div class="desk-bar">
-                <span class="dock-app is-up" data-app="terminal"></span>
-                <span class="dock-app is-up" data-app="Claude"></span>
-                <span class="dock-app is-up" data-app="Brave"></span>
-                <span class="dock-app" data-app="Cursor"></span>
-                <span class="dock-app" data-app="Discord"></span>
-              </div>
-            </div>
-            <div class="desk-foot">
-              <span class="desk-os">Windows</span>
-              <span class="chord"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
-            </div>
-          </div>
-
-          <div class="desk-slot">
-            <div class="desk" data-os="linux" data-scene="hero">
+          <div class="desk-slot is-wide">
+            <div class="desk" data-os="macos" data-scene="hero" id="hero-desk">
               <div class="desk-sky"></div>
               <div class="desk-bar">
                 <span class="dock-app is-up" data-app="terminal"></span>
@@ -232,23 +185,35 @@
                 </div>
               </div>
             </div>
-            <div class="desk-foot">
-              <span class="desk-os">Linux &middot; sway</span>
-              <span class="chord"><kbd class="key">Super</kbd><kbd class="key is-letter">C</kbd></span>
-            </div>
           </div>
-
         </div>
 
-        <!-- Ships hidden because it does nothing without JS; beckon.js fills it
-             with real buttons and reveals it. The three chord rows above are
-             what a JS-off reader sees instead, and they are enough: they carry
-             the letter and all three modifier sets. -->
-        <div class="press" id="hero-press" hidden></div>
+        <!-- What that key really is, on each machine. ALL THREE ROWS SHIP, and
+             CSS keeps only the reader's own once `data-os` is resolved — so a
+             reader with JS off, who has no OS strip to press, still gets the
+             cross-platform claim in full. Same component as #setups; the
+             "yours" chip is generated content keyed on :root[data-os]. -->
+        <ul class="mods hero-chords">
+          <li class="os-row" data-os="macos">
+            <span class="mod-os">macOS</span>
+            <span class="chord"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="mod-note">Hyper</span>
+          </li>
+          <li class="os-row" data-os="windows">
+            <span class="mod-os">Windows</span>
+            <span class="chord"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
+          </li>
+          <li class="os-row" data-os="linux">
+            <span class="mod-os">Linux &middot; sway</span>
+            <span class="chord"><kbd class="key">Super</kbd><kbd class="key is-letter">C</kbd></span>
+          </li>
+        </ul>
 
         <p class="demo-steps">One line — <code>beckon Claude</code> — bound to each machine's own
-        modifier. Pressed once on all three: Claude takes focus on all three.</p>
+        modifier. Claude was running behind Brave; one press and it takes focus.</p>
       </div>
+
+      <p class="hero-meta">MIT OR Apache-2.0 &middot; v0.9.1 &middot; Rust, no runtime</p>
 
     </div>
   </section>

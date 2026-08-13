@@ -166,17 +166,22 @@ else
   skip "node not installed, desk model tests not run"
 fi
 
-# --- 7. the hero is three machines, not one -------------------------------
-# The claim the hero exists to make is "the same letter on every OS you use".
-# It is made by drawing three different window chromes at once, so losing one
-# of them to a refactor would quietly delete the argument while leaving the
-# headline that promises it.
+# --- 7. all three machines are still reachable -----------------------------
+# The hero draws ONE desk, the reader's, so the claim "the same key on every OS
+# you use" now rests on two things: chrome the CSS can draw for each of the
+# three, and a chord row per OS in the markup — the row set a JS-off reader
+# keeps in full, since they have no OS strip to press. Lose either half and the
+# headline is promising something the page no longer shows.
 desk_fail=0
 for os in macos windows linux; do
-  grep -qF "<div class=\"desk\" data-os=\"$os\"" "$H" \
-    || { bad "the hero has no $os desk"; desk_fail=1; }
+  grep -q "\.desk\[data-os=\"$os\"\]" "$C" \
+    || { bad "beckon.css draws no chrome for $os"; desk_fail=1; }
+  grep -q "class=\"os-row\" data-os=\"$os\"" "$H" \
+    || { bad "the hero has no $os chord row"; desk_fail=1; }
 done
-[ "$desk_fail" -eq 0 ] && ok "the hero draws all three desks"
+grep -q 'class="mods hero-chords"' "$H" \
+  || { bad "the hero chord rows are gone"; desk_fail=1; }
+[ "$desk_fail" -eq 0 ] && ok "all three machines are drawable and named"
 
 # --- 8. no control on screen that silently does nothing --------------------
 # Every one of these is inert without JS, so every one of them must ship with
@@ -191,6 +196,7 @@ done <<'CTLS'
 os-switch
 theme
 hero-press
+hero-os
 how-press
 how-readout
 hud
