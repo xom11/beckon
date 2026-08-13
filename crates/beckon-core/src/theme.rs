@@ -117,6 +117,92 @@ pub fn contrast(fg: u32, bg: u32) -> f64 {
     (hi + 0.05) / (lo + 0.05)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Light,
+    Dark,
+    /// Reads `GetSysColor` on Windows, exactly as the window did before this
+    /// design existed. There is no `Palette` for it, and that is the point:
+    /// the branch cannot accidentally acquire a literal.
+    HighContrast,
+}
+
+impl Theme {
+    pub fn palette(self) -> Option<&'static Palette> {
+        match self {
+            Theme::Light => Some(&LIGHT),
+            Theme::Dark => Some(&DARK),
+            Theme::HighContrast => None,
+        }
+    }
+}
+
+/// What the OS reports. `apps_use_light_theme` is `None` when the registry
+/// value is absent, which is the state of a fresh profile and means light.
+#[derive(Clone, Copy, Debug)]
+pub struct ThemeInputs {
+    pub high_contrast: bool,
+    pub apps_use_light_theme: Option<u32>,
+}
+
+pub fn resolve(i: ThemeInputs) -> Theme {
+    // High contrast outranks the registry unconditionally. A user in high
+    // contrast has asked the OS for specific colours; a palette of ours would
+    // override exactly the thing they turned on.
+    if i.high_contrast {
+        return Theme::HighContrast;
+    }
+    match i.apps_use_light_theme {
+        Some(0) => Theme::Dark,
+        _ => Theme::Light,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backdrop {
+    /// Tier 1: DWM composites Mica behind an unpainted client area.
+    Mica,
+    /// Tier 2: one uniform alpha over the whole window.
+    Alpha(u8),
+    /// Tier 3: no transparency at all.
+    Opaque,
+}
+
+/// Windows 11 22H2. `DWMWA_SYSTEMBACKDROP_TYPE` is ignored below this.
+pub const MICA_MIN_BUILD: u32 = 22621;
+
+/// The alpha for tier 2. 245/255 is visible against a busy wallpaper and
+/// leaves text effectively solid.
+pub const TIER2_ALPHA: u8 = 245;
+
+#[derive(Clone, Copy, Debug)]
+pub struct BackdropInputs {
+    pub build: u32,
+    pub high_contrast: bool,
+    pub remote_session: bool,
+    /// `Themes\Personalize\EnableTransparency`. False means the user turned
+    /// transparency off in Settings.
+    pub transparency_enabled: bool,
+    /// Cleared by the caller once tier 1 has been shown not to work on this
+    /// machine, so the decision has one home rather than two.
+    pub mica_supported: bool,
+}
+
+pub fn backdrop(i: BackdropInputs) -> Backdrop {
+    // Three refusals, each of which is correctness rather than taste.
+    // High contrast: a translucent ground defeats the guaranteed contrast the
+    // mode exists to provide. Remote session: every frame becomes a blend the
+    // wire has to carry. Transparency off: the user already answered this
+    // question in Settings.
+    if i.high_contrast || i.remote_session || !i.transparency_enabled {
+        return Backdrop::Opaque;
+    }
+    if i.mica_supported && i.build >= MICA_MIN_BUILD {
+        return Backdrop::Mica;
+    }
+    Backdrop::Alpha(TIER2_ALPHA)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,5 +265,103 @@ mod tests {
     #[test]
     fn accent_and_accent_fill_are_distinct_in_dark() {
         assert_ne!(DARK.accent, DARK.accent_fill);
+    }
+
+    fn ti(hc: bool, light: Option<u32>) -> ThemeInputs {
+        ThemeInputs {
+            high_contrast: hc,
+            apps_use_light_theme: light,
+        }
+    }
+
+    #[test]
+    fn registry_zero_is_dark_and_anything_else_is_light() {
+        assert_eq!(resolve(ti(false, Some(0))), Theme::Dark);
+        assert_eq!(resolve(ti(false, Some(1))), Theme::Light);
+        // Absent on a fresh profile.
+        assert_eq!(resolve(ti(false, None)), Theme::Light);
+    }
+
+    #[test]
+    fn high_contrast_outranks_the_registry_both_ways() {
+        assert_eq!(resolve(ti(true, Some(0))), Theme::HighContrast);
+        assert_eq!(resolve(ti(true, Some(1))), Theme::HighContrast);
+        assert_eq!(resolve(ti(true, None)), Theme::HighContrast);
+    }
+
+    #[test]
+    fn high_contrast_has_no_palette_so_no_literal_can_reach_it() {
+        assert!(Theme::HighContrast.palette().is_none());
+        assert!(Theme::Light.palette().is_some());
+        assert!(Theme::Dark.palette().is_some());
+    }
+
+    fn bi(build: u32) -> BackdropInputs {
+        BackdropInputs {
+            build,
+            high_contrast: false,
+            remote_session: false,
+            transparency_enabled: true,
+            mica_supported: true,
+        }
+    }
+
+    #[test]
+    fn mica_needs_22h2() {
+        assert_eq!(backdrop(bi(MICA_MIN_BUILD)), Backdrop::Mica);
+        assert_eq!(
+            backdrop(bi(MICA_MIN_BUILD - 1)),
+            Backdrop::Alpha(TIER2_ALPHA)
+        );
+        // Windows 10 21H2.
+        assert_eq!(backdrop(bi(19044)), Backdrop::Alpha(TIER2_ALPHA));
+    }
+
+    #[test]
+    fn a_hardware_failure_demotes_to_tier_two_without_touching_the_build() {
+        let i = BackdropInputs {
+            mica_supported: false,
+            ..bi(26200)
+        };
+        assert_eq!(backdrop(i), Backdrop::Alpha(TIER2_ALPHA));
+    }
+
+    #[test]
+    fn three_conditions_force_opaque_even_on_a_capable_build() {
+        let capable = bi(26200);
+        assert_eq!(
+            backdrop(BackdropInputs {
+                high_contrast: true,
+                ..capable
+            }),
+            Backdrop::Opaque
+        );
+        assert_eq!(
+            backdrop(BackdropInputs {
+                remote_session: true,
+                ..capable
+            }),
+            Backdrop::Opaque
+        );
+        assert_eq!(
+            backdrop(BackdropInputs {
+                transparency_enabled: false,
+                ..capable
+            }),
+            Backdrop::Opaque
+        );
+    }
+
+    /// Opaque wins over Mica, not the other way round. Written as its own test
+    /// because an `if` reordered during a refactor would still pass every test
+    /// above.
+    #[test]
+    fn refusals_are_checked_before_capability() {
+        let i = BackdropInputs {
+            high_contrast: true,
+            transparency_enabled: false,
+            ..bi(26200)
+        };
+        assert_eq!(backdrop(i), Backdrop::Opaque);
     }
 }
