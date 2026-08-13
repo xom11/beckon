@@ -37,7 +37,7 @@ a card-and-shadow system that reads as generated rather than designed.
 | # | Decision |
 |---|---|
 | 1 | Hero is a **simulated desktop with real window chrome**, driven by real keypresses — not a diagram. |
-| 2 | Trigger is **Caps Lock and a letter**. |
+| 2 | Trigger is the **bare letter**. A Caps Lock gate was built, shipped, and taken back out — see below. |
 | 3 | Visual identity is **authentic desktops**; the page itself is near-colourless. |
 | 4 | Copy is **cut hard**; everything removed moves verbatim into the FAQ. Nothing is deleted. |
 | 5 | `site/` is **rewritten**, keeping six named contracts (below). |
@@ -62,14 +62,30 @@ something the reader does. Under the desk, all three real chords ship in the
 markup and CSS keeps the reader's own — which means a JS-off reader, who has no
 strip to press, keeps all three and loses nothing.
 
-### Caps Lock and a letter, not a bare letter
+### The Caps Lock gate: built, shipped, removed
 
-A bare letter is frictionless and reads as nothing. `C` is not a shortcut; a
-page that teaches beckon by asking for `C` has taught the wrong shape.
+This is written up rather than deleted, because the argument for it is good and
+someone will have it again.
 
-**A page cannot see a *held* Caps Lock** — there is no `capsKey` on a keyboard
-event the way there is `shiftKey`. Measured 2026-08-13, there are exactly two
-observable signals, and the gate accepts either:
+**The case for it.** A bare letter is frictionless and reads as nothing. `C` is
+not a shortcut; a page that teaches beckon by asking for `C` has arguably
+taught the wrong shape. So the demos asked for Caps Lock and a letter.
+
+**Why it came out.** Two rounds of use, and it was friction without the
+teaching. The gesture it asked for is not the reader's gesture anywhere except
+Windows-with-Caps-mode-ticked; on macOS the binding is Hyper and on sway it is
+Super, both of which the row under the desk already names, with its last cap
+following whatever letter was just pressed. So the gate charged every reader a
+toll to be taught something the page teaches better two lines lower down — and
+charged most heavily the readers whose Caps Lock is remapped, who are
+disproportionately the people who would want a keyboard-driven app switcher at
+all. It needed an opt-out button to explain itself with, which is the shape of a
+feature arguing with its own users.
+
+**The mechanics, for anyone who reopens this.** A page cannot see a *held* Caps
+Lock — there is no `capsKey` on a keyboard event the way there is `shiftKey`.
+Measured 2026-08-13, there are exactly two observable signals, and the gate
+accepted either:
 
 1. **The lock is on** — `getModifierState('CapsLock')`. It is available on
    `MouseEvent` and `PointerEvent` as well as `KeyboardEvent`, so the state
@@ -82,27 +98,34 @@ observable signals, and the gate accepts either:
    synthetic-event test can reach: Chrome does not flip its caps modifier for
    injected keys, measured with the same probe.
 
-**A remapped Caps Lock satisfies neither**, and kanata / PowerToys / a Hyper
-remap are disproportionately common among the people who would want this tool.
-A demo that cannot be operated is worse than one that teaches its gesture
-loosely — so there is a way out, and **it is a button, not a counter**.
+**A remapped Caps Lock satisfies neither.** kanata, PowerToys and a Hyper remap
+all swallow the key before the browser sees anything.
 
-Two refused presses used to open the gate by themselves. That was worse than
-either alternative: a reader whose Caps works fine reached it by fumbling
-twice, and from the outside the demo simply looked like it had quietly stopped
-asking for Caps. The gate now never opens on its own. After two refusals the
-hint offers *Use letters only*, and only a click opens it — for every demo at
-once, since having answered the question in the hero should not mean answering
-it again in `#how`.
+Two escape hatches were tried in turn. A counter — two refused presses opened
+the gate by itself — was worse than either alternative: a reader whose Caps
+works fine reached it by fumbling twice, and from the outside the demo simply
+looked like it had quietly stopped asking for Caps. Replacing it with an
+explicit *Use letters only* button fixed that and left the real problem
+standing: the reader still had to notice the gate, fail at it twice, and then
+dismiss it.
 
-Clicking a key never goes through the gate: requiring a lock key from a pointer
-would be asking for a gesture the device may not have.
+### So: the bare letter, and the chord is taught below the desk
 
-Why Caps and not each platform's real chord: the browser cannot see those
-either. `Super` is grabbed by every Wayland compositor and most X11 WMs, and
-`Win` opens the Start menu. Only macOS Hyper is observable. Caps is beckon's
-own gesture on Windows, and here it stands in for whatever the reader's real
-chord is — which the rows under the desk name.
+The letter alone drives both demos. Nothing is gated, and there is no lock
+state to report.
+
+What the gate was reaching for is done by the row under the desk, which was
+already there: it names the reader's real modifier — Hyper on macOS,
+`Ctrl+Win+Alt` on Windows, `Super` on sway — and its last cap follows whatever
+letter was just pressed. That is the reader's actual binding rather than a
+stand-in for it.
+
+Asking for the real chord instead is not possible, and this is the fact that
+constrains every version of this: `Super` is taken by the compositor before the
+browser hears it, `Win` opens the Start menu, and only macOS Hyper is
+observable at all. The page says so in the FAQ rather than pretending
+otherwise. It has no text input, so a bare-letter listener swallows nobody's
+typing.
 
 ## Architecture
 
