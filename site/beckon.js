@@ -803,12 +803,43 @@
       mark('is-on', step);
       mark('is-hit', null);
 
-      /* The precondition is read out of the table's own row rather than
-         written twice. A blurb kept here would be a second copy of a sentence
-         the table already carries, free to drift from it. */
-      var row = rows.filter(function (r) { return r.getAttribute('data-step') === step; })[0];
-      var th = row && row.querySelector('th');
-      readout(out, 'Ready', (th ? th.textContent.trim() : 'Ready') + '. Press a key.');
+      /* THE LABEL IS THE BRANCH NAME IN BOTH STATES, and the sentence under it
+         is what changes tense. Setting a scene reads "Launch — Chrome is not
+         running."; the press that follows reads "Launch — Chrome was not
+         running. beckon launched it." One word, present then past, so a reader
+         watching the tour sees the same name twice and reads the second line as
+         the answer to the first.
+
+         It used to say "Ready", which named a state of the demo rather than
+         anything beckon does, and left the five words this section exists to
+         teach appearing only for the half-second after a press.
+
+         THE SENTENCE IS DERIVED FROM THE DESK, NOT WRITTEN OUT PER STEP. It
+         used to echo the table row — "not running. Press a key." — which was
+         accurate and abstract at the same time: the picture beside it has
+         actual windows with actual names in them, and the line under it named
+         none of them. `readyLine` reads the scene the desk was just built from,
+         so it cannot drift from what is on screen, and it stays correct if a
+         scene in desk.js is ever changed. */
+      readout(out, deskStepName(step), readyLine(desk, 'c'));
+    }
+
+    /* What is true right now, for the app the tour presses. Short, and it names
+       the app: "Chrome is not running." beats "not running." beside a desktop
+       that is drawing Chrome. */
+    function readyLine(d, key) {
+      var app = deskAppOf(key);
+      if (!app || !d) return '';
+      var mine = d.wins.filter(function (w) { return w.app === app.name; });
+      if (!mine.length) return app.name + ' is not running.';
+      var f = d.wins.filter(function (w) { return w.id === d.focused; })[0];
+      if (!f || f.app !== app.name) {
+        return app.name + ' is open, behind ' + (f ? f.app : 'another window') + '.';
+      }
+      if (mine.length > 1) return app.name + ' is focused, and has a second window.';
+      var others = d.wins.filter(function (w) { return w.app !== app.name; });
+      if (others.length) return app.name + ' is focused. ' + others[0].app + ' is open too.';
+      return app.name + ' is focused, and nothing else is open.';
     }
 
     function press(key, ok) {
@@ -828,9 +859,20 @@
       return true;
     }
 
-    /* The row headers ship as plain text and become buttons here. A disabled
-       or inert button in the markup would be a control that silently does
-       nothing, which is the one thing this page does not ship. */
+    /* THE WHOLE ROW IS THE TARGET, not the words in its first cell. The row is
+       one statement — a condition and what beckon does about it — and only the
+       left half of it used to be clickable, so the obvious place to aim (the
+       branch name, which is the part set in full ink) did nothing.
+
+       ONE HANDLER, ON THE `tr`. The button stays because a table cell is not
+       focusable and a mouse-only target is not a target for everyone; it no
+       longer carries its own listener, so Enter or Space on the focused button
+       fires a click that bubbles to the row and takes the same path a mouse
+       does. Two handlers would have run `scene` twice for one click.
+
+       The markup still ships plain text: a disabled or inert button in the
+       markup would be a control that silently does nothing, which is the one
+       thing this page does not ship. */
     rows.forEach(function (r) {
       var th = r.querySelector('th');
       var step = r.getAttribute('data-step');
@@ -838,9 +880,11 @@
       var b = el('button', 'row-btn', th.textContent.trim());
       b.type = 'button';
       b.setAttribute('aria-label', 'Set the desk up: ' + th.textContent.trim());
-      b.addEventListener('click', function () { scene(step); });
       th.replaceChildren(b);
+      r.addEventListener('click', function () { scene(step); });
     });
+    /* Only now is any of the row a target, so only now may it look like one. */
+    table.classList.add('is-live');
 
     /* A mouse gesture lights no row, because none of the five rows is about the
        mouse: unmarking is the honest thing for the table to do while the

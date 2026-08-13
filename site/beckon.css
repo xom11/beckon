@@ -1615,7 +1615,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 .how-grid { display: grid; gap: 34px; }
 
-.how-table { width: 100%; border-collapse: collapse; }
+/* PULLED LEFT BY ITS OWN CELL PADDING so the table's ink starts on the same
+   vertical as the heading and the lead above it. The cells keep their 14px,
+   which is what gives a hovered or fired row room to breathe around its text —
+   dropping the padding instead would have put the row fill hard against the
+   first letter. The table is 14px wider to land flush on the right; there is a
+   44px column gap beside it, so nothing collides. */
+.how-table {
+  width: calc(100% + 14px);
+  margin-left: -14px;
+  border-collapse: collapse;
+}
 .how-cap {
   caption-side: top; text-align: left;
   max-width: var(--measure);
@@ -1632,11 +1642,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
      with the tail of the condition instead of its start. */
   vertical-align: top;
 }
+/* NO TOP PADDING, and this is the fix for "the left column sits lower than the
+   desk". The two grid tracks start at the same y — measured, both boxes at
+   1384 — but the header row inherited 12px of padding-top from the cell rule,
+   so the first ink on the left was 12px below the desk's hard top edge on the
+   right while the boxes agreed. Aligning boxes is not aligning a picture. */
 .how-table thead th {
   font: 500 12px/1 var(--sans);
   letter-spacing: .06em; text-transform: uppercase;
   color: var(--fg-dim);
-  padding-bottom: 9px;
+  padding-top: 0;
+  padding-bottom: 11px;
 }
 .how-table tbody th { color: var(--fg-dim); width: 42%; }
 .how-table tbody td { font-weight: 400; }
@@ -1669,13 +1685,39 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* JS replaces each row header's text with this button. It ships as plain text,
    because a button that does nothing is exactly the failure the JS-off
-   ordering exists to prevent. */
+   ordering exists to prevent.
+
+   `.is-live` IS SET BY THE SAME CODE THAT ADDS THE LISTENER, so the row cannot
+   look clickable before it is. Everything below is inside it for that reason. */
 .row-btn {
   font: inherit; color: inherit; text-align: left;
   background: none; border: 0; padding: 0; margin: 0;
   cursor: pointer; width: 100%;
 }
-.row-btn:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+/* THE WHOLE ROW IS THE TARGET. The underline that used to appear under the
+   first cell's text is gone with it: it marked the words as the thing to aim
+   at, which is exactly the impression this change exists to remove. A row-wide
+   fill says the row is the button, and it is the same fill `is-hit` uses a
+   moment later — the hover is a preview of the mark the press will leave. */
+.how-table.is-live tbody tr { cursor: pointer; }
+.how-table.is-live tbody tr:hover { background: var(--hit); }
+.how-table.is-live tbody tr:hover .how-do { color: var(--accent); }
+/* The button is the keyboard's way in and must still say where focus is, but it
+   is 42% of a row that is now one target, so the ring is drawn on the row.
+
+   MOVING THE RING IS GATED ON `:has()` BEING AVAILABLE, and the guard is not
+   defensive habit. Dropping `outline: none` on the button unconditionally, with
+   the replacement ring behind a selector the engine may not understand, is how
+   a keyboard user ends up with no focus indicator at all — the one failure mode
+   worse than an ugly one. Inside the query both halves land together; outside
+   it the button keeps the page's own :focus-visible ring and nothing is lost
+   except the ring being 42% as wide as the thing it describes. */
+@supports selector(:has(*)) {
+  .row-btn:focus-visible { outline: none; }
+  .how-table.is-live tbody tr:has(.row-btn:focus-visible) {
+    outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-ctl);
+  }
+}
 
 /* The desk sits BESIDE the table, not under it, wherever there is room: the row
    you click and the thing it changes should be within one glance of each
