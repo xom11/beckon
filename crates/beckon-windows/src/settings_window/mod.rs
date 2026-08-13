@@ -1875,10 +1875,25 @@ unsafe fn create() -> Result<(), String> {
         hInstance: hinst.into(),
         lpszClassName: class,
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // WNDCLASS takes a system colour index PLUS ONE here, not a brush
-        // and not the raw index -- 0 means "no background", so passing
-        // COLOR_BTNFACE unshifted paints the window with COLOR_BTNSHADOW.
-        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
+        // **No class background brush at all.** WNDCLASS takes a system
+        // colour index PLUS ONE here, and this was `COLOR_BTNFACE + 1` -- a
+        // LIGHT system colour, which is the only light thing anywhere in this
+        // window's paint path once the theme took over.
+        //
+        // It showed. Measured on a14 2026-08-13, right after `nccalcsize`
+        // began reclaiming the whole frame: a #B1B1B1 band 10 px wide down
+        // the inside of the left and top edges -- exactly the strip that had
+        // just stopped being non-client -- which vanished on the next
+        // repaint. `DefWindowProc` erases a newly-exposed region with this
+        // brush before `WM_PAINT` gets to it, so any region the theme has not
+        // painted yet flashes a system colour, and the wider the client grows
+        // the more of it there is to flash.
+        //
+        // A null brush means `DefWindowProc` erases nothing and
+        // `WM_ERASEBKGND` owns the ground unconditionally -- which it already
+        // did for every tier that paints, and deliberately does not under
+        // Mica, where painting is the thing that would hide the backdrop.
+        hbrBackground: HBRUSH(std::ptr::null_mut()),
         hIcon: icon,
         hIconSm: icon_sm,
         ..Default::default()
