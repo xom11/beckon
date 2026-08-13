@@ -309,13 +309,26 @@ mod win {
     /// integer message, so unlike the comctl32 messages `Remote` exists for
     /// it needs no marshalling across the process boundary.
     ///
+    /// **Sent to the WINDOW, not to the chip**, which is the one thing about
+    /// this that does not read like `BM_GETCHECK`. `BM_GETCHECK` asked the
+    /// control because a check box owned its own state; `WM_CHIP_STATE` is
+    /// answered by `wndproc`, and the id travels in `WPARAM`. Addressed to
+    /// the button it reaches comctl32's BUTTON instead, which does not know
+    /// the message and returns 0 -- indistinguishable from an old build.
+    /// Measured on a14: the first run of this function did exactly that and
+    /// reported every chip unreadable while the window was working.
+    ///
+    /// `dlg_item` still runs, and only as an existence check: a chip that is
+    /// not there must read as `None` rather than as whatever the window says
+    /// about an id it has no control for.
+    ///
     /// **`0` means the window did not answer**, which is what an older
     /// `beckon-serve` returns through `DefWindowProcW`. Reported rather than
     /// folded into `false`: a probe that cannot see the chips must say so,
     /// not print a chord it guessed.
     fn chip_armed(parent: HWND, id: i32) -> Option<bool> {
-        let c = dlg_item(parent, id)?;
-        match send(c, WM_CHIP_STATE, id as usize, 0) {
+        dlg_item(parent, id)?;
+        match send(parent, WM_CHIP_STATE, id as usize, 0) {
             2 => Some(true),
             1 => Some(false),
             _ => None,
