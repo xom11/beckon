@@ -681,21 +681,26 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //                                                    ----
 //   window, exact fit                                 725
 //
-// **Re-derived for Task 10's 26 px rows** (was header 21 + 8*row 20 +
-// border 2 = 183; the `+ border` term is gone too -- see `layout.rs`'s own
-// comment on why -- so the new figure is header 21 + 8*row 26 = 229, +46 on
-// the old one, which is exactly the +46 the client and exact-fit totals
-// below carry). 740 still leaves **15 px of slack** at rest (`900x740`
-// client 732, needed 717) -- down hard from the pre-Task-10 61 px, but still
-// positive, and the list still reaches its full 8 rows without a scroll bar
-// (see the paragraph below `MIN_HEIGHT`'s own table for the trace). Simulated
-// against `compute_card_rects`'s own formula by hand-tracing it at `h = 732`,
-// not measured: nothing on the machine this was written on can display the
-// window. At 144 DPI (150 %), the same proportional relationship the
-// pre-Task-10 figure used (`61 * 1.5 = 91.5` against a measured 93) puts the
-// new slack at roughly `15 * 1.5 ≈ 22` px -- an estimate, not a fresh trace,
-// for the same reason the original one was: `notes_height` is a live font
-// measurement, not a value that scales exactly by 1.5 between two DPIs.
+// **SUPERSEDED BY MEASUREMENT, 2026-08-13.** Everything above this line is
+// the derivation for the 900x740 window with 26 px rows, and every figure in
+// it is now wrong: the compaction pass took the window to 760x600 and moved
+// eight tokens at once (PAD 16->10, CARD_PAD 16->11, GAP_CARD 12->8, GAP
+// 8->6, LABEL 12->10, CTL 32->26, ROW_H 26->22, TITLEBAR_H 40->34).
+//
+// It was not re-derived, and saying so is more useful than a fresh table
+// nobody checked. What replaced it is better evidence: the window was built
+// and run on a14 at 144 DPI, and measured **1140 x 900** -- exactly 760 x 600
+// scaled by 1.5 -- with all eight list rows present and no scroll bar. The
+// arithmetic this block exists to protect is the arithmetic that closes, and
+// it closes.
+//
+// **What the block is still for**, and why it is kept rather than deleted:
+// it records WHICH terms compose the height and in what order, so the next
+// person changing a token knows what they are spending. Re-derive it before
+// trusting any number in it -- and note that a real trace now has to account
+// for `notes_height`, a live font measurement that does not scale by 1.5
+// between DPIs, which is why the previous two versions of this comment both
+// ended in an estimate rather than a figure.
 const WINDOW_WIDTH: i32 = 760;
 const WINDOW_HEIGHT: i32 = 600;
 
