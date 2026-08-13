@@ -18,13 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// `0xRRGGBB` to Win32's `0x00BBGGRR`.
 ///
-/// Called from `ThemeCache::col` below, which is itself unreachable until
-/// the drawing code (Task 5 on) starts calling it -- hence the allow. The
-/// real Windows CI job runs this crate's own clippy under `-D warnings`
-/// (unlike the local macOS-shaped gate, which excludes it), so leaving this
-/// as ordinary dead code would fail that job the moment this commit lands,
-/// the same way an unused `use super::*;` already did for Task 3.
-#[allow(dead_code)]
+/// Called from `ThemeCache::col` below, which the drawing code in `paint.rs`
+/// and `mod.rs` now calls directly.
 pub(super) fn colorref(rgb: u32) -> COLORREF {
     COLORREF(((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF))
 }
@@ -119,9 +114,7 @@ pub(super) struct ThemeCache {
 }
 
 impl ThemeCache {
-    /// Unreachable until later tasks read it back to decide what to draw --
-    /// see the allow on `colorref` above.
-    #[allow(dead_code)]
+    /// The resolved theme, read back by `col` below to decide what to draw.
     pub(super) fn theme(&self) -> Theme {
         self.theme.unwrap_or(Theme::Light)
     }
@@ -153,11 +146,6 @@ impl ThemeCache {
     ///
     /// Both arguments are mandatory, which is what makes the third branch
     /// impossible to forget at a call site.
-    ///
-    /// Unreachable until Task 5 (`Consumes: ThemeCache::col, ThemeCache::brush
-    /// from Task 4`) calls it from the card/button drawing -- see the allow
-    /// on `colorref` above.
-    #[allow(dead_code)]
     pub(super) fn col(&self, pick: impl Fn(&Palette) -> u32, sys: SYS_COLOR_INDEX) -> COLORREF {
         match self.theme().palette() {
             Some(p) => colorref(pick(p)),
@@ -169,9 +157,6 @@ impl ThemeCache {
     ///
     /// Never returns a system brush, so every handle here is ours to delete
     /// and `free` cannot leak or double-free one of Windows'.
-    ///
-    /// Unreachable until Task 5 calls it -- see the allow on `colorref` above.
-    #[allow(dead_code)]
     pub(super) fn brush(&mut self, c: COLORREF) -> HBRUSH {
         *self
             .brushes

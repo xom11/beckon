@@ -3,6 +3,11 @@
 //! (`WM_DRAWITEM`, `WM_NOTIFY` / `NM_CUSTOMDRAW`) stays in `mod.rs`; this
 //! file holds only the painters those handlers call into.
 
+// GetSysColorBrush must not appear in this file. It returns a brush owned by
+// Windows, while ThemeCache::brush returns one owned by us; a call site that
+// cannot tell them apart is a double-free waiting for a theme switch. Every
+// colour goes through `col`, which answers the high-contrast branch itself.
+
 use super::*;
 
 /// Lay a run of keycaps out inside `cell`, or report that it does not fit.
@@ -20,11 +25,12 @@ use super::*;
 /// each reach the limit on their own. A clipped keycap reads as a rendering
 /// fault; an ellipsis reads as a narrow column.
 ///
-/// **Every colour is `GetSysColor`.** An accent literal would fight the row
+/// **Every colour comes from `col`.** A literal would fight the row
 /// highlight four pixels away and would be the first crack in this window's
-/// light-only rule; `COLOR_HIGHLIGHT` is the user's own accent and is already
-/// right in high contrast. `hc` changes the *shape* only -- see
-/// `high_contrast`.
+/// theme; `col(|p| p.accent_fill, COLOR_HIGHLIGHT)` is the user's own accent
+/// in Light/Dark and is already right in high contrast, since `col` falls
+/// back to `GetSysColor` there on its own. `hc` changes the *shape* only --
+/// see `high_contrast`.
 unsafe fn draw_keycaps(
     hdc: HDC,
     cell: RECT,
@@ -126,15 +132,16 @@ unsafe fn draw_keycaps(
         CapStyle::Chord => cell.left + inset,
         CapStyle::Toggle { .. } => cell.left + ((cell.right - cell.left) - total) / 2,
     };
-    // **Every colour is `GetSysColor`, or derived from one.** An armed chip's
-    // face is `COLOR_HIGHLIGHT` -- the user's own accent, matching the row
-    // highlight four pixels away and already correct in high contrast -- and
-    // its edge is that same colour through `shade`. Direction B's `#2563eb` /
-    // `#1d4fc4` pair is what the ratio was read off, not a colour to hard-code.
-    let armed_face = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    // **Every colour comes from `col`, or is derived from one.** An armed
+    // chip's face is `col(|p| p.accent_fill, COLOR_HIGHLIGHT)` -- the user's
+    // own accent in Light/Dark, already correct in high contrast because
+    // `col` falls back to `GetSysColor` there on its own -- and its edge is
+    // that same colour through `shade`. Direction B's `#2563eb` / `#1d4fc4`
+    // pair is what the ratio was read off, not a colour to hard-code.
+    let armed_face = theme_col(|p| p.accent_fill, COLOR_HIGHLIGHT);
     let (edge_col, border_col) = match style {
         _ if hc => {
-            let c = COLORREF(GetSysColor(COLOR_WINDOWTEXT));
+            let c = theme_col(|p| p.text, COLOR_WINDOWTEXT);
             (c, c)
         }
         CapStyle::Toggle { armed: true, .. } => {
@@ -143,47 +150,64 @@ unsafe fn draw_keycaps(
         }
         // A disabled chip keeps its shape and its depth and loses only its
         // ink -- see the face table below for why it does not also keep the
-        // light face.
+        // light face. Its edge takes `text_faint`, the same muted tone every
+        // OTHER disabled element in this window uses -- not `keycap_edge`,
+        // which is tuned to nearly vanish into a dark-mode keycap on purpose
+        // (it is a shadow, not an outline) and would say nothing about being
+        // disabled there.
         CapStyle::Toggle { disabled: true, .. } => {
-            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
+            let c = theme_col(|p| p.text_faint, COLOR_BTNSHADOW);
             (c, c)
         }
         _ => {
-            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
+            let c = theme_col(|p| p.keycap_edge, COLOR_BTNSHADOW);
             (c, c)
         }
     };
     let pen = CreatePen(PS_SOLID, 1, border_col);
     let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
     SetBkMode(hdc, TRANSPARENT);
-    // **A chip's resting face is `COLOR_WINDOW`, not `COLOR_BTNFACE`**, and
+    // **A chip's resting face is `keycap`, not the window's own `bg`**, and
     // that one substitution is most of why the shipped chips disappeared:
-    // `COLOR_BTNFACE` IS the window's own background, so an unarmed chip was
-    // a grey box on a grey surface with only a hairline to prove it existed.
-    // Direction B puts `--w-cap:#fafafa` on a `--w-bg:#f3f3f3` window -- the
-    // key is LIGHTER than what it sits on, which is how a physical keycap
-    // catches light.
+    // `bg` IS the window's own background, so an unarmed chip was a grey box
+    // on a grey surface with only a hairline to prove it existed. Direction
+    // B puts `--w-cap:#fafafa` on a `--w-bg:#f3f3f3` window -- the key is
+    // LIGHTER than what it sits on, which is how a physical keycap catches
+    // light. `keycap` is its own palette token rather than a re-use of
+    // `card`, because in dark mode the two differ on purpose --
+    // `DARK.keycap` is deliberately the lighter of the two, which is what
+    // keeps the "catches light" effect true there as well.
     //
-    // **Greyed outranks armed, and a disabled chip keeps `COLOR_BTNFACE`.**
-    // The light face is what makes an OPERABLE key stand off the surface, so
-    // giving it to a disabled one inverts the whole point -- measured on a14:
-    // with `keyboard.caps` off, three white `Hold` keys read as the most
-    // prominent thing in the band. `.wtog.dis` puts `#f7f7f7` on a `#f3f3f3`
-    // window, i.e. it deliberately sinks BACK into the surface. Only the ink
-    // and the face change; the box and its edge stay, so the shape survives.
+    // **Greyed outranks armed, and a disabled chip keeps the window's own
+    // `bg`.** The light face is what makes an OPERABLE key stand off the
+    // surface, so giving it to a disabled one inverts the whole point --
+    // measured on a14: with `keyboard.caps` off, three white `Hold` keys
+    // read as the most prominent thing in the band. `.wtog.dis` puts
+    // `#f7f7f7` on a `#f3f3f3` window, i.e. it deliberately sinks BACK into
+    // the surface. Only the ink and the face change; the box and its edge
+    // stay, so the shape survives.
     //
     // What a disabled chip stops saying is which way it is set. That is a
     // real loss on the three `Hold` chips, which are greyed whenever Caps is
     // off while still describing what Caps would do. No accent-on-grey
-    // pairing exists in the system palette to settle it; it wants eyes
-    // rather than another argument here.
+    // pairing exists in the palette to settle it; it wants eyes rather than
+    // another argument here.
     let (face, text_colour) = match style {
-        CapStyle::Chord => (None, COLOR_BTNTEXT),
-        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_BTNFACE), COLOR_GRAYTEXT),
-        CapStyle::Toggle { armed: true, .. } => (Some(COLOR_HIGHLIGHT), COLOR_HIGHLIGHTTEXT),
-        CapStyle::Toggle { .. } => (Some(COLOR_WINDOW), COLOR_BTNTEXT),
+        CapStyle::Chord => (None, theme_col(|p| p.text, COLOR_BTNTEXT)),
+        CapStyle::Toggle { disabled: true, .. } => (
+            Some(theme_col(|p| p.bg, COLOR_BTNFACE)),
+            theme_col(|p| p.text_faint, COLOR_GRAYTEXT),
+        ),
+        CapStyle::Toggle { armed: true, .. } => (
+            Some(armed_face),
+            theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
+        ),
+        CapStyle::Toggle { .. } => (
+            Some(theme_col(|p| p.keycap, COLOR_WINDOW)),
+            theme_col(|p| p.text, COLOR_BTNTEXT),
+        ),
     };
-    SetTextColor(hdc, COLORREF(GetSysColor(text_colour)));
+    SetTextColor(hdc, text_colour);
     // A cell's text is data and its `&` is a character; a chip's caption
     // carries a mnemonic, and whether the underline SHOWS is the window's UI
     // state to say, not this function's -- see `draw_chip`.
@@ -209,14 +233,14 @@ unsafe fn draw_keycaps(
         // armed fill is decided above and simply wins here.
         let fill = match face {
             Some(f) => f,
-            None if i + 1 == caps.len() => COLOR_WINDOW,
-            None => COLOR_BTNFACE,
+            None if i + 1 == caps.len() => theme_col(|p| p.keycap, COLOR_WINDOW),
+            None => theme_col(|p| p.bg, COLOR_BTNFACE),
         };
         if hc {
             // Flat, hard and no depth: a high-contrast theme is built on
             // solid fills and hard borders, and a soft edge under one reads
             // as a rendering artefact rather than as a key.
-            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let brush = CreateSolidBrush(fill);
             let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
             let _ = Rectangle(hdc, x, top, x + w, top + cap_h);
             if !prev_brush.is_invalid() {
@@ -243,7 +267,7 @@ unsafe fn draw_keycaps(
                 }
                 let _ = DeleteObject(HGDIOBJ(eb.0));
             }
-            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let brush = CreateSolidBrush(fill);
             let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
             let _ = RoundRect(hdc, x, top, x + w, top + cap_h - edge_h, r, r);
             if !prev_brush.is_invalid() {
@@ -280,12 +304,15 @@ unsafe fn draw_keycaps(
 
 /// The pill colours for a flag: `(fill, ink)`.
 ///
-/// **The one place in this window that uses colour literals, and the reason
-/// is that the system palette has no opinion here.** There is no
-/// `COLOR_WARNING`; Windows' own shell draws these states with semantic
-/// colours of its own. The values are direction B's Windows palette --
-/// `--w-warn:#9d5d00` on `--w-warn-bg:#fff4ce`, `--w-crit:#c42b1c` on
-/// `--w-crit-bg:#fdf3f4`, `--w-good:#0f7b0f`.
+/// **The one place in this window with no `GetSysColor` fallback that means
+/// anything, and the reason is that the system palette has no opinion here.**
+/// There is no `COLOR_WARNING`; Windows' own shell draws these states with
+/// semantic colours of its own. `col`'s `sys` argument is still supplied,
+/// because the signature requires it, but it is dead in practice: the only
+/// caller (`draw_flag_pill`) already returns before reaching this function
+/// whenever the theme is high contrast, so the branch that would consult it
+/// never runs. `COLOR_WINDOW`/`COLOR_WINDOWTEXT` are named there as the
+/// least-wrong stand-ins, not as a considered high-contrast answer.
 ///
 /// **`None` means no pill**, and the caller leaves comctl32's own text
 /// showing. That is what `FlagTone::Neutral` gets -- `custom`, which is true
@@ -294,8 +321,14 @@ unsafe fn draw_keycaps(
 /// about the theme or unreadable on the accent.
 fn flag_colours(t: FlagTone) -> Option<(COLORREF, COLORREF)> {
     match t {
-        FlagTone::Bad => Some((COLORREF(0x00F4F3FD), COLORREF(0x001C2BC4))),
-        FlagTone::Warn => Some((COLORREF(0x00CEF4FF), COLORREF(0x00005D9D))),
+        FlagTone::Bad => Some((
+            theme_col(|p| p.bad_bg, COLOR_WINDOW),
+            theme_col(|p| p.bad, COLOR_WINDOWTEXT),
+        )),
+        FlagTone::Warn => Some((
+            theme_col(|p| p.warn_bg, COLOR_WINDOW),
+            theme_col(|p| p.warn, COLOR_WINDOWTEXT),
+        )),
         FlagTone::Neutral => None,
     }
 }
@@ -556,10 +589,17 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
     .0 != 0;
     // `CDRF_SKIPDEFAULT` means we own the background too, not only the text.
     // Getting this wrong shows up as a selected row with one un-highlighted
-    // cell, which is worse than no keycaps at all. `GetSysColorBrush` returns
-    // a system brush and must not be deleted.
-    let bg = if sel { COLOR_HIGHLIGHT } else { COLOR_WINDOW };
-    FillRect(hdc, &rc, GetSysColorBrush(bg));
+    // cell, which is worse than no keycaps at all. `theme_brush` returns a
+    // brush this window owns, never a system one -- see the ban at the top
+    // of this file. A selected row takes `accent_soft`, not the stronger
+    // `accent_fill` an armed chip or `Save` gets: a full-strength fill this
+    // close to a column of keycaps would fight them for attention.
+    let bg = if sel {
+        theme_col(|p| p.accent_soft, COLOR_HIGHLIGHT)
+    } else {
+        theme_col(|p| p.card, COLOR_WINDOW)
+    };
+    FillRect(hdc, &rc, theme_brush(bg));
 
     // The cell holds `combo_display`'s output, so splitting on its separator
     // recovers exactly the caps `combo_caps` would have produced -- without a
@@ -576,11 +616,11 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(
             hdc,
-            COLORREF(GetSysColor(if sel {
-                COLOR_HIGHLIGHTTEXT
+            if sel {
+                theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
             } else {
-                COLOR_WINDOWTEXT
-            })),
+                theme_col(|p| p.text, COLOR_WINDOWTEXT)
+            },
         );
         DrawTextW(
             hdc,
@@ -629,9 +669,10 @@ pub(super) unsafe fn draw_chip(hwnd: HWND, di: &DRAWITEMSTRUCT) -> bool {
     // button draws nothing of itself, its background included, so any pixel
     // this function leaves alone keeps whatever the last frame put there --
     // and the cap is deliberately narrower than its control, so there are
-    // plenty of them. `COLOR_BTNFACE` is what the window class registers;
-    // `GetSysColorBrush` returns a system brush and must not be deleted.
-    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+    // plenty of them. `bg` is what the window class registers; `theme_brush`
+    // returns a brush this window owns, never a system one -- see the ban at
+    // the top of this file.
+    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)));
 
     // Never zero in practice -- `child` sets a font on every control it
     // creates -- but a null `HFONT` would make `SelectObject` fail and leave
@@ -678,11 +719,11 @@ pub(super) unsafe fn draw_chip(hwnd: HWND, di: &DRAWITEMSTRUCT) -> bool {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(
             hdc,
-            COLORREF(GetSysColor(if di.itemState.0 & ODS_DISABLED.0 != 0 {
-                COLOR_GRAYTEXT
+            if di.itemState.0 & ODS_DISABLED.0 != 0 {
+                theme_col(|p| p.text_faint, COLOR_GRAYTEXT)
             } else {
-                COLOR_BTNTEXT
-            })),
+                theme_col(|p| p.text, COLOR_BTNTEXT)
+            },
         );
         let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
         if ui_state & UISF_HIDEACCEL != 0 {

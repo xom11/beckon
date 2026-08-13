@@ -1112,6 +1112,8 @@ struct Ui {
     /// The OS's current light/dark/high-contrast answer, and the brushes it
     /// implies. Resolved once at creation and re-resolved on
     /// `WM_SETTINGCHANGE`/`WM_THEMECHANGED`; see `on_theme_changed` below.
+    /// Painting code never reads this field -- see `PAINT_THEME`, which is
+    /// kept in step with it at both points it rebuilds.
     theme: theme::ThemeCache,
 }
 
@@ -1769,11 +1771,17 @@ unsafe fn create() -> Result<(), String> {
     // `Ui` with a default (unresolved) `ThemeCache`, so this is the first
     // real answer it gets. The borrow is taken and dropped on this one
     // statement; `apply_dwm_dark` below holds none.
+    //
+    // `PAINT_THEME` is rebuilt right alongside it -- see `PAINT_THEME` for
+    // why painting code needs its own copy rather than reading `ui.theme`.
     let t = beckon_core::theme::resolve(theme::read_inputs());
     UI.with(|u| {
         if let Some(ui) = u.borrow_mut().as_mut() {
             ui.theme.rebuild(t);
         }
+    });
+    PAINT_THEME.with(|c| {
+        c.borrow_mut().rebuild(t);
     });
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
 
@@ -3695,11 +3703,10 @@ thread_local! {
 /// and on the `SPI_SETHIGHCONTRAST` arm that already forwards the message to
 /// every child.
 ///
-/// Only the *shape* of a keycap consults it. Every colour comes from
-/// `GetSysColor`, which is already correct in high contrast without asking --
-/// what is not correct there is a rounded box with a soft bottom edge, which
-/// reads as a rendering artefact against a theme built on flat fills and hard
-/// borders.
+/// Only the *shape* of a keycap consults it. Every colour comes from `col`,
+/// which already answers correctly for high contrast on its own -- what is
+/// not correct there is a rounded box with a soft bottom edge, which reads as
+/// a rendering artefact against a theme built on flat fills and hard borders.
 fn high_contrast() -> bool {
     HIGH_CONTRAST.with(|c| c.get())
 }
@@ -3729,6 +3736,29 @@ fn cap_font() -> Option<HFONT> {
     } else {
         Some(HFONT(v as *mut core::ffi::c_void))
     }
+}
+
+thread_local! {
+    /// Mirrors `Ui::theme`, apart from it for `CAP_FONT`'s own reason: a
+    /// paint reaches this window while `UI` is already borrowed, and `col` /
+    /// `brush` are exactly the calls a paint makes. `RefCell`, not a `Cell`
+    /// like `CAP_FONT` -- `ThemeCache::brush` needs `&mut self` to grow its
+    /// cache, and a `Cell` can hand out a copy but never a borrow. Refreshed
+    /// at both points `Ui::theme.rebuild` runs: creation and
+    /// `on_theme_changed`.
+    static PAINT_THEME: RefCell<theme::ThemeCache> = RefCell::new(theme::ThemeCache::default());
+}
+
+/// A colour, resolved through the paint-safe mirror. See `PAINT_THEME` for
+/// why painting code reaches this instead of `UI`.
+fn theme_col(pick: impl Fn(&beckon_core::theme::Palette) -> u32, sys: SYS_COLOR_INDEX) -> COLORREF {
+    PAINT_THEME.with(|cache| cache.borrow().col(pick, sys))
+}
+
+/// A cached brush from the same mirror. Never a system brush -- see the
+/// `GetSysColorBrush` ban documented at the top of `paint.rs`.
+fn theme_brush(c: COLORREF) -> HBRUSH {
+    PAINT_THEME.with(|cache| cache.borrow_mut().brush(c))
 }
 
 /// One subitem's text, read from the control rather than from the model.
@@ -3789,31 +3819,36 @@ unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
 
     // The parent's surface first: a rounded button leaves its corners
     // showing, and whatever was there last frame would stay in them.
-    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)));
 
-    let accent = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    let accent = theme_col(|p| p.accent_fill, COLOR_HIGHLIGHT);
     let (fill, ink) = if disabled {
         (
-            COLORREF(GetSysColor(COLOR_BTNFACE)),
-            COLORREF(GetSysColor(COLOR_GRAYTEXT)),
+            theme_col(|p| p.bg, COLOR_BTNFACE),
+            theme_col(|p| p.text_faint, COLOR_GRAYTEXT),
         )
     } else if pressed {
         (
             shade(accent, 4, 5),
-            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+            theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
         )
     } else if hot {
         (
             shade(accent, 9, 10),
-            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+            theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
         )
     } else {
-        (accent, COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)))
+        (accent, theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT))
     };
-    // A disabled button needs an outline or it is a hole in the window;
-    // a filled one is its own shape.
+    // A disabled button needs an outline or it is a hole in the window; a
+    // filled one is its own shape. The outline takes the same faint tone
+    // every other disabled element in the window uses, not `keycap_edge`:
+    // that token is tuned to nearly vanish into a dark-mode keycap on
+    // purpose (it is a shadow, not an outline) -- `DARK.keycap_edge` sits one
+    // hex digit from `DARK.bg`, which would leave a disabled Save with
+    // effectively no visible outline at all.
     let border = if disabled {
-        COLORREF(GetSysColor(COLOR_BTNSHADOW))
+        theme_col(|p| p.text_faint, COLOR_BTNSHADOW)
     } else {
         fill
     };
@@ -3994,6 +4029,12 @@ fn is_immersive_colour_set(lp: LPARAM) -> bool {
 /// across an `extern "system"` boundary aborts the process instead of
 /// unwinding -- the same rule `WM_DPICHANGED` and `WM_DESTROY` already
 /// follow.
+///
+/// `PAINT_THEME` is rebuilt unconditionally, even when `ui.theme` did not
+/// move (or there is no `Ui` at all, mid-teardown) -- `ThemeCache::rebuild`
+/// is a no-op on a repeat theme, so this is never wasted work, and it is
+/// what stops the paint-safe mirror from answering for a theme `Ui` already
+/// left behind.
 unsafe fn on_theme_changed(hwnd: HWND) {
     let t = beckon_core::theme::resolve(theme::read_inputs());
     let changed = UI.with(|u| {
@@ -4001,6 +4042,9 @@ unsafe fn on_theme_changed(hwnd: HWND) {
             .as_mut()
             .map(|ui| ui.theme.rebuild(t))
             .unwrap_or(false)
+    });
+    PAINT_THEME.with(|c| {
+        c.borrow_mut().rebuild(t);
     });
     if !changed {
         return;
@@ -4152,13 +4196,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_SYSCOLORCHANGE => {
                 // System palette changed (e.g. entering/leaving high
-                // contrast). Every control on this window already reads
-                // colours through GetSysColor / DefWindowProcW's own
-                // COLOR_BTNFACE brush -- see the module-level colour audit
-                // -- so there is no cached colour of ours to re-read here;
-                // the forward+invalidate is what makes the CHILDREN's own
-                // cached colours (edit control backgrounds, ListView text/
-                // back colour) catch up.
+                // contrast). This window's own cached colours -- `ThemeCache`
+                // and its paint-safe mirror `PAINT_THEME` -- are refreshed by
+                // `on_theme_changed`, reached separately: `WM_THEMECHANGED`
+                // fires for the same high-contrast transition, and
+                // `WM_SETTINGCHANGE`'s `ImmersiveColorSet` check catches the
+                // light/dark toggle. Nothing here rebuilds them a second
+                // time; the forward+invalidate below is what makes the
+                // CHILDREN's own cached colours (edit control backgrounds,
+                // ListView text/back colour) catch up.
                 broadcast_theme_change(hwnd, msg, wp, lp);
                 LRESULT(0)
             }
@@ -4396,18 +4442,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // banner, which is the one piece of text here that must not be
                 // played down.
                 //
-                // `GetSysColorBrush` returns a SYSTEM brush, so it is not
-                // deleted and can be returned safely. `SetBkMode(TRANSPARENT)`
-                // rather than a matching background: the group boxes and the
-                // window share `COLOR_BTNFACE`, and letting the parent's paint
+                // `theme_brush` returns a brush `PAINT_THEME` owns and frees
+                // on its next theme change -- never here. It survives this
+                // window's own `WM_DESTROY` on purpose: `PAINT_THEME` is a
+                // thread-local, not a field of `Ui`, so the same handle is
+                // still good the next time this window opens on an unchanged
+                // theme. Never a system brush either: `GetSysColorBrush` is
+                // banned from this window's drawing code (see the comment at
+                // the top of `paint.rs`). `SetBkMode(TRANSPARENT)` rather
+                // than a matching background: the group boxes and the window
+                // share the same `bg` token, and letting the parent's paint
                 // show through is what keeps this correct if that ever stops
                 // being true.
                 let ctl = HWND(lp.0 as *mut core::ffi::c_void);
                 if GetDlgCtrlID(ctl) == IDC_LBL_COUNT {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-                    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
+                    SetTextColor(hdc, theme_col(|p| p.text_faint, COLOR_GRAYTEXT));
                     SetBkMode(hdc, TRANSPARENT);
-                    return LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize);
+                    return LRESULT(theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)).0 as isize);
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
