@@ -377,6 +377,58 @@ fn flag_colours(t: FlagTone) -> Option<(COLORREF, COLORREF)> {
     }
 }
 
+/// The selected row's own mark (Task 10): a 2 px `accent` bar down the row's
+/// left edge. Drawn in the SAME postpaint pass as the flag pill and for the
+/// same reason -- an overlay on top of comctl32's own already-finished draw,
+/// never a takeover of it, so the check box a few pixels to its right is
+/// never at risk. Not a full accent fill on the row: that would fight the
+/// keycaps (`accent_soft`, subitem 1) and the status pill (subitem 0's own
+/// colours) for the same cell -- the same reasoning `list_custom_draw`
+/// already gives for using `accent_soft` rather than `accent_fill` there.
+///
+/// **`LVM_GETITEMSTATE`, not `nmcd.uItemState`** -- same rule, same reason,
+/// as `list_custom_draw`'s own selection read: at the SUBITEM stage
+/// comctl32 reports every row as selected regardless of the real state.
+unsafe fn draw_selection_bar(cd: &NMLVCUSTOMDRAW) {
+    let list = cd.nmcd.hdr.hwndFrom;
+    let row = cd.nmcd.dwItemSpec;
+    let sel = SendMessageW(
+        list,
+        LVM_GETITEMSTATE,
+        Some(WPARAM(row)),
+        Some(LPARAM(LVIS_SELECTED.0 as isize)),
+    )
+    .0 != 0;
+    if !sel {
+        return;
+    }
+    let mut rc = RECT {
+        left: LVIR_BOUNDS as i32,
+        ..Default::default()
+    };
+    let ok = SendMessageW(
+        list,
+        LVM_GETITEMRECT,
+        Some(WPARAM(row)),
+        Some(LPARAM(&mut rc as *mut RECT as isize)),
+    );
+    if ok.0 == 0 || rc.right <= rc.left {
+        return;
+    }
+    let hdc = cd.nmcd.hdc;
+    let dpi = GetDpiForWindow(list).max(96);
+    let w = scale(2, dpi).max(1);
+    let bar = RECT {
+        right: rc.left + w,
+        ..rc
+    };
+    FillRect(
+        hdc,
+        &bar,
+        theme_brush(theme_col(|p| p.accent, COLOR_HIGHLIGHT)),
+    );
+}
+
 /// Lay a coloured pill over the flag comctl32 has just drawn in the App cell.
 ///
 /// **Additive, never a takeover**, and that is the whole design. comctl32 has
@@ -557,6 +609,7 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
     // the raw u32s; `examples/customdraw_probe.rs` found this the hard way.
     if stage.0 == CDDS_ITEMPOSTPAINT.0 | CDDS_SUBITEM.0 {
         return if cd.iSubItem == 0 {
+            draw_selection_bar(cd);
             draw_flag_pill(hwnd, cd)
         } else {
             CDRF_DODEFAULT as isize
@@ -631,6 +684,15 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
         Some(LPARAM(LVIS_SELECTED.0 as isize)),
     )
     .0 != 0;
+    // The row under the mouse (Task 10) -- `LVM_GETHOTITEM`, not
+    // `nmcd.uItemState`'s `CDIS_HOT` bit. Not independently measured, but
+    // read the same skeptical way the comment above already reads
+    // selection: this stage's `uItemState` is proven wrong for SELECTED,
+    // and there is no reason to trust it more for HOT. Comparing this row's
+    // own index against the control's own idea of which one is hot sidesteps
+    // the question entirely, the way `LVM_GETITEMSTATE` does for `sel`.
+    let hot_row = SendMessageW(list, LVM_GETHOTITEM, Some(WPARAM(0)), Some(LPARAM(0))).0;
+    let hot = !sel && hot_row >= 0 && hot_row as usize == row;
     // `CDRF_SKIPDEFAULT` means we own the background too, not only the text.
     // Getting this wrong shows up as a selected row with one un-highlighted
     // cell, which is worse than no keycaps at all. `theme_brush` returns a
@@ -640,6 +702,20 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
     // close to a column of keycaps would fight them for attention.
     let bg = if sel {
         theme_col(|p| p.accent_soft, COLOR_HIGHLIGHT)
+    } else if hot && !high_contrast() {
+        // "Reduced weight": `accent_soft` blended halfway toward the resting
+        // `card` ground, so a hovered row reads as a hint rather than the
+        // stronger, unblended fill a selected row gets. Skipped outright
+        // under high contrast -- `blend`'s own doc explains why a blend of
+        // two `GetSysColor` answers has no guaranteed relationship to
+        // anything; falling through to the same `card`/`COLOR_WINDOW` pair
+        // every resting row already uses is the safe answer.
+        blend(
+            theme_col(|p| p.accent_soft, COLOR_HIGHLIGHT),
+            theme_col(|p| p.card, COLOR_WINDOW),
+            1,
+            2,
+        )
     } else {
         theme_col(|p| p.card, COLOR_WINDOW)
     };
@@ -672,6 +748,98 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
             &mut tr,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
+    }
+    CDRF_SKIPDEFAULT as isize
+}
+
+/// Paint one Header item -- `IDC_LIST`'s own column-header row (Task 10): a
+/// `card` ground, its caption in `text_muted` at `Role::BodyStrong`, and a
+/// 1 px `divider` along the bottom, so the header reads as part of the card
+/// rather than as the system's own grey button strip. No sort glyphs:
+/// `IDC_LIST` already carries `LVS_NOSORTHEADER`, and `CDRF_SKIPDEFAULT`
+/// below means comctl32 never gets to draw one regardless.
+///
+/// **Reached through message reflection, not a dedicated control id.** The
+/// Header is a child of `IDC_LIST`, never of `hwnd` -- `set_header_font`'s
+/// own reason -- so its `WM_NOTIFY`s carry `hwndFrom` equal to the HEADER's
+/// own HWND rather than `IDC_LIST`'s; `mod.rs`'s dispatcher (`header_of`)
+/// tells the two custom-draw sources apart by handle, not by `idFrom`.
+///
+/// **The caption comes from `LIST_COLUMNS`, not a live read of the
+/// control.** The same reason `draw_combo_item` reads `key_table()` /
+/// `cap::TAP_ITEMS` rather than the control they populated: this text
+/// cannot go stale because nothing ever rewrites it after `build_children`
+/// inserts the two columns from this exact array. The alignment
+/// (`LVCFMT_RIGHT` for Shortcut) comes from the same array, so the header
+/// caption and the column's own cells can never disagree about which way
+/// they lean.
+pub(super) unsafe fn header_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage == CDDS_PREPAINT {
+        return CDRF_NOTIFYITEMDRAW as isize;
+    }
+    if cd.dwDrawStage != CDDS_ITEMPREPAINT {
+        return CDRF_DODEFAULT as isize;
+    }
+    let Some((title, fmt)) = LIST_COLUMNS.get(cd.dwItemSpec).copied() else {
+        return CDRF_DODEFAULT as isize;
+    };
+
+    let hdc = cd.hdc;
+    let rc = cd.rc;
+    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.card, COLOR_WINDOW)));
+
+    // The bottom pixel row, in the divider colour: one line per column, and
+    // every column shares the same top/bottom, so the sum reads as one rule
+    // the width of the header rather than a dashed one.
+    let div = RECT {
+        top: rc.bottom - 1,
+        ..rc
+    };
+    FillRect(
+        hdc,
+        &div,
+        theme_brush(theme_col(|p| p.divider, COLOR_BTNSHADOW)),
+    );
+
+    // The control's own font (`set_header_font` puts `Role::BodyStrong` on
+    // it, at creation and on every `WM_DPICHANGED`), read back rather than
+    // asked of `Fonts` -- `draw_combo_item`'s own reason: a paint can arrive
+    // while `UI` is borrowed, and it does.
+    let font = HFONT(
+        SendMessageW(
+            cd.hdr.hwndFrom,
+            WM_GETFONT,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+        .0 as *mut core::ffi::c_void,
+    );
+    let prev = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, theme_col(|p| p.text_muted, COLOR_WINDOWTEXT));
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let pad = scale(6, dpi);
+    let right = fmt == LVCFMT_RIGHT;
+    let mut tr = RECT {
+        left: rc.left + if right { 0 } else { pad },
+        right: rc.right - if right { pad } else { 0 },
+        ..rc
+    };
+    let mut t = wide(title);
+    let n = t.len() - 1;
+    DrawTextW(
+        hdc,
+        &mut t[..n],
+        &mut tr,
+        (if right { DT_RIGHT } else { DT_LEFT }) | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if !prev.is_invalid() {
+        SelectObject(hdc, prev);
     }
     CDRF_SKIPDEFAULT as isize
 }

@@ -73,15 +73,11 @@ pub(super) mod tok {
     /// width/height, i.e. `2 * CARD_RADIUS`).
     pub const CARD_RADIUS: i32 = 10;
     /// The list's row height, fed to `ImageList_Create` for the state image
-    /// list a row's height is actually derived from.
-    ///
-    /// Unreachable until Task 10 wires it in — see that task's own Step 1.
-    /// `#[allow(dead_code)]` here, named after the task that removes it, the
-    /// same pattern `colorref` and `Role::Title` carried across Tasks 4/5
-    /// and 5/7. Left as a token now rather than invented later because
-    /// Task 8 is what sizes the list's card around `tok::ROWS`, and the two
-    /// numbers belong beside each other.
-    #[allow(dead_code)]
+    /// list a row's height is actually derived from -- see
+    /// `rebuild_state_image_list` in `mod.rs` (Task 10), the lever this
+    /// token exists for. Left as a token from Task 8 rather than invented
+    /// later because Task 8 is what sizes the list's card around
+    /// `tok::ROWS`, and the two numbers belong beside each other.
     pub const ROW_H: i32 = 26;
 }
 
@@ -231,9 +227,15 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // short: a shrunk list scrolls, an overlapped control is unreachable.
     // Everything below it (card 2, card 3) is fixed, which is what makes it
     // the thing that must yield.
+    //
+    // No `+ border` term any more (Task 10). That used to be
+    // `2 * SM_CYBORDER`, the two pixels `WS_BORDER` drew OUTSIDE the list's
+    // own client area -- height the control's window rect needed beyond its
+    // content that a border-less control no longer spends. The list's
+    // border is the card's now (`paint::card`), so there is nothing left
+    // for that term to pay for.
     let row_h = list_row_height(ui.list, dpi);
-    let border = 2 * GetSystemMetricsForDpi(SM_CYBORDER, dpi);
-    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS + border;
+    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS;
     // Where the LIST ITSELF starts: past card 1's own top inset, the head
     // row and the control gap below it. The direct analogue of the
     // pre-Task-8 `y` this same computation read, which was already past

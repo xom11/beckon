@@ -650,7 +650,7 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //   title bar (chrome::TITLEBAR_H)                    40
 //   pad                                                16
 //   Shortcuts card: CARD_PAD 16, head row ctl 32,
-//     gap 8, list (header 21 + 8*row 20 + border 2)   16+32+8+183+16 = 255
+//     gap 8, list (header 21 + 8*row 26)       16+32+8+229+16 = 301
 //   gap_card                                           12
 //   editor card: CARD_PAD 16, caption inset s(24) 24,
 //     App ctl 32, gap 8, Shortcut ctl 32, gap 8,
@@ -662,23 +662,27 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //   command bar (ctl, not a card)                      32
 //   pad                                                16
 //                                                    ----
-//   client (list at its full 8 rows)                  671
+//   client (list at its full 8 rows)                  717
 //   frame, bottom only (`chrome::nccalcsize` gives
 //     the rest back to the client; see `MIN_HEIGHT`)     8
 //                                                    ----
-//   window, exact fit                                 679
+//   window, exact fit                                 725
 //
-// 740 leaves **61 px of slack** at rest (`900x740` client 732, needed 671) --
-// the same role the old 860x640's 74 px played, between the editor card's
-// bottom and the keyboard card's top, since the keyboard card stays anchored
-// to the window's bottom edge and the editor card follows the list rather
-// than filling whatever room is left. Simulated against
-// `compute_card_rects`'s own formula by hand-tracing it at `h = 732`, not
-// measured: nothing on the machine this was written on can display the
-// window. At 144 DPI (150 %) the same trace gives 93 px of slack (client
-// 1098, needed 1005 with the 144-DPI fallbacks `list_header_height` 31 /
-// `list_row_height` 30 / `notes_height` 54), consistent with the 96-DPI
-// figure scaled by 1.5 (61 * 1.5 = 91.5).
+// **Re-derived for Task 10's 26 px rows** (was header 21 + 8*row 20 +
+// border 2 = 183; the `+ border` term is gone too -- see `layout.rs`'s own
+// comment on why -- so the new figure is header 21 + 8*row 26 = 229, +46 on
+// the old one, which is exactly the +46 the client and exact-fit totals
+// below carry). 740 still leaves **15 px of slack** at rest (`900x740`
+// client 732, needed 717) -- down hard from the pre-Task-10 61 px, but still
+// positive, and the list still reaches its full 8 rows without a scroll bar
+// (see the paragraph below `MIN_HEIGHT`'s own table for the trace). Simulated
+// against `compute_card_rects`'s own formula by hand-tracing it at `h = 732`,
+// not measured: nothing on the machine this was written on can display the
+// window. At 144 DPI (150 %), the same proportional relationship the
+// pre-Task-10 figure used (`61 * 1.5 = 91.5` against a measured 93) puts the
+// new slack at roughly `15 * 1.5 ≈ 22` px -- an estimate, not a fresh trace,
+// for the same reason the original one was: `notes_height` is a live font
+// measurement, not a value that scales exactly by 1.5 between two DPIs.
 const WINDOW_WIDTH: i32 = 900;
 const WINDOW_HEIGHT: i32 = 740;
 
@@ -731,8 +735,8 @@ const WINDOW_HEIGHT: i32 = 740;
 ///   gap_card                                             12
 ///   card 1  Shortcuts, 4 rows: CARD_PAD 16, head ctl 32,
 ///           gap 8, header (list_header_height, 21) 21,
-///           4 * row (list_row_height, 20) 80,
-///           border (2 * SM_CYBORDER) 2, CARD_PAD 16     175
+///           4 * row (list_row_height, 26) 104,
+///           CARD_PAD 16                                 197
 ///   gap_card                                             12
 ///   card 2  editor: CARD_PAD 16, caption inset s(24) 24,
 ///           App ctl 32, gap 8, Shortcut ctl 32, gap 8,
@@ -746,26 +750,33 @@ const WINDOW_HEIGHT: i32 = 740;
 ///   command bar (ctl -- not a card)                      32
 ///   pad                                                  16
 ///                                                      ----
-///   client                                              667
+///   client                                              689
 ///   frame at 96 DPI -- bottom only, unchanged since
 ///     Task 7: `WM_NCCALCSIZE` (`chrome::nccalcsize`)
 ///     hands the whole caption back to the client, so
 ///     only `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` on the
 ///     bottom edge remains non-client                      8
 ///                                                      ----
-///   window                                              675
+///   window                                              697
 /// ```
 ///
-/// Shipped as 680. The five pixels are slack against a non-client area the
-/// OS sizes, not a fudge of the derivation, same as the pre-Task-8 constant
-/// — and the whole constant is scaled linearly by `scale(MIN_HEIGHT, dpi)`
-/// rather than re-derived per DPI, so it is not exact at 150 % either.
-/// Erring high costs nothing; erring low costs list rows. Traced by hand
-/// through `compute_card_rects`'s own formula at the shipped client height
-/// (672): the five pixels land entirely on `list_h` (108 px, not the 103
-/// four rows need) rather than on the gap below card 2, which stays exactly
-/// one `gap_card` in both cases — the same "clears by exactly one gap" shape
-/// the pre-Task-8 table described for `band`.
+/// **Re-derived for Task 10's 26 px rows** (was header 21 + 4*row 20 +
+/// border 2 = 103; the row figure alone moves to 4*26 = 104, and the
+/// `+ border` term drops out entirely -- `layout.rs`'s own comment on
+/// `compute_card_rects` says why -- for a new content figure of 21+104=125,
+/// +22 on the old 103. That +22 is exactly what card 1, the client and the
+/// window all move by below, since nothing else in the table depends on row
+/// height.) Shipped as 702 (was 680). The five pixels are still slack
+/// against a non-client area the OS sizes, not a fudge of the derivation,
+/// same as the pre-Task-8 constant — and the whole constant is scaled
+/// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
+/// is not exact at 150 % either. Erring high costs nothing; erring low costs
+/// list rows. Traced by hand through `compute_card_rects`'s own formula at
+/// the shipped client height (694 = 702 − 8): the five pixels land entirely
+/// on `list_h` (130 px, not the 125 four rows need) rather than on the gap
+/// below card 2, which stays exactly one `gap_card` in both cases — the same
+/// "clears by exactly one gap" shape the pre-Task-8 table described for
+/// `band`.
 ///
 /// The two row figures are `list_row_height` / `list_header_height`'s own
 /// 96-DPI fallbacks. They are the honest numbers to derive from: comctl32
@@ -784,16 +795,18 @@ const WINDOW_HEIGHT: i32 = 740;
 ///
 /// **The floor buys four rows with the banner up, and — a genuine
 /// improvement over the pre-Task-8 "four with it, six without" — the list's
-/// full eight rows without it.** Traced by hand at the shipped client height
-/// (672, banner down): `list_h` caps at 184, one pixel above `want` (183),
-/// so the cap never binds and the list reaches its full `tok::ROWS`. That is
-/// a property of these particular numbers, not a designed-in guarantee — a
-/// future change to `notes_height`, `card2_h` or the row/header fallbacks
-/// can move it back below eight — so re-check it by the same hand trace
-/// rather than assuming it survives. Simulated, not seen: nothing on the
-/// machine this was written on can display the window.
+/// full eight rows without it.** Traced by hand at `WINDOW_HEIGHT`'s shipped
+/// client height (732, banner down): the room-based cap evaluates to 244 px,
+/// 15 above `want` (229), so the cap never binds and the list reaches its
+/// full `tok::ROWS` — the same 15 px `WINDOW_HEIGHT`'s own comment reports as
+/// slack, measured the other way. That is a property of these particular
+/// numbers, not a designed-in guarantee — a future change to `notes_height`,
+/// `card2_h` or the row/header fallbacks can move it back below eight — so
+/// re-check it by the same hand trace rather than assuming it survives.
+/// Simulated, not seen: nothing on the machine this was written on can
+/// display the window.
 const MIN_WIDTH: i32 = 753;
-const MIN_HEIGHT: i32 = 680;
+const MIN_HEIGHT: i32 = 702;
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
@@ -955,6 +968,29 @@ fn scale(v: i32, dpi: u32) -> i32 {
 /// order.
 fn shade(c: COLORREF, num: u32, den: u32) -> COLORREF {
     let ch = |sh: u32| ((c.0 >> sh) & 0xFF) * num / den;
+    COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
+}
+
+/// `num/den` of `a` blended with the rest of `b`, per channel. `shade` above
+/// answers "the same colour, darker"; this answers "partway between two
+/// DIFFERENT colours" -- the Shortcut column's hover tint (Task 10),
+/// `accent_soft` blended toward `card` so a hovered row reads as a hint
+/// rather than the stronger, unblended fill a selected row gets.
+///
+/// **Never called under high contrast.** Blending two arbitrary
+/// `GetSysColor` answers has no guaranteed relationship to anything -- the
+/// same high-contrast collision this window has already shipped three
+/// times, just reached through a blend instead of a mismatched `sys` index.
+/// Callers gate on `high_contrast()` themselves rather than this function
+/// gating on it, because there is no single safe fallback colour to hand
+/// back instead: falling through to whichever of `a`/`b` the caller means as
+/// "resting" is a decision only the caller can make.
+fn blend(a: COLORREF, b: COLORREF, num: u32, den: u32) -> COLORREF {
+    let ch = |sh: u32| {
+        let ca = (a.0 >> sh) & 0xFF;
+        let cb = (b.0 >> sh) & 0xFF;
+        (ca * num + cb * (den - num)) / den
+    };
     COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
 }
 
@@ -1932,6 +1968,21 @@ unsafe fn create() -> Result<(), String> {
         );
     }
 
+    // The list's own theme sync (Task 10) -- `LVM_SETBKCOLOR` and friends,
+    // `SetWindowTheme`, and the state image list that forces `tok::ROW_H`
+    // rows. All three read state that is only final HERE: `theme_list`
+    // through `PAINT_THEME`, already rebuilt above; `rebuild_state_image_list`
+    // through `real_dpi`, not the earlier guess `dpi` -- a wrong initial
+    // monitor guess must not leave the tick sized for the wrong DPI with no
+    // `WM_DPICHANGED` ever arriving to correct it, since the window was
+    // already born on its final monitor (the comment above this block gives
+    // the same reason for the `SetWindowPos` correction it guards). Before
+    // `ShowWindow`, so nothing paints with the wrong sizing first.
+    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
+    if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
+        rebuild_state_image_list(list, real_dpi);
+    }
+
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
     Ok(())
@@ -2362,12 +2413,16 @@ unsafe fn build_children(hwnd: HWND) {
     );
 
     // -- Band 3: the list.
+    // `WS_BORDER` off (Task 10): the card is the border now
+    // (`paint::card`, drawn by the PARENT's `WM_PAINT` around the whole
+    // Shortcuts card), the same move Task 9 already made for `IDC_FILTER`
+    // and `IDC_APP`. `LVM_GETITEMRECT`/`layout`'s own `border` term drops
+    // with it -- see `compute_card_rects`'s comment in `layout.rs`.
     let list = child(
         hwnd,
         w!("SysListView32"),
         "",
         WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER)
-            | WS_BORDER
             | WS_TABSTOP,
         IDC_LIST,
         &fonts,
@@ -3009,15 +3064,20 @@ enum CapStyle {
 
 /// One ListView row, in physical pixels at the live DPI.
 ///
-/// **Queried, never scaled from a token.** 29 px measured on a14 at 144 DPI
-/// is 19.33 at 96, and a non-integer is the tell that comctl32 derives the
-/// row height from the font rather than from a design constant — a 96-DPI
-/// token pushed through `scale` would be wrong at every non-integer scale
-/// and would go wrong again the moment B.3 changes the font.
+/// **Queried, never scaled from a token, when a row exists to measure.**
+/// Pre-Task-10, 29 px measured on a14 at 144 DPI was 19.33 at 96, and a
+/// non-integer was the tell that comctl32 derived the row height from the
+/// font rather than from a design constant. Since Task 10 the height is
+/// FORCED by `rebuild_state_image_list`'s state image list to be at least
+/// `scale(tok::ROW_H, dpi)`, but comctl32 is still free to add its own
+/// padding on top of that image height, so the real answer is asked of the
+/// control rather than assumed either way -- a 96-DPI token pushed through
+/// `scale` would still be wrong at every non-integer scale.
 ///
 /// `LVM_GETITEMRECT` needs a row to measure. When the list is empty there is
-/// none, so this falls back to a scaled token -- 30 px at 144 DPI, against the
-/// 29 a real row measures.
+/// none, so this falls back to `scale(tok::ROW_H, dpi)` -- the forced LOWER
+/// BOUND, not a hardware measurement: since Task 10 the true figure can only
+/// be equal to or greater than it, never less.
 ///
 /// **The list's item count is therefore an input to `layout`, and
 /// `apply_state` has to treat it as one.** This comment used to say the
@@ -3046,7 +3106,7 @@ unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
             return h;
         }
     }
-    scale(20, dpi)
+    scale(tok::ROW_H, dpi)
 }
 
 /// Give the ListView's own Header control a font.
@@ -3069,6 +3129,20 @@ unsafe fn set_header_font(list: HWND, font: HFONT) {
     }
 }
 
+/// The ListView's Header child, by `HWND` rather than by dialog control id --
+/// the Header carries none of its own, so this is the only way to name it
+/// from a `WM_NOTIFY`'s bare `hwndFrom` (Task 10's header custom draw).  Same
+/// `LVM_GETHEADER` round trip `set_header_font` / `list_header_height` already
+/// pay; a fourth call site rather than a cache, because it is only reached on
+/// a custom-draw notification that neither `IDC_LIST` nor a push button
+/// already claimed -- at most once per repaint.
+unsafe fn header_of(hwnd: HWND) -> HWND {
+    let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) else {
+        return HWND::default();
+    };
+    HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _)
+}
+
 /// The ListView's header, in physical pixels at the live DPI. Measured 31
 /// at 144 DPI, which is 20.67 at 96 — a non-integer for the same reason a
 /// row is, so it is asked for rather than tabulated.
@@ -3084,6 +3158,145 @@ unsafe fn list_header_height(list: HWND, dpi: u32) -> i32 {
         }
     }
     scale(21, dpi)
+}
+
+/// Replace `list`'s checkbox state image list with one tall enough to force
+/// `tok::ROW_H` rows -- a ListView's row height comes from its image list,
+/// not from a token of its own (see `tok::ROW_H`'s own comment), so the
+/// state list the per-row ticks already ride in is the lever.
+///
+/// **The glyphs are comctl32's own, not hand-drawn.** `LVS_EX_CHECKBOXES`
+/// already built two correctly-themed, correctly-DPI-scaled checkbox images
+/// the moment it was turned on; `DrawFrameControl` would draw the pre-Vista
+/// flat checkbox instead of the rounded one Explorer itself uses, sitting
+/// oddly next to `theme_list`'s `SetWindowTheme("DarkMode_Explorer")`. Each
+/// glyph is copied, unmodified, onto a taller canvas sized
+/// `s(16) x s(tok::ROW_H)`, centred -- the tick itself stays whatever size
+/// comctl32 drew it at (~15 px), only the cell around it grows.
+///
+/// **A real 32-bit alpha canvas, not a legacy colour-key mask.** GDI drawing
+/// onto an ordinary `CreateCompatibleBitmap` does not reliably touch the
+/// alpha byte, so the canvas is a `CreateDIBSection` this function zeroes by
+/// hand (alpha 0, fully transparent) before every frame. `ImageList_Draw` --
+/// unlike a raw `BitBlt`/`DrawFrameControl` -- is comctl32's own API and is
+/// alpha-aware when the destination is a real 32bpp DIB, so the composited
+/// glyph keeps a working alpha channel that `ImageList_Add`'s `ILC_COLOR32`
+/// list (no mask argument) can use directly.
+///
+/// Called once at creation (`create`, after the theme and DPI are both
+/// final) and again on every `WM_DPICHANGED`. **Known limitation, disclosed
+/// rather than fixed**: after the first call, `LVM_GETIMAGELIST` reads back
+/// OUR OWN previous composite as the source to re-centre, not comctl32's
+/// native default -- once we own `LVSIL_STATE` there is no API to ask
+/// comctl32 to regenerate its own default at a new DPI. The CELL still
+/// rescales correctly on a live DPI change (`cx`/`cy` are computed fresh
+/// every call); the tick's own pixel resolution does not, and stays at
+/// whatever DPI first installed it. A monitor move is the only way to reach
+/// this, and the result is a soft-scaled tick, never a missing or
+/// mis-centred one.
+///
+/// **Unverified on hardware.** This host cannot run Windows; Gate 05
+/// (Task 15) is what actually confirms the tick still centres.
+unsafe fn rebuild_state_image_list(list: HWND, dpi: u32) {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let cx = s(16);
+    let cy = s(tok::ROW_H);
+    if cx <= 0 || cy <= 0 {
+        return;
+    }
+
+    let src = HIMAGELIST(
+        SendMessageW(
+            list,
+            LVM_GETIMAGELIST,
+            Some(WPARAM(LVSIL_STATE as usize)),
+            Some(LPARAM(0)),
+        )
+        .0,
+    );
+    if src.is_invalid() {
+        return;
+    }
+    let (mut src_cx, mut src_cy) = (0i32, 0i32);
+    let _ = ImageList_GetIconSize(
+        src,
+        Some(&mut src_cx as *mut i32),
+        Some(&mut src_cy as *mut i32),
+    );
+    if src_cx <= 0 || src_cy <= 0 {
+        return;
+    }
+
+    let il = ImageList_Create(cx, cy, ILC_COLOR32, 2, 0);
+    if il.is_invalid() {
+        return;
+    }
+
+    let screen = GetDC(None);
+    let mem = CreateCompatibleDC(Some(screen));
+    if mem.is_invalid() {
+        let _ = ReleaseDC(None, screen);
+        let _ = ImageList_Destroy(Some(il));
+        return;
+    }
+    let header = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: cx,
+        // Negative: top-down, so (0,0) is the top-left -- the same sense
+        // `ImageList_Draw`'s own (x, y) offset expects.
+        biHeight: -cy,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: 0, // BI_RGB
+        ..Default::default()
+    };
+    let bmi = BITMAPINFO {
+        bmiHeader: header,
+        ..Default::default()
+    };
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    let dib = CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0);
+    let _ = ReleaseDC(None, screen);
+    let Ok(dib) = dib else {
+        let _ = DeleteDC(mem);
+        let _ = ImageList_Destroy(Some(il));
+        return;
+    };
+
+    let xoff = ((cx - src_cx) / 2).max(0);
+    let yoff = ((cy - src_cy) / 2).max(0);
+    let px_bytes = (cx as usize) * (cy as usize) * 4;
+
+    // Unchecked (state 1, image list index 0), then checked (state 2, index
+    // 1) -- `LVIS_UNCHECKED`/`LVIS_CHECKED`'s own one-based-minus-one
+    // mapping, unchanged by this swap.
+    for i in 0..2i32 {
+        let old_bmp = SelectObject(mem, HGDIOBJ(dib.0));
+        if !bits.is_null() {
+            std::ptr::write_bytes(bits as *mut u8, 0, px_bytes);
+        }
+        let _ = ImageList_Draw(src, i, mem, xoff, yoff, ILD_TRANSPARENT);
+        // Deselected before `ImageList_Add` touches the bitmap directly --
+        // GDI does not allow a bitmap to be read by one caller while it is
+        // still selected into a DC of ours.
+        SelectObject(mem, old_bmp);
+        ImageList_Add(il, dib, None);
+    }
+    let _ = DeleteObject(HGDIOBJ(dib.0));
+    let _ = DeleteDC(mem);
+
+    let prev = SendMessageW(
+        list,
+        LVM_SETIMAGELIST,
+        Some(WPARAM(LVSIL_STATE as usize)),
+        Some(LPARAM(il.0)),
+    );
+    // `LVM_SETIMAGELIST` does not free the list it displaces -- ours to
+    // free, the same rule as any other `HIMAGELIST` we swap in.
+    let old = HIMAGELIST(prev.0);
+    if !old.is_invalid() && old.0 != il.0 {
+        let _ = ImageList_Destroy(Some(old));
+    }
 }
 
 /// Set a column's width, but only when it is not already right.
@@ -3129,30 +3342,36 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// which is why it is trusted for the DPI nobody has measured. If a real
 /// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
 /// nudged -- though the disagreement is bounded, not open-ended: the derived
-/// window height is `675 + 2(L - 16)` for a real Caption line height `L`
-/// (re-derived for Task 8's cards below; unchanged in FORM from the
+/// window height is `697 + 2(L - 16)` for a real Caption line height `L`
+/// (re-derived for Task 10's rows below; unchanged in FORM from the
 /// pre-Task-8 `546 + 2(L-16)` -- `notes_h` is still a single linear term
 /// inside `card2_h`, which is still a single linear term inside the total,
 /// so the coefficient survives even though the anchor moved with the
-/// table). The shipped 680 absorbs any `L` up to 18 px with the four-row
-/// banner-up guarantee intact -- the identical threshold the pre-Task-8
-/// constant gave, because both the sensitivity and the five-pixel buffer
-/// are unchanged. `L = 19` costs one row and nothing else -- `editor_min =
-/// card2_h` in `compute_card_rects` (see its own comment there) is computed
-/// from the RUNTIME value, not this estimate, so a wrong `L` can only
-/// shrink the list at the absolute floor; it cannot produce an overlap at
-/// any `L`. That is the safe direction.
+/// table, twice now). The shipped 702 absorbs any `L` up to 18 px with the
+/// four-row banner-up guarantee intact -- the identical threshold every
+/// earlier constant gave, because both the sensitivity and the five-pixel
+/// buffer are unchanged. `L = 19` costs one row and nothing else --
+/// `editor_min = card2_h` in `compute_card_rects` (see its own comment
+/// there) is computed from the RUNTIME value, not this estimate, so a wrong
+/// `L` can only shrink the list at the absolute floor; it cannot produce an
+/// overlap at any `L`. That is the safe direction.
 ///
 /// **Re-derived for Task 8's cards** (was `546 + 2(L-16)` before Task 7's
-/// title bar moved it to `555 + 2(L-16)` / shipped 560; this task replaces
+/// title bar moved it to `555 + 2(L-16)` / shipped 560; that task replaced
 /// both the table and the constant, not just the anchor). Solved from
 /// `compute_card_rects`'s own formula: at the banner-up, four-row floor,
 /// `client = 631 + notes_h` exactly (`notes_h` the only non-constant term
 /// once `card1`'s want/room clamp resolves to the four-row target), and
 /// `notes_h = 2L + scale(4, dpi)`, so `client = 631 + 2L + 4 = 635 + 2L` at
 /// 96 DPI -- `675 + 2(L-16)` once the `+8` non-client frame and the `-32`
-/// from centering the formula on `L=16` are folded in. See `MIN_HEIGHT`'s
-/// own table for the raw 675 this anchors to.
+/// from centering the formula on `L=16` are folded in.
+///
+/// **Re-derived again for Task 10's 26 px rows.** The four-row content
+/// figure `header + 4*row (+ border, now gone)` moved from 103 to 125, +22
+/// -- see `MIN_HEIGHT`'s own table -- and that +22 is a constant shift of
+/// the whole linear relationship, since `notes_h` never entered it: `client
+/// = 653 + notes_h`, `697 + 2(L-16)` once the same `+8`/`-32` are folded in.
+/// See `MIN_HEIGHT`'s own table for the raw 697 this now anchors to.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)
@@ -4218,8 +4437,10 @@ unsafe fn broadcast_theme_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
     // Relayout, not just repaint: high contrast and theme switches can
     // change the system metrics `layout` reads live -- ListView row height
     // (`list_row_height`, the same value WM_DPICHANGED's font swap already
-    // invalidates), SM_CXVSCROLL / SM_CYBORDER, and control heights read
-    // back through GetWindowRect. Those are exactly the metrics that move
+    // invalidates), SM_CXVSCROLL, and control heights read back through
+    // GetWindowRect. `SM_CYBORDER` used to be one of these too, but
+    // `layout.rs`'s `compute_card_rects` stopped reading it once `WS_BORDER`
+    // came off the list (Task 10). Those are exactly the metrics that move
     // when a user enters or leaves high contrast, and layout already
     // queries them at call time instead of assuming a constant -- staying
     // stale here would reintroduce the clipping bug that query was added to
@@ -4280,7 +4501,63 @@ unsafe fn on_theme_changed(hwnd: HWND) {
         return;
     }
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
     let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Bring the ListView's own background in line with the theme (Task 10).
+///
+/// **`LVM_SETBKCOLOR` / `LVM_SETTEXTBKCOLOR` / `LVM_SETTEXTCOLOR`, all
+/// three.** Rows are custom-drawn, but comctl32 paints the ground BELOW the
+/// last row -- and, for subitem 0 (the App column), the row's own background
+/// and text too, since `list_custom_draw` deliberately leaves that subitem
+/// to comctl32's default draw so the check box survives
+/// (`CDRF_NOTIFYPOSTPAINT`, see its own comment). Both messages default to
+/// `COLOR_WINDOW`/black until told otherwise, which is why a dark-mode list
+/// used to show themed rows sitting on a light ground with black text on it.
+///
+/// **`SetWindowTheme` rides along.** A public exported function, NOT one of
+/// the uxtheme ordinals the 2026-08-11 spec rejected -- but the theme class
+/// name is undocumented and the call degrades silently on builds that do not
+/// know it, which is why nothing downstream depends on it having worked. It
+/// is also what enables the dark scrollbar AND native hot-item tracking
+/// (`LVM_GETHOTITEM`), which the Shortcut column's own hover tint
+/// (`list_custom_draw`) reads.
+///
+/// Called at creation (`create`, once the theme is resolved) and again on
+/// every theme change (`on_theme_changed`) -- the same two moments
+/// `theme::apply_dwm_dark` already runs at, and for the same reason: nothing
+/// else tells this control its colours moved.
+unsafe fn theme_list(hwnd: HWND, dark: bool) {
+    let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) else {
+        return;
+    };
+    let bg = theme_col(|p| p.card, COLOR_WINDOW);
+    let text = theme_col(|p| p.text, COLOR_WINDOWTEXT);
+    SendMessageW(
+        list,
+        LVM_SETBKCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(bg.0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTBKCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(bg.0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(text.0 as isize)),
+    );
+    let name = if dark {
+        w!("DarkMode_Explorer")
+    } else {
+        w!("Explorer")
+    };
+    let _ = SetWindowTheme(list, name, None);
 }
 
 /// Repaint just the title bar band, not the whole client -- a hover move is
@@ -4423,6 +4700,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // sets it separately rather than through `role_of`.
                 if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
                     set_header_font(list, fonts.get(Role::BodyStrong));
+                    // The state image list is sized in DEVICE pixels
+                    // (Task 10), so a monitor move needs a fresh one at the
+                    // new DPI for the same reason the font does. Known
+                    // limitation: the composited GLYPH itself is copied from
+                    // whichever image list is CURRENTLY installed, which
+                    // after the first call is our own previous composite,
+                    // not comctl32's native default -- so only the CELL
+                    // rescales cleanly across a live DPI change; the tick's
+                    // own pixels stay at their first-installed resolution.
+                    // Unverified on hardware; see `rebuild_state_image_list`.
+                    rebuild_state_image_list(list, dpi);
                 }
                 // AFTER the broadcast, never before: the old handles were
                 // selected into those controls until the loop above replaced
@@ -4766,6 +5054,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // between two spellings of the same chord.
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
+                }
+                // The ListView's own Header (Task 10): a child of `IDC_LIST`,
+                // never of `hwnd` -- `set_header_font`'s own reason -- so its
+                // `WM_NOTIFY`s carry `hwndFrom` equal to the HEADER's own
+                // HWND rather than `IDC_LIST`'s, and `idFrom` cannot tell the
+                // two custom-draw sources apart the way it does above.
+                // Answered here, before `suppressed()`, for the same reason
+                // the list's own custom draw is: pure painting, no callback,
+                // cannot recurse into `apply_state`.
+                if nm.code == NM_CUSTOMDRAW && nm.hwndFrom == header_of(hwnd) {
+                    return LRESULT(header_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
                 // Every push button paints through here now, `Save` included
                 // -- Task 9 widened this from `Save` alone to all nine of
