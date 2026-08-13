@@ -237,6 +237,18 @@ pub(super) fn apply_backdrop(hwnd: HWND, b: Backdrop) {
                     &ty as *const _ as *const _,
                     std::mem::size_of::<u32>() as u32,
                 );
+                // Reset frame margins set by Mica. Unconditional: when not
+                // coming from Mica, the call is idempotent; when we are, it
+                // prevents the -1 margins from persisting and causing visual
+                // corruption. The call runs before `set_layered` so the two
+                // mechanisms (DWM backdrop and WS_EX_LAYERED) don't interact.
+                let m = MARGINS {
+                    cxLeftWidth: 0,
+                    cxRightWidth: 0,
+                    cyTopHeight: 0,
+                    cyBottomHeight: 0,
+                };
+                let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
                 set_layered(hwnd, Some(a));
             }
             Backdrop::Opaque => {
@@ -247,6 +259,18 @@ pub(super) fn apply_backdrop(hwnd: HWND, b: Backdrop) {
                     &ty as *const _ as *const _,
                     std::mem::size_of::<u32>() as u32,
                 );
+                // Reset frame margins set by Mica. Unconditional: when not
+                // coming from Mica, the call is idempotent; when we are, it
+                // prevents the -1 margins from persisting and causing visual
+                // corruption. The call runs before `set_layered` so the two
+                // mechanisms (DWM backdrop and WS_EX_LAYERED) don't interact.
+                let m = MARGINS {
+                    cxLeftWidth: 0,
+                    cxRightWidth: 0,
+                    cyTopHeight: 0,
+                    cyBottomHeight: 0,
+                };
+                let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
                 set_layered(hwnd, None);
             }
         }

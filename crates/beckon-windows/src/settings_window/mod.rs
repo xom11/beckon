@@ -4550,9 +4550,6 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     PAINT_THEME.with(|c| {
         c.borrow_mut().rebuild(t);
     });
-    if !changed {
-        return;
-    }
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
     theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
     // High contrast turning on is a theme change (`Theme::HighContrast`
@@ -4562,7 +4559,17 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     // unrelated repaint trigger happens to call `apply_current_backdrop`.
     // Leaving high contrast re-evaluates the same way and can bring Mica or
     // Alpha back.
+    //
+    // `apply_current_backdrop` is unconditional: transparency effects being
+    // toggled off/on (via Settings > Personalization > Colors) affects
+    // whether we can use Mica or Alpha, but doesn't change the Theme enum.
+    // Without this unconditional call, toggling transparency with the settings
+    // window open leaves the window at the wrong tier until an unrelated
+    // theme event or a reopen. The call is idempotent when values unchanged.
     apply_current_backdrop(hwnd);
+    if !changed {
+        return;
+    }
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
