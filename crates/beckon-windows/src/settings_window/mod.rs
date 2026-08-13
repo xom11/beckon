@@ -1920,7 +1920,20 @@ unsafe fn create() -> Result<(), String> {
         // WM_NCCALCSIZE overflows the monitor by the frame thickness unless
         // corrected by hand -- unreachable. The window is still resizable by
         // its edges; `layout` already handles that.
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX,
+        // **No `WS_CAPTION`.** Measured on a14 2026-08-13: with it, Windows 11
+        // composites its OWN caption buttons over the reclaimed client area,
+        // so the window wore two minimise glyphs and two close glyphs drawn on
+        // top of each other -- plus a maximise button this design does not
+        // have -- visible as colour fringing where the two renderings of the
+        // same X disagree. `WM_NCCALCSIZE` reclaims the SPACE; it does not
+        // stop DWM drawing the buttons it believes a captioned window needs.
+        //
+        // `WS_POPUP` keeps `WS_THICKFRAME`'s resize border and the DWM shadow
+        // while declaring no caption for DWM to furnish. MSDN says
+        // `WS_SYSMENU` wants `WS_CAPTION`; it is kept anyway because the Alt
+        // +Space menu and the taskbar's own close entry route through it, and
+        // dropping it changes those without fixing anything.
+        WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         w,

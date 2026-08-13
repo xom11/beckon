@@ -130,7 +130,16 @@ pub(super) fn apply_dwm_dark(hwnd: HWND, dark: bool) {
 /// answer, and `beckon_core::theme::backdrop` -- tested, not touched by this
 /// flag -- is what turns it into `Backdrop::Alpha(TIER2_ALPHA)`. That
 /// single-flag property is why the tier decision lives there and not here.
-pub(super) const MICA_SUPPORTED: bool = true;
+/// **FLIPPED 2026-08-13. Gate 01 was measured on a14 and Mica lost.** The
+/// window came up fully opaque: `WS_EX_LAYERED` absent, nothing of the desktop
+/// behind it visible anywhere. That is the outcome the tier design predicted —
+/// DWM composites its backdrop *behind* the window, and this client is painted
+/// edge to edge with GDI, so there is no unpainted region for it to show
+/// through. The sheet-of-glass margins are set and simply have nothing to do.
+///
+/// Tier 2 is not a consolation prize here: a uniform alpha is the only one of
+/// the three that a fully-painted client can actually wear.
+pub(super) const MICA_SUPPORTED: bool = false;
 
 /// Gather the OS's current answer to which backdrop tier this window may
 /// use, for `beckon_core::theme::backdrop` to decide with.

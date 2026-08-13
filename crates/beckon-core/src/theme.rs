@@ -162,9 +162,15 @@ pub enum Backdrop {
 /// Windows 11 22H2. `DWMWA_SYSTEMBACKDROP_TYPE` is ignored below this.
 pub const MICA_MIN_BUILD: u32 = 22621;
 
-/// The alpha for tier 2. 245/255 is visible against a busy wallpaper and
-/// leaves text effectively solid.
-pub const TIER2_ALPHA: u8 = 245;
+/// The alpha for tier 2.
+///
+/// **Was 245 (96 %), and that was chosen without ever seeing it.** With Mica
+/// demoted after Gate 01, this is no longer a fallback nobody looks at — it is
+/// the only transparency the window has, and at 96 % it is indistinguishable
+/// from opaque. 232/255 (91 %) is the value that reads as glass while keeping
+/// text solid: every string in this window sits on an opaque card, so only the
+/// window's own ground and the card fills carry the blend.
+pub const TIER2_ALPHA: u8 = 232;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BackdropInputs {
