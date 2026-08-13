@@ -222,7 +222,13 @@ mod tests {
             ("bad pill", p.bad, p.bad_bg, 4.5),
             ("warn pill", p.warn, p.warn_bg, 4.5),
             ("unknown pill", p.unk, p.unk_bg, 4.5),
-            ("ok note glyph", p.ok, p.card, 4.5),
+            // The four `IDC_NOTES` severity-dot colours against the card
+            // they sit on (beckon-windows `paint::draw_notes`, Task 12).
+            // `Mark::Unknown`'s dot is `text_faint`, already covered by
+            // "faint text on card" above -- not repeated here.
+            ("ok note dot", p.ok, p.card, 4.5),
+            ("warn note dot", p.warn, p.card, 4.5),
+            ("bad note dot", p.bad, p.card, 4.5),
             ("keycap letter", p.text, p.keycap, 4.5),
             ("card border on bg", p.card_border, p.bg, 1.2),
             ("field border on card", p.field_border, p.card, 1.2),

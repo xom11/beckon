@@ -98,7 +98,7 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark,
+    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note,
 };
 use beckon_core::shortcuts::{
     combo_display, combo_view, key_table, CapsTap, Chord, Combo, ComboView,
@@ -138,9 +138,6 @@ mod paint;
 use paint::*;
 mod theme;
 
-/// `SS_LEFT` is 0 and `windows` 0.61 does not export it as a constant.
-const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
-
 /// `SS_NOPREFIX` (0x0080), which `windows` 0.61 does not export either.
 ///
 /// A STATIC treats `&` in its text as a mnemonic marker and draws the next
@@ -150,15 +147,32 @@ const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
 /// Do`, `Arts & Crafts`) -- so without this an app name renders as a
 /// mangled, underlined string that looks like a beckon bug.
 ///
-/// **`SS_ENDELLIPSIS` is deliberately NOT here.** The three ellipsis styles
-/// force a static onto ONE line with no word wrap (documented on Static
-/// Control Styles, and the reason is that the control switches to a
-/// single-line DrawText path). `IDC_NOTES` is a multi-line strip -- several
-/// `\r\n`-joined note lines, on the line `notes_height` sizes inside the
-/// editor group -- so adding the style would collapse the whole notes band to
-/// its first line. Ellipsised multi-line text needs an owner-draw `DrawText`
-/// with `DT_WORDBREAK | DT_END_ELLIPSIS`, which is not this landing.
+/// **`SS_ENDELLIPSIS` is deliberately NOT here**, which used to matter
+/// because the three ellipsis styles force a static onto ONE line with no
+/// word wrap (documented on Static Control Styles) and `IDC_NOTES` was a
+/// multi-line strip that relied on native word-wrap to show a second note at
+/// all. **Since Task 12, `IDC_NOTES` is `SS_OWNERDRAW`** and neither wraps
+/// nor ellipsises through the control at all -- `paint::draw_notes` draws
+/// each note as its own `DT_SINGLELINE | DT_END_ELLIPSIS` line at a fixed
+/// height, so the risk this paragraph used to warn about (the whole band
+/// collapsing to its first line) cannot recur regardless of what this
+/// constant is combined with.
 const SS_NOPREFIX_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0080);
+
+/// `SS_OWNERDRAW` (0x0000000D). `windows` 0.61 DOES define this constant,
+/// but under `System::SystemServices`, not `WindowsAndMessaging` where the
+/// rest of this file's STATIC style bits live -- named locally rather than
+/// pulling in that whole module for one constant, the same call
+/// `SS_NOPREFIX_STYLE` above already makes for a different gap.
+///
+/// **A different VALUE of a STATIC's type field, not a flag beside
+/// `SS_LEFT`** -- `SS_LEFT` is 0, `SS_OWNERDRAW` is 13, and both occupy the
+/// same low bits (`SS_TYPEMASK`), exactly the relationship `button`'s own
+/// doc comment describes for `BS_OWNERDRAW`/`BS_DEFPUSHBUTTON`. `IDC_NOTES`
+/// is the only control that carries this style (Task 12), and was the only
+/// caller of the file's own `SS_LEFT_STYLE` constant -- deleted along with
+/// this replacing it, rather than left unused.
+const SS_OWNERDRAW_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0000000D);
 
 /// `DM_GETDEFID` is `WM_USER + 0`, `DM_SETDEFID` is `WM_USER + 1`, and
 /// `DC_HASDEFID` is the magic `0x534B` winuser.h gives it -- not a bit flag,
@@ -578,12 +592,11 @@ fn shown(caption: &str) -> String {
 
 /// The window title, without the dirty mark: `beckon - <file name>`.
 ///
-/// **ASCII hyphen, not an em-dash**, for the reason `mark_glyph` already
-/// gives -- this window inherits the shell's text face, and a glyph it does
-/// not carry draws as a box that reads like a rendering bug rather than as
-/// information. beckon has been bitten by exactly this once already: a UTF-8
-/// em-dash written to a `serve --log` came back as `?"` through Windows
-/// PowerShell 5.1's `Get-Content`.
+/// **ASCII hyphen, not an em-dash**: this window inherits the shell's text
+/// face, and a glyph it does not carry draws as a box that reads like a
+/// rendering bug rather than as information. beckon has been bitten by
+/// exactly this once already: a UTF-8 em-dash written to a `serve --log`
+/// came back as `?"` through Windows PowerShell 5.1's `Get-Content`.
 ///
 /// The FILE NAME, not the path: `serve` can be pointed anywhere and nothing
 /// on screen used to say where, but a full path in a title bar is truncated
@@ -1731,45 +1744,38 @@ fn show(h: HWND, on: bool) {
     }
 }
 
-/// The severity prefix on a line of the notes STATIC. Not the list: rows
-/// carry `ListItem::flag` beside the app name now (see `app_cell`), and a
-/// healthy row says nothing at all rather than `OK`.
-fn mark_glyph(m: Mark) -> &'static str {
-    // ASCII on purpose: the notes carry a Segoe UI Variable text face, or
-    // the shell's own on the fallback path, and neither is a symbol font --
-    // a missing glyph shows as a box that reads like a rendering bug rather
-    // than a status. (Segoe Fluent Icons IS installed, measured on a14, but
-    // spec B.5 defers those glyphs to the NM_CUSTOMDRAW pass that can give
-    // them their own font.)
-    //
-    // **`Ok` is blank, and this comment used to explain why it was not.** It
-    // said "All four are two columns wide so the note lines line up", which
-    // is a MONOSPACE property asserted about a proportional face -- measured
-    // on a14 and false. Each note is laid out as `glyph + "  " + text`, so
-    // the glyph's advance IS the x where the text starts:
-    //
-    // |            | 144 DPI | 96 DPI |
-    // |------------|---------|--------|
-    // | `OK` + 2sp | 35 px   | 22 px  |
-    // | `!!` + 2sp | 20 px   | 14 px  |
-    // | `! ` + 2sp | 20 px   | 13 px  |
-    // | `..` + 2sp | 18 px   | 12 px  |
-    // | 4 spaces   | 20 px   | 12 px  |
-    //
-    // So `OK` stood 15 px proud of `!!`, and the other three were never
-    // equal either -- just close enough not to be noticed. Two spaces put
-    // `Ok` inside the 2 px spread the shipped marks already had, and say
-    // the same thing spec B.5 says with the list flag: a healthy row is
-    // silent. Exact alignment needs a glyph column drawn at a fixed x,
-    // which is the NM_CUSTOMDRAW work B.5 defers.
-    //
-    // The trailing space on `Warn` is still load-bearing, not a typo.
-    match m {
-        Mark::Ok => "  ",
-        Mark::Warn => "! ",
-        Mark::Bad => "!!",
-        Mark::Unknown => "..",
-    }
+thread_local! {
+    /// What `IDC_NOTES` is currently showing, one severity-tagged line per
+    /// entry -- `paint::draw_notes`'s own input, and the paint-side mirror
+    /// of `CHIPS` for exactly `CHIPS`'s own reason: `WM_DRAWITEM` can arrive
+    /// while `UI` is already borrowed, so the notes cannot be re-derived
+    /// from `Ui::detail` at draw time. `show_notes` keeps this in step with
+    /// whatever it writes to the control's own window text, in the same
+    /// call, so the two can never disagree about which lines are showing.
+    static SHOWN_NOTES: RefCell<Vec<Note>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Push `body` to `IDC_NOTES`: mirrored into `SHOWN_NOTES` for `WM_DRAWITEM`
+/// to paint (`paint::draw_notes` needs the `Mark` beside each line, which
+/// plain window text cannot carry) and, separately, written as plain joined
+/// text through `set_text` -- so `GetWindowText`, which is what a screen
+/// reader and `examples/settings_probe.rs`'s `dump` both read, still answers
+/// with something. The plain text drops the severity a screen reader cannot
+/// see drawn as colour anyway; the note's own words already say what is
+/// wrong, exactly as they did before this task.
+///
+/// Replaces the old per-mark glyph prefix (`mark_glyph`, deleted): alignment
+/// is structural now -- `paint::draw_notes` draws every dot at the same
+/// fixed x regardless of which mark it is -- so there is no glyph column
+/// left to keep aligned inside the string.
+fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
+    let plain = body
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    set_text(notes_hwnd, &plain);
+    SHOWN_NOTES.with(|c| *c.borrow_mut() = body);
 }
 
 // ---------------------------------------------------------------------------
@@ -2655,13 +2661,24 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
     // On its own line directly beneath the strip, which is where B.1's
-    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE -- and, for
-    // the same reason, no SS_ENDELLIPSIS either; see SS_NOPREFIX_STYLE.
+    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE.
+    //
+    // **`SS_OWNERDRAW` since Task 12** -- a different VALUE of a STATIC's
+    // type field, replacing `SS_LEFT` rather than joining it (`draw_chip`'s
+    // own reason for `BS_OWNERDRAW`), so this control paints nothing of
+    // itself any more, background included: `paint::draw_notes`, reached
+    // through `WM_DRAWITEM`, owns the whole surface now, and
+    // `WM_CTLCOLORSTATIC` no longer reaches this id (see that arm in
+    // `mod.rs`). `SS_NOPREFIX` is kept anyway -- harmless on an owner-draw
+    // static, since it never runs the native prefix-parsing `DrawText` path
+    // this style would otherwise change (`draw_notes` passes `DT_NOPREFIX`
+    // itself) -- as cheap insurance against a future revert away from
+    // owner-draw silently losing ampersand handling along with it.
     let notes = child(
         hwnd,
         w!("STATIC"),
         "",
-        SS_LEFT_STYLE | SS_NOPREFIX_STYLE,
+        SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
         IDC_NOTES,
         &fonts,
     );
@@ -3445,7 +3462,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     // without this it would re-enable the five typed controls and write the
     // model's notes over the prompt -- two writers on one value, which is
     // the defect spec C.4 forbids by name.
-    let cap_notes: Option<String> = UI.with(|u| {
+    let cap_notes: Option<Vec<Note>> = UI.with(|u| {
         u.borrow()
             .as_ref()
             .and_then(|x| x.capture.as_ref().map(capture_notes))
@@ -3524,39 +3541,34 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // The capture prompt outranks the row's notes while one is
                 // live: it is the only thing on screen telling the user what
                 // beckon is doing with their keyboard.
-                match &cap_notes {
-                    Some(t) => set_text(notes, t),
+                let body: Vec<Note> = match &cap_notes {
+                    Some(lines) => lines.clone(),
                     None => {
-                        // Caps at two NOTES, not two RENDERED lines.
-                        // `IDC_NOTES` is `SS_LEFT` and word-wraps (see its
-                        // own comment above), so this cap does not bound
-                        // what actually reaches the screen: a single note
-                        // wider than the control's inset width wraps to two
-                        // lines on its own, a second note then lands on a
-                        // clipped third line, and "(+N more)" -- appended to
-                        // the end of note 2 -- inherits that clipping, so
-                        // the "there is more" text can itself be the part
-                        // nobody sees. `notes_height` reserves exactly two
-                        // RENDERED lines; nothing here guarantees these two
-                        // NOTES fit inside them. The real fix is
-                        // measure-and-truncate or an owner-draw `DrawText`
-                        // with `DT_WORDBREAK | DT_END_ELLIPSIS` -- out of
-                        // scope for this landing; see the hardware
-                        // checklist's wrap-case entry.
+                        // Caps at two NOTES, not two RENDERED lines -- but
+                        // now that IS the same cap: `paint::draw_notes`
+                        // draws exactly one `DT_SINGLELINE | DT_END_ELLIPSIS`
+                        // line per entry, at the fixed height `notes_height`
+                        // budgets, so a long note truncates with an ellipsis
+                        // instead of wrapping onto a line nothing reserved
+                        // room for -- the old failure mode, where a wrapped
+                        // note could push "(+N more)" onto a clipped third
+                        // line, is structurally gone. "(+N more)" is folded
+                        // into the SECOND note's own text rather than added
+                        // as a third entry, so it can never exceed the
+                        // two-line budget either.
                         const NOTE_LINES: usize = 2;
-                        let body: Vec<String> = d
-                            .notes
-                            .iter()
-                            .take(NOTE_LINES)
-                            .map(|n| format!("{}  {}", mark_glyph(n.mark), n.text))
-                            .collect();
-                        let mut text = body.join("\r\n");
+                        let mut body: Vec<Note> =
+                            d.notes.iter().take(NOTE_LINES).cloned().collect();
                         if d.notes.len() > NOTE_LINES {
-                            text.push_str(&format!("  (+{} more)", d.notes.len() - NOTE_LINES));
+                            if let Some(last) = body.last_mut() {
+                                last.text
+                                    .push_str(&format!("  (+{} more)", d.notes.len() - NOTE_LINES));
+                            }
                         }
-                        set_text(notes, &text);
+                        body
                     }
-                }
+                };
+                show_notes(notes, body);
             }
             None => {
                 for id in SHORTCUT_CONTROLS {
@@ -3586,12 +3598,19 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // prompt still outranks the placeholder, and the commit that
                 // follows simply lands nowhere -- `on_edit_combo` reaches a
                 // model with no `selected` and changes nothing.
-                set_text(
-                    notes,
-                    cap_notes
-                        .as_deref()
-                        .unwrap_or("Select a shortcut, or press Add."),
-                );
+                //
+                // `Mark::Unknown` for the placeholder: it is an
+                // informational, not-yet-decided state -- the same meaning
+                // `row_condition` already gives `Mark::Unknown` elsewhere
+                // ("Checking installed apps...", "Not registered yet."), not
+                // a new case invented for this one line.
+                let body = cap_notes.clone().unwrap_or_else(|| {
+                    vec![Note {
+                        mark: Mark::Unknown,
+                        text: "Select a shortcut, or press Add.".into(),
+                    }]
+                });
+                show_notes(notes, body);
             }
         }
         // The card head's caption, and it is a TEXT write, not a geometry
@@ -5237,6 +5256,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SetBkMode(hdc, OPAQUE);
                     return LRESULT(theme_brush(field).0 as isize);
                 }
+                // `IDC_NOTES` is deliberately ABSENT since Task 12: it is
+                // `SS_OWNERDRAW` now, and an owner-draw static never asks
+                // its parent for a background brush at all -- `draw_chip`'s
+                // own controls (the seven toggle chips) are absent from this
+                // list for exactly the same reason, and `push_button_custom_draw`'s
+                // nine buttons never were in it either. `paint::draw_notes`
+                // paints this control's background itself, through
+                // `WM_DRAWITEM`.
                 let on_card = matches!(
                     id,
                     IDC_LBL_SECTION
@@ -5245,7 +5272,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         | IDC_GRP_EDITOR
                         | IDC_LBL_APP
                         | IDC_LBL_SHORTCUT
-                        | IDC_NOTES
                         | IDC_GRP_KEYBOARD
                         | IDC_CAPS
                         | IDC_LBL_HOLD
@@ -5301,6 +5327,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // control blank.
                 let di = &*(lp.0 as *const DRAWITEMSTRUCT);
                 if draw_chip(hwnd, di) {
+                    return LRESULT(1);
+                }
+                // `IDC_NOTES`, added in Task 12. `SHOWN_NOTES` rather than a
+                // read of `Ui::detail`: this arm is answered BEFORE
+                // `suppressed()` below, on `list_custom_draw`'s own rule --
+                // pure painting, no callback, cannot recurse into
+                // `apply_state` -- and a paint can arrive while `UI` is
+                // already borrowed, which is `CHIPS`'s reason too.
+                if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_NOTES {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    let body = SHOWN_NOTES.with(|c| c.borrow().clone());
+                    PAINT_THEME.with(|c| paint::draw_notes(di, &body, &mut c.borrow_mut(), dpi));
                     return LRESULT(1);
                 }
                 // `IDC_COMBO` and `IDC_TAP`, added in Task 9: both are
@@ -5575,13 +5613,21 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 //    first: the `Stop` button, all three of spec F.4's focus layers, the
 //    watchdog, `WM_CLOSE` (before the save prompt) and `WM_DESTROY`.
 
-/// The notes strip's text while a capture is live: the partial combo, then
-/// the hint.
+/// The notes strip's content while a capture is live: the partial combo,
+/// then the hint -- each a `Note` so `paint::draw_notes` draws it exactly
+/// like a row's own notes, through the same function.
 ///
-/// Indented through `mark_glyph(Mark::Ok)` -- the blank one -- so the two
-/// lines sit exactly where a healthy note sits. That is the only reason this
-/// goes through the glyph table rather than writing spaces: a second
-/// indentation rule is a second thing to keep in step with the first.
+/// **`Mark::Unknown` for both, not `Mark::Ok`.** The blank `Ok` glyph this
+/// used to borrow (`mark_glyph(Mark::Ok)`, deleted) was chosen only because
+/// it was blank -- pure alignment, nothing about the mark's real meaning.
+/// Now that alignment is structural (`draw_notes` draws every dot at the
+/// same fixed x regardless of colour), there is no reason left to borrow a
+/// mark whose real meaning is "registered and working". A capture in
+/// progress is informational, not a verdict either way -- exactly what
+/// `Mark::Unknown` already means elsewhere in this window ("Checking
+/// installed apps...", "Not registered yet."), so reusing it here says the
+/// same thing `row_condition` already says about not-yet-known state,
+/// rather than inventing a new case.
 ///
 /// **Two lines is the ceiling `notes_height` reserves, and this fits it
 /// exactly, not by accident.** The `Some(p)` arm below IS two lines -- the
@@ -5590,12 +5636,19 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 /// third capture line would clip exactly as a third NOTE line does, and
 /// nothing here would stop one from being added -- if one ever is, check it
 /// against this ceiling first.
-fn capture_notes(c: &Capture) -> String {
-    let g = mark_glyph(Mark::Ok);
-    match &c.partial {
-        Some(p) => format!("{g}  {p}\r\n{g}  {}", c.hint),
-        None => format!("{g}  {}", c.hint),
+fn capture_notes(c: &Capture) -> Vec<Note> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(p) = &c.partial {
+        out.push(Note {
+            mark: Mark::Unknown,
+            text: p.clone(),
+        });
     }
+    out.push(Note {
+        mark: Mark::Unknown,
+        text: c.hint.clone(),
+    });
+    out
 }
 
 /// Write a caption only when it would change.
@@ -5632,7 +5685,13 @@ fn capture_showing() -> bool {
 /// cleared by something, and there is nothing sensible to clear it on.
 unsafe fn say_unavailable() {
     if let Some(notes) = UI.with(|u| u.borrow().as_ref().map(|x| x.notes)) {
-        set_text(notes, HINT_UNAVAILABLE);
+        show_notes(
+            notes,
+            vec![Note {
+                mark: Mark::Bad,
+                text: HINT_UNAVAILABLE.to_string(),
+            }],
+        );
     }
 }
 
@@ -5643,8 +5702,8 @@ unsafe fn say_unavailable() {
 /// call from anywhere.
 unsafe fn show_capture(hwnd: HWND) {
     // ONE borrow, dropped on this line. `capture_notes` allocates but makes
-    // no OS call, so building the string inside it is sound; every send is
-    // below.
+    // no OS call, so building the `Vec<Note>` inside it is sound; every send
+    // is below.
     let Some((notes, body)) = UI.with(|u| {
         u.borrow()
             .as_ref()
@@ -5652,8 +5711,12 @@ unsafe fn show_capture(hwnd: HWND) {
     }) else {
         return;
     };
-    if text_of(notes) != body {
-        set_text(notes, &body);
+    // Compared against `SHOWN_NOTES`, not `text_of(notes)`: the window text
+    // is now a DERIVED plain-text mirror (`show_notes`'s own doc), so it is
+    // `SHOWN_NOTES` that says whether this call would actually change
+    // anything.
+    if SHOWN_NOTES.with(|c| *c.borrow() != body) {
+        show_notes(notes, body);
     }
     // Two writers on one value is what spec C.4 forbids, and this is the
     // half that enforces it: while the hook is recording, the five controls

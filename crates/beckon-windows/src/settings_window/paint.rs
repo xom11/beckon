@@ -1748,3 +1748,175 @@ pub(super) unsafe fn draw_combo_item(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache
         SelectObject(hdc, prev_font);
     }
 }
+
+/// The dot's diameter, at 96 DPI. `scale`d like every other literal in this
+/// file.
+const NOTE_DOT_D: i32 = 7;
+
+/// The gap between the dot's right edge and where a note's text starts.
+/// Matches `pad` everywhere else in this file a leading glyph precedes body
+/// text (`draw_combo_item`, `header_custom_draw`'s title, the Shortcut
+/// column's own ellipsis fallback) -- one number, not a fresh guess here.
+const NOTE_TEXT_GAP: i32 = 6;
+
+/// A severity WORD for `IDC_NOTES` under high contrast ONLY, prepended to a
+/// note's own text in place of the dot `draw_notes` skips there. See
+/// `draw_notes`'s own doc for why high contrast does not lean on colour
+/// here at all.
+///
+/// **Not `mark_glyph`.** That function (deleted, Task 12) served every
+/// theme and existed to keep a proportional-font glyph column aligned by
+/// padding the shorter string -- a problem this task removed by drawing a
+/// dot at a fixed x instead. This is a NEW, narrowly-scoped decision for one
+/// theme branch, and it says a WORD rather than a symbol precisely because a
+/// high-contrast user, who is disproportionately likely to be running a
+/// screen reader, is exactly the audience an ASCII glyph like `!!` served
+/// worst. `Ok` stays silent, matching the "a healthy row says nothing" rule
+/// the deleted function documented for the very same mark.
+fn hc_severity_word(m: Mark) -> &'static str {
+    match m {
+        Mark::Ok => "",
+        Mark::Warn => "Warning: ",
+        Mark::Bad => "Error: ",
+        Mark::Unknown => "Note: ",
+    }
+}
+
+/// Paint `IDC_NOTES` (Task 12): one line per note, a coloured dot at a fixed
+/// x, then the note's own text in `Role::Caption` at `text_muted`.
+///
+/// **Owner-draw now covers the WHOLE control, background included** --
+/// `draw_chip`'s own rule, for the same reason: `SS_OWNERDRAW` is a
+/// different VALUE of a STATIC's type field, not a flag beside `SS_LEFT`, so
+/// nothing paints this control's background but this function.
+/// `WM_CTLCOLORSTATIC` no longer reaches `IDC_NOTES` at all -- an owner-draw
+/// static never asks for one -- so it is removed from that arm's id list in
+/// `mod.rs`. `COLOR_WINDOW`, not `COLOR_BTNFACE`: `card`'s fallback
+/// everywhere else THIS FILE paints it (`card`, `list_custom_draw`'s resting
+/// row, `toggle`'s own wash, whose doc names this exact reasoning), not the
+/// `COLOR_BTNFACE` the old `WM_CTLCOLORSTATIC` arm used, which this control
+/// no longer reaches.
+///
+/// **The dot's x is fixed, never measured.** The old `!`/`!!` scheme kept
+/// two notes aligned with a trailing space baked into the shorter glyph,
+/// which the deleted `mark_glyph`'s own doc measured as never quite equal
+/// across four marks and two DPIs (up to 15 px of drift). A dot painted at
+/// `rc.left` cannot drift: every note's text starts at `rc.left + dot
+/// diameter + gap` whether its mark is `Ok` or `Bad`.
+///
+/// **High contrast: colour does not distinguish the four marks; the word
+/// does, and no dot is drawn at all.** `ThemeCache::col` answers
+/// `GetSysColor` for every one of the four dot colours under
+/// `Theme::HighContrast`, and the system palette an actual high-contrast
+/// theme ships is a small, THEME-CHOSEN set -- there is no portable way to
+/// prove four `sys` indices resolve to four visually distinct colours on
+/// every high-contrast theme a user might have picked, and this host cannot
+/// run Windows to check one. So this function does not gamble on it: the
+/// dot is skipped entirely under high contrast (the `sys` fallbacks passed
+/// to `cache.col` below for the four marks are consequently dead code on
+/// that branch, kept only because `col`'s signature requires one --
+/// `flag_colours`' own doc names the same situation), and `hc_severity_word`
+/// prepends a WORD to the note's text instead. This is the same choice
+/// `draw_flag_pill` already makes for the App column's flag: plain,
+/// uncoloured text under high contrast, full stop -- not a new policy
+/// invented here.
+///
+/// Font and line height come from `di.hwndItem`'s own `WM_GETFONT` and an
+/// "Ag" measurement, matching `notes_height`'s own calculation in the same
+/// `Role::Caption` font -- so what is painted here never exceeds the
+/// two-line budget that function reserves, as long as `notes` holds at most
+/// two entries (`show_notes`'s own cap in `mod.rs`, unchanged by this task).
+pub(super) unsafe fn draw_notes(
+    di: &DRAWITEMSTRUCT,
+    notes: &[Note],
+    cache: &mut ThemeCache,
+    dpi: u32,
+) {
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+
+    let bg = cache.col(|p| p.card, COLOR_WINDOW);
+    FillRect(hdc, &rc, cache.brush(bg));
+
+    if notes.is_empty() {
+        return;
+    }
+
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let font = if font.is_invalid() {
+        HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+    } else {
+        font
+    };
+    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
+
+    // The same "Ag" measurement `notes_height` uses, in the SAME font --
+    // so this can never paint more than the two lines that function
+    // budgeted, as long as the caller respects the two-entry cap.
+    let mut sz = SIZE::default();
+    let ag = wide("Ag");
+    let _ = GetTextExtentPoint32W(hdc, &ag[..ag.len() - 1], &mut sz);
+    let line_h = if sz.cy > 0 { sz.cy } else { scale(16, dpi) };
+
+    let dot_d = scale(NOTE_DOT_D, dpi);
+    let dot_x = rc.left;
+    let text_x = dot_x + dot_d + scale(NOTE_TEXT_GAP, dpi);
+    let ink = cache.col(|p| p.text_muted, COLOR_WINDOWTEXT);
+
+    SetBkMode(hdc, TRANSPARENT);
+    let mut y = rc.top;
+    for n in notes {
+        if !hc {
+            let dot = match n.mark {
+                Mark::Ok => cache.col(|p| p.ok, COLOR_WINDOWTEXT),
+                Mark::Warn => cache.col(|p| p.warn, COLOR_WINDOWTEXT),
+                Mark::Bad => cache.col(|p| p.bad, COLOR_WINDOWTEXT),
+                Mark::Unknown => cache.col(|p| p.text_faint, COLOR_GRAYTEXT),
+            };
+            let dot_top = y + (line_h - dot_d) / 2;
+            let brush = CreateSolidBrush(dot);
+            let pen = CreatePen(PS_SOLID, 1, dot);
+            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+            let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+            let _ = Ellipse(hdc, dot_x, dot_top, dot_x + dot_d, dot_top + dot_d);
+            if !prev_pen.is_invalid() {
+                SelectObject(hdc, prev_pen);
+            }
+            if !prev_brush.is_invalid() {
+                SelectObject(hdc, prev_brush);
+            }
+            let _ = DeleteObject(HGDIOBJ(pen.0));
+            let _ = DeleteObject(HGDIOBJ(brush.0));
+        }
+
+        SetTextColor(hdc, ink);
+        let mut tr = RECT {
+            left: text_x,
+            top: y,
+            right: rc.right,
+            bottom: y + line_h,
+        };
+        let line = if hc {
+            format!("{}{}", hc_severity_word(n.mark), n.text)
+        } else {
+            n.text.clone()
+        };
+        let mut t = wide(&line);
+        let tn = t.len() - 1;
+        DrawTextW(
+            hdc,
+            &mut t[..tn],
+            &mut tr,
+            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+        y += line_h;
+    }
+
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+}
