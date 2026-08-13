@@ -52,9 +52,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DrawIconEx, GetClassLongPtrW, GetClientRect, GetWindowRect, DI_NORMAL,
-    GCLP_HICONSM, HICON, HTCAPTION, HTCLOSE, HTMINBUTTON, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER,
-    SM_CYSIZEFRAME, WM_NCCALCSIZE,
+    DrawIconEx, GetClassLongPtrW, GetClientRect, GetWindowRect, DI_NORMAL, GCLP_HICONSM, HICON,
+    HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT, HTCLOSE, HTLEFT, HTMINBUTTON,
+    HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, SM_CXPADDEDBORDER, SM_CYSIZEFRAME,
 };
 
 /// The bar's height, at 96 DPI. `layout` offsets every band's starting `y`
@@ -118,25 +118,14 @@ fn button_rects(right: i32, top: i32, dpi: u32) -> [(RECT, u32); 2] {
 /// The two forms differ only in how `lParam` is shaped: `FALSE` gives a bare
 /// `RECT`, `TRUE` gives `NCCALCSIZE_PARAMS` whose `rgrc[0]` plays the same
 /// role. Both are window-rect-in, client-rect-out.
-pub(super) fn nccalcsize(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // BOTH forms, and that is the whole fix. Every sample of this technique
-    // handles only `wParam == TRUE` and passes `FALSE` to `DefWindowProcW`,
-    // which is what this function did -- so the caption-reclaiming branch
-    // never ran and the window wore two title bars.
-    let top: *mut i32 = unsafe {
-        if wparam.0 == 0 {
-            // A single RECT: proposed window rect in, client rect out.
-            std::ptr::addr_of_mut!((*(lparam.0 as *mut RECT)).top)
-        } else {
-            // `rgrc[0]`: same contract, inside NCCALCSIZE_PARAMS.
-            std::ptr::addr_of_mut!((*(lparam.0 as *mut NCCALCSIZE_PARAMS)).rgrc[0].top)
-        }
-    };
-    let before_top = unsafe { top.read() };
-    let _ = unsafe { DefWindowProcW(hwnd, WM_NCCALCSIZE, wparam, lparam) };
-    // Give the caption band back to the client. The side and bottom borders
-    // stay whatever DefWindowProc made them, so resizing is untouched.
-    unsafe { top.write(before_top) };
+pub(super) fn nccalcsize(_hwnd: HWND, _wparam: WPARAM, _lparam: LPARAM) -> LRESULT {
+    // Returning 0 without calling `DefWindowProcW` leaves the rect exactly as
+    // it arrived -- the proposed WINDOW rect -- so the client becomes the whole
+    // window and `paint` fills every pixel of it. Both `wParam` forms are
+    // handled by doing nothing to either, which is why neither parameter is
+    // read: `FALSE` hands over a bare `RECT` and `TRUE` an `NCCALCSIZE_PARAMS`
+    // whose `rgrc[0]` plays the same role, and leaving each untouched says the
+    // same thing.
     LRESULT(0)
 }
 
@@ -180,9 +169,38 @@ pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
     if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
         return None;
     }
+    // With the whole frame reclaimed there is no non-client border left for
+    // `DefWindowProc` to find a resize direction in, so every edge and corner
+    // is answered here. Corners first: a point in the bottom-left corner is in
+    // both the left strip and the bottom strip, and answering `HTLEFT` there
+    // would cost the diagonal cursor.
+    let border = unsafe {
+        GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    };
+    let l = pt.x < rc.left + border;
+    let r = pt.x >= rc.right - border;
+    let t = pt.y < rc.top + border;
+    let b = pt.y >= rc.bottom - border;
+    let edge = match (l, r, t, b) {
+        (true, _, true, _) => Some(HTTOPLEFT),
+        (_, true, true, _) => Some(HTTOPRIGHT),
+        (true, _, _, true) => Some(HTBOTTOMLEFT),
+        (_, true, _, true) => Some(HTBOTTOMRIGHT),
+        (true, ..) => Some(HTLEFT),
+        (_, true, ..) => Some(HTRIGHT),
+        (_, _, true, _) => Some(HTTOP),
+        (_, _, _, true) => Some(HTBOTTOM),
+        _ => None,
+    };
+    if let Some(e) = edge {
+        return Some(LRESULT(e as isize));
+    }
+
     let bar_h = rc.top + TITLEBAR_H * dpi as i32 / 96;
     if pt.y >= bar_h {
-        return None;
+        // Below the bar and not on an edge: ordinary client, and the child
+        // controls under it must keep getting their own mouse messages.
+        return Some(LRESULT(HTCLIENT as isize));
     }
     // The resize border wins over the caption along the very top edge,
     // otherwise the window cannot be resized upward at all.
@@ -194,12 +212,6 @@ pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
     // one is the same two constants under their Y names. Omitting
     // `SM_CXPADDEDBORDER` here left the top edge's grabbable strip half the
     // width of every other window on the machine.
-    let border = unsafe {
-        GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
-    };
-    if pt.y < rc.top + border {
-        return None;
-    }
     if let Some(ht) = hit_button(hwnd, pt, dpi) {
         return Some(LRESULT(ht as isize));
     }
