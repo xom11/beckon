@@ -4550,26 +4550,18 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     PAINT_THEME.with(|c| {
         c.borrow_mut().rebuild(t);
     });
-    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
-    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
-    // High contrast turning on is a theme change (`Theme::HighContrast`
-    // differs from whatever `Theme` preceded it), so it reaches here and
-    // re-evaluating the backdrop is what forces `Backdrop::Opaque`
-    // immediately rather than leaving Mica or Alpha showing until the next
-    // unrelated repaint trigger happens to call `apply_current_backdrop`.
-    // Leaving high contrast re-evaluates the same way and can bring Mica or
-    // Alpha back.
-    //
-    // `apply_current_backdrop` is unconditional: transparency effects being
-    // toggled off/on (via Settings > Personalization > Colors) affects
-    // whether we can use Mica or Alpha, but doesn't change the Theme enum.
-    // Without this unconditional call, toggling transparency with the settings
-    // window open leaves the window at the wrong tier until an unrelated
-    // theme event or a reopen. The call is idempotent when values unchanged.
+    // The backdrop tier depends on `EnableTransparency` and the high-contrast
+    // flag, NOT on `Theme` — toggling Transparency in Settings > Personalization >
+    // Colors broadcasts "ImmersiveColorSet" without changing Theme, so gating this
+    // on `changed` would leave the window stuck at its old tier. The DWM and
+    // SetWindowLong calls underneath are idempotent, so running it every time
+    // costs nothing.
     apply_current_backdrop(hwnd);
     if !changed {
         return;
     }
+    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
