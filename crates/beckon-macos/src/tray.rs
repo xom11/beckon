@@ -6,13 +6,23 @@
 //! `MenuEntry` — so `serve::build_entries` composes one menu for both
 //! platforms and neither side owns a private notion of what a row is.
 //!
-//! **Nothing here proves an icon appeared.** Measured on macmini
-//! 2026-08-12: in the "Background" bootstrap namespace an SSH shell gets,
-//! `TransformProcessType` returns `OSStatus 0` and `statusItemWithLength`
-//! returns a live `NSStatusItem` with a non-nil `button`, while the screen
-//! shows nothing and `screencapture` refuses to run at all. Every check of
-//! this module has to happen in an Aqua session, and has to carry a control
-//! — see `examples/tray_probe.rs`.
+//! **Nothing here proves an icon appeared, and no API in this process can.**
+//! Two things were measured on macmini, and both are load-bearing:
+//!
+//! - 2026-08-12, in the "Background" bootstrap namespace an SSH shell gets:
+//!   `TransformProcessType` returns `OSStatus 0` and `statusItemWithLength`
+//!   returns a live `NSStatusItem` with a non-nil `button`, while the screen
+//!   shows nothing and `screencapture` refuses to run at all.
+//! - 2026-08-13, in a real Aqua session: a status item that a person could
+//!   plainly SEE on the menu bar was **not listed by
+//!   `CGWindowListCopyWindowInfo`** — not at any layer, while an ordinary
+//!   window of the same process was listed in the same call. So the window
+//!   server cannot be asked either; "no window" is not "no icon".
+//!
+//! Between them: constructing successfully proves nothing, screenshotting
+//! needs a grant about something else, and enumerating windows structurally
+//! misses this one. The instrument is a person looking at the menu bar, and
+//! `testing/macos_tray_probe.sh` asks one rather than inferring.
 //!
 //! ## Main thread
 //!
