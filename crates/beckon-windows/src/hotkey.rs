@@ -70,29 +70,12 @@ type TickCallbacks = Vec<(usize, Box<dyn FnMut()>)>;
 /// One row of the tray context menu. `hotkey.rs` draws it and reports the
 /// click; what any row *means* is entirely the caller's business, which is
 /// why there is no enum of actions here.
-pub struct MenuEntry {
-    pub id: u32,
-    pub label: String,
-    /// `None` for a plain item, `Some(bool)` for a check box.
-    pub checked: Option<bool>,
-    pub enabled: bool,
-}
-
-impl MenuEntry {
-    /// A horizontal rule. Recognised by its empty label.
-    pub fn separator() -> Self {
-        Self {
-            id: 0,
-            label: String::new(),
-            checked: None,
-            enabled: false,
-        }
-    }
-}
-
-/// Delivered to `on_click` when the tray icon is double-clicked. Callers
-/// must number their real entries below this.
-pub const MENU_ID_DOUBLE_CLICK: u32 = u32::MAX;
+///
+/// Defined in `beckon_core::menu` and re-exported here so that
+/// `serve::build_entries` can compose one menu for every platform. Kept as a
+/// re-export rather than moving the call sites: `hotkey::MenuEntry` is what
+/// this module's own code and its tests already say.
+pub use beckon_core::menu::{MenuEntry, MENU_ID_DOUBLE_CLICK};
 
 /// Our tray icon's callback message. WM_APP+1 rather than WM_USER+n: WM_USER
 /// is only private to a window *class*, and this window's class is shared

@@ -30,7 +30,7 @@ but the schema changes between Plasma versions.)
 1. **System Settings → Shortcuts → Custom Shortcuts**
 2. **Edit → New → Global Shortcut → Command/URL**
 3. Trigger tab: press `Meta+C` (Meta = Super = the Windows key).
-4. Action tab: command = `beckon Claude` (use `which beckon` if `beckon`
+4. Action tab: command = `beckon "Google Chrome"` (use `which beckon` if `beckon`
    isn't on the system-wide PATH KDE inherits).
 5. Click **Apply**.
 6. Repeat for each binding you want.
@@ -39,16 +39,18 @@ Recommended bindings (matching the rest of the examples):
 
 | Trigger | Action |
 |---|---|
-| `Meta+Space` | `beckon kitty` |
-| `Meta+C`     | `beckon Claude` |
-| `Meta+B`     | `beckon Brave` |
-| `Meta+E`     | `beckon Cursor` |
-| `Meta+D`     | `beckon Discord` |
+| `Meta+T`     | `beckon kitty` |
+| `Meta+C`     | `beckon "Google Chrome"` |
+| `Meta+V`     | `beckon "Visual Studio Code"` |
+| `Meta+F`     | `beckon Dolphin` (Plasma's file manager) |
+| `Meta+S`     | `beckon Spotify` |
 
-KDE will warn if a chosen shortcut conflicts with an existing one (it
-binds `Meta+Space` to KRunner by default). Either accept the
-override or pick a different letter — pressing the same shortcut
-opens the previous owner's UI for confirmation.
+KDE will warn if a chosen shortcut conflicts with an existing one.
+Either accept the override or pick a different letter — pressing the
+same shortcut opens the previous owner's UI for confirmation. This is
+worth knowing on Plasma in particular, which ships more Meta bindings
+than most desktops: `Meta+Space` is KRunner, which is one reason the
+terminal is on `T` here rather than on the space bar.
 
 ## Names
 

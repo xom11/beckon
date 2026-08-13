@@ -49,15 +49,15 @@ Run `beckon doctor` to confirm the trust state.
 
 ## App Names on macOS
 
-Most macOS apps surface their `localizedName` ("Claude", "Brave Browser",
-"Cursor"). PWAs installed via Brave/Chrome land in
+Most macOS apps surface their `localizedName` ("Google Chrome", "Visual
+Studio Code", "Finder"). PWAs installed via Brave/Chrome land in
 `~/Applications/<Browser> Apps.localized/<Name>.app` and beckon scans
 that subdir too, so PWAs work the same way as native apps.
 
 ```sh
 beckon installed        # all installed apps
 beckon list             # currently running apps
-beckon resolve Claude   # validate one id
+beckon resolve Finder   # validate one id
 ```
 
 ## Troubleshooting

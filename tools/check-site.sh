@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# The landing page's test suite. Every check here is one of the five
-# "verifiable without a browser" items in
-# docs/superpowers/specs/2026-08-12-github-pages-landing-design.md.
+# The landing page's test suite. Checks 1-5 are the five "verifiable without a
+# browser" items in
+# docs/superpowers/specs/2026-08-12-github-pages-landing-design.md; checks 6-8
+# were added by
+# docs/superpowers/specs/2026-08-13-landing-redesign-design.md.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
 ok()  { printf '  ok   %s\n' "$1"; }
 bad() { printf ' FAIL  %s\n' "$1"; fail=1; }
+skip() { printf ' skip  %s\n' "$1"; }
 
 H=site/index.html
 C=site/beckon.css
 J=site/beckon.js
+M=site/desk.js
+T=site/desk.test.mjs
 
-for f in "$H" "$C" "$J"; do
+for f in "$H" "$C" "$J" "$M" "$T"; do
   [ -f "$f" ] || { bad "missing $f"; }
 done
 [ "$fail" -eq 1 ] && { printf '\n%s\n' "site/ is not built yet"; exit 1; }
@@ -31,8 +36,8 @@ if grep -nEi "url\(\s*[\"']?https?://" "$C"; then
 else
   ok "no external url() in CSS"
 fi
-if grep -nEi '(fetch|XMLHttpRequest|import)\s*\(\s*["'"'"']https?://' "$J"; then
-  bad "network call in beckon.js (above)"
+if grep -nEi '(fetch|XMLHttpRequest|import)\s*\(\s*["'"'"']https?://' "$J" "$M"; then
+  bad "network call in JS (above)"
 else
   ok "no network calls in JS"
 fi
@@ -66,12 +71,20 @@ done
 # --- 4. reduced motion ------------------------------------------------------
 # The page's argument IS the animation, so turning motion off must land on the
 # final frame, not on nothing.
+#
+# `animation-fill-mode: forwards` is checked because the other two are NOT
+# sufficient and this check used to say they were. Measured under Chrome's
+# reduced-motion emulation: a 1ms single-iteration animation runs and then
+# returns the element to its base style, which is the OPENING frame — so the
+# page froze on the one picture that contradicts its own caption while this
+# check reported ok. All three, or the guarantee is not a guarantee.
 if grep -q 'prefers-reduced-motion: reduce' "$C" \
    && awk '/prefers-reduced-motion: reduce/,/^\}/' "$C" | grep -q 'animation-duration' \
-   && awk '/prefers-reduced-motion: reduce/,/^\}/' "$C" | grep -q 'animation-iteration-count: 1'; then
+   && awk '/prefers-reduced-motion: reduce/,/^\}/' "$C" | grep -q 'animation-iteration-count: 1' \
+   && awk '/prefers-reduced-motion: reduce/,/^\}/' "$C" | grep -q 'animation-fill-mode: forwards'; then
   ok "reduced-motion block pins animations to their final frame"
 else
-  bad "no reduced-motion block, or it does not pin animation-duration + iteration-count"
+  bad "reduced-motion block missing, or it does not pin duration + iteration-count + fill-mode"
 fi
 # Per demo, not "at least one of each": the old form counted any line whose
 # class attribute contained the substring "demo" (so .how-demos and .demo-cap
@@ -111,10 +124,17 @@ nix run github:xom11/beckon -- list
 CMDS
 [ "$cmd_fail" -eq 0 ] && ok "install commands match README byte for byte"
 
-# The other half of spec item 5, and it was missing: the letter->app table.
-# Read the rows out of README's own table and require the page to carry the
-# same pairing, so re-binding a letter in examples/ cannot leave the page
-# teaching the old one.
+# The other half of spec item 5: the letter->app pairing. Read the rows out of
+# README's own table and require the page to carry the same pairing, so
+# re-binding a letter in examples/ cannot leave the page teaching the old one.
+#
+# THE PAGE NO LONGER PRINTS A LETTER TABLE, so this no longer looks for one. It
+# used to grep for a <kbd> row in #config, which was a third listing of
+# something the docks and the cheat sheet already showed twice, and it was
+# deleted with the section's other redundancies. The GUARANTEE did not move
+# with it: the pairing still lives in exactly two places, and both are checked
+# below. Do not weaken this to one — the two can drift apart, and if they do the
+# icon a reader presses and the sheet telling them to press it disagree.
 key_fail=0
 keys=0
 while IFS='|' read -r _ letter app _; do
@@ -122,13 +142,153 @@ while IFS='|' read -r _ letter app _; do
   app=$(printf '%s' "$app" | sed 's/^ *//;s/ *$//')
   [ -z "$letter" ] && continue
   keys=$((keys + 1))
-  grep -qF "<kbd class=\"key\">$letter</kbd></th><td>$app</td>" "$H" \
-    || { bad "letter table drifted from README: $letter -> $app"; key_fail=1; }
+  # 1. The dock prints the letter ON the icon — the one place where the key and
+  #    the thing it reaches are the same object. Both desks carry a full dock,
+  #    so both have to agree: hence -c and the count, not a bare grep.
+  n=$(grep -cF "data-app=\"$app\" data-key=\"$letter\"" "$H" || true)
+  [ "$n" -eq 2 ] \
+    || { bad "dock icon for $app does not print $letter on both desks (found $n of 2)"; key_fail=1; }
+  # 2. DESK_APPS in desk.js, which is what fills the cheat sheet pinned to the
+  #    hero and what deskAppOf() resolves a keypress through. A letter that is
+  #    right in the markup and wrong here is a key that prints one app and
+  #    beckons another.
+  grep -qF "key: '$letter', name: '$app'" "$M" \
+    || { bad "DESK_APPS in desk.js does not map $letter to $app"; key_fail=1; }
 done < <(awk '/^\| Letter \| App \|/{f=1;next} f&&/^\|---/{next} f&&/^\|/{print} f&&!/^\|/{exit}' README.md)
 if [ "$keys" -eq 0 ]; then
   bad "could not find README's letter->app table"
 elif [ "$key_fail" -eq 0 ]; then
-  ok "letter->app table matches README ($keys rows)"
+  ok "letter->app pairing matches README in the docks and desk.js ($keys rows)"
+fi
+
+# The five branch names. They replaced the step numbers (4, 5, 5a-5c) that the
+# table used to print, and they now exist in two places that must agree: the
+# table in #how, and DESK_STEP_NAMES in desk.js, which is what the readout under
+# the desk prints when that branch fires. A reader who presses a key sees the
+# readout name and looks for the row with the same word; if these drift, that
+# stops working and nothing else would notice.
+name_fail=0
+for n in Launch Focus Cycle Back Hide; do
+  grep -q "class=\"how-do\">$n<" "$H" \
+    || { bad "the #how table does not name the '$n' branch"; name_fail=1; }
+  grep -q "'$n'" "$M" \
+    || { bad "desk.js has no '$n' in DESK_STEP_NAMES"; name_fail=1; }
+done
+# And the numbers must not come back as a visible column.
+if grep -q 'class="how-step"' "$H"; then
+  bad "the #how table is printing step numbers again"
+  name_fail=1
+fi
+[ "$name_fail" -eq 0 ] && ok "the five branches are named, in the table and in desk.js"
+
+# --- 6. the algorithm the page draws is the algorithm it describes ----------
+# site/desk.js is the page's only copy of beckon's focus algorithm, and it is
+# pure precisely so this can run. Before it existed, "press it again and it
+# cycles" was a sentence beside an animation and nothing could check either.
+#
+# Skipped rather than failed when node is absent: this is a Rust repository and
+# a contributor is not required to have a JS runtime. CI does — GitHub's
+# ubuntu-latest ships node — so the check is enforced where it counts.
+if command -v node >/dev/null 2>&1; then
+  if node --test "$T" >/tmp/beckon-desk-test.$$ 2>&1; then
+    # node --test prefixes its summary with a multibyte glyph, so this matches
+    # on the word rather than on a column.
+    ok "desk model passes $(grep -oE '^[^0-9]*pass [0-9]+' /tmp/beckon-desk-test.$$ | grep -oE '[0-9]+') tests"
+  else
+    bad "desk model tests failed:"
+    sed 's/^/       /' /tmp/beckon-desk-test.$$
+  fi
+  rm -f /tmp/beckon-desk-test.$$
+else
+  skip "node not installed, desk model tests not run"
+fi
+
+# --- 7. all three machines are still reachable -----------------------------
+# The hero draws ONE desk, the reader's, so the claim "the same key on every OS
+# you use" now rests on two things: chrome the CSS can draw for each of the
+# three, and a chord row per OS in the markup — the row set a JS-off reader
+# keeps in full, since they have no OS strip to press. Lose either half and the
+# headline is promising something the page no longer shows.
+desk_fail=0
+for os in macos windows linux; do
+  grep -q "\.desk\[data-os=\"$os\"\]" "$C" \
+    || { bad "beckon.css draws no chrome for $os"; desk_fail=1; }
+  grep -q "class=\"os-row\" data-os=\"$os\"" "$H" \
+    || { bad "the hero has no $os chord row"; desk_fail=1; }
+done
+grep -q 'class="mods hero-chords"' "$H" \
+  || { bad "the hero chord rows are gone"; desk_fail=1; }
+[ "$desk_fail" -eq 0 ] && ok "all three machines are drawable and named"
+
+# --- 8. no control on screen that silently does nothing --------------------
+# Every one of these is inert without JS, so every one of them must ship with
+# the `hidden` attribute for beckon.js to remove. The install PANELS are the
+# mirror image and must NOT ship hidden — a reader with JS off needs all four.
+ctl_fail=0
+while IFS= read -r id; do
+  [ -z "$id" ] && continue
+  grep -qE "id=\"$id\"[^>]*hidden|hidden[^>]*id=\"$id\"" "$H" \
+    || { bad "control #$id does not ship hidden"; ctl_fail=1; }
+done <<'CTLS'
+os-switch
+theme
+hero-press
+hero-os
+how-readout
+hud
+CTLS
+# `how-press` was on this list until the #how section stopped carrying a press
+# row of its own. It is not hidden — it does not exist, and the element must not
+# come back without this line coming back with it.
+if grep -q 'id="how-press"' "$H"; then
+  bad "#how-press is back in the markup — add it to the CTLS list above"
+  ctl_fail=1
+fi
+[ "$ctl_fail" -eq 0 ] && ok "every JS-only control ships hidden"
+
+if grep -qE 'class="panel"[^>]*hidden' "$H"; then
+  bad "an install panel ships hidden — JS-off readers lose it"
+else
+  ok "all four install panels ship visible"
+fi
+
+# The guard above is a regex over `class="panel"`, so it stops being able to
+# match the moment a panel's class list grows — `class="panel is-active"` makes
+# it vacuous and it reports green whatever the markup does. Counting the bare
+# form is what keeps the check honest.
+n=$(grep -c 'class="panel"' "$H" || true)
+if [ "$n" -eq 4 ]; then
+  ok "all four panels are still bare class=\"panel\" (check 8 can see them)"
+else
+  bad "expected 4 bare class=\"panel\" attributes, found $n — check 8's guard is now vacuous"
+fi
+
+# --- 9. the skins are actually three skins ---------------------------------
+# The token audit in check 2 proves a NAME exists on bare :root. It cannot see a
+# forgotten override — and a form token that is never restated for Windows and
+# Linux silently serves them the macOS value, so the page's whole "it wears your
+# machine" thesis is refuted by the page itself with every other check green.
+#
+# beckon.css marks the OS-varying tokens with @os-parity begin/end. Every one of
+# them has to appear in all three :root[data-os="…"] blocks in §1c.
+parity=$(awk '/@os-parity begin/,/@os-parity end/' "$C" | grep -oE '^\s+--[a-zA-Z0-9-]+' | tr -d ' ')
+if [ -z "$parity" ]; then
+  bad "no @os-parity block in beckon.css — the skin tokens are unguarded"
+else
+  parity_fail=0
+  for os in macos windows linux; do
+    block=$(awk -v pat=":root\\[data-os=\"$os\"\\], .door\\[data-os=\"$os\"\\] \\{" \
+              'index($0, "@os-parity") { next }
+               $0 ~ /^:root\[data-os=/ && index($0, "\"'"$os"'\"") { f=1 }
+               f { print }
+               f && /^\}/ { exit }' "$C")
+    for t in $parity; do
+      printf '%s\n' "$block" | grep -q -- "$t:" \
+        || { bad "$t is not overridden for $os — that skin silently gets the macOS value"; parity_fail=1; }
+    done
+  done
+  [ "$parity_fail" -eq 0 ] \
+    && ok "every @os-parity token is overridden in all three skins ($(printf '%s\n' "$parity" | wc -l | tr -d ' ') tokens)"
 fi
 
 printf '\n'

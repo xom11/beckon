@@ -23,8 +23,8 @@ press hotkey
 cargo install --git https://github.com/xom11/beckon
 
 # 2. discover the Names beckon sees on your machine
-beckon installed | grep -i claude     # is "Claude" the right Name?
-beckon resolve Claude                 # confirm: shows match type + Exec
+beckon installed | grep -i chrome     # is "Google Chrome" the right Name?
+beckon resolve "Google Chrome"        # confirm: shows match type + Exec
 beckon doctor                         # diagnose your environment
 
 # 3. wire a hotkey via your existing dotfile — pick yours from
@@ -139,7 +139,7 @@ To pull beckon into your own flake, add the overlay:
 The hot path is `beckon <id>` — invoke from a hotkey binding:
 
 ```sh
-beckon Claude            # focus / launch / cycle Claude
+beckon Spotify           # focus / launch / cycle Spotify
 ```
 
 Eight names are reserved for subcommands — `list`, `installed`, `search`,
@@ -181,8 +181,10 @@ Apps.localized/*.app`):
 When the resolved exe is a launcher stub (e.g. Brave PWA `chrome_proxy.exe` →
 `brave.exe`), beckon falls back to title matching against running windows.
 
-Names are stable across machines. Brave PWA hashes are not — bind to `Claude`,
-not `brave-fmpnliohj...-Default` or `com.vivaldi.Vivaldi.app.<hash>`.
+Names are stable across machines. Chromium PWA hashes are not — bind to the
+PWA's own display name, not `brave-fmpnliohj...-Default` or
+`com.vivaldi.Vivaldi.app.<hash>`. That hash is minted locally when you install
+the PWA, so it differs on your second laptop while the name does not.
 On Windows, prefer exact friendly names such as `Terminal`, `Settings`, and
 `File Explorer`; shortened `Explorer` can collide with shortcuts that launch
 through `explorer.exe`.
@@ -192,8 +194,8 @@ through `explorer.exe`.
 ```sh
 beckon list              # list running apps with their app_ids
 beckon installed         # list installed apps (parsed from .desktop)
-beckon search claude     # fuzzy-search ids matching "claude"
-beckon resolve Claude    # show how an id resolves (match type, exec, status)
+beckon search files      # fuzzy-search ids matching "files"
+beckon resolve Spotify   # show how an id resolves (match type, exec, status)
 beckon doctor            # check environment (compositor / IPC / notification daemon)
 ```
 
@@ -209,22 +211,41 @@ remember the letter, not the modifier:
 
 | Letter | App |
 |---|---|
-| `Space` | terminal |
-| `C` | Claude |
-| `B` | Brave |
-| `E` | Cursor |
-| `D` | Discord |
+| `T` | Terminal |
+| `C` | Chrome |
+| `V` | VS Code |
+| `F` | Files |
+| `S` | Spotify |
+
+Each letter names the app, which is the whole point of binding by letter
+rather than by modifier. Five different kinds of program, so the set is
+useful on a machine that has none of your other habits.
 
 Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
 `Ctrl+Win+Alt` on Windows. Replace the Names with whatever
 `beckon installed` reports on your machine.
+
+**Three of these are named differently per OS, and that is the point of
+`beckon installed`.** The examples use the Name each system actually
+reports:
+
+| Letter | macOS | Windows | Linux |
+|---|---|---|---|
+| `T` | `Terminal` | `Terminal` | `kitty` |
+| `C` | `Google Chrome` | `Google Chrome` | `Google Chrome` |
+| `V` | `Visual Studio Code` | `Visual Studio Code` | `Visual Studio Code` |
+| `F` | `Finder` | `File Explorer` | `Files` (GNOME) / `Dolphin` (KDE) |
+| `S` | `Spotify` | `Spotify` | `Spotify` |
+
+A file manager is the clearest case: every desktop ships one and no two
+agree on what it is called. `beckon search files` finds yours.
 
 ## Resident mode (macOS & Windows)
 
 `beckon serve shortcuts.toml` turns beckon into the hotkey host itself —
 no Hammerspoon/AHK layer needed. The file is flat TOML, one combo per line:
 
-    "ctrl+super+alt+t" = "kitty"
+    "ctrl+super+alt+t" = "Terminal"
     "ctrl+super+alt+shift+t" = "Telegram Web"
 
 Ready-to-use setups, including the launchd agent and the Scheduled Task

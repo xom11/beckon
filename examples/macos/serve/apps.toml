@@ -17,8 +17,8 @@
 # Hyper = ctrl+super+alt, matching the Hammerspoon example. Swap the
 # Names for whatever `beckon installed` reports on your machine.
 
-"ctrl+super+alt+space" = "kitty"
-"ctrl+super+alt+c"     = "Claude"
-"ctrl+super+alt+b"     = "Brave Browser"
-"ctrl+super+alt+e"     = "Cursor"
-"ctrl+super+alt+d"     = "Discord"
+"ctrl+super+alt+t"     = "Terminal"
+"ctrl+super+alt+c"     = "Google Chrome"
+"ctrl+super+alt+v"     = "Visual Studio Code"
+"ctrl+super+alt+f"     = "Finder"
+"ctrl+super+alt+s"     = "Spotify"

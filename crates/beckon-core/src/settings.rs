@@ -289,6 +289,62 @@ pub struct ControlState {
     pub editable: bool,
 }
 
+/// Everything a settings window reports back. The caller owns all policy:
+/// what an edit means, whether a close is allowed, what Save writes.
+///
+/// Defined here rather than in a per-OS crate for the same reason
+/// `ControlState` is: the window is a renderer of `ControlState` and a
+/// raiser of these, and neither half is Win32- or AppKit-shaped. Both
+/// `beckon_windows::settings_window` and `beckon_macos::settings_window`
+/// implement exactly this, so `serve.rs` builds one set of callbacks.
+pub struct Callbacks {
+    /// A row became current. The index is a **model** row -- the window has
+    /// already mapped it through `ListItem::row`, because a list widget
+    /// only ever knows the position within the filtered list it was given.
+    pub on_select: Box<dyn FnMut(usize)>,
+    /// A row's tick changed: `(model row, ticked)`. Independent of
+    /// `on_select` -- one click can raise both, and neither implies the
+    /// other.
+    pub on_mark: Box<dyn FnMut(usize, bool)>,
+    pub on_edit_combo: Box<dyn FnMut(String)>,
+    /// The shortcut controls now spell a whole chord: find out whether
+    /// anything else already has it.
+    ///
+    /// Separate from `on_edit_combo`, and raised FIRST, for two reasons
+    /// that are both about not lying:
+    ///
+    /// 1. **It is a global OS mutation**, however brief -- one hotkey
+    ///    registration round trip -- so it must be raised by a change to the
+    ///    shortcut and by nothing else.
+    /// 2. **The model must still hold the row's PREVIOUS chord** when the
+    ///    caller decides. `probe_plan`'s "Unchanged - this row already uses
+    ///    it" compares the typed chord against the row's own, so a probe
+    ///    asked after `on_edit_combo` has written it would find every chord
+    ///    unchanged and never ask the OS anything.
+    pub on_probe_shortcut: Box<dyn FnMut(String)>,
+    pub on_edit_app: Box<dyn FnMut(String)>,
+    /// The filter box's text changed. Indices in `on_select` / `on_mark`
+    /// are model rows either way -- the window maps them.
+    pub on_filter: Box<dyn FnMut(String)>,
+    pub on_add: Box<dyn FnMut()>,
+    pub on_remove: Box<dyn FnMut()>,
+    pub on_apply: Box<dyn FnMut()>,
+    pub on_caps: Box<dyn FnMut(bool)>,
+    pub on_caps_tap: Box<dyn FnMut(CapsTap)>,
+    /// What holding Caps stands for. The window sends all three chips
+    /// together because they are one value.
+    pub on_caps_hold: Box<dyn FnMut(Chord)>,
+    pub on_open_file: Box<dyn FnMut()>,
+    /// The installed-app catalog finished scanning.
+    pub on_catalog: Box<dyn FnMut(Vec<String>)>,
+    /// Reload the model from disk, discarding in-memory edits.
+    pub on_reload_from_disk: Box<dyn FnMut()>,
+    /// Keep the in-memory edits and dismiss the external-change banner.
+    pub on_keep_mine: Box<dyn FnMut()>,
+    /// `true` if the window may close. The caller shows any save prompt.
+    pub on_close_request: Box<dyn FnMut() -> bool>,
+}
+
 impl Model {
     pub fn from_text(text: &str) -> Result<Model, String> {
         let cfg = parse_config(text)?;

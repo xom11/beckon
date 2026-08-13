@@ -36,7 +36,7 @@ Explorer launches through `explorer.exe`.
 ```cmd
 beckon installed       list installed desktop and MSIX/AppX apps
 beckon list            list currently running apps
-beckon resolve Claude  validate an id
+beckon resolve Spotify validate an id
 ```
 
 For example, Windows Terminal is commonly exposed as `Terminal`; verify the

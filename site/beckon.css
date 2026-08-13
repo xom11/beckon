@@ -1,71 +1,383 @@
 /* beckon — landing page. No build step: this file is served as written.
 
    Order, and it is load-bearing:
-     1. tokens                    (bare :root, then the two dark restatements)
-     2. shell                     (container, nav, footer)
-     3. system                    (section rhythm, headings, prose, code)
-     4. one block per section     (hero, how, names, setups, serve, install,
-                                   faq — page order)
-     5. responsive                (exactly two breakpoints, for the whole page)
-     6. prefers-reduced-motion    (LAST, so it wins)
+     1. tokens                 (one bare :root, the dark restatements, the skins)
+     2. shell                  (reset, container, title bar, footer)
+     3. system                 (rhythm, headings, prose, code, keycap, buttons)
+     4. the desk               (ONE component; the hero and #how both use it)
+     5. one block per section  (hero, how, config, install, faq)
+     6. the HUD
+     7. responsive             (three breakpoints, for the whole page)
+     8. prefers-reduced-motion (LAST, so it wins)
 
-   The five sections were drafted separately. Everything they had in common —
-   section padding, heading scale, panel padding, corner radii, prose measure,
-   inline code, keycap, and the breakpoints — is defined ONCE in §3 and §5 and
-   is never restated per section. A section block below may only add what is
-   genuinely its own. */
+   THE PAGE WEARS THE READER'S MACHINE. `:root[data-os]` is resolved before
+   first paint by the inline script in <head>, and it changes the document's
+   corners, materials, accent, control padding, easing curve, the window
+   controls in the title bar, and — the part that is actually the signature —
+   WHAT A CONTROL DOES WHEN YOU PUSH IT. Underneath, nothing moves: same grid,
+   same type scale, same body face, same five app hues, same words. beckon's
+   claim is "one line, three machines", and a page that performs that claim is
+   stronger than a page that spends 170 words asserting it. §5d is where the
+   deleted words used to be.
+
+   §4 IS NOT PART OF THAT REDESIGN and was left byte-identical. The desk's
+   animation and its model are settled; the tokens it reads — `--radius`,
+   `--radius-sm`, `--shadow`, `--shadow-soft`, every `--win-*`, `--term-*` and
+   `--app-*` — therefore keep their values here and are marked. The shell reads
+   `--r-*` and `--elev-*` instead. `--accent` is the one token deliberately
+   shared: an OS strip in Windows blue on a Windows desk is the point.
+
+   EVERY CUSTOM PROPERTY READ WITH var() ANYWHERE IN THIS FILE IS DEFINED IN
+   THE BARE :root BLOCK BELOW — including the ones a rule later sets locally,
+   like --app and --slot. tools/check-site.sh collects every property this file
+   reads and requires the name in the first `:root {` block, because a token
+   that exists only inside @media or [data-theme] renders unstyled for one of
+   the three theme states. A local override is fine; a local-only definition is
+   not. (That check reads this file with grep, so a comment naming a property
+   that does not exist fails it too — which is why none of them do.)
+
+   THAT AUDIT PROVES A NAME EXISTS. IT CANNOT SEE A FORGOTTEN OVERRIDE. A form
+   token that is never restated for Windows and Linux silently serves them the
+   macOS value, and the page's whole thesis is then refuted by the page itself
+   — with CI green. So every token between the `@os-parity` markers carries a
+   trailing comment naming all three values, and check-site.sh requires each of
+   them to appear in all three skin blocks. */
 
 
 /* --- 1. tokens ------------------------------------------------------------ */
 
 :root {
-  /* UA-painted surfaces — scrollbars on every <pre>, the table wrap and the
-     document itself, plus the caret — follow this, not the palette. Without it
-     a #0B0D12 page keeps a white scrollbar. Restated in both dark blocks
-     because the explicit toggle has to win over the OS preference. */
+  /* UA-painted surfaces — scrollbars, the caret, form controls — follow this,
+     not the palette. Restated in both dark blocks because the explicit toggle
+     has to win over the OS preference. */
   color-scheme: light dark;
 
-  --bg:         #FFFFFF;
-  --bg-raised:  #F6F7F9;
-  --fg:         #0B0D12;
-  --fg-dim:     #5A6072;
-  --rule:       #E3E6EC;
-  --accent:     #2563EB;   /* measured from assets/beckon.ico */
-  --accent-fg:  #FFFFFF;
+  /* ---- the ground, and the ink on it. Theme axis; the skins tint --bg only.
+          Warm, never pure #FFF: a white canvas plus a blue accent is the exact
+          stock look this page is not. ---- */
+  --bg:          #F4F3F0;
+  --bg-raised:   #EAE9E4;
+  --surface:     #FFFFFF;   /* a card, a door body, a popover */
+  --surface-2:   #F8F7F5;   /* a toolbar or headerbar sitting on a card */
+  --fg:          #16161A;
+  --fg-dim:      #5C5C66;
+  --rule:        rgba(18, 18, 24, .12);
+  --rule-hard:   rgba(18, 18, 24, .22);
+  --hit:         rgba(18, 18, 24, .05);   /* the table row whose step just fired */
+  --rim:         rgba(255, 255, 255, .70);/* the specular top edge of a material */
 
-  --radius:     10px;      /* panels, cards, tiles, <pre> */
-  --radius-sm:  6px;       /* keycaps, inline code, the fake window rows */
-  --pad:        20px;      /* every panel, card and tile pays the same padding */
-  --maxw:       1080px;    /* the container, and the only page width there is */
-  --measure:    68ch;      /* body copy */
-  --measure-lead: 62ch;    /* the sentence under a heading */
-  --nav-h:      60px;
-  --section-y:  88px;      /* the vertical rhythm every <section> gets */
+  /* ---- accent. OS × theme, and it is spent on exactly four things: the
+          primary button, the active segment, the focus ring, and the readout
+          rail under a desk. Adwaita's own guidance warns against accent on
+          large surfaces and Fluent rations it just as hard, so obeying the
+          strictest of the three everywhere keeps all three honest. ---- */
+  --accent:      #007AFF;   /* mac #007AFF · win #0078D4 · lin #3584E4 */
+  --accent-fg:   #FFFFFF;
+  --accent-soft: rgba(0, 122, 255, .13);
 
-  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Menlo,
-          Consolas, "Liberation Mono", monospace;
+  --shadow:      0 24px 60px -26px rgba(12, 12, 20, .55);   /* §4 desk — do not retune */
+  --shadow-soft: 0 10px 26px -16px rgba(12, 12, 20, .40);   /* §4 desk — do not retune */
+
+  --radius:      12px;      /* §4 desk — do not retune; the shell uses --r-* */
+  --radius-sm:   7px;       /* §4 desk — do not retune */
+  --pad:         20px;
+  --maxw:        1120px;
+  --measure:     66ch;
+  --measure-lead: 58ch;
+  --nav-h:       56px;
+  --section-y:   104px;
+
+  /* THE HOST FACE IS NEVER SWAPPED BY THE SKIN, and that is a decision rather
+     than an omission. Segoe UI Variable does not exist off Windows and Adwaita
+     Sans / Cantarell do not exist off Linux, so a whole-page typeface swap
+     serves its most convincing costume to the two thirds of readers who cannot
+     render it, and its least to the reader who pressed the switch. `system-ui`
+     leading this stack already puts the page in the reader's own OS face before
+     the title bar says a word about operating systems. The skin carries type
+     only inside chrome, through --ui-sans, where a miss degrades to the same
+     `system-ui` and nothing looks broken.
+     Never name "SF Pro" or "SF Mono": they are not installed on stock macOS,
+     so naming them is a no-op — and on a developer's Mac that did download
+     them it is worse, pinning a static optical cut instead of variable SFNS. */
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+          "Segoe UI", "Adwaita Sans", Cantarell, Roboto, "Helvetica Neue", Arial,
+          sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas,
+          "Adwaita Mono", "Liberation Mono", monospace;
+
+  /* ================= @os-parity begin =================================
+     Every token below is restated in ALL THREE skin blocks in §1c, and
+     tools/check-site.sh enforces that. The trailing comment is the spec.
+     ==================================================================== */
+
+  --r-window:    26px;      /* mac 26 · win 8 · lin 12 */
+  --r-card:      16px;      /* mac 16 · win 8 · lin 12 */
+  --r-ctl:        8px;      /* mac 8  · win 4 · lin 6  */
+  --r-pill:      999px;     /* mac pill · win 4 (Fluent has no pill) · lin pill */
+  --stroke:      0.5px;     /* mac hairline, the rim carries the edge · win 1 · lin 1 */
+  --btn-pad:     9px 18px;  /* mac 9/18 · win 6/14 · lin 7px 16px */
+
+  /* THE SIGNATURE. Same gesture, three beliefs about depth: glass descends and
+     its blur tightens so what is behind it sharpens; a Fluent control barely
+     moves and re-shades, dropping the darker bottom stroke that is its edge;
+     an Adwaita chip does not move at all and only deepens. This is what carries
+     the costume once type is off the table — and unlike type it renders on
+     every machine. */
+  --press-travel:  4px;     /* mac 4 · win 1 · lin 0 */
+  --mat-blur:      saturate(180%) blur(20px);  /* mac only · win none · lin none */
+  --mat-blur-press: saturate(180%) blur(14px); /* mac only · win none · lin none */
+  --mat-fill:      color-mix(in srgb, var(--surface) 64%, transparent);
+                            /* mac 64% glass · win 100% opaque layer · lin 100% flat */
+  --mat-fill-press: color-mix(in srgb, var(--surface) 82%, transparent);
+                            /* mac 82% · win the subtle-pressed wash · lin chip 15% */
+  --mat-rim:       inset 0 1px 0 var(--rim), inset 0 0 0 .5px var(--rim);
+                            /* mac specular rim · win inset 0 -1px 0 bottom stroke · lin none */
+  --mat-rim-press: inset 0 1px 0 var(--rim);
+                            /* mac rim only · win NONE, the stroke is removed · lin none */
+  --elev-1:  0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px -8px rgba(0, 0, 0, .18);
+                            /* mac soft+wide · win 0 1px 2px .10 · lin none, Adwaita is flat */
+  --elev-2:  0 24px 60px -22px rgba(0, 0, 0, .38);
+                            /* mac · win 0 4px 8px .14 · lin 0 8px 24px .18 */
+  --ease:    cubic-bezier(.32, .72, 0, 1);  /* mac · win cubic-bezier(0,0,0,1) · lin cubic-bezier(.25,.46,.45,.94) */
+  --dur:     320ms;         /* mac 320 · win 250 · lin 200 */
+
+  /* Chrome type. On the reader's OWN machine this resolves to the real face,
+     which is what makes a title bar read as a title bar; on a switched skin it
+     falls through to system-ui and nothing looks wrong. Windows needs the
+     Display cut named separately — "Segoe UI Variable" alone resolves in no
+     browser and the opsz axis does not work on Win11, so the cut is switched by
+     FAMILY per size band, not by font-optical-sizing. */
+  --ui-sans: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue",
+             Arial, sans-serif;
+  --ui-mono: ui-monospace, Menlo, monospace;
+  --ui-scale: 1;            /* mac 1 · win .96 · lin .98 — density, on skinned
+                               objects only, never on <html> */
+
+  /* ================= @os-parity end ==================================== */
+
+  /* The five apps of README.md's table. Approximations, not brand marks — the
+     page draws no logos, both because check 1 forbids fetching one and because
+     a trademark is not ours to redraw. Hue is doing the work: five distinct
+     hues, all muted to the same rough chroma so no window shouts. */
+  /* A terminal is dark in both themes, because a terminal is dark in both
+     themes. Everything else inside a window follows --win-paper. */
+  --term-bg:      #15171C;
+  --term-ink:     rgba(214, 223, 238, .52);
+  /* A wash of the app's own hue, set from --app on .win-body. Declared here
+     because every property this file reads with var() has to be. */
+  --tint:         rgba(60, 64, 72, .18);
+
+  --app:          #3B3F48;   /* the default a .win falls back to */
+  --ink:          #EDEFF4;   /* the letter on a dock icon; set per app in §4 */
+  --app-terminal: #3B3F48;
+  --app-chrome:   #C2564A;
+  --app-code:     #3E79BF;
+  --app-files:    #C9993F;
+  --app-spotify:  #3E9B62;
+
+  /* An app's own interior does not follow the site's theme by accident — it
+     follows it because a glaring white rectangle inside a dark page is worse
+     than a plausible fiction. Plenty of people run dark apps. */
+  --win-paper:   #FCFCFA;
+  --win-ink:     #2A2A30;
+  --win-bar:     #EFEFEB;
+  --win-bar-ink: #4A4A54;
+  --win-line:    rgba(20, 20, 28, .10);
+
+  --slot:        0;          /* which step of the cascade a window sits on */
+  --sky:         #2B3242;    /* a desk's wallpaper; §4 sets it per OS */
+
+  /* A window the reader has dragged stops taking its position from --slot and
+     takes it from these instead — beckon.js writes all four, in px, and writes
+     them on the node. They are declared here because every custom property this
+     file reads with var() has to be, and because 0/62%/60% IS the window every
+     desk ships with. */
+  --dx:          0px;
+  --dy:          0px;
+  --win-w:       62%;
+  --win-h:       60%;
+  --bar-h:       0px;        /* how much of the desk's bottom edge the bar owns,
+                                so a maximised window stops above it; §4 per OS */
+
+  --hud-bg:      rgba(250, 250, 248, .86);
 }
 
-/* Only the tokens that differ are restated. Twice: once for the system
-   preference, once for the explicit toggle, so the toggle wins both ways. */
+/* --- 1b. dark. THEME AXIS ONLY — no form token appears below, so the two
+       axes cannot fight over specificity. `:root[data-theme="dark"]` and
+       `:root[data-os="linux"]` both score (0,2,0), and if either block set a
+       token the other also set, source order alone would decide it. Keeping the
+       palette here and the form in §1c makes that collision unrepresentable.
+
+       Written twice: once for the system preference, once for the explicit
+       toggle, so the toggle wins both ways. Only what differs is restated. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
-    --fg-dim: #9AA1B4; --rule: #232936;
-    --accent: #5B8CFF;  /* #2563EB is 3.8:1 here and fails AA */
-    --accent-fg: #0B0D12;
+    --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+    --fg: #EDEDEA; --fg-dim: #9A9AA4;
+    --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
+    --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
+    --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
+    --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+    --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+    --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
+    --win-paper: #1B1B20; --win-ink: #D8D8DC;
+    --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
+    --win-line: rgba(255, 255, 255, .10);
+    --hud-bg: rgba(20, 20, 24, .86);
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0B0D12; --bg-raised: #141822; --fg: #E8EAF0;
-  --fg-dim: #9AA1B4; --rule: #232936;
-  --accent: #5B8CFF; --accent-fg: #0B0D12;
+  --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+  --fg: #EDEDEA; --fg-dim: #9A9AA4;
+  --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
+  --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
+  --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
+  --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+  --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
+  --win-paper: #1B1B20; --win-ink: #D8D8DC;
+  --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
+  --win-line: rgba(255, 255, 255, .10);
+  --hud-bg: rgba(20, 20, 24, .86);
 }
 :root[data-theme="light"] { color-scheme: light; }
+
+
+/* --- 1c. the three skins -------------------------------------------------
+   FORM AXIS ONLY. Each block restates every token between the @os-parity
+   markers in §1a; check-site.sh counts them, because a missing override
+   silently serves the macOS value and no other check can see it.
+
+   EACH SELECTOR IS A PAIR, and the second half is what makes §5d work. The
+   doors in #config are drawn in a FIXED language each — a GNOME terminal, a
+   Fluent settings window, a Liquid Glass file — regardless of what the reader
+   is running, because three grammars in one glance is that section's whole
+   argument and a shelf that re-skinned all three together would be one grammar
+   printed three times. Custom properties inherit, so `.door[data-os="windows"]`
+   re-declares the skin for its own subtree and everything inside it draws
+   Windows on a macOS page for free. Nothing else on the page may use
+   `[data-os]` this way: `.desk[data-os]` is §4's and is a different vocabulary.
+
+   Colour is deliberately NOT restated here. Chrome fills are built out of the
+   theme-aware --surface / --rule / --rim, so one definition serves light and
+   dark; only --accent is genuinely per-machine AND per-theme, which is what
+   §1d is for and all §1d contains. */
+
+:root[data-os="macos"], .door[data-os="macos"] {
+  --r-window: 26px; --r-card: 16px; --r-ctl: 8px; --r-pill: 999px;
+  --stroke: 0.5px; --btn-pad: 9px 18px;
+  --press-travel: 4px;
+  --mat-blur: saturate(180%) blur(20px);
+  --mat-blur-press: saturate(180%) blur(14px);
+  --mat-fill: color-mix(in srgb, var(--surface) 64%, transparent);
+  --mat-fill-press: color-mix(in srgb, var(--surface) 82%, transparent);
+  --mat-rim: inset 0 1px 0 var(--rim), inset 0 0 0 .5px var(--rim);
+  --mat-rim-press: inset 0 1px 0 var(--rim);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px -8px rgba(0, 0, 0, .18);
+  --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .38);
+  --ease: cubic-bezier(.32, .72, 0, 1); --dur: 320ms;
+  --ui-sans: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", Arial, sans-serif;
+  --ui-mono: ui-monospace, Menlo, monospace;
+  --ui-scale: 1;
+  --accent: #007AFF; --accent-fg: #FFFFFF; --accent-soft: rgba(0, 122, 255, .13);
+}
+
+/* Fluent gets hierarchy from stacked OPAQUE layers and 1px strokes, not from
+   blur and not from shadow — so --mat-blur is `none` here on purpose. Mica is a
+   wallpaper tint, not a blur of what is behind the window, and a web page has
+   no wallpaper to tint; faking it with a backdrop-filter would be the one wrong
+   note in the whole skin. The bottom stroke is the control's edge, and REMOVING
+   it on :active is what a Fluent press looks like. */
+:root[data-os="windows"], .door[data-os="windows"] {
+  --r-window: 8px; --r-card: 8px; --r-ctl: 4px; --r-pill: 4px;
+  --stroke: 1px; --btn-pad: 6px 14px;
+  --press-travel: 1px;
+  --mat-blur: none;
+  --mat-blur-press: none;
+  --mat-fill: var(--surface);
+  --mat-fill-press: color-mix(in srgb, var(--fg) 6%, var(--surface));
+  --mat-rim: inset 0 -1px 0 var(--rule-hard);
+  --mat-rim-press: none;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .10);
+  --elev-2: 0 4px 8px rgba(0, 0, 0, .14);
+  --ease: cubic-bezier(0, 0, 0, 1); --dur: 250ms;
+  --ui-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, Arial, sans-serif;
+  --ui-mono: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  --ui-scale: .96;
+  --accent: #0078D4; --accent-fg: #FFFFFF; --accent-soft: rgba(0, 120, 212, .10);
+}
+
+/* Adwaita is deliberately flat: there is almost no elevation INSIDE a window,
+   only 1px hairlines and a one-step background change, and real shadow is
+   reserved for dialogs and popovers. So --elev-1 is `none` and a press does not
+   move anything — the surface goes from an 8% chip of the ink colour to 15%.
+   Getting this wrong in the generous direction is what makes a web imitation of
+   GNOME look like Material. */
+:root[data-os="linux"], .door[data-os="linux"] {
+  --r-window: 12px; --r-card: 12px; --r-ctl: 6px; --r-pill: 999px;
+  --stroke: 1px; --btn-pad: 7px 16px;
+  --press-travel: 0px;
+  --mat-blur: none;
+  --mat-blur-press: none;
+  --mat-fill: var(--surface-2);
+  --mat-fill-press: color-mix(in srgb, var(--fg) 15%, transparent);
+  --mat-rim: none;
+  --mat-rim-press: none;
+  --elev-1: none;
+  --elev-2: 0 8px 24px rgba(0, 0, 0, .18);
+  --ease: cubic-bezier(.25, .46, .45, .94); --dur: 200ms;
+  --ui-sans: "Adwaita Sans", Cantarell, Inter, "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --ui-mono: "Adwaita Mono", "Source Code Pro", ui-monospace, "DejaVu Sans Mono", monospace;
+  --ui-scale: .98;
+  --accent: #3584E4; --accent-fg: #FFFFFF; --accent-soft: rgba(53, 132, 228, .15);
+}
+
+
+/* --- 1d. accent, the one token that is genuinely OS × theme ---------------
+   Fluent LIGHTENS its accent in dark rather than reusing #0078D4, and Adwaita
+   does the same; #007AFF, #0078D4 and #3584E4 all fail AA against a dark
+   canvas. Written at (0,3,0) so it beats both §1b and §1c whichever way source
+   order runs, and written twice for the same reason §1b is. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-os="macos"],
+  :root:not([data-theme="light"]) .door[data-os="macos"] {
+    --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+  }
+  :root:not([data-theme="light"])[data-os="windows"],
+  :root:not([data-theme="light"]) .door[data-os="windows"] {
+    --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+  }
+  :root:not([data-theme="light"])[data-os="linux"],
+  :root:not([data-theme="light"]) .door[data-os="linux"] {
+    --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+  }
+}
+:root[data-theme="dark"][data-os="macos"],
+:root[data-theme="dark"] .door[data-os="macos"] {
+  --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+}
+:root[data-theme="dark"][data-os="windows"],
+:root[data-theme="dark"] .door[data-os="windows"] {
+  --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+}
+:root[data-theme="dark"][data-os="linux"],
+:root[data-theme="dark"] .door[data-os="linux"] {
+  --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+}
+
+
+/* --- 1e. the fallback that is not optional -------------------------------
+   Without backdrop-filter, glass at 64% is body text over whatever is behind
+   it. macOS is the default skin for roughly a third of readers, so this is not
+   an edge case — it is one of the three front doors. Opaque instead. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-os="macos"], .door[data-os="macos"] {
+    --mat-fill: var(--surface);
+    --mat-fill-press: color-mix(in srgb, var(--fg) 6%, var(--surface));
+  }
+}
 
 
 /* --- 2. shell ------------------------------------------------------------- */
@@ -73,18 +385,19 @@
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 
-/* The install tablist ships with the `hidden` attribute and JS removes it. The
-   UA rule for `[hidden]` is `display: none` at specificity (0,1,0) — exactly
-   what `.tabs { display: flex }` scores — and an author rule beats the UA sheet
-   at equal specificity, so without this line the strip ships VISIBLE and inert
-   for every reader with JS off. That is the one failure the JS-off ordering
-   exists to prevent, so it is enforced here rather than avoided by discipline. */
+/* The install tablist, the OS switcher, the theme button, the press rows, the
+   readout and the HUD all ship with the `hidden` attribute and JS removes it.
+   The UA rule for `[hidden]` is `display: none` at specificity (0,1,0) —
+   exactly what `.tabs { display: flex }` scores — and an author rule beats the
+   UA sheet at equal specificity, so without this line those controls ship
+   VISIBLE and inert for every reader with JS off. That is the one failure the
+   whole JS-off ordering exists to prevent, so it is enforced here rather than
+   avoided by discipline. */
 [hidden] { display: none !important; }
 
-/* The ONLY sr-only text on the page: the copy button's "Copied" confirmation,
-   which is otherwise a label swap no assistive technology is told about. It is
-   created by JS alongside the button it belongs to, so nothing here is
-   sr-only in the JS-off page. */
+/* The only sr-only text on the page: the copy button's "Copied" confirmation,
+   which is otherwise a label swap nothing is told about. JS creates it
+   alongside the button, so the JS-off page has no sr-only content at all. */
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -94,1621 +407,1736 @@ html { scroll-behavior: smooth; }
 
 body {
   margin: 0;
-  background: var(--bg);       /* explicit, never transparent */
+  background: var(--bg);        /* explicit, never transparent */
   color: var(--fg);
   font-family: var(--sans);
   font-size: 17px;
-  line-height: 1.6;
+  line-height: 1.62;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
-.wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: 24px; }
-a { color: var(--accent); }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: 28px; }
 
-/* The opaque background is a FALLBACK, not a duplicate. color-mix() shipped in
-   Safari 16.2; where it is unsupported the whole declaration is invalid and the
-   UA drops it, and a sticky bar whose only background was that one line renders
-   fully transparent with the page scrolling through it. The later declaration
-   wins wherever color-mix parses, so this costs nothing there. */
-.nav {
-  position: sticky; top: 0; z-index: 10;
-  background: var(--bg);
-  background: color-mix(in srgb, var(--bg) 88%, transparent);
-  backdrop-filter: blur(8px);
-  border-bottom: 1px solid var(--rule);
+/* Links are ink with a quiet rule under them, not a blue word. The accent is
+   reserved for the two things that genuinely need to signal state: the focus
+   ring and the readout's rail. */
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--rule);
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
 }
-.nav .wrap { display: flex; align-items: center; gap: 24px; height: var(--nav-h); }
-.nav a { color: var(--fg-dim); text-decoration: none; font-size: 15px; }
-.nav a:hover { color: var(--fg); }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 
-/* WCAG 2.2 SC 2.5.8: a target is at least 24x24 CSS px. Both link rows are
-   14-15px text on a 1.6 line box, i.e. 22px, and the spacing exception does not
-   rescue them — the nav wraps to a 8px/16px gap at 375px and the footer sits at
-   16px, so 24px target circles would overlap. min-height costs no layout at
-   desktop, where both rows are already taller than their text. The in-sentence
-   links in .note / .prose are exempt under the inline exception and are left
-   alone. */
-.nav a:not(.brand),
-footer .wrap a { display: inline-flex; align-items: center; min-height: 24px; }
+/* THE TITLE BAR IS THE PAGE'S FIRST SENTENCE, and it has no words in it.
+   Drawn as the title bar of the machine the reader is on, so the claim
+   "every machine you own" is made in a shape they recognise before the
+   headline says it in English.
+
+   It is the ONLY blurred element that stays on screen during scroll — the
+   glass in a door or on a desk scrolls away — which is why the fallback in
+   §1e is load-bearing rather than tidy. */
+.bar {
+  position: sticky; top: 0; z-index: 30;
+  background: var(--mat-fill);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+  border-bottom: var(--stroke) solid var(--rule);
+  font-family: var(--ui-sans);
+  transition: background-color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+.bar .wrap {
+  display: flex; align-items: center; gap: 18px;
+  height: var(--nav-h);
+}
+
+/* THE WINDOW CONTROLS ARE A PICTURE, NOT A CONTROL. No focus, no hover, no
+   accessible name, `aria-hidden` in the markup — the page's rule is that a
+   control on screen never silently does nothing, and the cheapest way to keep
+   it is to not be a control. `order` is what moves the group from the left
+   (macOS) to the right (Windows, Linux) without a second element.
+
+   THE DOTS ARE INK AT 20%, NOT RED/AMBER/GREEN. Traffic-light colour is the
+   single most quoted macOS gesture on the web and it invites someone to click
+   the red one. The desks in §4 keep real colour, because there they depict an
+   actual window; the page is not a window and does not pretend to be. */
+.bar-ctl { display: flex; align-items: center; gap: 8px; order: -1; }
+.bar-ctl i {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--fg-dim); opacity: .2;
+}
+:root[data-os="windows"] .bar-ctl,
+:root[data-os="linux"]   .bar-ctl { order: 9; margin-left: 4px; }
+/* Windows draws glyphs, not dots: a 46x32 hit area each, hard right. */
+:root[data-os="windows"] .bar-ctl { gap: 0; }
+:root[data-os="windows"] .bar-ctl i {
+  width: 34px; height: 30px; border-radius: 0;
+  background: none; opacity: .75;
+  display: grid; place-items: center;
+  font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
+}
+:root[data-os="windows"] .bar-ctl i:nth-child(1)::before { content: "\2014"; }
+:root[data-os="windows"] .bar-ctl i:nth-child(2)::before { content: "\25A1"; }
+:root[data-os="windows"] .bar-ctl i:nth-child(3)::before { content: "\2715"; }
+/* GNOME ships ONE control on a headerbar, a circular close button. */
+:root[data-os="linux"] .bar-ctl i:nth-child(1),
+:root[data-os="linux"] .bar-ctl i:nth-child(2) { display: none; }
+:root[data-os="linux"] .bar-ctl i {
+  width: 24px; height: 24px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent); opacity: 1;
+  display: grid; place-items: center;
+}
+:root[data-os="linux"] .bar-ctl i::before {
+  content: "\2715"; font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
+}
+
 .brand {
-  display: flex; align-items: center; gap: 9px;
-  font-weight: 650; color: var(--fg) !important; margin-inline-end: auto;
+  display: inline-flex; align-items: center; gap: 9px;
+  font-weight: 650; letter-spacing: -.01em; font-size: 16px;
+  text-decoration: none;
 }
-.brand img { width: 22px; height: 22px; border-radius: var(--radius-sm); }
+.brand img { border-radius: 5px; display: block; }
 
-/* The theme toggle is the page's only <button> outside a section, and it was
-   shipping as a default UA button next to designed hero buttons. It borrows
-   the outline button's vocabulary rather than inventing a third one. */
-.nav button {
-  padding: 6px 12px;
-  font: 600 14px var(--sans);
-  color: var(--fg-dim);
-  background: transparent;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
+/* macOS and GNOME centre the title; Windows leaves it hard left. The brand IS
+   the title, so it moves rather than being duplicated.
+
+   TRUE CENTRE, AND IT IS GATED ON WIDTH. `position: absolute; left: 50%` is
+   what actually centres a title, and the first cut of this redesign printed it
+   straight through the word "How" — with four nav links the middle third of the
+   bar was occupied. The fix was to cut the links to two rather than to give up
+   on centring: measured at 1440, the right-hand group now starts at 900px while
+   a centred `beckon` spans 675-765, so there is 135px of clearance.
+
+   Flex centring (`flex: 1; justify-content: center`) was tried and rejected. It
+   centres the title in the space LEFT OVER, and because the right group is
+   ~380px wide against ~60px of window controls, that put the title at x=570 on
+   a 1440px bar — 150px left of centre, which reads as a bug rather than as a
+   design. Measured, both numbers.
+
+   Below 1100px the clearance is gone, so the title goes back to flowing after
+   the controls. Nothing is lost: the tell that actually carries the skin there
+   is the controls, the corners and the press. */
+:root[data-os="macos"] .bar .wrap,
+:root[data-os="linux"] .bar .wrap { position: relative; }
+@media (min-width: 1100px) {
+  :root[data-os="macos"] .brand,
+  :root[data-os="linux"] .brand {
+    position: absolute; left: 50%; transform: translateX(-50%);
+  }
 }
-.nav button:hover { color: var(--fg); border-color: var(--accent); }
+:root[data-os="macos"] .bar-links,
+:root[data-os="linux"] .bar-links { margin-left: auto; }
+:root[data-os="windows"] .brand { margin-right: auto; }
 
-/* The OS switcher, sitting beside the theme button and borrowing the same
-   vocabulary for the same reason: an unstyled UA <select> next to a designed
-   outline button reads as a third widget system.
+.bar-links { display: flex; gap: 18px; align-items: center; }
+:root[data-os="windows"] .bar-links { margin-left: auto; }
+.bar a { font-size: 14px; color: var(--fg-dim); text-decoration: none; }
+.bar a:hover { color: var(--fg); }
 
-   `appearance` is deliberately NOT reset. The native disclosure arrow is the
-   only thing distinguishing this control from the button next to it, and the
-   popup it opens is painted by the UA in the theme `color-scheme` on :root
-   already declares — both of which a custom arrow would cost. The global
-   :focus-visible ring in §2 covers it, so there is no focus rule here.
+/* WCAG 2.2 SC 2.5.8: a target is at least 24x24 CSS px. These rows are the
+   page's tightest, so the padding is here rather than trusted to line-height. */
+.bar-links a { padding: 6px 0; }
 
-   min-height on the select for the same WCAG 2.2 SC 2.5.8 reason the nav links
-   carry one: padding alone clears 24px today, and drops the target under it the
-   moment the phone breakpoint shrinks the font. It costs no layout where the
-   box is already taller. */
-.os-switch { display: inline-flex; align-items: center; gap: 8px; }
-.os-switch label { color: var(--fg-dim); font: 600 14px var(--sans); }
+.os-switch { display: inline-flex; align-items: center; gap: 7px; }
+.os-switch label { font-size: 12px; color: var(--fg-dim); }
 .os-switch select {
-  min-height: 24px;
-  padding: 5px 8px;
-  font: 600 14px var(--sans);
-  color: var(--fg-dim);
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
+  font: inherit; font-size: 13px; font-family: var(--ui-sans);
+  color: var(--fg); background: var(--mat-fill);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
+  padding: 5px 8px; min-height: 30px;
 }
-.os-switch select:hover { color: var(--fg); border-color: var(--accent); }
-
-/* The last section already pays --section-y below itself, so the footer adds
-   no margin of its own; otherwise the page ends on a gap twice as tall as
-   every other. */
-footer { border-top: 1px solid var(--rule); margin-top: 0; padding-block: 40px; }
-footer .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; color: var(--fg-dim); font-size: 14px; }
-
-
-/* --- 3. system: rhythm, headings, prose and code -------------------------- */
-
-/* One rule sets the rhythm for every section, including the install
-   placeholder. scroll-margin keeps the sticky nav off a linked heading. */
-main > section {
-  padding-block: var(--section-y);
-  scroll-margin-top: calc(var(--nav-h) + 16px);
+.ghost {
+  font: inherit; font-size: 13px; font-family: var(--ui-sans); cursor: pointer;
+  color: var(--fg); background: var(--mat-fill);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
+  padding: 5px 12px; min-height: 30px;
+  box-shadow: var(--mat-rim);
+  transition: transform var(--dur) var(--ease),
+              background-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+.ghost:hover { background: var(--bg-raised); }
+.ghost:active {
+  transform: translateY(var(--press-travel));
+  background: var(--mat-fill-press);
+  box-shadow: var(--mat-rim-press);
 }
 
+footer {
+  border-top: 1px solid var(--rule);
+  padding-block: 30px 40px;
+  color: var(--fg-dim); font-size: 14px;
+}
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+footer a { padding: 4px 0; }
+
+
+/* --- 3. system: rhythm, headings, prose, code, keycaps -------------------- */
+
+/* One rule sets the vertical rhythm for every section, including the install
+   panels, which are <section> too. */
+main > section { padding-block: var(--section-y); }
+main > section + section { border-top: 1px solid var(--rule); }
+.panels section { padding-block: 0; }
+
+/* THE POSITIVE TRACKING ON THE DISPLAY SIZE IS DELIBERATE and looks like a
+   typo to anyone who has only ever tightened a big heading. Apple's published
+   SF tracking table is tightest at 17-20px and crosses back to POSITIVE above
+   24px (+.014em at 28px, +.008em at 48px). Since --sans opens with system-ui,
+   SF is the face most likely to render this line, so the SF-correct value is
+   the one to use — and Segoe UI Variable Display and Adwaita Sans both want 0,
+   which +.006em is within noise of. The web reflex of stamping -.02em on a
+   72px heading is wrong for all three. */
+h1 {
+  margin: 0 0 20px;
+  font-size: clamp(38px, 7vw, 84px);
+  line-height: .95;
+  letter-spacing: .006em;
+  font-weight: 640;
+}
 h2 {
   margin: 0 0 16px;
-  font-size: clamp(1.9rem, 4.2vw, 3rem);
-  letter-spacing: -0.02em;
-  line-height: 1.08;
-  text-wrap: balance;
+  font-size: clamp(29px, 4vw, 46px);
+  line-height: 1.05;
+  letter-spacing: .004em;
+  font-weight: 640;
 }
-h3 { margin: 0 0 8px; font-size: 1.05rem; letter-spacing: -0.01em; }
+h3 { margin: 0 0 10px; font-size: 17px; letter-spacing: -.006em; font-weight: 620; }
 
 /* Three prose roles, and only three: the sentence under a heading, body copy,
-   and small print. Sections use these instead of a per-section paragraph
-   class, which is what made four sections read as four typefaces. */
+   and a footnote. Anything that wants a fourth is a sign the section is too
+   long — which is what the FAQ is for. */
 .lead {
+  margin: 0 0 30px;
   max-width: var(--measure-lead);
-  margin: 0 0 40px;
+  font-size: clamp(17px, 1.4vw, 20px);
+  line-height: 1.5;
   color: var(--fg-dim);
-  font-size: clamp(1.02rem, 1.6vw, 1.15rem);
 }
-.prose { max-width: var(--measure); margin: 0 0 32px; color: var(--fg-dim); }
-.note {
-  max-width: var(--measure);
-  margin: 24px 0 0;
-  color: var(--fg-dim);
-  font-size: 15px;
-}
-.note:first-child { margin-top: 0; }
-
-code { font-family: var(--mono); font-size: .92em; }
+.prose { max-width: var(--measure); margin: 0 0 24px; }
+.note  { max-width: var(--measure); margin: 14px 0 0; font-size: 15px; color: var(--fg-dim); }
 
 /* Inline code is boxed; code inside a <pre> is not, because a <pre> already
-   has its own ground and a second border inside it reads as a nested box. */
-p code, li code, td code, th code, figcaption code {
-  padding: .1em .38em;
-  color: var(--fg);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  overflow-wrap: anywhere;
-}
-a code { color: inherit; }   /* a boxed <code> inside a link stays a link */
-
-/* Every command block on the page is this one panel: the discovery commands,
-   the TOML sample and all four install blocks. overflow-x lives here, so a
-   long line scrolls inside its own box and never widens <body>. */
-pre {
-  margin: 0;
-  padding: 18px var(--pad);
-  overflow-x: auto;
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+   is the box. */
+code {
   font-family: var(--mono);
-  font-size: .95rem;
-  line-height: 1.7;
-  color: var(--fg);
+  font-size: .88em;
 }
-pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap: normal; }
+:not(pre) > code {
+  background: var(--bg-raised);
+  border: var(--stroke) solid var(--rule);
+  border-radius: 5px;
+  padding: .12em .38em;
+}
 
+/* Every command block on the page is this one panel, and after the redesign the
+   ONLY <pre>s left are the five real install commands — which is why beckon.js
+   may keep attaching a copy button to every one of them without asking. The
+   transcripts in #config are deliberately not <pre>: "Copy" on a shell session
+   would hand you the prompt and the output along with the command. */
+pre {
+  margin: 16px 0 0;
+  max-width: 72ch;
+  background: var(--bg-raised);
+  border: var(--stroke) solid var(--rule);
+  border-radius: var(--r-card);
+  padding: 15px 17px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 1.7;
+  position: relative;
+}
+pre code { font-size: 14px; }
 
-/* --- 4a. section: hero ---------------------------------------------------- */
+.copy {
+  position: absolute; top: 9px; right: 9px;
+  font: 500 12px/1 var(--ui-sans);
+  color: var(--fg-dim); background: var(--surface);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
+  padding: 5px 9px; cursor: pointer; min-height: 24px;
+  opacity: 0; transition: opacity .15s;
+}
+pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
-/* Shared: the keycap.
-   CONTRACT — reused verbatim by the how demo, the letter table in setups and
-   the Caps Lock line in serve. Do not fork it.
-
-     <kbd class="key">C</kbd>                 one cap
-     <kbd class="key" data-down>C</kbd>       the pressed look, statically
-     <kbd class="key" data-lock>Caps</kbd>    a LOCKED key, held down
-     <span class="chord">                     a row of caps
-       <kbd class="key">Ctrl</kbd> ... <span class="plus">+</span> ...
-     </span>
-
-   `data-lock` is an extension of this component, not a fork of it: same box,
-   same tokens, and it borrows `data-down`'s exact depression so a locked key
-   is drawn as what it is — a key that is down and staying down. It carries the
-   accent as well, because a reader has to be able to tell "I am holding this"
-   from "this is latched" at a glance, and beckon.js sets it from
-   `getModifierState('CapsLock')` on every key event. The two attributes may be
-   present at once (the demo taps a cap that is already locked); the
-   declarations are identical, so that is a no-op rather than a fight.
-
-   The cap sizes from its own font-size in em, so a section scales a whole
-   chord by setting font-size on the container (the hero does exactly that).
-   Colour and background come from tokens only, so it is correct in light,
-   dark and explicit-toggle without a second rule. Do NOT put aria-hidden on
-   .key itself: the letter table in #setups is content, not decoration.
-   aria-hidden belongs on the demo container. */
-
+/* Shared: the keycap. Used by the chords under the hero desk, the letter table,
+   the press rows and the HUD — one component, never forked. The heavier bottom
+   border is the whole trick: it reads as a key with a side without costing a
+   shadow. It keeps --radius-sm rather than --r-ctl because the press rows and
+   the HUD are §4's and §6's, and a keycap is a picture of a physical key rather
+   than a piece of any operating system's chrome. */
 .key {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 2.1em; padding: .3em .55em;
-  font: 600 .82em/1 var(--mono);
-  color: var(--fg);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
+  min-width: 27px; height: 27px; padding: 0 8px;
+  border: 1px solid var(--rule-hard);
+  border-bottom-width: 2px;
   border-radius: var(--radius-sm);
-  box-shadow: 0 2px 0 var(--rule);
-  transform: translateY(0);
+  background: var(--surface);
+  font: 500 12.5px/1 var(--mono);
+  color: var(--fg);
+  white-space: nowrap;
 }
-.key[data-down] { box-shadow: 0 1px 0 var(--rule); transform: translateY(1px); }
-.key[data-lock] {
-  box-shadow: 0 1px 0 var(--rule); transform: translateY(1px);
-  color: var(--accent); border-color: var(--accent);
+/* Chords are adjacent caps with a gap, not caps joined by "+" glyphs. The plus
+   signs were three extra marks per chord saying what adjacency already says. */
+.chord { display: inline-flex; align-items: center; gap: 5px; }
+
+/* The modifier rows. One per machine; CSS keeps only the reader's own once
+   `data-os` resolves, and all three stay on screen with JS off — which is the
+   cross-platform claim surviving in the one mode that cannot switch. */
+.mods { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; justify-items: center; }
+.mods li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mod-os { font-size: 14px; min-width: 68px; text-align: right; color: var(--fg-dim); }
+.mod-note { font-size: 13px; color: var(--fg-dim); }
+
+/* The one `=` on the page, and it is not a plus sign: it separates two whole
+   chords rather than two keys, and what it claims is that they are the same
+   gesture. Left readable rather than aria-hidden — "Caps Lock C equals Ctrl Win
+   Alt C" is exactly the sentence a screen reader should get. */
+.chord-is { color: var(--fg-dim); font-size: 14px; }
+
+/* Caps Lock leads; the chord it stands in for follows, quieter. The right-hand
+   group is what goes in apps.toml and stays fully legible — dimmed, not greyed
+   out — because a reader has to be able to copy it. */
+.key.is-caps { font-weight: 640; }
+.chord.is-alias .key { color: var(--fg-dim); border-bottom-width: 1px; }
+
+/* THE PRESS IS THE SIGNATURE, and it is one rule set reading four tokens the
+   skin swaps. Glass descends 4px and its blur tightens from 20px to 14px, so
+   what is behind it SHARPENS as it goes down; a Fluent control moves 1px, dims,
+   and loses the darker bottom stroke that was its edge; an Adwaita chip does
+   not move at all and only deepens. Three material philosophies, one component.
+
+   This is what carries the costume now that a whole-page typeface swap is off
+   the table — and unlike a typeface it renders on every machine, so the reader
+   who presses the switch gets the most convincing version rather than the
+   least. */
+.btn, .tab, .door-btn {
+  transition: transform var(--dur) var(--ease),
+              background-color var(--dur) var(--ease),
+              backdrop-filter var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease),
+              border-color var(--dur) var(--ease),
+              color var(--dur) var(--ease);
 }
-.chord { display: inline-flex; align-items: center; gap: 6px; }
-.chord .plus { color: var(--fg-dim); font-size: .8em; }
-
-/* Shared: the demo panel.
-   CONTRACT for every demo on the page.
-
-     <div class="demo">
-       <div class="…-stage" aria-hidden="true"> …moving parts… </div>
-       <p class="demo-steps">…the same thing in words…</p>
-     </div>
-
-   .demo owns the frame and the padding, nothing else, so each section styles
-   only its own stage inside it. .demo-steps is the LAST child and is never
-   aria-hidden — it is what a reduced-motion reader reads, and it is visible
-   to everyone, not sr-only.
-
-   MOTION CONTRACT, and it is load-bearing. There is no per-section
-   prefers-reduced-motion block; the global one at the end of this file
-   (animation-duration: .01ms + animation-iteration-count: 1) does the work.
-   That only lands on the state worth seeing if BOTH of these hold, so any
-   new demo must honour them too:
-     1. every animation carries fill-mode `both`, so the 100% keyframe is held
-        after the 0.01ms run instead of snapping back to the base rule; and
-     2. the base rule IS the final keyframe, so the panel is still correct if
-        the animation never runs at all.
-   Authoring rule that follows: the LAST keyframe is the state worth holding. */
-
-.demo {
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: var(--pad);
-}
-.demo-steps {
-  margin: 18px 0 0;
-  color: var(--fg-dim);
-  font-size: 14px;
-  line-height: 1.5;
-}
-.demo-steps:first-child { margin-top: 0; }
-
-/* The hero itself. It pays less top padding than a mid-page section because
-   the nav sits directly above it, and none at the bottom because #how pays
-   the full rhythm on its own top edge. */
-.hero { padding-block: 64px 0; text-align: center; }
-
-.hero h1 {
-  margin: 0;
-  font-size: clamp(2.75rem, 7vw, 5.5rem);
-  letter-spacing: -0.03em;
-  line-height: 1.02;
-  text-wrap: balance;
-  overflow-wrap: break-word;
+.btn:active, .tab:active {
+  transform: translateY(var(--press-travel));
+  backdrop-filter: var(--mat-blur-press);
+  box-shadow: var(--mat-rim-press);
 }
 
-.hero .lead { max-width: 60ch; margin: 22px auto 0; }
-.hero .lead code { font-weight: 600; white-space: nowrap; }
-
-.hero-cta {
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 12px;
-  margin-top: 30px;
-}
-.hero-btn {
+.btn {
   display: inline-flex; align-items: center; justify-content: center;
-  min-height: 46px; padding: 0 26px;
-  border: 1px solid transparent;
+  min-height: 44px; padding: var(--btn-pad);
+  border-radius: var(--r-pill);
+  font-family: var(--ui-sans);
+  font-weight: 560; font-size: 15px;
+  text-decoration: none;
+  border: var(--stroke) solid transparent;
+}
+/* The accent's first of four placements. It is the machine's own blue, so the
+   one saturated thing above the fold is the reader's own system colour. */
+.btn-solid { background: var(--accent); color: var(--accent-fg); box-shadow: var(--mat-rim); }
+.btn-solid:hover { filter: brightness(1.08); }
+.btn-solid:active { background: color-mix(in srgb, var(--fg) 12%, var(--accent)); }
+.btn-line {
+  border-color: var(--rule-hard); color: var(--fg);
+  background: var(--mat-fill); backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+}
+.btn-line:hover { background: var(--bg-raised); }
+.btn-line:active { background: var(--mat-fill-press); }
+
+
+/* --- 4. the desk ---------------------------------------------------------- */
+
+/* ONE component, three chromes. The hero draws three of these side by side and
+   #how draws one; nothing about a desk knows which section it is in.
+
+   What each OS actually does differently is the point of the whole section, so
+   it is spelled out rather than reduced to a hue swap:
+
+     macOS    rounded, traffic lights left, title centred, windows cascade
+     Windows  squarer, min/max/close right, title left, windows cascade
+     sway     no title bar at all, windows TILED with a gap and never
+              overlapping, focus is a border moving rather than a window rising
+
+   The sway column is the one that earns this. A tiling compositor does not
+   stack windows, so "comes to the front" is not a thing that happens there —
+   which is why every transcript on this page says "takes focus" instead. */
+
+.desks { display: grid; gap: 22px; }
+.desk-slot { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* THE DESK IS A CONTAINER, and the chrome inside it is sized in `cqw`. Two
+   desks on this page differ by nearly 2:1 in width — 860px in the hero, ~500px
+   beside the table in #how — and fixed pixel chrome cannot serve both: a 22px
+   title bar that reads correctly at 500px looks like a hairline on a window
+   twice that size, which is exactly how the hero looked once it went to one
+   big desk. Every rule below states a plain px value first and the container
+   version second, so a browser without container query units gets the middle
+   size rather than nothing. */
+.desk {
+  position: relative;
+  container-type: inline-size;
+  aspect-ratio: 16 / 9;
   border-radius: var(--radius);
-  font-size: 16px; font-weight: 600; text-decoration: none;
-}
-.hero-btn-solid { background: var(--accent); color: var(--accent-fg); }
-.hero-btn-solid:hover { background: color-mix(in srgb, var(--accent) 86%, var(--fg)); }
-.hero-btn-line { background: transparent; color: var(--fg); border-color: var(--rule); }
-.hero-btn-line:hover { border-color: var(--accent); color: var(--accent); }
-
-.hero-meta { margin: 18px 0 0; color: var(--fg-dim); font-size: 13px; }
-
-.hero-demo { margin-top: 48px; text-align: start; }
-.hero-stage { display: grid; }
-
-/* hero demo: the chords.
-   One timeline, 4.4s, shared by every animated part of this demo. Nothing
-   here declares animation-delay, so all ten caps across the three chords and
-   all three cards are phase-locked by construction rather than by delays that
-   have to agree.
-
-   There is no single .hero-chord any more, and that is a correctness fix
-   rather than a layout preference: README.md's modifier defaults are `Super`
-   on Linux, Hyper (`cmd+ctrl+alt`) on macOS and `Ctrl+Win+Alt` on Windows, so
-   one chord above three cards was the Windows chord shown being pressed on a
-   Mac and a Linux box. Each card now carries its own.
-
-   .key and .chord are untouched — this only scopes SIZE and wrapping to the
-   hero. The chord wraps rather than shrinking to fit: three cards at a third
-   of a 375px viewport cannot hold four spelled-out modifier caps on one line
-   at any legible size, and the glyphs (Cmd)(Ctrl)(Alt) teach a reader who
-   does not already know them nothing. Wrapping is safe because the window
-   stack is bottom-aligned (see .os-stack), so a chord that takes two lines in
-   one card and one in another still leaves every stack on the same line —
-   structural, rather than a reserved height to re-measure per font. */
-.os-chord {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  margin-top: 10px;
-  font-size: clamp(.68rem, 1.5vw, 1rem);
-}
-.os-chord .key { animation: hero-cap 4.4s linear infinite both; }
-
-@keyframes hero-cap {
-  /* 0-18% resting */
-  0%, 17%     { transform: translateY(0);   box-shadow: 0 2px 0 var(--rule); }
-  /* 18-26% pressed */
-  18%, 26%    { transform: translateY(1px); box-shadow: 0 1px 0 var(--rule); }
-  /* released, and held to the end */
-  27%, 100%   { transform: translateY(0);   box-shadow: 0 2px 0 var(--rule); }
-}
-
-/* hero demo: the three OS cards. They stay three across at every width —
-   stacking them would put the demo's whole point, three machines moving on
-   the same beat, below the fold on a phone. They only get tighter. */
-.os-grid {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
-  width: 100%;
-}
-.os-card {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  padding: 12px;
-  min-width: 0;
-}
-.os-label {
-  font: 600 12px/1 var(--sans);
-  letter-spacing: .04em; text-transform: uppercase;
-  color: var(--fg-dim);
-}
-
-/* The two fake windows overlap by 6px, so z-index has something to say and
-   the raise is a real change of stacking order rather than a hint.
-
-   `margin-block-start: auto` is what keeps the three stacks level: grid items
-   stretch to the tallest card, so pushing the stack to the bottom of its card
-   aligns all three no matter how many lines each chord wrapped onto. The 12px
-   is padding rather than margin because the auto margin has taken that slot. */
-.os-stack { position: relative; margin-block-start: auto; padding-top: 12px; }
-.os-win {
-  position: relative;                 /* z-index needs a positioned box */
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  height: 52px;
   overflow: hidden;
-  min-width: 0;
-  color: var(--fg);                   /* the state lives here; see .is-brave */
+  background: var(--sky);
+  box-shadow: var(--shadow-soft);
+  isolation: isolate;
 }
-.os-win + .os-win { margin-top: -6px; }
-/* `color: inherit`, so the window owns the lit/dim state and the bar just
-   renders it. The bar is the only text inside a window, so this is what lets
-   the dim be a colour change instead of an opacity. */
-.os-bar {
+.desk-sky { position: absolute; inset: 0; background: var(--sky); }
+
+.desk[data-os="macos"] {
+  --sky: linear-gradient(155deg, #3E52C4 0%, #7457C0 42%, #B9709E 78%, #D98C7E 100%);
+}
+.desk[data-os="windows"] {
+  --sky: radial-gradient(125% 105% at 50% 118%, #3B7BEA 0%, #1B4BA8 42%, #0A1E4A 100%);
+}
+/* Not a hue nobody else has for its own sake: macOS is running warm purple and
+   Windows a cold blue radial, so a Linux desk that reads as either at a glance
+   would undo the point of switching between them. */
+.desk[data-os="linux"] {
+  --sky: linear-gradient(160deg, #14313A 0%, #1E5158 44%, #2F7163 100%);
+}
+
+/* --- windows on the desk --- */
+
+.desk-wins { position: absolute; inset: 0; }
+
+.win {
+  position: absolute;
+  left: 8%; top: 14%;
+  width: var(--win-w); height: var(--win-h);
+  border-radius: 9px;
+  overflow: hidden;
+  /* A column, so the body takes whatever the title bar leaves. It used to be
+     `height: calc(100% - 22px)`, which pinned the body to one bar height and
+     broke the moment the bar started scaling with the desk. */
+  display: flex; flex-direction: column;
+  background: var(--win-paper);
+  color: var(--win-ink);
+  /* transform, not left/top: the cascade offset is what animates, and moving a
+     window by its box position relayouts on every frame.
+     15% and 13% are what keep the FOURTH window (slot 3) fully on the desk:
+     the offsets are percentages of the window, so slot 3 lands at
+     8% + 3x15%x62% = 35.9% with 62% of width to go — 97.9%, just inside. At
+     20%/17% it was 107% wide and 105% tall, and the fourth window was visibly
+     clipped on the right the moment a reader launched Files or Spotify. */
+  transform: translate(calc(var(--slot) * 15% + var(--dx)),
+                       calc(var(--slot) * 13% + var(--dy)));
+  transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
+              border-color .3s ease, width .3s ease, height .3s ease;
+  box-shadow: var(--shadow-soft);
+  /* A background window is dimmed, not erased. It has to stay readable —
+     seeing "Chrome" still sitting there behind VS Code is the whole evidence
+     that the press raised a window rather than renamed one — and at .78 over a
+     dark wallpaper its title bar disappeared entirely. */
+  opacity: .84;
+}
+.win.is-focused { opacity: 1; box-shadow: var(--shadow); }
+
+/* --- a window the reader is holding ---
+ *
+ * The desk is draggable, resizable and maximisable, and NONE OF THAT IS
+ * BECKON — beckon focuses and launches, and never touches window geometry.
+ * It is here because the hero is claiming to be the reader's own machine, and
+ * a desktop whose title bar does not respond is a screenshot. beckon.js says
+ * so out loud in the transcript the moment a window is moved.
+ *
+ * ALL THREE OF THESE RULES ARE SCOPED TO `.demo.is-live`, which beckon.js adds
+ * to a demo it has taken over. Without JS nothing here can be dragged, so
+ * without JS nothing here says it can be: no grab cursor, no grip, no hover
+ * lift on a button that would not answer. Same rule as every other control on
+ * the page. */
+.demo.is-live .win-bar { cursor: grab; touch-action: none; user-select: none; }
+.demo.is-live .win.is-grabbed .win-bar { cursor: grabbing; }
+/* Held windows do not ease. A transition on the thing following the pointer is
+   a window lagging behind the hand holding it. */
+.win.is-grabbed { transition: none; }
+
+/* Maximised: the whole desk except whatever the bar owns. `--bar-h` is set per
+   OS in the dock block below, because a floating macOS dock, a full-width
+   Windows taskbar and a Plasma panel do not take the same bite out of it. */
+.win.is-max {
+  left: 0; top: 0;
+  width: 100%; height: calc(100% - var(--bar-h));
+  transform: none;
+}
+/* The corners are squared off by a SEPARATE, heavier selector on purpose: each
+   OS block sets its own `border-radius` on `.desk[data-os="…"] .win`, which
+   scores (0,3,0) and would beat `.win.is-max` at (0,2,0) no matter where in the
+   file it sat. Specificity, not source order — do not "tidy" this back up into
+   the rule above. */
+.desk[data-os] .win.is-max { border-radius: 0; }
+
+/* The resize corner. beckon.js is the only thing that builds one — see the note
+   at `makeWin` — so it cannot appear on a desk nothing can drag. Two hairlines
+   rather than an icon: at 500px of desk anything else is a smudge. */
+.win-grip {
+  position: absolute; right: 0; bottom: 0;
+  width: 16px; height: 16px;
+  width: clamp(12px, 2.4cqw, 22px); height: clamp(12px, 2.4cqw, 22px);
+  cursor: nwse-resize; touch-action: none;
+  opacity: 0; transition: opacity .2s ease;
+}
+.win-grip::before, .win-grip::after {
+  content: "";
+  position: absolute; right: 3px; bottom: 3px;
+  border-right: 1.5px solid var(--win-bar-ink);
+  border-bottom: 1.5px solid var(--win-bar-ink);
+}
+.win-grip::before { width: 9px; height: 9px; }
+.win-grip::after  { width: 4px; height: 4px; opacity: .7; }
+.win:hover .win-grip, .win.is-grabbed .win-grip { opacity: .55; }
+.win.is-max .win-grip { display: none; }
+
+.win-bar {
   display: flex; align-items: center; gap: 6px;
-  height: 22px; padding: 0 8px;
-  border-bottom: 1px solid var(--rule);
-  font: 600 11px/1 var(--mono);
-  color: inherit;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  height: 24px; padding: 0 8px;
+  background: var(--win-bar);
+  border-bottom: 1px solid var(--win-line);
+  font: 500 10px/1 var(--sans);
+  color: var(--win-bar-ink);
+  letter-spacing: .01em;
 }
-.os-dot {
-  flex: none; width: 7px; height: 7px; border-radius: 50%;
-  background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
+/* THE TITLE BAR IS DRAWN LARGER THAN SCALE, DELIBERATELY. The desk is a model
+ * of a whole screen, so anything drawn to true proportion is tiny: measured at
+ * the previous sizes, a window control was 5x7.8px with an 11x17.8px hit area
+ * on a 680px desk — and 13x21.5px even at the 1000px cap, which is the widest
+ * this page can ever be. So growing the DESK cannot fix a control that small;
+ * a 24px target would need a desk about 1850px across. The chrome grows
+ * instead, roughly 2-3x true proportion, which is the trade this makes: the
+ * desk reads slightly less like a photograph and its buttons can be hit.
+ * The numbers below are set by one constraint — three controls whose hit areas
+ * do not overlap. Centre-to-centre is button + gap, so the hit area can never
+ * be wider than that, and every size here was measured rather than guessed. */
+.win-bar {
+  height: clamp(26px, 4cqw, 40px);
+  padding-inline: clamp(7px, 1.2cqw, 14px);
+  gap: clamp(4px, .8cqw, 9px);
+  font-size: clamp(10.5px, 1.6cqw, 15px);
+}
+.win-lights { display: none; gap: 4px; }
+.win-lights { gap: clamp(8px, 1.25cqw, 12px); }
+.win-lights i { width: 7px; height: 7px; border-radius: 50%; background: #C8C8CC; }
+.win-lights i { width: clamp(9px, 1.35cqw, 14px); height: clamp(9px, 1.35cqw, 14px); }
+.win-ctl { display: none; gap: 7px; margin-left: auto; font-size: 8px; }
+.win-ctl { gap: clamp(4px, .75cqw, 9px); font-size: clamp(9.5px, 1.45cqw, 13.5px); }
+/* A square cell rather than a bare glyph, so the control has a size of its own
+   that the hit area can be measured against — and so the three of them sit on a
+   predictable pitch. `min-` is what keeps it honest on the small desk beside
+   the table in #how, where 1.9em alone comes to 19px. */
+.win-ctl i {
+  display: grid; place-items: center;
+  width: 1.9em; height: 1.9em;
+  min-width: 20px; min-height: 20px;
+}
+.win-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- the window's interior, one layout per app ----------------------------
+ *
+ * Every window used to be the same drawing — a sidebar in the app's hue and
+ * three lines — so five windows differed only by colour, and a reader who
+ * cannot separate the hues could not tell Spotify from a terminal. Each app now
+ * gets the SHAPE of its own kind of program: a shell prompt, a browser's tab
+ * strip and address bar, a chat with a composer, an editor's indented code, a
+ * server rail beside a channel list.
+ *
+ * NO LOGOS, and that is the same rule the palette note above states: this page
+ * fetches nothing (check 1 in tools/check-site.sh forbids it) and a trademark
+ * is not ours to redraw. What is drawn is the genre, not the brand — an
+ * address bar is not Chrome's, a prompt is not any one shell's.
+ *
+ * DRAWN ENTIRELY IN BACKGROUND LAYERS, no extra markup. The window nodes are
+ * built in two places — the shipped HTML for readers with JS off, and `makeWin`
+ * in beckon.js — so anything needing child elements would have to be authored
+ * twice and kept in step. A layer list is authored once, here.
+ *
+ * SIZED IN cqw, which is a share of the DESK, not of the window. So the
+ * "text" stays one size while a window the reader drags larger simply shows
+ * more of it — which is what resizing a real window does.
+ *
+ * LAYER ORDER IS PAINT ORDER REVERSED: the FIRST layer in the list is drawn on
+ * TOP. So every list below reads detail-first, panel-last, and the flat colour
+ * closes it. Written the other way round — panels first, as they would be in a
+ * drawing — each panel covers the very lines it is a backdrop for, and the
+ * first version of this had exactly that: the browser's tab strip hid its own tab,
+ * the editor's and file manager's sidebars hid their own lists, and a server rail hid all
+ * three of its server dots.
+ */
+.win-body {
+  position: relative;
+  flex: 1; min-height: 0;
+  /* The app's own hue, weak enough to sit under "text" and strong enough to
+     tell two windows apart at a glance. */
+  --tint: color-mix(in srgb, var(--app) 26%, transparent);
+  background: var(--win-paper);
 }
 
-/* BASE = FINAL KEYFRAME. Read the three rules below as the end of the
-   timeline: Claude in front and accented, Brave dimmed behind it. The
-   keyframes rewind that to the resting look for the first 26% and put it
-   back by 46%, where it holds to 100%. With motion off, the base rule is
-   already the frame worth seeing and `both` pins it there. */
-
-/* NO OPACITY ON THE UNFOCUSED WINDOW, and this is the third place on the page
-   that has to say so — see .how-count in §4b and the playground block's header.
-   This one was the counterexample: at `opacity: .5` the bar's `600 11px/1`
-   label composited to 3.52:1 in the light palette and 4.44:1 in dark, both
-   under the 4.5:1 that 11px bold needs, and JS made it the state a press parks
-   on rather than a frame the loop passes through. --fg-dim is the page's own
-   vocabulary for "not the lit one" (.how-win uses exactly this pair) and it
-   measures 5.85:1 / 6.87:1 on --bg-raised.
-
-   Everything else that says "behind" is untouched and is doing the work
-   anyway: Claude is raised 6px, accented, and carries the glow. */
-.os-win.is-brave {
-  z-index: 2;
-  color: var(--fg-dim);
-  animation: hero-dim 4.4s linear infinite both;
-}
-@keyframes hero-dim {
-  0%, 26%   { color: var(--fg); }
-  46%, 100% { color: var(--fg-dim); }
+/* terminal — a prompt, some output, a block cursor. No sidebar: a terminal
+   does not have one, and the absence is most of what makes it recognisable. */
+.win[data-app="Terminal"] .win-body {
+  background:
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 2.6cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 2.6cqw / 13cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 5cqw   / 28cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 7.4cqw / 20cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 9.8cqw / 32cqw .6cqw no-repeat,
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 13cqw  / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 13cqw / 9cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 15.4cqw / 24cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 17.8cqw / 15cqw .6cqw no-repeat,
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 21cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(#E7ECF5, #E7ECF5)                     left 4.4cqw top 20.4cqw / 1.3cqw 1.5cqw no-repeat,
+    var(--term-bg);
 }
 
-.os-win.is-claude {
-  z-index: 3;
-  transform: translateY(-6px);
-  border-color: var(--accent);
-  box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
-  animation: hero-raise 4.4s linear infinite both;
-}
-@keyframes hero-raise {
-  /* 0-26%: behind Brave, flat, unaccented */
-  0%, 26% {
-    z-index: 1;
-    transform: translateY(0);
-    border-color: var(--rule);
-    box-shadow: 0 10px 26px -12px transparent;
-  }
-  /* 26-46%: comes forward. 46-100%: holds. */
-  46%, 100% {
-    z-index: 3;
-    transform: translateY(-6px);
-    border-color: var(--accent);
-    box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
-  }
+/* Chrome — tab strip, one active tab, an address pill, then a page: a picture
+   on the left and a column of text on the right. */
+.win[data-app="Chrome"] .win-body {
+  background:
+    linear-gradient(var(--win-paper), var(--win-paper))   left 1.6cqw top .7cqw / 11cqw 2.3cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 1.6cqw top 4cqw / 60% 1.7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 8.2cqw / 20cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 10.3cqw / 17cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 12.4cqw / 19cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 2.4cqw top 18.4cqw / 34cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 2.4cqw top 20.5cqw / 28cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))             left 2.4cqw top 7.6cqw / 22cqw 9cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))             left 0 top 0 / 100% 3cqw no-repeat,
+    var(--win-paper);
 }
 
-.os-win.is-claude .os-dot {
-  background: var(--accent);
-  animation: hero-dot 4.4s linear infinite both;
+/* Files — a places sidebar, a breadcrumb, and a grid of folders with their
+   names under them. The grid is what says "file manager": nothing else on this
+   desk arranges its content in rows of identical tiles. */
+.win[data-app="Files"] .win-body {
+  background:
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 4.2cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 8.4cqw / 3.6cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 11.5cqw top 1.8cqw / 14cqw .7cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 11.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 19.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 27.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 35.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12cqw top 9.6cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 20cqw top 9.6cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 28cqw top 9.6cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 36cqw top 9.6cqw / 3.6cqw .6cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 11.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 19.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 27.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12cqw top 17.8cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 20cqw top 17.8cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 28cqw top 17.8cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 9.5cqw 100% no-repeat,
+    var(--win-paper);
 }
-@keyframes hero-dot {
-  0%, 26%   { background: color-mix(in srgb, var(--fg-dim) 55%, transparent); }
-  46%, 100% { background: var(--accent); }
+
+/* VS Code — a file list, a gutter, and code that is indented differently on
+   every line, which is the one thing that reads as code from across a room. */
+.win[data-app="VS Code"] .win-body {
+  background:
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.2cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 2.2cqw top 4cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 2.2cqw top 5.8cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 10.4cqw top 2.2cqw / .5cqw 16cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 12.4cqw top 2.4cqw / 6cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 19.4cqw top 2.4cqw / 9cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 14.4cqw top 4.6cqw / 16cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 6.8cqw / 11cqw .7cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 16.4cqw top 9cqw / 5cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 22.4cqw top 9cqw / 8cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 14.4cqw top 11.2cqw / 13cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12.4cqw top 13.4cqw / 7cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 8.5cqw 100% no-repeat,
+    var(--win-paper);
 }
 
-/* Shared: the press control.
-   CONTRACT — built by beckon.js, once in the hero and once in the playground.
-
-     <div class="try-wrap">
-       <p class="try-lead" role="status">Turn Caps Lock on, then press C…</p>
-       <div class="try">
-         <span class="try-caps" aria-hidden="true">
-           <kbd class="key" data-lock>Caps</kbd><span class="plus">+</span>
-         </span>
-         <div class="try-keys">
-           <button class="try-press" type="button">
-             <kbd class="key" aria-hidden="true">C</kbd>    <- the real .key
-             <span class="try-app" aria-hidden="true">Claude</span>
-           </button>
-           …one button per letter…
-         </div>
-         <div class="try-end">
-           <span class="try-lock" data-caps="on">Caps Lock: on</span>
-           <button class="try-reset" type="button">Reset</button>  (playground only)
-         </div>
-       </div>
-
-   THREE FLEX ITEMS, NOT EIGHT, and both wrappers are load-bearing rather than
-   tidiness: `.try-keys` keeps `Caps +` in front of every letter when the
-   letters wrap, and `.try-end` keeps the chip and `Reset` on one line. Both
-   were measured failures as loose siblings — see those rules below.
-     </div>
-
-   The buttons are TRANSPARENT WRAPPERS around real `.key`s, not a second
-   keycap style — .key's contract above says do not fork it, and this does not:
-   the button owns the hit target and the font-size that scales the cap, and
-   the pressed look is still `.key[data-down]`. Nothing here is exempted from
-   the document-level letter handler by name; it stopped excluding buttons
-   outright, which is what used to kill the key after a click. See the comment
-   on that listener in beckon.js.
-
-   ONE ROW, NOT A GRID, and it wraps rather than shrinking. Five buttons do not
-   fit 375px, and shrinking them until they did would put a sub-24px tap target
-   on the one device that has no Caps Lock key at all and therefore depends on
-   the pointer path entirely — the same call `.pg-pick` and `.tab` make in §5.
-
-   THE INSTRUCTION IS ABOVE THE ROW. It names the precondition (the lock has to
-   be on), so a reader meets it before the first press rather than after it has
-   silently done nothing. It doubles as the surface beckon.js nudges when a
-   press cannot act, which is what `[data-nudge]` colours.
-
-   Nothing here animates, and that is deliberate rather than incidental: the
-   reduced-motion block at the end of the file pins animation-duration, and a
-   cap that has to go down and come back is exactly the shape that block cannot
-   land on a correct frame. The press flash is an attribute JS sets and clears,
-   and so is the lock. */
-.try-wrap { margin-top: 16px; }
-.try-lead {
-  margin: 0 0 10px;
-  max-width: var(--measure);
-  font: 600 14px/1.5 var(--sans);
-  color: var(--fg);
+/* Spotify — a library sidebar, a track list where every row starts with its own
+   square of album art, and the now-playing bar pinned across the bottom. That
+   bar is the giveaway: it is the one piece of chrome no other app here has, and
+   it is positioned from the BOTTOM so it stays there when a window is
+   resized. */
+.win[data-app="Spotify"] .win-body {
+  background:
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 6cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 8.4cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 12.5cqw top 2.2cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 3.2cqw / 18cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 5.6cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 6.6cqw / 22cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 9cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 10cqw / 15cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 12.4cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 13.4cqw / 20cqw .7cqw no-repeat,
+    /* the now-playing bar, from the bottom up */
+    linear-gradient(var(--app), var(--app))           left 1.6cqw bottom 1cqw / 2.4cqw 2.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 5cqw bottom 2.6cqw / 7cqw .6cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 16cqw bottom 2cqw / 14cqw .5cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 30cqw bottom 2cqw / 10cqw .5cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 bottom 0 / 100% 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 10.5cqw 100% no-repeat,
+    var(--win-paper);
 }
-.try-lead[data-nudge] { color: var(--accent); }
-.try {
-  display: flex; align-items: center; flex-wrap: wrap;
-  gap: 12px;
-}
-/* THE LETTERS ARE ONE FLEX ITEM, WHICH IS WHAT KEEPS `Caps +` IN FRONT OF ALL
-   OF THEM. They used to be five siblings in the row above, so the prefix held
-   only whichever letters happened to land on its wrap row: measured at 1280px
-   the row read `Caps+ | C | B | E` and then `D | Space` on a bare second row;
-   at 430px `Caps+ | C | B`, then `E | D`, then `Space`. Three of the five
-   letters were drawn as keys with no chord in front of them, which is the one
-   thing this row exists to show. Wrapping them in a block of their own means
-   the row has three items — prefix, letter block, chip — and the block wraps
-   internally, underneath itself, still to the right of the prefix. */
-/* `flex: 1 1 0` is the load-bearing half. Left at the default `0 1 auto` the
-   block's base size is its max-content width — all five buttons on one line —
-   which does not fit beside the prefix, so the flex algorithm gives the block
-   a line of its own and the prefix ends up orphaned from ALL the letters
-   rather than from two of them. A zero flex-basis always fits, so the block
-   takes the remaining width of the row and does its wrapping inside. */
-.try-keys {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
-  flex: 1 1 0; min-width: 0;
-}
-/* Same font-size as the buttons beside it, so `Caps` and `C` read as one chord
-   rather than as a label and a control. It is not a button: clicking it could
-   not turn a lock on, and this page does not render a control that silently
-   does nothing.
 
-   `align-self: center` is the default and is right: with the letters wrapped
-   onto two rows the prefix centres against the block, which reads as
-   "Caps + {all of this}" rather than as a prefix to the first row only. */
-.try-caps { display: inline-flex; align-items: center; gap: 6px; font-size: 1.15rem; }
-.try-press {
-  display: inline-flex; align-items: center; gap: 8px;
-  margin: 0; padding: 4px 8px 4px 4px;
-  color: inherit; background: none; border: 0;
-  border-radius: var(--radius-sm);
-  font-size: 1.15rem; line-height: 1;
-  cursor: pointer;
+.win[data-app="Terminal"] { --app: var(--app-terminal); }
+.win[data-app="Chrome"]   { --app: var(--app-chrome); }
+.win[data-app="VS Code"]  { --app: var(--app-code); }
+.win[data-app="Files"]    { --app: var(--app-files); }
+.win[data-app="Spotify"]  { --app: var(--app-spotify); }
+
+/* macOS: traffic lights, centred title, no min/max/close glyphs.
+ *
+ * THE LIGHTS ARE ALWAYS COLOURED AND UNFOCUS IS A `filter`, not a different
+ * colour per state. macOS really does grey the lights of a background window,
+ * so state-coloured lights were the honest spelling — but the JS-off loop
+ * moves a window with @keyframes and cannot add a class, so the raised window
+ * sat there full-opacity and on top with three grey dots, contradicting the
+ * caption under it. A filter is a property, so a keyframe can reach it. */
+.desk[data-os="macos"] .win { border-radius: 9px; }
+.desk[data-os="macos"] .win-lights { display: flex; }
+/* Centred by giving the name the whole middle and padding it by the width of
+   the cluster on the other side — NOT by `margin-inline: auto`, which competes
+   with the `margin-left: auto` on the control group: three auto margins split
+   the slack three ways and the title lands left of centre. It was only ever
+   nearly right here because the lights are small; on the Linux bar, whose
+   controls are three 1.9em cells, it was out by 59px. */
+.desk[data-os="macos"] .win-name {
+  flex: 1; text-align: center;
+  padding-right: clamp(46px, 7.3cqw, 74px);
 }
-/* The app name is what makes the pointer path self-explanatory — a row of five
-   bare letters would send a reader to #setups to find out that D is Discord —
-   and it is what makes the letter table live rather than decorative. */
-.try-app { font: 600 12px/1 var(--sans); color: var(--fg-dim); }
-.try-press:hover .key { color: var(--accent); border-color: var(--accent); }
-.try-press:hover .try-app { color: var(--accent); }
-/* A chip, not a bare word: it sits in a row of app names, and unboxed
-   "Caps Lock: unknown" read as a sixth thing you could beckon. */
-.try-lock {
-  padding: 4px 8px;
-  font: 600 12px/1.2 var(--mono);
-  color: var(--fg-dim);
+.desk[data-os="macos"] .win-lights i:nth-child(1) { background: #FF5F57; }
+.desk[data-os="macos"] .win-lights i:nth-child(2) { background: #FEBC2E; }
+.desk[data-os="macos"] .win-lights i:nth-child(3) { background: #28C840; }
+.desk[data-os="macos"] .win-lights {
+  filter: grayscale(1) opacity(.7);
+  transition: filter .3s ease;
+}
+.desk[data-os="macos"] .win.is-focused .win-lights { filter: none; }
+
+/* Windows 11: squarer, title left, the three controls on the right. The glyphs
+   are generated content rather than markup — they are decoration inside an
+   aria-hidden stage, and putting them in the HTML would triple its window
+   markup for nothing. */
+.desk[data-os="windows"] .win { border-radius: 7px; }
+.desk[data-os="windows"] .win-ctl { display: flex; }
+.desk[data-os="windows"] .win-ctl i::before { content: "\2013"; }
+.desk[data-os="windows"] .win-ctl i:nth-child(2)::before { content: "\25A1"; }
+.desk[data-os="windows"] .win-ctl i:nth-child(3)::before { content: "\2715"; }
+.desk[data-os="windows"] .win.is-focused { box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, .22); }
+
+/* GNOME / KDE: a STACKING desktop — rounded, title centred and bold, three
+ * round controls on the right.
+ *
+ * THIS COLUMN USED TO DRAW SWAY, TILED: no title bar, windows edge to edge, and
+ * focus shown as a border colour moving rather than a window rising. It was the
+ * honest picture of the compositor beckon was built on first, and it was the
+ * wrong picture for this page. Three reasons, in order:
+ *
+ *   1. Most people reading a landing page on Linux are on GNOME or KDE. A tiled
+ *      row of three borderless panes does not read to them as "my desktop";
+ *      it reads as a screenshot of somebody else's setup.
+ *   2. Nothing in the demo's argument survived it. The claim is that a second
+ *      press CYCLES and a third goes BACK, and on a tiling desk every one of
+ *      those looks identical — a 2px border changing colour — while on a
+ *      stacking desk the window visibly comes forward.
+ *   3. It cost the page a second renderer path, a second pair of keyframes and
+ *      a sort by id, all so one of three machines could contradict the other
+ *      two.
+ *
+ * beckon still supports sway, i3 and Hyprland exactly as before — that is what
+ * the tile list in #setups is for, and it still names all of them. Only the
+ * picture changed. The transcripts stay written in "takes focus" rather than
+ * "comes to the front", because they have to stay true on the compositors this
+ * desk no longer draws. */
+.desk[data-os="linux"] .win { border-radius: 11px; }
+.desk[data-os="linux"] .win-ctl { display: flex; }
+/* Round buttons rather than Windows' bare glyphs, which is the difference a
+   Breeze or Adwaita reader will recognise from across the room. */
+.desk[data-os="linux"] .win-ctl i {
+  border-radius: 50%;
+  background: var(--win-line);
+}
+.desk[data-os="linux"] .win-ctl i::before { content: "\2013"; }
+.desk[data-os="linux"] .win-ctl i:nth-child(2)::before { content: "\25A1"; }
+.desk[data-os="linux"] .win-ctl i:nth-child(3)::before { content: "\2715"; }
+/* Centred, and bold the way a GTK4 header bar is. The left padding balances the
+   button cluster on the right; without it "centred" is centred in what is left
+   over, which is visibly off. */
+/* The left padding balances the button cluster on the right, and it is sized to
+   MEASURE it rather than to look about right: three cells at max(20px, 1.9em)
+   plus two gaps comes to ~70px on a 680px desk and ~92px on a 1000px one. At
+   5.6cqw the title sat visibly left of centre. */
+.desk[data-os="linux"] .win-name {
+  flex: 1; text-align: center;
+  padding-left: clamp(70px, 10.5cqw, 100px);
+  font-weight: 640;
+}
+.desk[data-os="linux"] .win.is-focused { box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, .25); }
+
+/* --- the dock / taskbar / bar --- */
+
+/* It is here so that step 4 looks different from step 5. Launching an app and
+   focusing one both end with the same window in the same place; the only thing
+   that distinguishes them on screen is that a launch lights up a slot that was
+   dark. Without this, the demo's most-explained branch was its least visible. */
+.desk-bar {
+  position: absolute; z-index: 5;
+  display: flex; align-items: center; gap: 6px;
+}
+.desk-bar { gap: clamp(4px, .9cqw, 10px); }
+/* FIVE SHAPES AND FIVE LETTERS, not five colours. These were identical rounded
+   squares that differed only in hue, which is unreadable to anyone who cannot
+   separate those hues — and hard for everyone else at 13px.
+   THE LETTER IS THE POINT: the dock is the only place on the page where the key
+   and the thing it reaches are the same object, so `T` sits on the terminal and
+   `C` on Chrome. It comes from `data-key` in the markup, which check-site.sh
+   pins against README's own table.
+   The outline stays because the letter alone would need reading: at a glance
+   the shape says what kind of program it is, and the letter says which key. */
+.desk-bar .dock-app {
+  position: relative;
+  display: grid; place-items: center;
+  width: 13px; height: 13px; border-radius: 4px;
+  background: var(--app);
+  color: var(--ink);
+  font: 600 8px/1 var(--mono);
+  transition: opacity .3s ease, transform .3s ease, box-shadow .3s ease;
+}
+.desk-bar .dock-app {
+  width: clamp(13px, 2.2cqw, 26px);
+  height: clamp(13px, 2.2cqw, 26px);
+  border-radius: clamp(3px, .55cqw, 6px);
+  font-size: clamp(7.5px, 1.25cqw, 14px);
+}
+.dock-app::after { content: attr(data-key); }
+
+/* THREE STATES, because the algorithm distinguishes three: not running (a press
+   is step 4, a launch), running (step 5, a focus), and holding focus right now
+   (the press goes to 5a / 5b / 5c instead). The dock used to draw only the
+   first two, so it could not agree with the windows above it about where the
+   reader was. The ring is what "lit" means here — a glow of the app's own
+   colour, which stays visible on a light Dock pill and a dark taskbar alike. */
+.desk-bar .dock-app { opacity: .32; }
+.desk-bar .dock-app.is-up { opacity: .8; }
+/* A ring AND a glow: the ring alone measured too quiet against the macOS Dock's
+   own translucent pill, which is the lightest ground any of the three bars
+   offers. Both are the app's own hue, so the lit icon reads as more of itself
+   rather than as a generic selection. */
+.desk-bar .dock-app.is-focused {
+  opacity: 1;
+  box-shadow:
+    0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+    0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+      color-mix(in srgb, var(--app) 45%, transparent);
+}
+/* The hue, the outline, and the ink the letter is set in.
+ *
+ * `--ink` IS PER APP AND NOT ONE COLOUR, because no single one works: white on
+ * Chrome's red is about 3.9:1, and near-black on the terminal's graphite is
+ * worse. Each is picked against its own background — dark ink on the three
+ * light-ish hues, light ink on the two dark ones — and none of them follow the
+ * page theme, because the icon's background does not either. */
+.dock-app[data-app="Terminal"] {
+  --app: var(--app-terminal); --ink: #E8EAF0;
+  border-radius: clamp(2px, .3cqw, 4px);      /* a boxy shell */
+}
+.dock-app[data-app="Chrome"] {
+  --app: var(--app-chrome); --ink: #2C0F0A;
+  border-radius: 50%;                         /* a browser */
+}
+.dock-app[data-app="VS Code"] {
+  --app: var(--app-code); --ink: #04182D;
+  border-radius: 50% 16% 50% 16%;             /* a caret */
+}
+.dock-app[data-app="Files"] {
+  --app: var(--app-files); --ink: #2A1D08;
+  /* square top-left corner, rounded elsewhere: a folder's tab */
+  border-radius: 6% 30% 30% 30%;
+}
+.dock-app[data-app="Spotify"] {
+  --app: var(--app-spotify); --ink: #04200F;
+  border-radius: 34%;                         /* a squircle */
+}
+
+/* `--bar-h` is the bite each bar takes out of the desk, and it is what stops a
+   maximised window from sliding under one. It is declared per OS beside the bar
+   it describes, so the two cannot drift. */
+
+/* macOS: a floating pill, centred at the bottom. It floats OVER the wallpaper,
+   so a maximised window stops above it rather than behind it — which is what
+   macOS itself does with the Dock at its default setting. */
+.desk[data-os="macos"] {
+  --bar-h: clamp(30px, 5.4cqw, 54px);
+}
+.desk[data-os="macos"] .desk-bar {
+  left: 50%; bottom: 3.5%; transform: translateX(-50%);
+  padding: 6px 9px; border-radius: 9px;
+  background: rgba(255, 255, 255, .26);
+  backdrop-filter: blur(6px);
+}
+/* Windows: a full-width bar, icons centred. */
+.desk[data-os="windows"] {
+  --bar-h: clamp(20px, 3.6cqw, 38px);
+}
+.desk[data-os="windows"] .desk-bar {
+  left: 0; right: 0; bottom: 0; height: 22px;
+  justify-content: center;
+  background: rgba(20, 22, 30, .58);
+  backdrop-filter: blur(6px);
+}
+.desk[data-os="windows"] .desk-bar { height: var(--bar-h); }
+/* GNOME / KDE: a panel along the bottom with its icons to the LEFT, which is
+   Plasma's default and close enough to a dash-to-dock GNOME. It used to be a
+   waybar strip along the top, because this column used to draw sway. */
+.desk[data-os="linux"] {
+  --bar-h: clamp(19px, 3.4cqw, 36px);
+}
+.desk[data-os="linux"] .desk-bar {
+  left: 0; right: 0; bottom: 0; height: var(--bar-h);
+  padding-inline: 7px;
+  padding-inline: clamp(6px, 1.1cqw, 12px);
+  background: rgba(12, 22, 24, .72);
+  backdrop-filter: blur(6px);
+}
+
+/* --- the desk's own controls, once JS is holding it ---
+ *
+ * Scoped to `.demo.is-live` throughout: without JS the title bar is a drawing
+ * and must not offer a pointer cursor for a button that will not answer. */
+.demo.is-live .win-lights i,
+.demo.is-live .win-ctl i,
+.demo.is-live .dock-app { cursor: pointer; }
+
+/* The hit area is grown with a pseudo element rather than with padding, which
+   would move the controls apart and change the drawing.
+   HOW FAR IT CAN GROW IS SET BY THE PITCH, not by a guideline: centre-to-centre
+   is the control plus the gap, so a hit area wider than that steals the
+   neighbour's clicks — which on a title bar means closing a window the reader
+   meant to minimise. Measured on a 680px desk: the Windows/Linux cells sit on a
+   ~25px pitch, so -2px all round gives ~24px and stops there; the macOS lights
+   sit on a ~17px pitch, so they grow sideways only to -4px and take their
+   height from the bar instead. macOS's real traffic lights are on a 20px pitch,
+   so this is not a limitation of the model. */
+.demo.is-live .win-lights i,
+.demo.is-live .win-ctl i { position: relative; }
+.demo.is-live .win-ctl i::after {
+  content: ""; position: absolute; inset: -2px;
+  border-radius: 6px;
+}
+.demo.is-live .win-lights i::after {
+  content: ""; position: absolute; inset: -7px -3px;
+  border-radius: 6px;
+}
+.demo.is-live .win-lights i { transition: transform .15s ease, background-color .3s ease; }
+.demo.is-live .win-lights i:hover { transform: scale(1.3); }
+.demo.is-live .win-ctl i:hover::after { background: currentColor; opacity: .14; }
+.demo.is-live .dock-app:hover { transform: translateY(-2px); }
+
+
+/* --- the OS strip --- */
+
+/* Three buttons over the desk's top edge. This is where the cross-platform
+   claim lives now that the hero draws one machine instead of three: pressing
+   Windows redraws the same desk in Windows chrome with the same gesture, which
+   is a thing the reader does rather than a sentence they are asked to believe.
+   It writes the same `data-os` the nav switcher writes, so the two never
+   disagree. */
+.os-seg {
+  display: inline-flex; gap: 3px;
+  padding: 3px;
+  margin-bottom: clamp(6px, 1.3vh, 12px);
   border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
+  border-radius: 9px;
+  background: var(--bg-raised);
 }
-.try-lock[data-caps="on"] { color: var(--accent); border-color: var(--accent); }
-/* The row's tail: the lock's state, and the way back to the start. It takes a
-   line of its own (`flex-basis: 100%`) rather than competing with the letters
-   for the last one, which is what keeps the chord above it whole — and it does
-   not wrap internally, so `Reset` can no longer end up alone on a line below
-   the chip the way it did at 375px and 900px.
-
-   IT COSTS THE HERO A LINE, where two letters and a chip would have fitted on
-   one, and that is the trade rather than an oversight: `.try-keys` can only
-   guarantee it never orphans `Caps +` by taking a zero flex-basis and growing,
-   which leaves no room on that line for anything after it. Both rows are the
-   same shape as a result, which is worth more than the hero's saved 34px. */
-.try-end {
-  display: flex; align-items: center; flex-wrap: nowrap; gap: 12px;
-  flex: 0 0 100%;
+.os-seg button {
+  font: inherit; font-size: 13px; cursor: pointer;
+  color: var(--fg-dim); background: none;
+  border: 0; border-radius: 7px;
+  padding: 6px 13px; min-height: 30px;
 }
-.try-reset {
-  margin-inline-start: auto;
-  min-height: 32px; padding: 6px 12px;
-  font: 600 13px/1.2 var(--sans);
-  color: var(--fg-dim);
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.try-reset:hover { color: var(--accent); border-color: var(--accent); }
-
-/* The note above the hero's try row. Same claims the playground's .pg-why and
-   .caps-truth make at length, in two sentences, because the hero is where the
-   first press happens and both are owed before it: a press taps every cap in
-   all three chords, and it turns the reader's Caps Lock on. `.caps` is the
-   shared leading for keycaps set in prose. */
-.try-note {
-  margin: 16px 0 0;
-  max-width: var(--measure);
-  color: var(--fg-dim);
-  font-size: 14px;
+.os-seg button:hover { color: var(--fg); }
+.os-seg button[aria-pressed="true"] {
+  color: var(--fg); background: var(--bg);
+  box-shadow: var(--shadow-soft);
+  font-weight: 560;
 }
 
-/* Shared: the readout. ONE component, built once by beckon.js and used by both
-   pressable demos — the hero's and the playground's.
+/* --- what sits under the desk --- */
 
-   Why it is a bordered panel and not a paragraph: it is the only thing on
-   screen that changes when the reader presses, and it sits directly above
-   .demo-steps, which never changes. As a bare 15px line it differed from the
-   transcript by one point of size and one token of colour, so the two read as
-   one two-sentence paragraph and the press appeared to do nothing to the text.
-   The accent edge and the small uppercase step line are what make the changing
-   surface look like the changing surface.
+/* The three real chords. All three ship; once `data-os` is resolved — which
+   happens in the <head>, before first paint — CSS keeps the reader's. With JS
+   off nothing matches, all three stay, and the hero still says "every OS you
+   use" with its own markup rather than with an adjective. */
+.hero-chords { justify-content: center; margin: 20px 0 0; }
+.hero-chords li { justify-content: center; }
+:root[data-os="macos"]   .hero-chords .os-row:not([data-os="macos"]),
+:root[data-os="windows"] .hero-chords .os-row:not([data-os="windows"]),
+:root[data-os="linux"]   .hero-chords .os-row:not([data-os="linux"]) { display: none; }
 
-   The hero names its branch in the words of the #how table ("Focus it",
-   "Switch back"); the playground names it "step 5a" and so on, which is
-   CLAUDE.md's numbering and is introduced by that table's own Step column one
-   screen above. */
+/* --- the press row --- */
+
+.press {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 8px;
+  margin-bottom: clamp(8px, 1.5vh, 14px);
+}
+.press-lead { display: inline-flex; align-items: center; gap: 8px; }
+.press-lead .key { min-width: 34px; height: 34px; font-size: 13.5px; }
+.press-plus { color: var(--fg-dim); font-size: 14px; }
+.press-key {
+  font: inherit; background: none; border: 0; padding: 0;
+  cursor: pointer; border-radius: 8px;
+}
+.press-key .key { pointer-events: none; min-width: 34px; height: 34px; font-size: 13.5px; }
+.press-key:hover .key { background: var(--bg-raised); }
+.press-key:active .key, .press-key.is-hit .key {
+  transform: translateY(1px); border-bottom-width: 1px;
+}
+.press-hint {
+  flex-basis: 100%;
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 4px 10px;
+  font-size: 14px; color: var(--fg-dim);
+  margin: 2px 0 0;
+}
+/* The way out of the Caps gate. It appears only after two refused presses and
+   opens nothing until it is clicked — see the gate's own note in beckon.js for
+   why a counter doing this silently was the wrong shape. */
+.press-out {
+  font: inherit; font-size: 13px;
+  color: var(--fg); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  padding: 4px 10px; min-height: 26px; cursor: pointer;
+}
+.press-out:hover { background: var(--bg-raised); }
+
+/* --- the readout --- */
+
 .readout {
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-inline-start: 3px solid var(--accent);
-  border-radius: var(--radius);
-  padding: var(--pad);
+  margin-top: 18px;
+  max-width: var(--measure);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 11px 15px;
 }
 .readout-step {
-  margin: 0;
-  font: 700 12px/1 var(--mono);
+  font: 600 11px/1 var(--mono);
   letter-spacing: .1em; text-transform: uppercase;
   color: var(--accent);
 }
-.readout-said { margin: 12px 0 0; color: var(--fg); font-size: 15px; line-height: 1.55; }
+.readout-say { margin: 7px 0 0; font-size: 15px; }
 
-/* The hero, once JS has the wheel.
-
-   `.is-live` cancels every animation inside the demo — chord caps, both fake
-   windows, the accent dot — and `data-front` on the stage becomes the single
-   input to what is drawn. So the CSS has two named states instead of a
-   timeline, which is what makes a press a state change rather than a seek.
-
-   The base rules in the block above ARE the `claude` state (that is the motion
-   contract: base = final keyframe), so only `brave` needs writing out. Every
-   selector here carries .hero-stage[data-front], which outscores the
-   .os-win.is-* rules it has to beat. With JS off none of this matches and the
-   4.4s loop runs exactly as it did. */
-.hero-demo.is-live .os-chord .key,
-.hero-demo.is-live .os-win,
-.hero-demo.is-live .os-win .os-dot { animation: none; }
-
-.hero-demo.is-live .os-win {
-  transition: color .2s, transform .2s, border-color .2s, box-shadow .2s;
-}
-.hero-demo.is-live .os-win .os-dot { transition: background .2s; }
-
-/* BOTH HALVES OF THE STATE, NOT JUST THE UNDOING OF THE OTHER ONE. This block
-   used to strip Claude's accent and re-light Brave's text and stop there, so
-   the brave-front state was drawn with both windows at --fg, both borders at
-   --rule and both dots neutral — measured, and byte-identical to the resting
-   state. Half of the hero's presses therefore looked like nothing had happened
-   while the readout claimed a focus change. The page's focus vocabulary
-   (accent border, accent dot, the other window at --fg-dim) is a vocabulary,
-   so it has to be speakable about Brave too.
-
-   The 6px RAISE stays Claude-only and that is geometry rather than an
-   omission: Claude is the lower of the two overlapping windows, so lifting it
-   is how it comes forward. Brave is already the upper one; lifting it would
-   open a gap under the stack instead of putting it in front. z-index carries
-   that half — Brave 2 over Claude 1. */
-.hero-stage[data-front="brave"] .os-win.is-brave {
-  color: var(--fg);
-  border-color: var(--accent);
-  box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
-}
-.hero-stage[data-front="brave"] .os-win.is-brave .os-dot { background: var(--accent); }
-.hero-stage[data-front="brave"] .os-win.is-claude {
-  z-index: 1;
-  color: var(--fg-dim);
-  transform: translateY(0);
-  border-color: var(--rule);
-  box-shadow: 0 10px 26px -12px transparent;
-}
-.hero-stage[data-front="brave"] .os-win.is-claude .os-dot {
-  background: color-mix(in srgb, var(--fg-dim) 55%, transparent);
-}
-
-/* The hero's readout is the shared .readout above, so there is nothing to
-   write here. It is inserted between the try row and the transcript, and gets
-   the same margin every panel in a demo gets. */
-.hero-demo .readout { margin-top: 16px; }
-
-
-/* --- 4b. section: how ("Focus is only the first press.") ------------------- */
-
-/* TWO demos, and the split is a correctness fix rather than a layout idea.
-   CLAUDE.md's step 5a cycles over a ring of the app's own windows and
-   "rotating over them visits every window exactly once per lap" — so with
-   three Claude windows open the ring never exits 5a, and the single five-press
-   demo that walked 1/3 -> 2/3 -> 3/3 -> Brave -> hidden showed two steps that
-   cannot be reached from that precondition. Each demo now names its own
-   precondition: the ring (three windows) and the toggle (one window).
-
-   Reduced motion: the base styles ARE the last keyframe of every animation
-   below — ring1 lit and back at the head of the ring, Brave lit in the second
-   demo, key up. Authoring the base as the FINAL frame rather than the first is
-   the whole reason a reader with motion off still gets the step the section
-   exists to show.
-
-   NO animation below declares a delay. The old demo offset two rows by 1.8s
-   and had to keep their 0% and 100% frames identical to stay honest under
-   reduced motion (a delayed animation sits in its backwards fill first). Four
-   explicit keyframe sets cost a few more lines and remove that trap entirely. */
-
-.how-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  gap: 36px;
-  margin-top: 4px;
-}
-
-/* The table is the reference and the two demos illustrate two of its rows, so
-   the table sits above them at prose measure and the demos share the width
-   below it — side by side from 900px up (see §5), stacked below that. */
-.how-tablewrap { overflow-x: auto; max-width: var(--measure); }
-.how-demos { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-
-/* The precondition is the caption, and it is the first child of .demo — the
-   contract only pins .demo-steps as the LAST child. */
-.demo-cap {
-  margin: 0 0 14px;
-  color: var(--fg-dim);
-  font-size: .78rem;
-  font-weight: 650;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-}
-
-.how-table {
-  width: 100%;
-  border-collapse: collapse;
-  text-align: left;
+/* The transcript. Not sr-only: it is the sentence the demo is making, and a
+   reader who never looks at the stage should still get it. Left-aligned with
+   its section by default; only the hero, which is a centred column, centres
+   it. */
+.demo-steps {
+  margin: 20px 0 0;
+  max-width: var(--measure);
   font-size: 15px;
+  color: var(--fg-dim);
 }
-.how-table th,
-.how-table td {
-  padding: 13px 16px 13px 0;
+
+
+/* --- 5a. section: hero ---------------------------------------------------- */
+
+/* The top padding, the headline ceiling and the two margins below are all
+   tuned to one requirement: THE DESKS HAVE TO BE ON SCREEN WITHOUT SCROLLING
+   at a 900px viewport, which is the shortest laptop worth designing for. The
+   demo is the argument; a demo below the fold is a screenshot of an argument. */
+/* EVERYTHING ABOVE THE DESK IS SUBTRACTED FROM THE DESK, so on a short viewport
+   all of it shrinks — continuously, with vh in the clamp, rather than at a
+   breakpoint. A breakpoint would put a step in the desk's width at the moment
+   it crosses: measured, tightening the headline is worth ~150px of desk, and
+   150px appearing between one pixel of viewport height and the next is a worse
+   artefact than the thing it fixes.
+   The headline takes `min(5.6vw, 7.4vh)` because it is the biggest single item
+   up here and it is TWO LINES — at 72px that is 150px of the budget, on a
+   viewport that may only have 625 in total. */
+/* THE BOTTOM PADDING MOVES ONTO .wrap, and the reason is §6's sticky dock.
+   A sticky box is constrained to its CONTAINING BLOCK, which for a static-
+   position child is the parent's CONTENT box — not, as is easy to assume, its
+   padding box. So with `main > section`'s 104px bottom padding still on #hero,
+   the cheat sheet came to rest 104px above the rule it is supposed to land on:
+   measured, hudBottom tracked heroBottom minus exactly `--section-y` at every
+   scroll offset. Moving the same 104px inside .wrap makes #hero's content box
+   end where its border box does, so the dock's resting place IS the rule. The
+   section looks identical; only the dock's floor moved. */
+.hero { padding-top: clamp(16px, 3.4vh, 34px); padding-bottom: 0; text-align: center; }
+.hero > .wrap { padding-bottom: var(--section-y); }
+.hero h1 {
+  font-size: clamp(34px, min(5.6vw, 7.4vh), 72px);
+  margin-bottom: clamp(10px, 1.9vh, 18px);
+}
+.hero .lead { margin-inline: auto; margin-bottom: clamp(14px, 2.6vh, 24px); }
+.hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.hero-meta { margin: 16px 0 0; font-size: 14px; color: var(--fg-dim); }
+.hero-demo { margin-top: clamp(14px, 2.8vh, 26px); }
+/* ONE desk, at the size a desktop has to be to read as one. 340px across —
+   what three side by side came to — was a thumbnail of a desktop; this is a
+   desktop. 1000px is as wide as it can go: `--maxw` minus the wrap's two 28px
+   gutters leaves 1064, and a desk touching that edge reads as a page element
+   rather than as a screen sitting on the page.
+   The extra width buys the interaction as much as the picture — a title bar
+   button is ~3% of the desk's width, so at 860px the Windows and GNOME controls
+   were a 12px target. */
+.hero-demo .desks { grid-template-columns: 1fr; justify-items: center; }
+.hero-demo .desk-slot { max-width: 1000px; width: 100%; }
+
+/* THE WHOLE DESK HAS TO FIT ON SCREEN, and 1000px at 16:9 is 563px tall, which
+   on a 900px laptop lands the bottom edge — the dock — below the fold. The
+   dock is not decoration: it is the only thing that distinguishes step 4 from
+   step 5, because launching an app and focusing one end with the same window
+   in the same place and differ only in a slot lighting up.
+   So the slot is capped by whichever is smaller: its own 1000px, or the width
+   at which a 16:9 desk still fits the height the copy above it leaves.
+
+   THE FLOOR WINS OVER THAT RULE, and it is 680px because 380 was measured to
+   be useless. On a 1366x768 Windows laptop, and on 1920x1080 at 150% display
+   scaling — which is a default, not an exotic setting — the height term came
+   out at 380px, and a 380px desk is the thumbnail this whole redesign exists to
+   stop drawing: the title bars are 8px tall and the buttons a reader is now
+   invited to click are 5px across. 1920x1080 at 125% was barely better at
+   428px. Below about 910px of viewport the floor takes over and the desk hangs
+   past the fold, which is the trade this makes deliberately: a demo you have to
+   scroll to finish reading beats one too small to use. Everything the reader
+   needs FIRST — the headline, the press row, the top of the desk — is still
+   above it, and the clamps above shrink the copy so the overhang stays small.
+   Desktop widths only — below 760px the page stacks and scrolling is the
+   expected way through it. */
+@media (min-width: 761px) {
+  .hero-demo .desk-slot {
+    /* 528px is what sits above the desk — MEASURED at 1440 wide in headless
+       Chrome, not guessed: nav, headline, one-line lead, the buttons, the press
+       row and the OS strip put the desk's top edge at 527, and the extra pixel
+       is the rounding. 526 was tried and the desk's bottom edge landed at 901
+       on a 900px viewport, which is the dock one pixel under the fold — the one
+       thing this expression exists to prevent.
+       It read 560 while the hero's top padding was 44 and the demo's margin 34.
+       Both came down, and this had to follow or the desk would have left the
+       reclaimed space empty instead of using it. On a 1440x900 laptop that is
+       the difference between a 604px desk and a 661px one — and it is the ONLY
+       place raising the cap above from 860 to 1000 can show up, because below
+       about 1045px of viewport the height binds first and the cap never
+       applies at all. */
+    max-width: min(1000px, max(680px, calc((100vh - 528px) * 1.7778)));
+    max-width: min(1000px, max(680px, calc((100svh - 528px) * 1.7778)));
+  }
+}
+.hero-demo .demo-steps { text-align: center; margin-inline: auto; }
+
+/* THE LOOP, and it only exists for readers without JS.
+
+   beckon.js adds `.is-live`, which switches every animation here off and hands
+   the reader the wheel. Written the other way round — a still image that JS
+   animates — a JS-off reader gets three rectangles and no argument.
+
+   NO ELEMENT HERE DECLARES AN animation-delay. That is what makes "all three
+   at the same instant" structural rather than a claim in the caption: the three
+   desks are three copies of one 6s timeline started by the same style
+   recalculation. */
+/* NEITHER OF THESE TOUCHES `transform`, and that is the fix rather than an
+   omission. They used to swap the two windows' cascade offsets, which is the
+   same defect the renderer had: two similar windows trading places does not
+   read as one coming forward, it reads as the front window being renamed. A
+   window keeps its place; raising it changes what is in front of what. Leaving
+   `transform` out of the keyframes is what lets the base rule's
+   `translate(var(--slot) …)` stand. */
+@keyframes deskRaise {
+  0%, 42%   { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
+  50%, 100% { opacity: 1;   z-index: 4; box-shadow: var(--shadow); }
+}
+@keyframes deskLower {
+  0%, 42%   { opacity: 1;   z-index: 3; box-shadow: var(--shadow); }
+  50%, 100% { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
+}
+/* The traffic lights follow the window they belong to. Two keyframes rather
+   than six: the lights are coloured unconditionally and this animates the
+   grey-out, so one pair covers all three dots. */
+@keyframes lightsOn  { 0%, 42% { filter: grayscale(1) opacity(.7); } 50%, 100% { filter: none; } }
+@keyframes lightsOff { 0%, 42% { filter: none; } 50%, 100% { filter: grayscale(1) opacity(.7); } }
+/* The dock follows the window. Without these the JS-off loop raises Chrome
+   while the dock keeps VS Code lit — the two halves of the same picture
+   disagreeing about which app has focus. `box-shadow` and `opacity` are both
+   animatable, which is why the focus ring is drawn with one. */
+@keyframes dockLight {
+  0%, 42%   { opacity: .8; box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+  50%, 100% { opacity: 1;
+              box-shadow:
+                0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+                0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+                  color-mix(in srgb, var(--app) 45%, transparent); }
+}
+@keyframes dockDim {
+  0%, 42%   { opacity: 1;
+              box-shadow:
+                0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+                0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+                  color-mix(in srgb, var(--app) 45%, transparent); }
+  50%, 100% { opacity: .8; box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+}
+@keyframes capPress {
+  0%, 38%   { transform: translateY(0);   border-bottom-width: 2px; }
+  44%, 52%  { transform: translateY(1px); border-bottom-width: 1px; }
+  58%, 100% { transform: translateY(0);   border-bottom-width: 2px; }
+}
+
+/* One pair of keyframes for all three machines, now that the Linux desk stacks
+   like the other two. It used to need its own, because a tiling compositor
+   cannot raise anything and the loop had to animate a border colour instead. */
+.hero-demo:not(.is-live) .win[data-app="Chrome"] { animation: deskRaise 6s infinite; }
+.hero-demo:not(.is-live) .win[data-app="VS Code"]  { animation: deskLower 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="Chrome"] { animation: dockLight 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="VS Code"]  { animation: dockDim 6s infinite; }
+.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"] .win-lights {
+  animation: lightsOn 6s infinite;
+}
+.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="VS Code"] .win-lights {
+  animation: lightsOff 6s infinite;
+}
+.hero-demo:not(.is-live) .hero-chords .key.is-letter {
+  animation: capPress 6s infinite;
+}
+
+
+/* --- 5b. section: how ----------------------------------------------------- */
+
+.how-grid { display: grid; gap: 34px; }
+
+/* PULLED LEFT BY ITS OWN CELL PADDING so the table's ink starts on the same
+   vertical as the heading and the lead above it. The cells keep their 14px,
+   which is what gives a hovered or fired row room to breathe around its text —
+   dropping the padding instead would have put the row fill hard against the
+   first letter. The table is 14px wider to land flush on the right; there is a
+   44px column gap beside it, so nothing collides. */
+.how-table {
+  width: calc(100% + 14px);
+  margin-left: -14px;
+  border-collapse: collapse;
+}
+.how-cap {
+  caption-side: top; text-align: left;
+  max-width: var(--measure);
+  margin-bottom: 14px;
+  font-size: 15px; color: var(--fg-dim);
+}
+.how-table th, .how-table td {
+  text-align: left; padding: 12px 14px;
   border-bottom: 1px solid var(--rule);
+  font-weight: 400;
+  /* `top`, not `baseline`: the condition in the first column wraps to two lines
+     on a narrow table while the branch beside it stays on one, and a baseline
+     alignment then hangs the branch off the SECOND line — so "Back" sat level
+     with the tail of the condition instead of its start. */
   vertical-align: top;
 }
-.how-table td:last-child { padding-right: 0; }
-/* The caption is the referent for the Step column, so it reads as prose above
-   the table rather than as a label on it. */
-.how-cap {
-  text-align: left;
-  max-width: var(--measure);
-  margin-bottom: 12px;
-  color: var(--fg-dim);
-  font-size: 14px;
-  line-height: 1.5;
-}
-/* Mono because the values are 4 / 5 / 5a and the playground quotes them back
-   in mono. --fg-dim, not the tbody td weight above: the step is the citation,
-   not the answer. */
-.how-table tbody td.how-step {
-  width: 1%;
-  white-space: nowrap;
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg-dim);
-  /* Every cell is `vertical-align: top`, so a smaller font would sit above the
-     row's own baseline and read as a superscript. 25px is the line box that
-     puts 13px on the same baseline as the row's 15px at line-height 1.6. */
-  line-height: 25px;
-}
+/* NO TOP PADDING, and this is the fix for "the left column sits lower than the
+   desk". The two grid tracks start at the same y — measured, both boxes at
+   1384 — but the header row inherited 12px of padding-top from the cell rule,
+   so the first ink on the left was 12px below the desk's hard top edge on the
+   right while the boxes agreed. Aligning boxes is not aligning a picture. */
 .how-table thead th {
+  font: 500 12px/1 var(--sans);
+  letter-spacing: .06em; text-transform: uppercase;
+  color: var(--fg-dim);
   padding-top: 0;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
+  padding-bottom: 11px;
 }
-.how-table tbody th {
-  width: 45%;
-  font-weight: 400;
-  color: var(--fg-dim);
+.how-table tbody th { color: var(--fg-dim); width: 42%; }
+.how-table tbody td { font-weight: 400; }
+
+/* THE TWO GROUP HEADINGS ARE GONE. They read "You are somewhere else" and "You
+   are already in it" — eight words restating what the first column says once
+   the conditions are written as conditions rather than as sentences. The five
+   rows carry the split on their own now.
+
+   The name of the branch. It carries the meaning the step number never did, so
+   it is the one thing in the row set in full ink. */
+.how-do { font-weight: 640; color: var(--fg); }
+
+/* The row whose step just fired, and the row the desk is currently set up for.
+   Two different things, so two different marks: a fill for "this just
+   happened", a caret for "this is what is on screen". */
+.how-table tbody tr.is-hit { background: var(--hit); }
+.how-table tbody tr.is-hit .how-do { color: var(--accent); }
+.how-table tbody tr.is-on th { color: var(--fg); font-weight: 500; }
+
+/* WHILE THE TOUR IS DRIVING, `is-on` gets the fill too, so exactly one row is
+   marked at every instant and the mark walks the list. Reader-driven, `is-on`
+   is a caret on a row the reader chose and is still looking at, and the fill
+   is reserved for the answer — but nobody chose these, and a mark that only
+   appears for the half-beat after each press read as the row vanishing and
+   another one lighting up somewhere else. `is-touring` is removed the moment
+   the reader takes over, so their `is-on` is upstream's again. The accent on
+   `.how-do` still separates "this fired" from "this is set up". */
+.how-table.is-touring tbody tr.is-on { background: var(--hit); }
+
+/* JS replaces each row header's text with this button. It ships as plain text,
+   because a button that does nothing is exactly the failure the JS-off
+   ordering exists to prevent.
+
+   `.is-live` IS SET BY THE SAME CODE THAT ADDS THE LISTENER, so the row cannot
+   look clickable before it is. Everything below is inside it for that reason. */
+.row-btn {
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; padding: 0; margin: 0;
+  cursor: pointer; width: 100%;
 }
-.how-table tbody td { color: var(--fg); font-weight: 600; }
-.how-table tbody tr:last-child th,
-.how-table tbody tr:last-child td { border-bottom: 0; }
+/* THE WHOLE ROW IS THE TARGET. The underline that used to appear under the
+   first cell's text is gone with it: it marked the words as the thing to aim
+   at, which is exactly the impression this change exists to remove. A row-wide
+   fill says the row is the button, and it is the same fill `is-hit` uses a
+   moment later — the hover is a preview of the mark the press will leave. */
+.how-table.is-live tbody tr { cursor: pointer; }
+.how-table.is-live tbody tr:hover { background: var(--hit); }
+.how-table.is-live tbody tr:hover .how-do { color: var(--accent); }
+/* The button is the keyboard's way in and must still say where focus is, but it
+   is 42% of a row that is now one target, so the ring is drawn on the row.
 
-.how-keyrow { display: flex; justify-content: center; padding: 4px 0 20px; }
-
-/* One press period, 1.8s, shared by both demos. The ring demo's rows run on
-   5.4s (three presses) and the toggle demo's on 3.6s (two presses); both are
-   whole multiples of 1.8s, so every row's state change stays on the press that
-   causes it, and the two demos stay in step with each other for good. Change
-   one of the three durations and you must change them all.
-
-   THE PRESS COUNT AND THE TRANSITION COUNT MUST MATCH. A ring of three windows
-   returns to its head in three presses, not four: 1/3 -> 2/3 -> 3/3 -> 1/3. The
-   ring ran on 7.2s (four press slots) against three transitions, so the first
-   press of every lap moved nothing on screen — a demo of the one thing beckon
-   is claimed never to do, sitting under a table row that says the opposite. */
-.how-key { animation: how-press 1.8s linear 0s infinite both; }
-
-@keyframes how-press {
-  0%, 5% {
-    transform: translateY(0);
-    box-shadow: 0 2px 0 var(--rule),
-                0 0 0 0 color-mix(in srgb, var(--accent) 30%, transparent);
+   MOVING THE RING IS GATED ON `:has()` BEING AVAILABLE, and the guard is not
+   defensive habit. Dropping `outline: none` on the button unconditionally, with
+   the replacement ring behind a selector the engine may not understand, is how
+   a keyboard user ends up with no focus indicator at all — the one failure mode
+   worse than an ugly one. Inside the query both halves land together; outside
+   it the button keeps the page's own :focus-visible ring and nothing is lost
+   except the ring being 42% as wide as the thing it describes. */
+@supports selector(:has(*)) {
+  .row-btn:focus-visible { outline: none; }
+  .how-table.is-live tbody tr:has(.row-btn:focus-visible) {
+    outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--r-ctl);
   }
-  9%, 14% {
-    transform: translateY(1px);
-    box-shadow: 0 1px 0 var(--rule),
-                0 0 0 5px color-mix(in srgb, var(--accent) 30%, transparent);
-  }
-  34%, 100% {
-    transform: translateY(0);
-    box-shadow: 0 2px 0 var(--rule),
-                0 0 0 16px color-mix(in srgb, var(--accent) 0%, transparent);
-  }
 }
 
-.how-windows { display: grid; gap: 8px; }
+/* The desk sits BESIDE the table, not under it, wherever there is room: the row
+   you click and the thing it changes should be within one glance of each
+   other. Below 1040px they stack in reading order, table first. */
+.how-demo .desks { grid-template-columns: 1fr; }
+.how-demo .desk-slot { width: 100%; }
+.how-demo .press { justify-content: flex-start; }
 
-.how-win {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-left: 3px solid var(--rule);
-  border-radius: var(--radius-sm);
-  color: var(--fg-dim);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.2;
-  transform: translateX(0);
+/* The one looping demo a JS-off reader gets here: the ring, which is the row
+   the table's caption points at. */
+.how-demo:not(.is-live) .win[data-app="Chrome"]:first-child {
+  animation: deskLower 6s infinite;
 }
-.how-dots { display: inline-flex; gap: 4px; flex: none; }
-.how-dots span { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .5; }
-.how-title { font-weight: 600; }
-/* No opacity here. These counters ARE the ring demo's payload — they are what
-   shows the highlight walking 1/3 -> 2/3 -> 3/3 — and at .75 over --bg the
-   inherited --fg-dim composited to 3.55:1 in the light palette. aria-hidden on
-   the stage redirects screen readers to the transcript; it does not exempt
-   visible text from 1.4.3. Inherited, --fg-dim on --bg is 6.27:1 / 7.52:1. */
-.how-count { margin-left: auto; font-family: var(--mono); font-size: 11px; }
-
-/* DEMO A — the ring. THREE presses over 5.4s, one press per 33.33%: the
-   highlight walks 1/3 -> 2/3 -> 3/3 and the third press comes back round to
-   1/3, which is the honest surprise. Every press moves something; there is no
-   fourth slot for a press that does nothing.
-
-   The offsets are in ABSOLUTE time, not in percent copied between timelines.
-   Both demos hand over 0.126s -> 0.180s after the slot starts, which is where
-   the cap is at the bottom of its travel (how-press bottoms out 0.162s-0.252s
-   in). On demo B's 3.6s that is 3.5% -> 5%; on this 5.4s it is 2.33% -> 3.33%,
-   and each later slot adds 33.33%. Percentages are NOT portable between the two
-   demos — reusing 3.5%/5% here put demo A's handover 180 ms later than demo
-   B's, and they sit side by side from 900px up.
-
-   ring1's base rule is the lit state because it is BOTH the 100% frame (the
-   third press) and the 0% frame (the next lap's first press lands on it again),
-   so the ring reads correctly with motion off and the loop has no visible
-   seam. Written out per row rather than as one shape plus delays — see the
-   section note above. */
-.how-ring1 {
-  border-left-color: var(--accent);
-  color: var(--fg);
-  transform: translateX(10px);
-  animation: how-ring1 5.4s linear 0s infinite both;
+.how-demo:not(.is-live) .win[data-app="Chrome"]:nth-child(2) {
+  animation: deskRaise 6s infinite;
 }
-.how-ring2 { animation: how-ring2 5.4s linear 0s infinite both; }
-.how-ring3 { animation: how-ring3 5.4s linear 0s infinite both; }
-
-@keyframes how-ring1 {
-  0%,     2.33% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  3.33%, 69%    { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  70%,   100%   { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"]:first-child .win-lights {
+  animation: lightsOff 6s infinite;
 }
-@keyframes how-ring2 {
-  0%,     2.33% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  3.33%, 35.67% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  36.67%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-}
-@keyframes how-ring3 {
-  0%,     35.67% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  36.67%, 69%    { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  70%,   100%    { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-}
-
-/* DEMO B — the one-window case. Two presses over 3.6s: the first focuses
-   Claude, the second goes back to Brave, which is where it rests. Brave's base
-   rule is therefore the lit one: it is the app you came from, so it is lit at
-   0% and again at 100%, and 5c ("hide it" when there is no Brave to go back to)
-   is carried by the transcript rather than by a frame — a demo cannot show a
-   window that is not there. */
-.how-tog-claude { animation: how-tog-claude 3.6s linear 0s infinite both; }
-.how-tog-brave {
-  border-left-color: var(--accent);
-  color: var(--fg);
-  transform: translateX(10px);
-  animation: how-tog-brave 3.6s linear 0s infinite both;
-}
-
-@keyframes how-tog-claude {
-  0%,   3.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  5%,  53.5% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  55%, 100%  { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-}
-@keyframes how-tog-brave {
-  0%,   3.5% { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
-  5%,  53.5% { border-left-color: var(--rule);   color: var(--fg-dim); transform: translateX(0); }
-  55%, 100%  { border-left-color: var(--accent); color: var(--fg);     transform: translateX(10px); }
+.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"]:nth-child(2) .win-lights {
+  animation: lightsOn 6s infinite;
 }
 
 
-/* --- 4b (ii). #how: the playground --------------------------------------- */
+/* --- 5c. section: config — three doors, one binding ----------------------- */
 
-/* EVERY SELECTOR IN THIS BLOCK IS INERT IN THE SHIPPED MARKUP. beckon.js
-   builds this subtree and puts it inside .how-demos, replacing the two looping
-   demos above. With JS off nothing here matches, .how-demos still holds those
-   two demos and the algorithm table above them is untouched — which is the
-   whole JS-off story for this section: the enhancement replaces working
-   content and is never the only copy of it.
+/* This section replaced three: #names (96 words arguing for display names),
+   #serve (104 introducing resident mode) and #setups (170 of compatibility
+   tiles). It replaces them with three pictures that carry the same information
+   by BEING what they describe — which is the only way a page gets shorter
+   without getting vaguer.
 
-   NOTHING HERE ANIMATES. State changes are transitions, which the
-   reduced-motion block at the end of the file pins to .01ms — so a reader with
-   motion off gets the correct frame instantly after every press, and the three
-   rules the looping demos depend on (fill-mode both, base rule = 100%
-   keyframe, no positive delay) have nothing new to hold.
+   EACH DOOR IS DRAWN IN A FIXED LANGUAGE, not in the reader's. `.door[data-os]`
+   re-declares the §1c skin for its own subtree, so a Fluent settings window
+   renders correctly on a macOS page and a GNOME terminal renders correctly on a
+   Windows one. Three grammars in one glance is the argument; a shelf that
+   re-skinned all three together would be one grammar printed three times.
 
-   NO OPACITY ON ANYTHING CARRYING TEXT, for the reason spelled out on
-   .how-count above: --fg-dim on --bg is 6.27:1, and dimming it to .7 composites
-   to 3.23:1, which fails 1.4.3. aria-hidden on the stage redirects screen
-   readers to the readout; it does not exempt visible text. An unfocused window
-   is marked by its border and by the word in .pg-tag, never by fading it. */
+   NOTHING IN A DOOR IS A CONTROL. The `C` row is marked `is-on` in all three,
+   permanently, so "the same binding, seen three ways" is a picture rather than
+   a click. An earlier draft lit the rows across doors on selection — that needs
+   JS this page's script does not have, and a row that looks selectable and is
+   not is the exact failure the rest of the page is built to avoid. */
 
-.how-demos.is-live { grid-template-columns: minmax(0, 1fr); }
-
-.pg { display: grid; gap: 18px; }
-
-/* The honest constraint, and it is also the pitch, so it reads at prose size
-   above the controls rather than as a footnote below them. The chord inside it
-   is the reader's own, rebuilt by beckon.js whenever `data-os` moves. */
-/* Leading and the chord's own margin come from `.caps` in §4e — the page's one
-   solution for keycaps set inside running prose. This block used to restate
-   both with its own numbers. */
-.pg-why {
-  margin: 0;
-  max-width: var(--measure);
-  color: var(--fg-dim);
-  font-size: 14px;
-}
-.pg-why strong { color: var(--fg); }
-
-/* The two caveat paragraphs, side by side from 900px (§5). They are one
-   argument in two halves — what a page cannot have, then what it does to you
-   when it takes what it can — and stacked they put 450px of grey prose between
-   the controls and the transcript. */
-.pg-prose { display: grid; gap: 18px; }
-
-/* The punchline: this page really did turn the reader's Caps Lock on, and what
-   beckon's hook does instead. Same prose role as .pg-why beside it — same
-   size, same colour, same `.caps` leading for the chord set inside it —
-   because it is the second half of the same argument, not an aside. The
-   wrapper's grid gap is what separates them; it carries no margin of its own. */
-.caps-truth {
-  margin: 0;
-  max-width: var(--measure);
-  color: var(--fg-dim);
-  font-size: 14px;
-}
-.caps-truth strong { color: var(--fg); }
-
-.pg-picks { display: flex; flex-wrap: wrap; gap: 8px; }
-/* Same box as `.try-reset`, which is its sibling 200px away inside the same
-   panel: one secondary button, one size. They were 34px and 32px. */
-.pg-pick {
-  min-height: 32px; padding: 6px 12px;
-  font: 600 13px/1.2 var(--sans);
-  color: var(--fg-dim);
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.pg-pick:hover { color: var(--fg); border-color: var(--accent); }
-.pg-pick[aria-pressed="true"] {
-  color: var(--accent-fg);
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-/* Drawing and readout are equal columns from 900px up (see §5), because the
-   readout is what actually teaches — it names the branch that fired and quotes
-   the algorithm — and a caption-sized line under the drawing would read as a
-   footnote to it. */
-.pg-main {
-  display: grid; grid-template-columns: minmax(0, 1fr);
-  align-items: start; gap: 18px;
-}
-.pg-stage { display: grid; gap: 8px; }
-
-/* The fake windows, in the chrome of :root[data-os]. Three axes and no more:
-   where the controls sit, where the title sits, and the corner radius. Drawn
-   with borders and pseudo-elements — no icon font, no asset, nothing to fetch.
-
-   The traffic lights are NEUTRAL rather than red/amber/green. Two reasons:
-   every colour on this page comes from a token, and a screenshot-accurate
-   window would be claiming to be a screenshot, which the spec's *Deferred*
-   entry says these illustrations must never do. Position (left, round, three)
-   is the recognisable half anyway. */
-.pg-win {
-  background: var(--bg);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  transform: translateX(0);
-  transition: transform .18s, border-color .18s, background-color .18s;
-}
-.pg-bar {
-  display: flex; align-items: center; gap: 8px;
-  height: 26px; padding: 0 8px;
-  border-bottom: 1px solid var(--rule);
-  font: 600 11px/1 var(--mono);
-  color: var(--fg-dim);
-}
-.pg-name {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.pg-face {
-  display: flex; align-items: center; gap: 10px;
-  min-height: 40px; padding: 0 10px;
-  font: 500 11px/1 var(--mono);
-  color: var(--fg-dim);
-}
-.pg-tag { margin-inline-start: auto; letter-spacing: .06em; text-transform: uppercase; }
-
-/* The ring position, and in the three-window scenario it IS the payload — the
-   thing that walks 1/3 -> 2/3 -> 3/3. It had no rule at all and rendered
-   identical to the state word beside it, so the one number that moves looked
-   like part of the label that does not. It takes the lit colour with the
-   window, like .pg-tag does. No opacity: see the block header. */
-.pg-count { font-weight: 700; letter-spacing: .04em; }
-.pg-win[data-state="focused"] .pg-count { color: var(--accent); }
-
-/* Both gutters are the same 34px (3x8px + 2x5px gap) and both are `display:
-   none` until an OS asks for one, so a gutter that is not drawn costs no width
-   AND no flex gap — a collapsed-but-present item would still take the bar's
-   8px gap on each side and indent the title past the left edge on Windows and
-   Linux, where it belongs against it.
-
-   macOS is the one case that lays out BOTH: the right gutter is a
-   `visibility: hidden` spacer, and it is what centres the title between the
-   traffic lights and the far edge rather than leaving it centred on a bar with
-   only one gutter. */
-.pg-dots,
-.pg-ctl { display: none; align-items: center; gap: 5px; flex: none; width: 34px; }
-.pg-ctl { justify-content: flex-end; }
-.pg-dots span { width: 8px; height: 8px; border-radius: 50%; background: currentColor; opacity: .5; }
-.pg-ctl span { position: relative; flex: none; width: 8px; height: 8px; opacity: .75; }
-
-.pg-min::before,
-.pg-close::before,
-.pg-close::after {
-  content: ""; position: absolute;
-  left: 0; right: 0; top: 50%;
-  height: 1px; background: currentColor;
-}
-.pg-max::before { content: ""; position: absolute; inset: 0; border: 1px solid currentColor; }
-.pg-close::before { transform: rotate(45deg); }
-.pg-close::after  { transform: rotate(-45deg); }
-
-/* --radius, not a hand-picked 9px: the scale is two values (§1) and the file's
-   header says it is defined once and never restated per section. */
-:root[data-os="macos"] .pg-win  { border-radius: var(--radius); }
-:root[data-os="macos"] .pg-dots { display: flex; }
-:root[data-os="macos"] .pg-ctl  { display: flex; visibility: hidden; }
-:root[data-os="macos"] .pg-name { text-align: center; }
-
-:root[data-os="windows"] .pg-win { border-radius: 0; }
-:root[data-os="windows"] .pg-ctl { display: flex; }
-
-/* Linux keeps the base: a plain bar, no controls, a modest radius. beckon
-   supports sway, i3, Hyprland, GNOME, KDE and every EWMH X11 desktop, so
-   drawing one of them would be a claim about which one the reader has. */
-
-.pg-win[data-state="focused"] {
-  border-color: var(--accent);
-  box-shadow: 0 10px 26px -14px color-mix(in srgb, var(--accent) 62%, transparent);
-  transform: translateX(6px);
-}
-.pg-win[data-state="focused"] .pg-bar { color: var(--fg); border-bottom-color: var(--accent); }
-.pg-win[data-state="focused"] .pg-tag { color: var(--accent); }
-
-/* Off-screen windows sink into the panel's own ground instead of fading:
-   same text colour, same contrast, a dashed edge and a word. */
-.pg-win[data-state="hidden"],
-.pg-win[data-state="absent"] { background: transparent; border-style: dashed; }
-.pg-win[data-state="hidden"] .pg-bar,
-.pg-win[data-state="absent"] .pg-bar { border-bottom-style: dashed; }
-
-/* The readout is the shared `.readout` in §4a — the hero uses the same one. */
-
-
-/* --- 4c. section: names ("Type the name, not the id.") -------------------- */
-
-/* Two stacked rows, good then bad. Each row is two columns — the code, then
-   its label — collapsing to one column on narrow screens so the 51-character
-   PWA id can never push the body into a horizontal scroll. */
-.compare {
-  display: grid;
-  gap: 1px;                    /* the gap IS the hairline between the rows */
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-  overflow: hidden;
-  margin: 0 0 32px;
-}
-
-.compare-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px 24px;
-  padding: var(--pad);
-  background: var(--bg-raised);
-}
-
-/* The code is never dimmed and never struck through: a reader copies from
-   both lines, including the one they should not bind to. It scrolls inside
-   its own box rather than widening the grid — hence min-width: 0, without
-   which a grid item refuses to shrink below its content. It sheds the shared
-   <pre> panel because it already sits inside one. */
-.compare-code {
-  padding: 0;
-  min-width: 0;
-  background: none;
-  border: 0;
-  border-radius: 0;
-  font-size: .95rem;
-  line-height: 1.5;
-}
-
-.compare-label {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.4;
-  color: var(--fg-dim);
-  white-space: nowrap;
-}
-
-/* The good row is marked with the accent down its edge; the bad row carries
-   the strike on its LABEL only. Keeping the two selectors apart is what makes
-   "never strike the code" a property of the stylesheet rather than a habit. */
-.compare-row.is-good { box-shadow: inset 3px 0 0 var(--accent); }
-.compare-row.is-bad .compare-label {
-  text-decoration: line-through;
-  text-decoration-thickness: 1px;
-}
-
-
-/* --- 4d. section: setups ("Works with your setup.") ----------------------- */
-
-/* Shared: the OS marker.
-   CONTRACT — reused verbatim by the three serve cards in §4e. Do not fork it.
-
-     <li class="os-row" data-os="macos">   ... </li>
-     <h3 class="os-row" data-os="linux">   ... </h3>
-
-   The chip appears on exactly the one element whose data-os equals :root's,
-   and :root only carries data-os once the head bootstrap has run. So this is
-   decoration layered onto markup that is already complete: with JS off no
-   selector below matches, no chip exists, and every row reads as it did before
-   the marker was added. That is the same direction as everything else on this
-   page — JS only ever REDUCES — except that here it adds nothing to read and
-   only says which of the rows already on screen is the reader's.
-
-   Generated content rather than a shipped <span> is the whole reason it can
-   work that way. A shipped chip would have to say "yours" on all three rows
-   with JS off, which is nonsense, or ship `hidden` and wait for JS, which is
-   the pattern this page refuses everywhere except the two nav controls (which
-   change nothing that is not already visible; a chip is content).
-
-   The three pairs are written out because CSS cannot compare an ancestor's
-   attribute with a descendant's. Nothing here uses :has(), so it needs no
-   support floor beyond the rest of the file.
-
-   Colours are .tile-flag's, and for the reason recorded there: --accent on
-   --bg is 5.17:1 light and 6.15:1 dark, with no compositing to compute. Inside
-   a .card the --bg ground makes it a well in the raised panel, which is the
-   same figure/ground pair .panel pre uses. */
-:root[data-os="macos"]   .os-row[data-os="macos"]::after,
-:root[data-os="windows"] .os-row[data-os="windows"]::after,
-:root[data-os="linux"]   .os-row[data-os="linux"]::after {
-  content: "yours";
-  padding: 3px 7px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  font: 600 11px/1 var(--sans);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--bg);
-}
-/* Both hosts are flex rows, so the chip is a flex item and the row's own gap
-   spaces it. .card h3 is made a flex row in §4e for exactly that. */
-
-.tiles {
-  list-style: none;
-  margin: 0 0 48px;
-  padding: 0;
-  display: grid;
-  gap: 12px;
-  /* min() keeps a 220px track from overflowing a 375px viewport. */
-  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
-}
-/* align-content, not align-items. Grid stretches every tile to the tallest in
-   its row; with the default `stretch` the spare height was shared between the
-   name line and the note line, so four tiles in one row started their titles on
-   four different baselines. Pinning the LINES to the top fixes that while
-   align-items still centres the pill against the name inside line one. */
-.tile {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  align-content: start;
-  gap: 6px 10px;
-  padding: var(--pad);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  /* Every tile carries the 3px edge so the marked one cannot shift layout. */
-  border-inline-start: 3px solid var(--rule);
-  border-radius: var(--radius);
-}
-.tile-name { font-weight: 650; }
-.tile-note {
-  flex-basis: 100%;
-  color: var(--fg-dim);
-  font-size: 14px;
-  line-height: 1.45;
-}
-
-/* GNOME (Wayland) is the only tile that does not work straight after a package
-   install — it needs the bundled shell extension and a re-login. So its note is
-   marked at full contrast instead of dimmed like the other seven, and the pill
-   says which kind of mark this is. Softening it is selling something beckon
-   does not do. */
-.tile-marked {
-  border-inline-start-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-raised));
-}
-.tile-marked .tile-note {
-  color: var(--fg);
-  font-weight: 600;
-}
-/* The pill is a chip on the page ground, not a tint on the tile's. A 14% accent
-   wash over .tile-marked's own 7% wash left --accent at 3.67:1 light and
-   4.19:1 dark — 11px text needs 4.5:1, so the one label the block above says
-   must not be softened was the softest text on the page. --accent on --bg is
-   5.17:1 / 6.15:1 with no compositing to compute and no color-mix to support. */
-.tile-flag {
-  padding: 3px 7px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  font: 600 11px/1 var(--sans);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--accent);
-  background: var(--bg);
-}
-
-.keys {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 32px 48px;
+.doors {
+  list-style: none; margin: 0 0 46px; padding: 0;
+  display: grid; gap: 26px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: start;
 }
+.door { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 
-.keytable { width: 100%; border-collapse: collapse; }
-.keytable th,
-.keytable td {
-  padding: 10px 12px 10px 0;
-  text-align: start;
-  font-weight: 400;
-  border-bottom: 1px solid var(--rule);
+/* ONE HEIGHT FOR ALL THREE, and it is a fixed number rather than a stretch.
+   Left to their content the three windows measured 154 / 212 / 154, which put
+   the three captions on three different baselines — and the captions are where
+   the availability matrix is read, so a reader comparing "macOS, Windows,
+   Linux" against "Windows" had to hunt for the second one. The Fluent door is
+   the tall one (three rows plus a command bar); 212 is its natural height, so
+   that is the height, and the other two get the slack inside their body rather
+   than under their caption. */
+.door-win {
+  display: flex; flex-direction: column;
+  height: 212px;
+  border-radius: var(--r-window);
+  border: var(--stroke) solid var(--rule-hard);
+  box-shadow: var(--elev-2);
+  overflow: hidden;
+  font-family: var(--ui-sans);
+  font-size: calc(13px * var(--ui-scale));
+  background: var(--surface);
+  margin-bottom: 14px;
 }
-.keytable thead th {
-  padding-block: 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+.door-bar {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 34px; padding: 0 10px;
+  background: var(--mat-fill);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+  border-bottom: var(--stroke) solid var(--rule);
+}
+.door-title { font-size: calc(12px * var(--ui-scale)); font-weight: 600; color: var(--fg-dim); }
+.door-ctl { display: flex; align-items: center; gap: 7px; }
+.door-body { flex: 1; padding: 12px; background: var(--surface); display: flex; flex-direction: column; }
+.door-actions { margin-top: auto; }
+
+/* The three title bars, drawn the way each system draws one. This is the
+   clearest place on the page to read the difference, because here they sit side
+   by side in the same light. */
+.door[data-os="macos"] .door-ctl { order: -1; }
+.door[data-os="macos"] .door-title { margin-inline: auto; padding-right: 42px; }
+.door[data-os="macos"] .door-ctl i { width: 11px; height: 11px; border-radius: 50%; }
+/* Real traffic-light colour HERE and not in the page's own title bar: a door is
+   depicting an actual window, so the dots are the window's. The page is not a
+   window and does not pretend to be one. */
+.door[data-os="macos"] .door-ctl i:nth-child(1) { background: #FF5F57; }
+.door[data-os="macos"] .door-ctl i:nth-child(2) { background: #FEBC2E; }
+.door[data-os="macos"] .door-ctl i:nth-child(3) { background: #28C840; }
+
+.door[data-os="windows"] .door-title { margin-right: auto; }
+.door[data-os="windows"] .door-ctl { gap: 0; margin-right: -10px; }
+.door[data-os="windows"] .door-ctl i {
+  width: 32px; height: 34px;
+  display: grid; place-items: center;
+  font: 400 9px/1 var(--ui-sans); color: var(--fg-dim);
+}
+.door[data-os="windows"] .door-ctl i:nth-child(1)::before { content: "\2014"; }
+.door[data-os="windows"] .door-ctl i:nth-child(2)::before { content: "\25A1"; }
+.door[data-os="windows"] .door-ctl i:nth-child(3)::before { content: "\2715"; }
+
+.door[data-os="linux"] .door-title { margin-inline: auto; padding-left: 24px; }
+.door[data-os="linux"] .door-ctl i {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  display: grid; place-items: center;
+}
+.door[data-os="linux"] .door-ctl i::before {
+  content: "\2715"; font: 400 9px/1 var(--ui-sans); color: var(--fg-dim);
+}
+
+/* Door 1 — the shell. Follows the theme rather than being unconditionally
+   black, because GNOME Console does. */
+.term { display: grid; gap: 3px; font: 400 12.5px/1.6 var(--ui-mono); }
+.term-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-ps { color: var(--accent); font-weight: 600; margin-right: 6px; }
+.term-line.is-out { color: var(--fg-dim); padding-left: 16px; }
+
+/* Door 2 — the settings list. Fluent separates rows with a hairline and marks
+   the selected one with a fill plus a short accent bar, never with a border. */
+.rows { display: grid; }
+.row {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 10px;
+  border-bottom: var(--stroke) solid var(--rule);
+  border-radius: var(--r-ctl);
+  position: relative;
+}
+.row-head {
+  font-size: calc(11px * var(--ui-scale)); font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase;
   color: var(--fg-dim);
 }
-.keytable tbody th { width: 1%; white-space: nowrap; }
-.keytable tbody tr:last-child th,
-.keytable tbody tr:last-child td { border-bottom: 0; }
-
-.mods {
-  list-style: none;
-  margin: 22px 0 0;
-  padding: 0;
-  display: grid;
-  gap: 12px;
+.row .mini { font: 400 11.5px/1 var(--ui-mono); color: var(--fg-dim); white-space: nowrap; }
+.door-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
+.door-btn {
+  padding: var(--btn-pad); border-radius: var(--r-ctl);
+  background: var(--accent); color: var(--accent-fg);
+  font-size: calc(12.5px * var(--ui-scale)); font-weight: 600;
+  box-shadow: var(--mat-rim);
 }
-.mods li {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 12px;
+
+/* Door 3 — the file. Three colours and no more: the key is the accent, the `=`
+   is dim, the value is ink. A six-colour syntax theme here would out-shout the
+   two doors beside it, which is not what this shelf is comparing. */
+.toml { display: grid; gap: 4px; font: 400 12.5px/1.7 var(--ui-mono); }
+.toml-line {
+  padding: 3px 8px; border-radius: var(--r-ctl);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.mod-os {
-  min-width: 84px;
-  font-size: 14px;
-  font-weight: 600;
+.t-k { color: var(--accent); }
+.t-o { color: var(--fg-dim); }
+.t-v { color: var(--fg); }
+
+/* The same binding, marked identically in three languages. */
+.row.is-on, .toml-line.is-on { background: var(--accent-soft); }
+.row.is-on::before {
+  content: ""; position: absolute; left: 0; top: 20%; bottom: 20%;
+  width: 3px; border-radius: 2px; background: var(--accent);
 }
-.mod-note { color: var(--fg-dim); font-size: 13px; }
 
-
-/* --- 4e. section: serve ("Or let beckon hold the keys.") ------------------ */
-
-/* The TOML sample. The <pre> panel and its overflow-x come from §3; only the
-   caption above it belongs to this section. */
-.toml-fig { margin: 0 0 40px; max-width: var(--measure-lead); }
-.toml-fig figcaption {
-  margin-bottom: 8px;
+.door-cap { margin: 0 0 3px; font-size: 15px; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.door-cap b { font-weight: 620; }
+/* The availability line, and the asymmetry between the three IS the section's
+   second argument: the CLI spans all three machines, the settings window is
+   Windows only, the file is macOS and Windows. That is the whole "which parts
+   work where" story stated as a matrix — with no compositor named anywhere on
+   this page, which is the other thing this redesign set out to stop doing. */
+.door-on {
+  font: 500 11px/1 var(--sans);
+  letter-spacing: .04em; text-transform: uppercase;
   color: var(--fg-dim);
-  font: 600 .76rem/1 var(--mono);
-  letter-spacing: .05em;
+  border: 1px solid var(--rule-hard); border-radius: 4px;
+  padding: 3px 6px;
 }
+.door-note { margin: 0; font-size: 14px; color: var(--fg-dim); }
 
-/* Three cards: macOS, Windows, Linux. minmax(0, 1fr) rather than 1fr so a
-   long unbroken token in a card cannot push the grid past its track. */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.card {
-  padding: var(--pad);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
-}
-/* flex, so the "yours" chip from §4d lands beside the caption on the same
-   centre line and is spaced by this gap rather than by a margin of its own.
-   The caption is the only other child, so flex changes nothing when the chip
-   is absent. */
-.card h3 {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-  margin: 0 0 10px;
-  color: var(--fg-dim);
-  font-size: .78rem;
-  font-weight: 650;
-  letter-spacing: .09em;
-  text-transform: uppercase;
-}
-.card p { margin: 0; font-size: .97rem; }
+/* `.keytable` went with the letter table it styled. The five letters are still
+   on the page in the two places that can be pressed — printed on every dock
+   icon, and listed as real buttons in the cheat sheet §6 pins to the hero — and
+   those are what tools/check-site.sh now holds against README. */
 
-/* Linux is the card that says beckon does NOT do this. A dashed edge marks it
-   as deliberately outside the set without dimming the text, which would read
-   as "unfinished" rather than "not offered". */
-.card-linux { border-style: dashed; }
-
-/* The reader's own card takes the accent edge as well as the chip, since the
-   cards are already bordered boxes and a chip alone is easy to miss in a row
-   of three. Border WIDTH and STYLE are untouched — .card-linux stays dashed
-   when it is also the marked one, because "not offered" and "yours" are
-   different facts and a Linux reader needs both. */
-:root[data-os="macos"]   .card[data-os="macos"],
-:root[data-os="windows"] .card[data-os="windows"],
-:root[data-os="linux"]   .card[data-os="linux"] { border-color: var(--accent); }
-
-/* Keycaps sit ~2.4em tall inside a small paragraph; the extra leading keeps
-   consecutive lines from touching when the line wraps. Reused three times: the
-   Caps Lock FAQ answer, the playground's constraint paragraph and the hero's
-   one-line version of it — all the same shape, a chord set in running prose.
-   `flex-wrap` belongs here for the same reason the leading does: a chord set
-   in prose has to be able to break. */
-.caps { line-height: 2.15; }
-.caps .chord { flex-wrap: wrap; margin-inline: 2px; }
+/* THE "yours" CHIP IS GONE, and it went with the section it was for. It marked
+   the reader's own row in a list of three, and the only such list left is
+   `.hero-chords` — which §5a already filters down to that one row. A chip
+   reading "yours" on the single row on screen is a label for a distinction that
+   is no longer being drawn. */
 
 
-/* --- 4f. section: install ------------------------------------------------- */
+/* --- 5f. section: install ------------------------------------------------- */
 
-/* The tab strip is an ENHANCEMENT over four panels that already work. It ships
-   `hidden` (see the [hidden] rule in §2, which is what makes that stick) and
-   beckon.js reveals it, so nothing here may be the only thing that makes a
-   panel readable. */
+/* The tab strip is the third place the skin shows, and each machine has a real
+   answer for it: macOS a segmented control sunk into a track, Windows a Fluent
+   pivot marked by a short underline rather than a fill, GNOME a view switcher
+   of pill chips. All three are the same markup and the same two states. */
 .tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin: 0 0 20px;
-  padding: 4px;
+  display: flex; gap: 4px; margin-bottom: 26px; flex-wrap: wrap;
+  align-self: flex-start; width: max-content; max-width: 100%;
+  padding: 3px; border-radius: var(--r-ctl);
   background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  font-family: var(--ui-sans);
 }
 .tab {
-  flex: 1 1 auto;
-  padding: 9px 16px;
-  font: 600 15px var(--sans);
-  color: var(--fg-dim);
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
+  font: inherit; font-size: calc(14px * var(--ui-scale)); cursor: pointer;
+  color: var(--fg-dim); background: none;
+  border: var(--stroke) solid transparent; border-radius: var(--r-ctl);
+  padding: 7px 15px; min-height: 38px;
 }
 .tab:hover { color: var(--fg); }
-.tab[aria-selected="true"] { color: var(--accent-fg); background: var(--accent); }
-
-/* With JS on this holds one panel; with JS off it holds four, stacked. Both
-   are correct pages, which is the whole point of the ordering.
-
-   `minmax(0, 1fr)` rather than a bare implicit column, and it is what stops the
-   PAGE from scrolling sideways. A grid item's automatic minimum size is
-   content-based, and the panel's content includes a `white-space: pre` install
-   command 57 characters long — so an implicit `auto` column let every panel
-   size to that line instead of to its track. Measured at 375px before the fix:
-   `.panels` 327px, each `.panel` 679px, `documentElement.scrollWidth` 703px.
-   The `overflow-x: auto` on the inner `<code>` below only takes effect once the
-   panel is allowed to be narrower than its content. */
-.panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
-
-.panel {
-  padding: var(--pad);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+.tab[aria-selected="true"] {
+  color: var(--fg); background: var(--surface);
+  border-color: var(--rule); box-shadow: var(--elev-1);
+  font-weight: 560;
 }
-.panel h3 {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-  margin: 0 0 14px;
-  font-size: 1.05rem;
-}
-.panel-os {
-  color: var(--fg-dim);
-  font: 600 11px/1 var(--sans);
-  letter-spacing: .09em;
-  text-transform: uppercase;
-}
-.panel .note + pre { margin-top: 14px; }
-
-/* The <pre> sits inside a --bg-raised panel, so it takes --bg to stay a well
-   rather than dissolving into its container — the same figure/ground pair the
-   hero demo uses for .os-card. */
-.panel pre { background: var(--bg); }
-
-/* beckon.js appends the copy button INSIDE the <pre>, so the <pre> cannot also
-   be the scroll container: an absolutely positioned child of an
-   `overflow-x: auto` box scrolls out of view with the text, and the longest
-   install line is 57 characters. The scroll therefore moves to the <code>,
-   which is display:block for exactly that reason, and the reserved
-   padding-inline-end keeps the button off the command. */
-#install pre {
+/* Fluent does NOT fill the selected pivot — it underlines it with a short
+   accent rule and leaves the ground alone. Faking it with a fill is the single
+   most common way a web imitation of Windows reads as not-Windows. */
+:root[data-os="windows"] .tabs { background: none; padding: 0; gap: 2px; }
+:root[data-os="windows"] .tab[aria-selected="true"] {
+  background: none; border-color: transparent; box-shadow: none;
   position: relative;
-  overflow-x: visible;
-  padding-inline-end: 86px;
 }
-#install pre > code { display: block; overflow-x: auto; }
-
-/* Created by JS and only when navigator.clipboard exists, so there is never a
-   button on screen that silently does nothing. */
-.copy {
-  position: absolute;
-  top: 10px;
-  inset-inline-end: 10px;
-  padding: 5px 10px;
-  font: 600 12px/1.4 var(--sans);
-  color: var(--fg-dim);
-  background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
+:root[data-os="windows"] .tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 15px; right: 15px; bottom: 2px;
+  height: 3px; border-radius: 2px; background: var(--accent);
 }
-.copy:hover { color: var(--accent); border-color: var(--accent); }
+/* Adwaita's view switcher is a chip of the ink colour, not a raised card. */
+:root[data-os="linux"] .tabs { background: none; padding: 0; gap: 6px; }
+:root[data-os="linux"] .tab { border-radius: var(--r-pill); }
+:root[data-os="linux"] .tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  border-color: transparent; box-shadow: none;
+}
+
+/* `minmax(0, 1fr)`, not `1fr`, and it is load-bearing on a phone. A grid item's
+   default `min-width: auto` refuses to shrink below its content, and the widest
+   content here is `scoop bucket add xom11 https://github.com/xom11/scoop-bucket`
+   — 62 characters that cannot wrap. So the panel grew to 562px inside a 390px
+   viewport and took the whole document with it: measured, the page scrolled
+   horizontally on every phone. The `overflow-x: auto` on `pre` was already
+   correct and could not help, because nothing was ever narrower than the thing
+   it was supposed to clip. */
+.panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 40px; }
+.panel h3 { display: flex; align-items: baseline; gap: 10px; }
+.panel-os { font: 500 12px/1 var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--fg-dim); }
 
 
-/* --- 4g. section: faq ----------------------------------------------------- */
+/* --- 5g. section: faq ----------------------------------------------------- */
 
-/* Native <details>/<summary>. The JS closes siblings and nothing else, so with
-   it disabled the FAQ is still a working accordion — every answer one click
-   away, and all seven openable at once. */
-.faq-list { max-width: var(--measure); border-top: 1px solid var(--rule); }
+.faq-list { border-top: 1px solid var(--rule); max-width: 76ch; }
 .faq-list details { border-bottom: 1px solid var(--rule); }
-
 .faq-list summary {
-  display: flex;
-  align-items: baseline;
-  gap: 16px;
-  padding: 18px 0;
-  font-weight: 600;
-  cursor: pointer;
-  list-style: none;          /* Firefox */
+  cursor: pointer; list-style: none;
+  padding: 17px 30px 17px 0;
+  font-weight: 540; font-size: 17px;
+  position: relative;
 }
-.faq-list summary::-webkit-details-marker { display: none; }   /* Safari */
-
-/* The marker is a glyph rather than a rotating chevron: it needs no transform,
-   so it reads identically whether or not motion is reduced. */
+.faq-list summary::-webkit-details-marker { display: none; }
 .faq-list summary::after {
   content: "+";
-  margin-inline-start: auto;
-  font: 400 20px/1 var(--mono);
-  color: var(--fg-dim);
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  font: 400 20px/1 var(--sans); color: var(--fg-dim);
 }
 .faq-list details[open] summary::after { content: "\2212"; }
-.faq-list summary:hover { color: var(--accent); }
-
-.faq-list details > p { margin: 0 0 20px; color: var(--fg-dim); }
-.faq-list details > p.caps { margin-bottom: 14px; }
+.faq-list p { margin: 0 0 20px; color: var(--fg-dim); font-size: 15.5px; }
 
 
-/* --- 5. responsive: two breakpoints, for the whole page ------------------- */
+/* --- 6. the HUD ----------------------------------------------------------- */
 
-/* 900px is where a two-column section has room to be two columns. Below it
-   every section is a single column — which is also the JS-off, no-CSS-grid
-   order the markup already reads in. */
-@media (min-width: 900px) {
-  .how-demos { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  /* The playground is ONE block, so it takes the whole row back off the two
-     columns above — and splits it itself, twice: drawing beside readout, and
-     the two caveat paragraphs beside each other under them. */
-  .pg-main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .pg-prose { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
-  .keys { grid-template-columns: minmax(220px, 300px) 1fr; }
+/* IT IS PINNED TO THE HERO, NOT TO THE SCROLL. It used to be `position: fixed`
+   and it followed the reader down past every section that has no key to press,
+   floating over the install commands and the FAQ as a control for a demo three
+   screens above.
+
+   The dock is a zero-height sticky child of #hero. A sticky element is
+   constrained to its containing block's PADDING box, and #hero's padding box
+   ends exactly at the 1px rule `main > section + section` draws — so the sheet
+   floats at the bottom of the viewport while the hero is on screen, comes to
+   rest on that rule, and never crosses it. No JS, no scroll listener, and no
+   IntersectionObserver that would have to guess a threshold.
+
+   Zero height so it costs the hero no layout: the sheet hangs upward out of it,
+   which is what `bottom: 0` on an absolutely positioned child of a
+   zero-height positioned box does. The dock spans the section's full width
+   because `main > section` has no inline padding, so `right: 22px` lands on the
+   viewport edge — the same place the fixed version sat. */
+.hud-dock { position: sticky; bottom: 22px; height: 0; z-index: 25; }
+.hud {
+  position: absolute; right: 22px; bottom: 0;
+  display: grid; gap: 1px;
+  padding: 7px;
+  border-radius: 11px;
+  border: 1px solid var(--rule);
+  background: var(--hud-bg);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--shadow-soft);
 }
-
-/* 720px is the phone compaction. One token carries the section rhythm, so the
-   whole page tightens together instead of five sections tightening by five
-   different amounts. */
-@media (max-width: 720px) {
-  :root { --section-y: 56px; --pad: 16px; }
-
-  /* The nav is four links plus the brand and two controls, and cannot fit one
-     row at 375px; it wraps to brand + controls, then the links. Overflowing it
-     instead would put a horizontal scroll bar on <body> for the whole page.
-     The ::after is a zero-height full-width flex item: without it the links
-     pack onto row one until it is full and only the overflow wraps.
-
-     The switcher and the button share order 1, so source order keeps them
-     together and in that order; if row one ever runs out of width the two of
-     them wrap as a pair, ahead of the ::after, and the links still start a row
-     of their own. */
-  .nav .wrap { flex-wrap: wrap; height: auto; padding-block: 10px; gap: 8px 16px; }
-  .os-switch { order: 1; gap: 6px; }
-  .os-switch label,
-  .os-switch select { font-size: 13px; }
-  .nav button { order: 1; }
-  .nav .wrap::after { content: ""; order: 2; flex-basis: 100%; height: 0; }
-  .nav a:not(.brand) { order: 3; font-size: 14px; }
-
-  .hero { padding-block: 44px 0; }
-  .hero-demo { margin-top: 34px; }
-  .hero-btn { flex: 1 1 auto; }
-  .os-grid { gap: 8px; }
-  .os-card { padding: 8px; }
-  .os-label { font-size: 10px; }
-  /* The chord's own size is a clamp() on viewport width, so it needs no rule
-     here; only the gap and the space above it tighten. */
-  .os-chord { gap: 4px; margin-top: 7px; }
-  .os-win { height: 46px; }
-  .os-bar { height: 20px; padding: 0 6px; font-size: 10px; gap: 5px; }
-
-  .how-grid { gap: 28px; }
-
-  /* The four scenario buttons take a row each at 375px and 430px — measured,
-     and the comment here used to say "they wrap to two", which was never
-     true at any width in this block (720px is the only one that gets 3 + 1).
-     They are shrunk a little and no further: taking them down until four
-     shared a row would put a 12px tap target on a phone, the same call the
-     install tabs make below.
-
-     `Reset` gives up its auto margin so it sits next to the chip rather than
-     at the far edge of a narrow screen. It does not need the margin to avoid
-     a line of its own any more — the comment here used to claim that and it
-     was measured false at 375px, where `Reset` ended up alone on the last
-     line and the chip alone on the one before it. `.try-end` is what fixed
-     that: the pair is one non-wrapping flex item now.
-
-     The five letter buttons wrap inside `.try-keys` and are NOT shrunk: a
-     phone has no Caps Lock key, so the pointer is the only path there and its
-     targets have to stay full size. Only the gap tightens. */
-  .pg-pick { padding: 7px 10px; font-size: 12px; }
-  .try, .try-keys, .try-end { gap: 8px; }
-  .try-reset { margin-inline-start: 0; }
-
-  .compare-row { grid-template-columns: minmax(0, 1fr); }
-  .compare-label { white-space: normal; }
-
-  .cards { grid-template-columns: minmax(0, 1fr); }
-
-  /* Four tabs do not fit one row at 375px, so they wrap to two. Shrinking them
-     until they did would put a 12px tap target on a phone. */
-  .tab { padding: 8px 12px; font-size: 14px; }
-  #install pre { padding-inline-end: 78px; }
+.hud-cap {
+  font: 500 10.5px/1 var(--sans);
+  letter-spacing: .08em; text-transform: uppercase;
+  color: var(--fg-dim);
+  padding: 5px 7px 7px;
+}
+/* The keycap column is wide enough for the widest cap in the table, which is
+   Space. Sized to the cap rather than to a letter: at 30px the Space cap
+   overflowed its own column and printed across the app name beside it. */
+.hud button {
+  display: grid; grid-template-columns: 104px 1fr; align-items: center; gap: 10px;
+  font: inherit; font-size: 13px; text-align: left;
+  color: var(--fg); background: none; border: 0;
+  padding: 4px 7px; border-radius: 7px; cursor: pointer;
+  min-height: 32px;
+}
+.hud button:hover { background: var(--bg-raised); }
+.hud button .chord { justify-self: start; }
+.hud button .key {
+  pointer-events: none;
+  height: 24px; min-width: 24px; font-size: 11.5px;
 }
 
 
-/* --- 6. reduced motion ---------------------------------------------------- */
+/* --- 7. responsive -------------------------------------------------------- */
 
-/* LAST in the file, so it wins. animation-duration: .01ms with
-   iteration-count: 1 lands every demo on its FINAL keyframe and holds it —
-   which is only the right frame because every demo above authors its last
-   keyframe as the state worth seeing. */
+/* The table and the desk sit side by side only where both stay legible. The
+   widest row is "Focused, one window, another app open" plus "switch back to
+   the app you came from", which needs about 560px of table. */
+@media (min-width: 1041px) {
+  .how-grid {
+    grid-template-columns: minmax(0, 1.04fr) minmax(0, .96fr);
+    gap: 44px;
+    align-items: start;
+  }
+}
+
+@media (max-width: 1040px) {
+  /* Stacked under the table, the desk has the whole column and no reason to
+     stay at the width it had beside one. Its title-bar buttons are clickable
+     now, and at 620px they were 8px across. */
+  .how-demo .desk-slot { max-width: 820px; }
+}
+
+/* The three doors go 1-up rather than into a scroll-snap rail. One door at a
+   time destroys "three grammars in one glance", which is the only reason the
+   section exists; stacked keeps all three on the same scroll and in the same
+   light, which is what makes them comparable. */
+@media (max-width: 900px) {
+  :root { --section-y: 76px; }
+  .hud { display: none; }          /* it would cover the content it explains */
+  .doors { grid-template-columns: 1fr; gap: 22px; }
+  .door-win { max-width: 520px; }
+  .bar-links { gap: 14px; }
+  .bar .wrap { gap: 12px; }
+}
+
+@media (max-width: 760px) {
+  .wrap { padding-inline: 20px; }
+  .hero { padding-top: 34px; }
+  .hero-demo { margin-top: 26px; }
+  .how-table tbody th { width: auto; }
+  .how-table th, .how-table td { padding: 11px 8px 11px 0; }
+
+  /* The title bar loses its links rather than wrapping or scrolling: every one
+     of them is reachable from the footer, and the two controls that are NOT
+     duplicated anywhere — the machine switch and the theme toggle — are the
+     ones that have to survive. Before this the Theme button was clipped off the
+     right edge of a 390px screen.
+
+     The window-control picture goes too, and it is the first thing to go: it is
+     the one element on the page that is decoration by construction, and a
+     390px-wide title bar has no room for a costume. */
+  .bar-links, .bar-ctl { display: none; }
+  :root[data-os="macos"] .brand,
+  :root[data-os="linux"] .brand { position: static; left: auto; transform: none; margin-right: auto; }
+  .os-switch label { display: none; }
+  .os-switch select, .ghost { padding: 5px 8px; font-size: 13px; }
+
+  /* One chord row is on screen at a time, and at full keycap size a four-key
+     macOS chord plus its label is ~330px of content on a 350px line. Smaller
+     caps keep it on one line without dropping the "yours" chip, which this page
+     does not hide on a phone. */
+  .mods .key { height: 24px; min-width: 22px; padding: 0 6px; font-size: 11px; }
+  .mods li { justify-content: center; gap: 5px 9px; }
+  .mods .mod-os { min-width: 0; text-align: left; }
+}
+
+
+/* --- 8. prefers-reduced-motion (LAST, so it wins) ------------------------- */
+
+/* The page's argument IS the animation, so turning motion off has to land on
+   the FINAL frame, not on nothing.
+ *
+ * `animation-fill-mode: forwards` IS THE HALF THAT MAKES THAT TRUE, and it was
+ * missing. Measured with Chrome's reduced-motion emulation: duration 1ms and
+ * iteration-count 1 run the animation and then hand the element back to its
+ * BASE style, which here is the cascade offset the markup ships — VS Code
+ * focused, Chrome behind it. So a reader who asks for no motion got the
+ * opening frame frozen: the one picture on the page that contradicts the
+ * sentence under it. With `forwards` the element holds the 100% keyframe,
+ * which is Chrome focused on all three desks — the same picture the loop
+ * spends six seconds arriving at.
+ *
+ * The transitions in §4 are zeroed for the same reason: with JS on, a press
+ * should change the picture instantly rather than not at all. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: .01ms !important;
+    animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-    scroll-behavior: auto !important;
+    animation-fill-mode: forwards !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
   }
+  html { scroll-behavior: auto; }
 }

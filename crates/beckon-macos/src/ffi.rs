@@ -191,6 +191,78 @@ pub struct WindowSnapshot {
     pub pid: i32,
 }
 
+/// Every on-screen window at EVERY layer, with its owner and bounds.
+///
+/// Diagnostic only — `cg_window_list_on_screen` above is the hot path and
+/// deliberately keeps its layer-0 filter. This one exists because
+/// "did the menu bar item actually appear?" has no other cheap answer: a
+/// status item IS a window, on the status layer, owned by our process, so
+/// the window server can be asked directly instead of taking a screenshot.
+///
+/// That matters because a screenshot needs Screen Recording, which is a
+/// permission about something else entirely, granted per terminal app, and
+/// three probe runs were lost to it. This call needs no TCC grant: window
+/// *names* are gated on newer macOS, owner, layer and bounds are not — and
+/// none of the three we need is the name.
+pub fn cg_windows_all() -> Vec<CgWindow> {
+    let raw = unsafe {
+        CGWindowListCopyWindowInfo(K_CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY, K_CG_NULL_WINDOW_ID)
+    };
+    if raw.is_null() {
+        return Vec::new();
+    }
+    let array: CFArray<CFDictionary> = unsafe { CFArray::wrap_under_create_rule(raw) };
+    let mut out = Vec::with_capacity(array.len() as usize);
+    for i in 0..array.len() {
+        let Some(dict_ref) = array.get(i) else {
+            continue;
+        };
+        let dict: &CFDictionary = &dict_ref;
+        let Some(pid) = dict_get_i64(dict, "kCGWindowOwnerPID") else {
+            continue;
+        };
+        let (w, h) = dict_get_bounds(dict).unwrap_or((0.0, 0.0));
+        out.push(CgWindow {
+            pid: pid as i32,
+            layer: dict_get_i64(dict, "kCGWindowLayer").unwrap_or(0) as i32,
+            width: w,
+            height: h,
+        });
+    }
+    out
+}
+
+/// One window as the window server describes it.
+#[derive(Debug, Clone, Copy)]
+pub struct CgWindow {
+    pub pid: i32,
+    /// 0 is the normal application layer; menu bar extras sit far above it.
+    pub layer: i32,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// `kCGWindowBounds` is a nested CFDictionary of CFNumbers, not a CGRect.
+fn dict_get_bounds(dict: &CFDictionary) -> Option<(f64, f64)> {
+    let key = CFString::new("kCGWindowBounds");
+    let value = dict.find(key.as_concrete_TypeRef() as *const c_void)?;
+    let raw = *value as CFTypeRef;
+    if raw.is_null() {
+        return None;
+    }
+    let inner: CFDictionary = unsafe { CFDictionary::wrap_under_get_rule(raw as _) };
+    let num = |k: &str| -> Option<f64> {
+        let kk = CFString::new(k);
+        let v = inner.find(kk.as_concrete_TypeRef() as *const c_void)?;
+        let r = *v as CFTypeRef;
+        if r.is_null() {
+            return None;
+        }
+        unsafe { CFNumber::wrap_under_get_rule(r as _) }.to_f64()
+    };
+    Some((num("Width")?, num("Height")?))
+}
+
 fn dict_get_i64(dict: &CFDictionary, key: &str) -> Option<i64> {
     let key = CFString::new(key);
     let value = dict.find(key.as_concrete_TypeRef() as *const c_void)?;

@@ -68,11 +68,14 @@ the letter, not the modifier:
 
 | Letter | App | Notes |
 |---|---|---|
-| `Space` | terminal | kitty / Alacritty / Windows Terminal — change to your terminal |
-| `C` | Claude | the desktop app or the [Claude.ai](https://claude.ai) PWA |
-| `B` | Brave | swap for Firefox / Chrome / Vivaldi if you don't use Brave |
-| `E` | Cursor | swap for VS Code, Zed, Sublime, etc. |
-| `D` | Discord | comms — swap for Slack, Telegram, etc. |
+| `T` | Terminal | `Terminal` on macOS and Windows, `kitty` in the Linux examples — change to yours |
+| `C` | Chrome | `Google Chrome` everywhere; swap for Firefox / Brave / Vivaldi |
+| `V` | VS Code | `Visual Studio Code`, not `Code`; swap for Cursor, Zed, Sublime |
+| `F` | Files | `Finder` on macOS, `File Explorer` on Windows, `Files` or `Dolphin` on Linux |
+| `S` | Spotify | `Spotify` everywhere; swap for whatever plays your music |
+
+The file manager is the one every desktop ships and no two agree on the
+name of, which is exactly the case `beckon search files` exists for.
 
 Modifier keys vary because each OS picks something idiomatic:
 
@@ -84,7 +87,7 @@ Modifier keys vary because each OS picks something idiomatic:
 
 ## Discovering ids on your machine
 
-Names in the examples (`Claude`, `Brave`, `kitty`, ...) are what
+Names in the examples (`Google Chrome`, `Spotify`, `kitty`, ...) are what
 beckon resolves against your installed-app metadata. Some apps have
 slightly different display names (e.g. `Visual Studio Code` instead
 of `Code`). Always check before binding:
@@ -92,12 +95,12 @@ of `Code`). Always check before binding:
 ```sh
 beckon installed         # list installed apps with their Name
 beckon list              # list currently running apps
-beckon search claude     # search by partial name
-beckon resolve Claude    # validate one id — shows match type + Exec
+beckon search files      # search by partial name
+beckon resolve Spotify   # validate one id — shows match type + Exec
 beckon doctor            # diagnose your environment
 ```
 
-If `beckon resolve Claude` reports `❌ no match`, copy the actual Name
+If `beckon resolve Spotify` reports `❌ no match`, copy the actual Name
 from `beckon installed` into your hotkey binding instead.
 
 ## Why one tool, many configs?
