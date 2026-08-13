@@ -56,9 +56,17 @@
      someone reading about a tool for their computer, and for an Apple reader
      that is the Apple column: Homebrew, the Hyper chord, the Accessibility
      note. Sending them to linux instead would be picking a wrong answer over a
-     probably-right one. What this does cost is a `Press C` hint on a device
-     with no keyboard; the keycap is a button and is tappable, which is why the
-     demos are built click-first with the key as the alternative.
+     probably-right one. What this does cost is larger than it was when this
+     comment first said "a `Press C` hint on a device with no keyboard". The
+     demos now ask for beckon's real gesture — "Turn Caps Lock on, then press
+     C, B, E or D" — and an iPhone or iPad has no Caps Lock key at all, so the
+     leading clause of that instruction names a precondition the device cannot
+     satisfy, and the `Caps +` prefix in the row draws a chord it cannot
+     produce. It is still not a dead end and it is still not worth a second
+     detection axis: every key in both rows is a real button, the same
+     instruction says so in its own second half ("Or click a key — that always
+     works"), and `(pointer: coarse)` would be the wrong test anyway — plenty
+     of Windows laptops are touchscreens with a Caps Lock key right there.
 
      ANDROID AND CHROME OS land in linux, and that is a change: the sniff this
      replaced tested /Android/ first and sent those readers to the Homebrew
@@ -134,23 +142,31 @@
        contract. Everything decorative inside the demo is aria-hidden;
        .demo-steps is the accessible transcript and is not.
 
-       WITH JS ON THIS DEMO BECOMES PRESSABLE. beckon.js adds `.is-live` to
+       WITH JS ON THIS DEMO BECOMES PRESSABLE, and the trigger is beckon's own
+       gesture: Caps Lock on, then a letter. beckon.js adds `.is-live` to
        .hero-demo, which cancels the 4.4s loop, and inserts three things above
-       .demo-steps: a one-line note saying the page cannot hold the reader's
-       real chord (a press taps every cap in all three chords at once, so that
-       cannot wait for the section below), a keycap button, and the same
-       .readout panel the playground uses. `data-front` on .hero-stage then
-       decides what is drawn. It also rewrites .demo-steps to drop its closing
-       "Claude comes to the front on all three" — true of the loop, false on
-       every other press once the reader has the wheel. With JS off the
-       sentence below stands exactly as written, which is the only reason it
-       may be rewritten at all.
+       .demo-steps: a two-sentence note (the chord in the cards is one a page
+       never sees; pressing Caps here really does turn the reader's Caps Lock
+       on — neither can wait for the section below, because a press taps every
+       cap in all three chords at once and flips the lock), the press control,
+       and the same .readout panel the playground uses. `data-front` on
+       .hero-stage then decides what is drawn. It also rewrites .demo-steps to
+       drop its closing "Claude comes to the front on all three" — true of the
+       loop, false on every other press once the reader has the wheel. With JS
+       off the sentence below stands exactly as written, which is the only
+       reason it may be rewritten at all.
 
-       Nothing else below changes: the three cards, their three
-       different chords and the window stacks are the markup either way, and
-       with JS off the loop runs exactly as it always has. The three OS cards
-       are the page's cross-platform claim, so they are never reduced to the
-       reader's own OS — only #setups and #serve mark it. -->
+       ONE THING BELOW IS REWRITTEN LIVE: the LAST cap of each chord, which is
+       the letter. Press `B` and all three read Brave's letter at once, which
+       is this demo's actual claim happening — same letter, three different
+       chords. The modifiers are never touched, and with JS off all three read
+       `C`, the letter README's table binds to Claude.
+
+       Nothing else below changes: the three cards, their three different
+       chords and the window stacks are the markup either way, and with JS off
+       the loop runs exactly as it always has. The three OS cards are the
+       page's cross-platform claim, so they are never reduced to the reader's
+       own OS — only #setups and #serve mark it. -->
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
 
@@ -254,9 +270,13 @@
        demo B is the one-window case, and each names its precondition.
 
        WITH JS ON, BOTH ARE REPLACED BY THE PLAYGROUND — four scenarios the
-       reader steps through with a real keypress, covering every branch of the
-       algorithm, with a readout that names the branch that fired. beckon.js
-       builds it and empties .how-demos into it.
+       reader steps through with beckon's own gesture (Caps Lock on, then one
+       of the five letters from the table in #setups), covering every branch of
+       the algorithm, with a readout that names the branch that fired.
+       beckon.js builds it and empties .how-demos into it. All five letters
+       work there and the desk is modelled per app, so pressing the letter of
+       the app already in front walks step 5 while a different app's letter
+       focuses it — or launches it, step 4, if nothing of it is running.
 
        That direction is the requirement, not a preference. The two demos and
        the table below ship VISIBLE and JS takes them away; written the other
@@ -540,7 +560,7 @@ beckon doctor</code></pre>
       does what
       <span class="chord"><kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Win</kbd><span class="plus">+</span><kbd class="key">Alt</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
       does and your bindings do not change. It installs a low-level keyboard hook, and the
-      three caveats that come with one are in the
+      three things to know before ticking it are in the
       <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a>.</p>
 
       <p class="note">Ready-to-use setups, including the launchd agent and the Scheduled Task
@@ -696,10 +716,11 @@ scoop install xom11/beckon</code></pre>
           <summary>Is it fast?</summary>
           <p>The whole focus-or-launch path measured about <strong>57 ms</strong> on the ARM64
           Windows 11 laptop beckon is developed against, and about <strong>95&ndash;105 ms</strong> on
-          an M3 MacBook Air. Each figure is one machine and one run series, not a
-          benchmark suite. Both are dominated by the OS rather than by beckon: on macOS,
-          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of the total, and
-          no API avoids that round trip.</p>
+          the macOS laptop it is developed against. Each figure is one machine and one run
+          series, not a benchmark suite. The macOS figure is mostly the OS rather than beckon:
+          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of it, and no API
+          avoids that round trip. The Windows figure has no such breakdown &mdash; it started at
+          about 443 ms and came down by changing beckon, not the OS.</p>
         </details>
 
         <details>
@@ -708,7 +729,11 @@ scoop install xom11/beckon</code></pre>
           stands in for <code>ctrl+super+alt</code>, so
           <span class="chord"><kbd class="key">Caps</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
           does what <code>ctrl+super+alt+T</code> does &mdash; your bindings do not change, and the
-          same file still works on a machine where the box is not ticked. Three caveats, all real: it
+          same file still works on a machine where the box is not ticked. The hook swallows the Caps
+          key itself and sends the chord on as one burst, so the lock does not flip while you use it;
+          tapping Caps on its own still toggles Caps Lock, because beckon puts that keystroke back.
+          <code>keyboard.caps_tap = "escape"</code> makes the tap Esc instead, and
+          <code>"none"</code> makes it do nothing. Three caveats, all real: it
           does nothing while an elevated window has focus, though typing the chord by hand still works
           there; any other remapper that already claims Caps &mdash; kanata, PowerToys Keyboard
           Manager, an AutoHotkey script &mdash; wins, so use one or the other and not both; and it

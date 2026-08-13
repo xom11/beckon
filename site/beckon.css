@@ -261,9 +261,19 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 
      <kbd class="key">C</kbd>                 one cap
      <kbd class="key" data-down>C</kbd>       the pressed look, statically
+     <kbd class="key" data-lock>Caps</kbd>    a LOCKED key, held down
      <span class="chord">                     a row of caps
        <kbd class="key">Ctrl</kbd> ... <span class="plus">+</span> ...
      </span>
+
+   `data-lock` is an extension of this component, not a fork of it: same box,
+   same tokens, and it borrows `data-down`'s exact depression so a locked key
+   is drawn as what it is — a key that is down and staying down. It carries the
+   accent as well, because a reader has to be able to tell "I am holding this"
+   from "this is latched" at a glance, and beckon.js sets it from
+   `getModifierState('CapsLock')` on every key event. The two attributes may be
+   present at once (the demo taps a cap that is already locked); the
+   declarations are identical, so that is a no-op rather than a fight.
 
    The cap sizes from its own font-size in em, so a section scales a whole
    chord by setting font-size on the container (the hero does exactly that).
@@ -284,6 +294,10 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   transform: translateY(0);
 }
 .key[data-down] { box-shadow: 0 1px 0 var(--rule); transform: translateY(1px); }
+.key[data-lock] {
+  box-shadow: 0 1px 0 var(--rule); transform: translateY(1px);
+  color: var(--accent); border-color: var(--accent);
+}
 .chord { display: inline-flex; align-items: center; gap: 6px; }
 .chord .plus { color: var(--fg-dim); font-size: .8em; }
 
@@ -521,41 +535,133 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 /* Shared: the press control.
    CONTRACT — built by beckon.js, once in the hero and once in the playground.
 
-     <div class="try">
-       <button class="try-press" type="button">
-         <kbd class="key" aria-hidden="true">C</kbd>       <- the real .key
-       </button>
-       <span class="try-hint">Click the key, or press C.</span>
-       <button class="try-reset" type="button">Reset</button>   (playground only)
+     <div class="try-wrap">
+       <p class="try-lead" role="status">Turn Caps Lock on, then press C…</p>
+       <div class="try">
+         <span class="try-caps" aria-hidden="true">
+           <kbd class="key" data-lock>Caps</kbd><span class="plus">+</span>
+         </span>
+         <div class="try-keys">
+           <button class="try-press" type="button">
+             <kbd class="key" aria-hidden="true">C</kbd>    <- the real .key
+             <span class="try-app" aria-hidden="true">Claude</span>
+           </button>
+           …one button per letter…
+         </div>
+         <div class="try-end">
+           <span class="try-lock" data-caps="on">Caps Lock: on</span>
+           <button class="try-reset" type="button">Reset</button>  (playground only)
+         </div>
+       </div>
+
+   THREE FLEX ITEMS, NOT EIGHT, and both wrappers are load-bearing rather than
+   tidiness: `.try-keys` keeps `Caps +` in front of every letter when the
+   letters wrap, and `.try-end` keeps the chip and `Reset` on one line. Both
+   were measured failures as loose siblings — see those rules below.
      </div>
 
-   The button is a TRANSPARENT WRAPPER around a real `.key`, not a second
+   The buttons are TRANSPARENT WRAPPERS around real `.key`s, not a second
    keycap style — .key's contract above says do not fork it, and this does not:
    the button owns the hit target and the font-size that scales the cap, and
    the pressed look is still `.key[data-down]`. Nothing here is exempted from
-   the document-level `C` handler by name any more; it stopped excluding
-   buttons outright, which is what used to kill the key after a click. See the
-   comment on that listener in beckon.js.
+   the document-level letter handler by name; it stopped excluding buttons
+   outright, which is what used to kill the key after a click. See the comment
+   on that listener in beckon.js.
+
+   ONE ROW, NOT A GRID, and it wraps rather than shrinking. Five buttons do not
+   fit 375px, and shrinking them until they did would put a sub-24px tap target
+   on the one device that has no Caps Lock key at all and therefore depends on
+   the pointer path entirely — the same call `.pg-pick` and `.tab` make in §5.
+
+   THE INSTRUCTION IS ABOVE THE ROW. It names the precondition (the lock has to
+   be on), so a reader meets it before the first press rather than after it has
+   silently done nothing. It doubles as the surface beckon.js nudges when a
+   press cannot act, which is what `[data-nudge]` colours.
 
    Nothing here animates, and that is deliberate rather than incidental: the
    reduced-motion block at the end of the file pins animation-duration, and a
    cap that has to go down and come back is exactly the shape that block cannot
-   land on a correct frame. The press flash is an attribute JS sets and clears. */
+   land on a correct frame. The press flash is an attribute JS sets and clears,
+   and so is the lock. */
+.try-wrap { margin-top: 16px; }
+.try-lead {
+  margin: 0 0 10px;
+  max-width: var(--measure);
+  font: 600 14px/1.5 var(--sans);
+  color: var(--fg);
+}
+.try-lead[data-nudge] { color: var(--accent); }
 .try {
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 12px;
-  margin-top: 16px;
 }
+/* THE LETTERS ARE ONE FLEX ITEM, WHICH IS WHAT KEEPS `Caps +` IN FRONT OF ALL
+   OF THEM. They used to be five siblings in the row above, so the prefix held
+   only whichever letters happened to land on its wrap row: measured at 1280px
+   the row read `Caps+ | C | B | E` and then `D | Space` on a bare second row;
+   at 430px `Caps+ | C | B`, then `E | D`, then `Space`. Three of the five
+   letters were drawn as keys with no chord in front of them, which is the one
+   thing this row exists to show. Wrapping them in a block of their own means
+   the row has three items — prefix, letter block, chip — and the block wraps
+   internally, underneath itself, still to the right of the prefix. */
+/* `flex: 1 1 0` is the load-bearing half. Left at the default `0 1 auto` the
+   block's base size is its max-content width — all five buttons on one line —
+   which does not fit beside the prefix, so the flex algorithm gives the block
+   a line of its own and the prefix ends up orphaned from ALL the letters
+   rather than from two of them. A zero flex-basis always fits, so the block
+   takes the remaining width of the row and does its wrapping inside. */
+.try-keys {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  flex: 1 1 0; min-width: 0;
+}
+/* Same font-size as the buttons beside it, so `Caps` and `C` read as one chord
+   rather than as a label and a control. It is not a button: clicking it could
+   not turn a lock on, and this page does not render a control that silently
+   does nothing.
+
+   `align-self: center` is the default and is right: with the letters wrapped
+   onto two rows the prefix centres against the block, which reads as
+   "Caps + {all of this}" rather than as a prefix to the first row only. */
+.try-caps { display: inline-flex; align-items: center; gap: 6px; font-size: 1.15rem; }
 .try-press {
-  display: inline-flex; align-items: center;
-  margin: 0; padding: 4px;
+  display: inline-flex; align-items: center; gap: 8px;
+  margin: 0; padding: 4px 8px 4px 4px;
   color: inherit; background: none; border: 0;
   border-radius: var(--radius-sm);
-  font-size: 1.55rem; line-height: 1;
+  font-size: 1.15rem; line-height: 1;
   cursor: pointer;
 }
+/* The app name is what makes the pointer path self-explanatory — a row of five
+   bare letters would send a reader to #setups to find out that D is Discord —
+   and it is what makes the letter table live rather than decorative. */
+.try-app { font: 600 12px/1 var(--sans); color: var(--fg-dim); }
 .try-press:hover .key { color: var(--accent); border-color: var(--accent); }
-.try-hint { color: var(--fg-dim); font-size: 13px; }
+.try-press:hover .try-app { color: var(--accent); }
+/* A chip, not a bare word: it sits in a row of app names, and unboxed
+   "Caps Lock: unknown" read as a sixth thing you could beckon. */
+.try-lock {
+  padding: 4px 8px;
+  font: 600 12px/1.2 var(--mono);
+  color: var(--fg-dim);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+}
+.try-lock[data-caps="on"] { color: var(--accent); border-color: var(--accent); }
+/* The row's tail: the lock's state, and the way back to the start. It takes a
+   line of its own (`flex-basis: 100%`) rather than competing with the letters
+   for the last one, which is what keeps the chord above it whole — and it does
+   not wrap internally, so `Reset` can no longer end up alone on a line below
+   the chip the way it did at 375px and 900px.
+
+   IT COSTS THE HERO A LINE, where two letters and a chip would have fitted on
+   one, and that is the trade rather than an oversight: `.try-keys` can only
+   guarantee it never orphans `Caps +` by taking a zero flex-basis and growing,
+   which leaves no room on that line for anything after it. Both rows are the
+   same shape as a result, which is worth more than the hero's saved 34px. */
+.try-end {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 12px;
+  flex: 0 0 100%;
+}
 .try-reset {
   margin-inline-start: auto;
   min-height: 32px; padding: 6px 12px;
@@ -568,11 +674,11 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 .try-reset:hover { color: var(--accent); border-color: var(--accent); }
 
-/* The note that admits the stand-in key, above the try row in the hero. Same
-   claim the playground's .pg-why makes at length, in one sentence, because the
-   hero is where the first press happens: a press taps every cap in all three
-   chords, and a reader who has not been told why sees five modifiers they did
-   not touch go down. `.caps` is the shared leading for keycaps set in prose. */
+/* The note above the hero's try row. Same claims the playground's .pg-why and
+   .caps-truth make at length, in two sentences, because the hero is where the
+   first press happens and both are owed before it: a press taps every cap in
+   all three chords, and it turns the reader's Caps Lock on. `.caps` is the
+   shared leading for keycaps set in prose. */
 .try-note {
   margin: 16px 0 0;
   max-width: var(--measure);
@@ -631,9 +737,29 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 .hero-demo.is-live .os-win .os-dot { transition: background .2s; }
 
-.hero-stage[data-front="brave"] .os-win.is-brave { color: var(--fg); }
+/* BOTH HALVES OF THE STATE, NOT JUST THE UNDOING OF THE OTHER ONE. This block
+   used to strip Claude's accent and re-light Brave's text and stop there, so
+   the brave-front state was drawn with both windows at --fg, both borders at
+   --rule and both dots neutral — measured, and byte-identical to the resting
+   state. Half of the hero's presses therefore looked like nothing had happened
+   while the readout claimed a focus change. The page's focus vocabulary
+   (accent border, accent dot, the other window at --fg-dim) is a vocabulary,
+   so it has to be speakable about Brave too.
+
+   The 6px RAISE stays Claude-only and that is geometry rather than an
+   omission: Claude is the lower of the two overlapping windows, so lifting it
+   is how it comes forward. Brave is already the upper one; lifting it would
+   open a gap under the stack instead of putting it in front. z-index carries
+   that half — Brave 2 over Claude 1. */
+.hero-stage[data-front="brave"] .os-win.is-brave {
+  color: var(--fg);
+  border-color: var(--accent);
+  box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
+}
+.hero-stage[data-front="brave"] .os-win.is-brave .os-dot { background: var(--accent); }
 .hero-stage[data-front="brave"] .os-win.is-claude {
   z-index: 1;
+  color: var(--fg-dim);
   transform: translateY(0);
   border-color: var(--rule);
   box-shadow: 0 10px 26px -12px transparent;
@@ -916,6 +1042,25 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   font-size: 14px;
 }
 .pg-why strong { color: var(--fg); }
+
+/* The two caveat paragraphs, side by side from 900px (§5). They are one
+   argument in two halves — what a page cannot have, then what it does to you
+   when it takes what it can — and stacked they put 450px of grey prose between
+   the controls and the transcript. */
+.pg-prose { display: grid; gap: 18px; }
+
+/* The punchline: this page really did turn the reader's Caps Lock on, and what
+   beckon's hook does instead. Same prose role as .pg-why beside it — same
+   size, same colour, same `.caps` leading for the chord set inside it —
+   because it is the second half of the same argument, not an aside. The
+   wrapper's grid gap is what separates them; it carries no margin of its own. */
+.caps-truth {
+  margin: 0;
+  max-width: var(--measure);
+  color: var(--fg-dim);
+  font-size: 14px;
+}
+.caps-truth strong { color: var(--fg); }
 
 .pg-picks { display: flex; flex-wrap: wrap; gap: 8px; }
 /* Same box as `.try-reset`, which is its sibling 200px away inside the same
@@ -1475,8 +1620,10 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 @media (min-width: 900px) {
   .how-demos { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   /* The playground is ONE block, so it takes the whole row back off the two
-     columns above — and splits it itself, drawing beside readout. */
+     columns above — and splits it itself, twice: drawing beside readout, and
+     the two caveat paragraphs beside each other under them. */
   .pg-main { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pg-prose { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
   .keys { grid-template-columns: minmax(220px, 300px) 1fr; }
 }
 
@@ -1518,11 +1665,25 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 
   .how-grid { gap: 28px; }
 
-  /* Four scenario buttons cannot share a row at 375px; they wrap to two, and
-     shrinking them until they did would put a 12px tap target on a phone —
-     the same call the install tabs make below. `Reset` gives up its auto
-     margin so it does not sit alone on a line of its own once the row wraps. */
+  /* The four scenario buttons take a row each at 375px and 430px — measured,
+     and the comment here used to say "they wrap to two", which was never
+     true at any width in this block (720px is the only one that gets 3 + 1).
+     They are shrunk a little and no further: taking them down until four
+     shared a row would put a 12px tap target on a phone, the same call the
+     install tabs make below.
+
+     `Reset` gives up its auto margin so it sits next to the chip rather than
+     at the far edge of a narrow screen. It does not need the margin to avoid
+     a line of its own any more — the comment here used to claim that and it
+     was measured false at 375px, where `Reset` ended up alone on the last
+     line and the chip alone on the one before it. `.try-end` is what fixed
+     that: the pair is one non-wrapping flex item now.
+
+     The five letter buttons wrap inside `.try-keys` and are NOT shrunk: a
+     phone has no Caps Lock key, so the pointer is the only path there and its
+     targets have to stay full size. Only the gap tightens. */
   .pg-pick { padding: 7px 10px; font-size: 12px; }
+  .try, .try-keys, .try-end { gap: 8px; }
   .try-reset { margin-inline-start: 0; }
 
   .compare-row { grid-template-columns: minmax(0, 1fr); }

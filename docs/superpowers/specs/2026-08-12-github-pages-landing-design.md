@@ -141,11 +141,18 @@ learning who reads the page. Hero is `clamp(2.75rem, 7vw, 5.5rem)` with
 border, a 2px bottom shadow that shortens by 1px under `.key[data-down]` so the
 cap visibly depresses.
 
-It is reused verbatim in four places: the hero's three chords, the algorithm demos, the
-letter→app table in *Works with your setup*, and the Caps Lock line in
-*Or let beckon hold the keys*. That reuse is what makes the page read as one
-system rather than eight unrelated blocks, and it is cheaper than styling four
-things that nearly match.
+`.key[data-lock]` extends it rather than forking it: same box, same tokens,
+the same depression as `data-down`, plus the accent — a locked key drawn as
+what it is, a key that is down and staying down. beckon.js sets it from
+`getModifierState('CapsLock')`, so the `Caps` cap in each try row IS the lock
+indicator. Both attributes can be present at once (a press taps a cap that is
+already locked); the declarations are identical, so that is a no-op.
+
+It is reused verbatim in five places: the hero's three chords, the algorithm
+demos, the letter→app table in *Works with your setup*, the Caps Lock line in
+*Or let beckon hold the keys*, and the press control's own caps. That reuse is
+what makes the page read as one system rather than eight unrelated blocks, and
+it is cheaper than styling four things that nearly match.
 
 ### 5. Motion
 
@@ -250,8 +257,13 @@ selling something beckon does not do.
 5. What does GNOME Wayland need? — the extension, and why Mutter forces it.
 6. Is it fast? — the measured figures, each stated with the machine and
    command it came from. Never as a bare number.
-7. Can I use Caps Lock as the modifier? — Windows, opt-in, and the three
-   caveats already in the README (UIPI, other remappers, EDR).
+7. Can I use Caps Lock as the modifier? — Windows, opt-in, the three caveats
+   already in the README (UIPI, other remappers, EDR), and what the hook does
+   to the lock: it swallows the Caps key and sends the chord on as one burst,
+   so the lock does not flip while you use it, while a bare tap still toggles
+   it because beckon puts that keystroke back (`keyboard.caps_tap`). The
+   playground in §8 makes the same claim beside a reader whose lock the page
+   has just turned on, so the two must not drift.
 
 ### 7. JavaScript
 
@@ -350,8 +362,40 @@ constraint paragraph sat between the caption and the controls, putting 143px of
 grey prose about what the page *cannot* do between "Try it" and the first thing
 a reader could click.
 
-**The stand-in key, which is also the pitch.** A browser cannot have beckon's
-chord, and the reason is per-OS rather than one reason stretched over three.
+**The trigger is Caps Lock plus a letter, which is beckon's own gesture.**
+This entry used to read *"The stand-in key, which is also the pitch: a browser
+cannot have beckon's chord."* Half of that survived and half of it was
+measured to be false, so the framing was rewritten rather than patched.
+
+**REVISED 2026-08-13: the trigger is Caps Lock plus a letter.** The design
+assumes a page receives Caps Lock — that unlike `Win` and `Super` it is not
+taken by the shell or the compositor first, that the page gets `keydown` with
+`event.code === 'CapsLock'`, and that
+`KeyboardEvent.getModifierState('CapsLock')` reports the lock on every key
+event. So both demos listen for the real gesture — Caps Lock on, then one of
+README's own letters (`C` Claude, `B` Brave, `E` Cursor, `D` Discord) —
+instead of standing in for it with a bare `C`. `Space` terminal is drawn and
+is a button, but is deliberately not on the keyboard path; see
+`beckonKeys` in `site/beckon.js`.
+
+**UNVERIFIED, and this entry said the opposite for one commit.** It read
+"Measured in a browser by a person at the keyboard", which no artefact
+supports: `docs/superpowers/measurements/2026-08-13-caps-gesture-manual-check.md`
+was created by the same commit and opens **"Nothing in this file has been
+run."** — the session that wrote the feature had no physical keyboard, and
+every keyboard result it holds came from
+`document.dispatchEvent(new KeyboardEvent(…, { modifierCapsLock: true }))`.
+That proves the page's *handler* is correct and proves nothing about the
+*lock*: a synthetic event cannot flip one, and cannot tell you what a real
+macOS keyup reports. CLAUDE.md's own repeated lesson is that a blind detector
+and a clean result are indistinguishable without a control. What still needs a
+person at a keyboard is in that measurement file; treat everything above as
+the design's assumption until it comes back.
+
+What is still true is narrower and is what the per-OS reasons below are
+about: a page never sees the **modifier chord** (`ctrl+super+alt+c` /
+`cmd+ctrl+alt+c` / `super+c`).
+
 Each is held to what the repo says, which is narrower than the first draft of
 all three:
 
@@ -371,27 +415,95 @@ all three:
   them; `CLAUDE.md`'s *Wayland hotkey* entry exists to retire the shorter story.
 
 On every OS a page only receives keys while the browser is in front, which is
-the one moment nobody needs a hotkey. So both demos listen for a bare `C`, the
-letter README's own example table binds to Claude, and **both** say so in the
-reader's own chord before the first press — the hero in one line above its try
-row, the playground at length. The hero's is not optional: a press there taps
-every cap in all three chords at once.
+the one moment nobody needs a hotkey. Both demos say so in the reader's own
+chord before the first press — the hero in two sentences above its try row,
+the playground at length. The hero's is not optional: a press there taps every
+cap in all three chords at once, and turns the reader's Caps Lock on.
 
-**Input.** Click or tap the keycap (the primary path; touch has no keyboard at
-all), or press `C`. One document-level listener serves both demos and refuses a
-keystroke that belongs to something else: any modifier, a repeat, an IME
-composition, a text field, a `<select>` (where a letter is typeahead) or
-contenteditable. **Buttons are not on that list.** They were, with the two
-keycaps exempted by a `data-press` attribute, and that was the trap rather than
-the caution: a `<button>` takes focus on mousedown and keeps it, so after
-clicking a scenario pick or `Reset` — the first two things this page asks a
-reader to do — `C` was dead while the hint beside it still said to press it. An
-exemption list has to be extended by hand for every button anyone adds near a
-demo, and was not. A button has no native `C` behaviour to protect, so there is
-nothing to exclude. It also acts only on a demo the reader can SEE, measured from
+**Lock, not hold, and the gap is stated rather than hidden.** beckon reads
+Caps as a key you HOLD — `beckon-core`'s `caps::decide` is a tap-vs-hold state
+machine on `HOLD_TIMEOUT_MS`. A page cannot: at the OS level Caps is a lock,
+not a held modifier, and the events are asymmetric on macOS (keydown on the
+on-transition, keyup on the off-transition), so a held-key model is wrong on at
+least one platform. The page therefore reads the LOCK, via
+`getModifierState('CapsLock')` on every key event, and every line of copy says
+"turn Caps Lock on", never "hold Caps".
+
+**The honest cost is the argument.** Pressing Caps here really does turn the
+reader's Caps Lock on, and the page says so in both directions — *"Press Caps
+here and it really will turn your Caps Lock on"* before, *"Your Caps Lock is
+on, and pressing it here is what did that"* after — beside what beckon does
+instead: with the box ticked (Windows only, off until you tick it) its
+`WH_KEYBOARD_LL` hook swallows the Caps key-down and sends `ctrl+super+alt` on
+as one burst, so the chord fires and the lock never flips; a bare tap still
+toggles the lock only because beckon puts that keystroke back itself
+(`CapsTap::CapsLock` is the default). **Nothing calls `preventDefault()` on the
+Caps key.** Whether that would stop the lock has not been measured, and a page
+that tried it and failed would be lying about the mechanism. A live indicator —
+a `Caps Lock: on / off / unknown` chip plus the `Caps` keycap drawn locked —
+carries the state, and says `unknown` until an event resolves it rather than
+guessing.
+
+**Caps is Windows-only and the page says which reader it is talking to.** The
+`data-os` branch is the whole difference: Windows gets "a real setting rather
+than an illustration", with the UIPI gap named; macOS and Linux get
+"Windows-only, so here it is only the demo's trigger and not something you can
+switch on".
+
+**Input.** Click or tap a letter button (the primary path; touch has no Caps
+Lock key at all, and NVDA/JAWS readers have Caps bound as their own modifier),
+or turn Caps Lock on and press the letter. One document-level `keydown`
+listener serves both demos and refuses a keystroke that belongs to something
+else: any modifier, a repeat, an IME composition, a text field, a `<select>`
+(where a letter is typeahead) or contenteditable. **Buttons are not on that
+list.** They were, with the two keycaps exempted by a `data-press` attribute,
+and that was the trap rather than the caution: a `<button>` takes focus on
+mousedown and keeps it, so after clicking a scenario pick or `Reset` — the
+first two things this page asks a reader to do — `C` was dead while the hint
+beside it still said to press it. An exemption list has to be extended by hand
+for every button anyone adds near a demo, and was not. A letter has no native
+behaviour on a button to protect, so there is nothing to exclude.
+
+**`Space` is the one exception and it is not that list coming back.** Space
+really is the native activation key of whatever has focus, and taking it would
+break every button on the page for a reader holding the lock on. The guard is
+one state check — *is anything focused at all* — not a roll-call of element
+types, so it cannot go stale the way the old list did.
+
+A second listener exists on `keyup` and it **never fires a demo**: it only
+feeds the lock indicator, because of the macOS asymmetry above. Clicks feed it
+too (`MouseEvent` carries `getModifierState`), which is how a reader who
+clicks before typing gets a resolved indicator instead of `unknown`.
+
+A press acts only on a demo the reader can SEE, measured from
 `getBoundingClientRect` at keypress time — no observer, nothing running when
-nobody is typing — so `C` typed while reading the FAQ cannot walk a ring three
-sections up the page.
+nobody is typing — so a letter typed while reading the FAQ cannot walk a ring
+three sections up the page. A press that cannot act says why instead of going
+silent: the instruction line above the buttons becomes *"Caps Lock is off —
+switch it on, then press C"*, or *"E is Cursor. These three cards only draw
+Claude and Brave"*, and settles back after three seconds or on the next
+successful press.
+
+**The playground models a desk, not one app plus a boolean.** It was
+`{ running, cur, hidden, other }` — Claude, plus a flag for whether some other
+app existed — which was enough while a bare `C` was the only trigger. Five
+letters need five apps, and the algorithm's own steps then fall out of the same
+model instead of being special-cased: the letter of the app already focused
+walks step 5 (5a cycle / 5b back / 5c hide), a different app's letter is step 5
+(focus), and a letter for an app with no window is step 4 — it gets a window of
+its own, which is what launching is. Every one of those is a row in the `#how`
+table one screen up, so the five letters make that table live rather than
+adding a behaviour it does not describe. Two orders are kept apart in the
+model and must stay apart: `slots` is creation order and IS the 5a ring
+(`CLAUDE.md`: the ring is ordered by address, addresses are ordered by
+creation), while `mru` is most-recently-focused first and is step 5b's input
+and nothing else's.
+
+The hero takes **two** letters, not five, and that is the drawing's doing: its
+three cards hold one Brave and one Claude window each, in markup, so `E` has
+nothing there to launch. The LETTER inside all three chords follows the press —
+watching it change to `B` in all three at once is the hero's actual claim
+happening — while the modifiers are never rewritten.
 
 **OS-authentic chrome, pure CSS.** macOS: three dots at the LEFT, title
 centred, rounded. Windows: minimise / maximise / close at the RIGHT, square
@@ -454,9 +566,19 @@ Needing a browser — `python3 -m http.server` from `site/`, driven with the
    algorithm table and both demos, and the hero must still run its 4.4s loop.
    An empty gap anywhere is the defect §7's one rule exists to prevent.
 9. With JS **on**, all four playground scenarios walk their branches and the
-   readout names the step that fired; Reset returns to the start; `C` advances
-   the demo on screen and does nothing while another section is; the chrome and
-   the chord follow all three `data-os` values.
+   readout names the step that fired; Reset returns to the start; a letter
+   advances the demo on screen and does nothing while another section is; the
+   chrome and the chord follow all three `data-os` values.
+10. The Caps gesture, which splits in two. The **handler** is testable from a
+    synthetic `KeyboardEvent` with `modifierCapsLock: true` — that populates
+    `getModifierState`, so all five letters, the lock-off nudge, the
+    `Space`-versus-focused-button guard, the modifier/repeat/`<select>`
+    refusals and the indicator can all be driven headlessly. The **lock** is
+    not: a synthetic event cannot turn a lock on, cannot be suppressed, and
+    cannot tell you what a real macOS keyup reports. Those presses are written
+    out for a human in
+    `docs/superpowers/measurements/2026-08-13-caps-gesture-manual-check.md`,
+    control step first.
 
 ## Documentation
 
