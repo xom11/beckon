@@ -3,6 +3,14 @@
 Date: 2026-08-13. Written as a handoff: a fresh session should be able to
 start work after reading this one file.
 
+> **CLOSED 2026-08-13, later the same day.** All three numbered items below
+> are done and the gates are run. Direction B's keycap layer is complete and
+> shipped as **v0.9.2**, a14 is on it through scoop, and the hardware results
+> are in
+> `docs/superpowers/measurements/2026-08-13-modifier-chips-a14.md`.
+> What is left is at the bottom, under *Still open*. The body is kept as
+> written, because the reasoning in it is what the work was done against.
+
 ## What direction B is
 
 Three redesigns of the Windows settings window were drawn and compared; the
@@ -27,7 +35,7 @@ the half of it still missing.
 |---|---|
 | **v0.9.0** | Landing 3a: the editor is two lines in a titled group; App gets a full-width line; `tok::KEY_COL` and `tok::BTN_SM` retired; notes capped at two lines; `MIN_HEIGHT` 460 → 550; `super` leaves the UI (`ctrl+super+alt+t` → the string `Ctrl + Win + Alt + T`); two hardware probes added, unrun |
 | **v0.9.1** | The **Shortcut column** is drawn as keycaps — `NM_CUSTOMDRAW` on subitem 1 |
-| merged, **unreleased** | §F.4: a modifier held before `Record` was clicked now reaches the chord (`7d2b7dd`) |
+| **v0.9.2** | §F.4 (`7d2b7dd`), released at last; and the **four modifier chips plus the three `Hold` chips** become `BS_OWNERDRAW` keycaps through the same `draw_keycaps`. Layer 2 complete |
 
 Specs and plans: `docs/superpowers/specs/2026-08-12-settings-keycaps-design.md`,
 `docs/superpowers/plans/2026-08-12-settings-keycaps-landing-3a.md` (its closing
@@ -201,3 +209,28 @@ The habit that caught the fourth one: before trusting a green test, break the
 thing it tests and watch it go red. Reverting `mods()` to ignore the live set
 turned four of five §F.4 tests red, which is the only reason they are known to
 be load-bearing rather than decorative.
+
+**It caught a fifth, unprompted.** `settings_probe`'s new `chips_readable`
+went red on its very first hardware run — `WM_CHIP_STATE` was being sent to
+the chip rather than to the window — while the window under test was working
+perfectly. Nobody had to break anything to find out the check was real.
+
+## Still open
+
+Everything the handoff listed is done. What remains:
+
+- **A disabled chip takes no fill, so it no longer says which way it is
+  set.** Costs nothing on the four editor chips; costs the three `Hold`
+  chips their state while Caps is off. No pairing in the system palette
+  settles it and this window takes every colour from `GetSysColor`. Needs a
+  human glance, not another argument — measurements §"The one decision that
+  still wants eyes".
+- **§B.6 `app_cell`** — G3 came back `TICK_SURVIVES`, so subitem 0 can join
+  the custom-draw pass: app name in Body, flag in Caption. Unblocked, not
+  started.
+- **A real 96-DPI panel.** G1 passed under the `DPIUNAWARE` shim, which
+  answers the layout question at 96 and rasterises there too, but shows the
+  result upscaled. Sharpness at 1:1 is unmeasured.
+- **`apps.windows.toml`'s mtime moved at 10:34:28** on a14 with byte-identical
+  content. Unexplained. Harmless as observed; worth a second look if the
+  settings window is ever suspected of writing a file it was not asked to.
