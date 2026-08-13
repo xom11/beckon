@@ -874,6 +874,92 @@
       return on ? on.getAttribute('data-step') : '5a';
     }
 
+    /* The idle tour.
+     *
+     * `is-live` above turns off the CSS loop a JS-off reader watches, so with
+     * JS on this section stood perfectly still until somebody pressed
+     * something. Measured on the deployed page: eight seconds, not one pixel.
+     * A reader who scrolls past therefore learned nothing from the one section
+     * carrying the whole argument, and the two sentences under the desk had to
+     * do a job a picture was right there to do.
+     *
+     * It drives `scene` and `press` — the same two functions the row buttons
+     * and the key caps call, `press` with the same `true` a cap click passes —
+     * so it can never show a state a reader could not reach themselves, and
+     * desk.js stays the only thing that decides what a press does.
+     *
+     * `c` in every scene, and that is DESK_SCENES' own design rather than a
+     * choice made here: "Pressing C in each of these is what makes that row's
+     * step fire".
+     */
+    (function () {
+      if (!window.matchMedia || !window.IntersectionObserver) return;
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+      var STEPS = ['4', '5', '5a', '5b', '5c'];
+      var READ = 1500;  /* long enough to read the precondition the row states */
+      var WATCH = 2500; /* ...and then the readout that answers it */
+
+      /* Starts mid-cycle, on the scene `onOs` has already built, and its first
+         act is to answer it. Opening with `scene('4')` instead would blank the
+         desk the caption has just promised starts on Cycle, before the reader
+         has looked at it. */
+      var at = 2, armed = true, timer = null, stopped = false, onScreen = false;
+
+      function clear() { if (timer) { clearTimeout(timer); timer = null; } }
+
+      function queue(ms) {
+        if (stopped || !onScreen || timer) return;
+        timer = setTimeout(tick, ms);
+      }
+
+      function tick() {
+        timer = null;
+        if (stopped) return;
+        if (armed) {
+          press('c', true);
+          armed = false;
+          at = (at + 1) % STEPS.length;
+          queue(WATCH);
+        } else {
+          scene(STEPS[at]);
+          armed = true;
+          queue(READ);
+        }
+      }
+
+      /* One way, and capture-phase so it lands before the control's own
+         handler moves anything. Somebody who has touched this section is
+         reading it, and a tour that resumed would pull the desk out from under
+         them mid-sentence. The table is a sibling of the demo, not a child, so
+         it needs its own listener; `keydown` is on the document because that is
+         where the page already routes a real press. */
+      function stop() {
+        if (stopped) return;
+        stopped = true;
+        clear();
+      }
+      demo.addEventListener('pointerdown', stop, true);
+      table.addEventListener('pointerdown', stop, true);
+      document.addEventListener('keydown', stop, true);
+
+      /* Said here rather than beside the sentence above, because the two early
+         returns mean this is the only place that knows the tour will actually
+         run. A reader with motion off would otherwise be told about a loop
+         nothing on their screen is doing. */
+      if (steps) {
+        steps.textContent = 'It walks the five rows on its own, and stops for good the moment ' +
+          'you touch it. ' + steps.textContent;
+      }
+
+      /* Off screen the tour would spend its laps unwatched and leave a reader
+         arriving in the middle of a branch. Hold, and pick up where it was. */
+      new IntersectionObserver(function (entries) {
+        onScreen = entries[0].isIntersecting;
+        if (onScreen) queue(WATCH); else clear();
+      }, { threshold: 0 }).observe(demo);
+    }());
+
     demos.push({ node: demo, press: press });
   }());
 
