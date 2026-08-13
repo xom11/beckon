@@ -37,7 +37,7 @@ a card-and-shadow system that reads as generated rather than designed.
 | # | Decision |
 |---|---|
 | 1 | Hero is a **simulated desktop with real window chrome**, driven by real keypresses — not a diagram. |
-| 2 | Trigger is the **bare letter**. A Caps Lock gate was built, shipped, and taken back out — see below. |
+| 2 | Trigger is **Caps Lock and a letter**. |
 | 3 | Visual identity is **authentic desktops**; the page itself is near-colourless. |
 | 4 | Copy is **cut hard**; everything removed moves verbatim into the FAQ. Nothing is deleted. |
 | 5 | `site/` is **rewritten**, keeping six named contracts (below). |
@@ -62,30 +62,22 @@ something the reader does. Under the desk, all three real chords ship in the
 markup and CSS keeps the reader's own — which means a JS-off reader, who has no
 strip to press, keeps all three and loses nothing.
 
-### The Caps Lock gate: built, shipped, removed
+### Caps Lock and a letter, not a bare letter
 
-This is written up rather than deleted, because the argument for it is good and
-someone will have it again.
+A bare letter is frictionless and reads as nothing. `C` is not a shortcut; a
+page that teaches beckon by asking for `C` has taught the wrong shape.
 
-**The case for it.** A bare letter is frictionless and reads as nothing. `C` is
-not a shortcut; a page that teaches beckon by asking for `C` has arguably
-taught the wrong shape. So the demos asked for Caps Lock and a letter.
+**Caps Lock is standing in for the reader's modifier, and the hint says so.**
+That substitution is the entire reason the demo asks for a chord: "hold Caps
+and press C" teaches nothing on its own, while *"Caps Lock stands in for Hyper
+(Cmd Ctrl Alt) here"* is what makes the row under the desk — `Cmd Ctrl Alt C`,
+marked **yours** — mean something. The sentence names the reader's own
+modifier and follows the OS strip, so switching to Windows rewrites it to
+`Ctrl Win Alt`.
 
-**Why it came out.** Two rounds of use, and it was friction without the
-teaching. The gesture it asked for is not the reader's gesture anywhere except
-Windows-with-Caps-mode-ticked; on macOS the binding is Hyper and on sway it is
-Super, both of which the row under the desk already names, with its last cap
-following whatever letter was just pressed. So the gate charged every reader a
-toll to be taught something the page teaches better two lines lower down — and
-charged most heavily the readers whose Caps Lock is remapped, who are
-disproportionately the people who would want a keyboard-driven app switcher at
-all. It needed an opt-out button to explain itself with, which is the shape of a
-feature arguing with its own users.
-
-**The mechanics, for anyone who reopens this.** A page cannot see a *held* Caps
-Lock — there is no `capsKey` on a keyboard event the way there is `shiftKey`.
-Measured 2026-08-13, there are exactly two observable signals, and the gate
-accepted either:
+**A page cannot see a *held* Caps Lock** — there is no `capsKey` on a keyboard
+event the way there is `shiftKey`. Measured 2026-08-13, there are three
+observable signals, and the gate accepts any of them:
 
 1. **The lock is on** — `getModifierState('CapsLock')`. It is available on
    `MouseEvent` and `PointerEvent` as well as `KeyboardEvent`, so the state
@@ -98,34 +90,38 @@ accepted either:
    synthetic-event test can reach: Chrome does not flip its caps modifier for
    injected keys, measured with the same probe.
 
-**A remapped Caps Lock satisfies neither.** kanata, PowerToys and a Hyper remap
-all swallow the key before the browser sees anything.
+3. **The real chord arrived** — two or more of `ctrlKey` / `altKey` / `metaKey`
+   on the letter's own event. **On a machine where Caps Lock is remapped to
+   Hyper this is the only signal that fires, and the reader is doing exactly
+   the right thing**: Karabiner or kanata swallow the Caps key and send
+   `Cmd+Ctrl+Alt+C`, so signals 1 and 2 are both silent. That remap is the
+   setup this page recommends, which made its absence the gate's worst bug —
+   the demo refused the very gesture it was teaching. Two flags rather than a
+   named chord, because `Win` never reaches a browser on Windows, so `Ctrl+Alt`
+   is as much of `Ctrl+Win+Alt` as will ever arrive; and two is what keeps
+   `Cmd+C` out of it.
 
-Two escape hatches were tried in turn. A counter — two refused presses opened
-the gate by itself — was worse than either alternative: a reader whose Caps
-works fine reached it by fumbling twice, and from the outside the demo simply
-looked like it had quietly stopped asking for Caps. Replacing it with an
-explicit *Use letters only* button fixed that and left the real problem
-standing: the reader still had to notice the gate, fail at it twice, and then
-dismiss it.
+**A Caps Lock remapped to something that is not a modifier satisfies none of
+the three** — remapped to Escape, say. A demo that cannot be operated is worse
+than one that teaches its gesture loosely, so there is a way out, and **it is a
+button, not a counter**.
 
-### So: the bare letter, and the chord is taught below the desk
+Two refused presses used to open the gate by themselves. That was worse than
+either alternative: a reader whose Caps works fine reached it by fumbling
+twice, and from the outside the demo simply looked like it had quietly stopped
+asking for Caps. The gate now never opens on its own. After two refusals the
+hint offers *Use letters only*, and only a click opens it — for every demo at
+once, since having answered the question in the hero should not mean answering
+it again in `#how`.
 
-The letter alone drives both demos. Nothing is gated, and there is no lock
-state to report.
+Clicking a key never goes through the gate: requiring a lock key from a pointer
+would be asking for a gesture the device may not have.
 
-What the gate was reaching for is done by the row under the desk, which was
-already there: it names the reader's real modifier — Hyper on macOS,
-`Ctrl+Win+Alt` on Windows, `Super` on sway — and its last cap follows whatever
-letter was just pressed. That is the reader's actual binding rather than a
-stand-in for it.
-
-Asking for the real chord instead is not possible, and this is the fact that
-constrains every version of this: `Super` is taken by the compositor before the
-browser hears it, `Win` opens the Start menu, and only macOS Hyper is
-observable at all. The page says so in the FAQ rather than pretending
-otherwise. It has no text input, so a bare-letter listener swallows nobody's
-typing.
+Why Caps and not each platform's real chord as the *instruction*: the browser
+cannot see those either. `Super` is grabbed by every Wayland compositor and
+most X11 WMs, and `Win` opens the Start menu. Only macOS Hyper is observable —
+which is precisely why signal 3 exists: where the real chord *does* arrive, it
+counts.
 
 ## Architecture
 

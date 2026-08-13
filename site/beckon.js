@@ -33,8 +33,8 @@
    * only counted once it was more than half on screen — and when the hero's
    * desk grew to full width the demo became 841px tall against a 900px
    * viewport, so at the top of the page it scored 0.481 and the hero was deaf
-   * to every key. A reader landed, read "press a letter", pressed one, and
-   * nothing happened. Measured, not reasoned. */
+   * to every key. A reader landed, read "turn Caps Lock on, then a letter",
+   * pressed, and nothing happened. Measured, not reasoned. */
   function share(node) {
     var r = node.getBoundingClientRect();
     var h = window.innerHeight || root.clientHeight;
@@ -73,10 +73,10 @@
   /* --- OS ---------------------------------------------------------------- */
 
   /* One piece of shared state: `data-os` on <html>. The inline script in <head>
-     resolves it before first paint; every control here only lets the reader
-     correct it. Four things read it — the "yours" markers and the hero's chord
-     rows (both CSS), the install tab that opens first, and both desks, which
-     redraw in that machine's chrome. */
+     resolves it before first paint; this only lets the reader correct it. Three
+     things read it — the "yours" markers (CSS), the install tab that opens
+     first, and the desk in #how. The hero never does: its three desks are the
+     cross-platform claim and are always all three. */
   var osSubs = [];
   var osSelect = null;
 
@@ -196,29 +196,105 @@
   }());
 
 
-  /* --- the desks ---------------------------------------------------------- */
+  /* --- the Caps Lock gate -------------------------------------------------- */
 
-  /* THERE IS NO MODIFIER TO HOLD HERE, and the reasoning is worth keeping
-   * because a Caps Lock gate was built, shipped and then taken out again.
+  /* The demos ask for beckon's own gesture — Caps Lock and a letter — rather
+   * than a bare letter, because a lone `C` does not read as a shortcut and the
+   * whole point of the page is that beckon is one.
    *
-   * The gesture the page is teaching is a chord, and the row under the desk is
-   * where it is taught: it names the reader's real modifier — Hyper on macOS,
-   * Ctrl+Win+Alt on Windows, Super on sway — and its last cap follows whatever
-   * letter was just pressed. That is the reader's actual binding.
+   * A page cannot see a HELD Caps Lock. There is no `capsKey` on a keyboard
+   * event the way there is `shiftKey`. So there are exactly two observable
+   * signals, and this accepts either:
    *
-   * Asking for that chord here is not possible: `Super` is taken by the
-   * compositor before the browser hears it and `Win` opens the Start menu, so
-   * only macOS Hyper is observable at all. Asking for Caps Lock instead was the
-   * next idea and it was worse in practice. A page cannot see a HELD Caps Lock
-   * — there is no `capsKey` the way there is `shiftKey` — so the gate had to
-   * infer it from the lock state or from a recent Caps keypress, and a remapped
-   * Caps Lock (kanata, PowerToys, a Hyper remap) produces neither. That is
-   * disproportionately the audience for a keyboard-driven app switcher: the
-   * gate's most likely effect was a demo that did nothing for the people most
-   * interested in it, plus an opt-out button to explain itself with.
+   *   1. THE LOCK IS ON — `getModifierState('CapsLock')`. Measured 2026-08-13:
+   *      it is available on KeyboardEvent AND on MouseEvent/PointerEvent, so
+   *      the state becomes known the moment the reader moves the mouse. The
+   *      previous version of this page could only learn it from a keypress and
+   *      therefore shipped a readout saying `Caps Lock: unknown` — a control
+   *      admitting it does not know its own state, on first sight.
+   *   2. THE CAPS KEY WAS JUST TOUCHED — a `keydown`/`keyup` whose key is
+   *      `CapsLock`, within ARM_MS. macOS fires only keydown on the way on and
+   *      only keyup on the way off, which is why both arm it. This is also the
+   *      only half a synthetic-event test can reach: Chrome does not flip its
+   *      caps modifier for injected keys, measured with the same probe.
    *
-   * So the letter alone drives the demo, and the chord under the desk says what
-   * it stands for. The page has no text input, so nothing is being swallowed. */
+   * AND A REMAPPED CAPS LOCK SATISFIES NEITHER. kanata, PowerToys and a Hyper
+   * remap all swallow the key before the browser sees anything — and that is
+   * disproportionately the audience for a keyboard-driven app switcher.
+   *
+   * THE WAY OUT IS A BUTTON, NOT A COUNTER. Two refused presses used to open
+   * the gate by themselves, which was worse than either alternative: a reader
+   * whose Caps works fine still reached it by fumbling twice, and from the
+   * outside the demo simply looked like it had stopped asking for Caps at all.
+   * The gate now never opens on its own. After two refusals the hint offers a
+   * button, and only the reader's own click opens it — for every demo at once,
+   * because having answered the question here should not mean answering it
+   * again further down the page. */
+  var CAPS_ARM_MS = 1500;
+  var capsOn = null;         /* null until the first event that can tell us */
+  var capsArmed = 0;
+  var capsOpen = false;      /* the escape hatch, and only a click opens it */
+  var capsMiss = 0;
+  var capsSubs = [];
+  var capsMoved = 0;
+  var capsRows = [];         /* every press row, so one answer serves them all */
+
+  function capsRead(e) {
+    if (typeof e.getModifierState !== 'function') return;
+    var v;
+    try { v = e.getModifierState('CapsLock'); } catch (err) { return; }
+    if (v === capsOn) return;
+    capsOn = v;
+    capsSubs.forEach(function (fn) { fn(capsOn); });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'CapsLock') capsArmed = Date.now();
+    capsRead(e);
+  }, true);
+  document.addEventListener('keyup', function (e) {
+    if (e.key === 'CapsLock') capsArmed = Date.now();
+    capsRead(e);
+  }, true);
+  document.addEventListener('pointerdown', capsRead, true);
+  document.addEventListener('pointermove', function (e) {
+    /* Throttled: this runs on every mouse move for the life of the page, and
+       all it is here to do is notice a lock that changed while the reader was
+       not typing. */
+    var t = Date.now();
+    if (t - capsMoved < 250) return;
+    capsMoved = t;
+    capsRead(e);
+  }, { capture: true, passive: true });
+
+  /* SIGNAL 3, AND ON A REMAPPED MACHINE IT IS THE ONLY ONE THAT FIRES: the
+   * reader's real chord arrived. If Caps Lock has been remapped to Hyper —
+   * Karabiner, kanata, a Hammerspoon binding, which is exactly the setup this
+   * page is recommending — then pressing Caps and C sends the browser
+   * `Cmd+Ctrl+Alt+C`. The Caps key never appears at all, so signals 1 and 2 are
+   * both silent, and the reader is doing precisely the right thing.
+   *
+   * Two of the three flags rather than a named chord, because the page cannot
+   * insist on which: `Win` never reaches a browser on Windows, so Ctrl+Alt is
+   * as much of `Ctrl+Win+Alt` as will ever arrive. Two is also what keeps
+   * `Cmd+C` and `Ctrl+C` — one flag — out of it. */
+  function capsChord(e) {
+    return ((e.ctrlKey ? 1 : 0) + (e.altKey ? 1 : 0) + (e.metaKey ? 1 : 0)) >= 2;
+  }
+
+  function capsHeld() {
+    return capsOpen || capsOn === true || (Date.now() - capsArmed) < CAPS_ARM_MS;
+  }
+  function onCaps(fn) { capsSubs.push(fn); fn(capsOn); }
+
+  /* The reader's own answer to "is Caps reaching this page?", given once. */
+  function capsGiveUp() {
+    capsOpen = true;
+    capsRows.forEach(function (r) { r.opened(); });
+  }
+
+
+  /* --- the desks ---------------------------------------------------------- */
 
   /* Everything below needs site/desk.js. If that script failed to load, the
      page keeps its loops and its table and simply stays the JS-off version,
@@ -297,34 +373,107 @@
     });
   }
 
+  /* CAPS LOCK IS STANDING IN FOR THE READER'S MODIFIER, and the hint names
+     which one, because that substitution is the whole reason the demo asks for
+     a chord at all. "Hold Caps and press C" teaches nothing on its own; "Caps
+     Lock is your Hyper key here" is the sentence that makes the row under the
+     desk — Cmd Ctrl Alt C, marked yours — mean something. */
+  var CHORD_OF = {
+    macos: 'Hyper (Cmd Ctrl Alt)',
+    windows: 'Ctrl Win Alt',
+    linux: 'Super'
+  };
+  function hintAsk(os) {
+    return 'Caps Lock stands in for ' + (CHORD_OF[os] || CHORD_OF.linux) +
+           ' here — hold it, then a letter. Or click one.';
+  }
+  var HINT_NUDGE = 'That one needs Caps Lock held down first, then the letter.';
+  var HINT_STUCK = 'Still nothing? Some setups remap Caps Lock, and this page never sees it.';
+  var HINT_OPEN = 'Caps Lock set aside — the letters work on their own now.';
+
   /* A press row, and the HUD, are how a reader with no keyboard — or on a
-     phone — takes part at all. So neither is decoration and neither is
-     aria-hidden. */
+     phone, or with Caps remapped — takes part at all. So neither is
+     decoration, neither is aria-hidden, and CLICKING NEVER GOES THROUGH THE
+     CAPS GATE: requiring a lock key from a pointer would be asking for a
+     gesture the device may not have. */
   function buildPress(host, onKey) {
     if (!host) return null;
-    var keys = {};
+    var caps = {};
+
+    /* ONE `Caps` cap, then the five letters — not five `Caps + letter` pairs.
+       Five pairs in a row rendered as ten keycaps with identical gaps, and read
+       as ten keys to press rather than five chords sharing a modifier. This
+       shape says the thing the gesture actually is: hold one key, pick a
+       letter. The single cap is decorative — every letter is the button, and
+       each carries the whole chord in its accessible name. */
+    var lead = el('span', 'press-lead');
+    lead.setAttribute('aria-hidden', 'true');
+    lead.appendChild(el('kbd', 'key', 'Caps'));
+    lead.appendChild(el('span', 'press-plus', '+'));
+    host.appendChild(lead);
 
     APPS.forEach(function (a) {
       var b = el('button', 'press-key');
       b.type = 'button';
-      b.setAttribute('aria-label', a.key + ' — ' + a.name);
+      b.setAttribute('aria-label', 'Caps Lock and ' + a.key + ' — ' + a.name);
       b.appendChild(el('kbd', 'key', a.label));
-      b.addEventListener('click', function () { onKey(a.key); });
-      keys[a.key] = b;
+      b.addEventListener('click', function () { onKey(a.key, true); });
+      caps[a.key] = b;
       host.appendChild(b);
     });
 
-    host.appendChild(el('p', 'press-hint', 'Press a letter — or click one.'));
+    var hint = el('p', 'press-hint');
+    var words = document.createTextNode('');
+    var out = el('button', 'press-out', 'Use letters only');
+    out.type = 'button';
+    out.hidden = true;
+    out.addEventListener('click', capsGiveUp);
+    var state = el('span', 'caps-state');
+    hint.appendChild(words);
+    hint.appendChild(out);
+    hint.appendChild(state);
+    host.appendChild(hint);
     host.hidden = false;
 
-    return {
+    /* One place decides what the hint says, out of two pieces of state: which
+       machine the reader is on, and how the last press went. Set from several
+       call sites instead, the OS strip would leave the sentence naming a
+       modifier the reader had just switched away from. */
+    var mode = 'ask';
+    function paint() {
+      words.nodeValue =
+        (capsOpen ? HINT_OPEN
+          : mode === 'stuck' ? HINT_STUCK
+          : mode === 'nudge' ? HINT_NUDGE
+          : hintAsk(root.dataset.os || 'linux')) + ' ';
+      out.hidden = capsOpen || mode !== 'stuck';
+    }
+    onOs(paint);
+
+    onCaps(function (on) {
+      state.textContent = 'Caps Lock: ' + (on === null ? '—' : on ? 'on' : 'off');
+      state.classList.toggle('is-on', on === true);
+    });
+
+    var row = {
+      opened: paint,
       flash: function (key) {
-        var b = keys[key];
+        var b = caps[key];
         if (!b) return;
         b.classList.add('is-hit');
         setTimeout(function () { b.classList.remove('is-hit'); }, 160);
+        mode = 'ask';
+        paint();
+      },
+      miss: function () {
+        capsMiss++;
+        /* The gate does not open here. It offers. */
+        mode = capsMiss >= 2 ? 'stuck' : 'nudge';
+        paint();
       }
     };
+    capsRows.push(row);
+    return row;
   }
 
   function readout(host, step, say) {
@@ -384,17 +533,20 @@
       renderDesk(host, desk);
     }
 
-    function press(key) {
+    /* `ok` is "the gesture was made" — a real chord, a held Caps Lock, or a
+       click, which is always allowed because a pointer has no Caps Lock. The
+       routing above works it out; nothing in here re-derives it. */
+    function press(key, ok) {
       var app = deskAppOf(key);
       if (!app || !desk) return false;
+      if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
       renderDesk(host, desk);
       if (ui) ui.flash(app.key);
-      /* Only the LAST cap of the chord is rewritten — the letter. The
+      /* Only the LAST cap of each chord is rewritten — the letter. The
          modifiers are never touched: "one letter, whatever your modifier is"
-         is the sentence that row is drawing, and it is where the gesture the
-         demo stands in for is actually taught. */
+         is the sentence these rows are drawing. */
       letters.forEach(function (l) { l.textContent = app.label; });
       if (steps) steps.textContent = deskSay(r);
       return true;
@@ -446,9 +598,10 @@
       readout(out, 'Ready', (th ? th.textContent.trim() : 'Ready') + '. Press a key.');
     }
 
-    function press(key) {
+    function press(key, ok) {
       var app = deskAppOf(key);
       if (!app || !desk) return false;
+      if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
       renderDesk(host, desk);
@@ -484,8 +637,8 @@
        for everyone who never gets here. */
     var steps = demo.querySelector('.demo-steps');
     if (steps) {
-      steps.textContent = 'Pick a row above to set the desk up, then press a letter. ' +
-        'The readout names the step that fired, and the row it came from lights up.';
+      steps.textContent = 'Pick a row above to set the desk up, then press Caps Lock and a ' +
+        'letter. The readout names the step that fired, and the row it came from lights up.';
     }
 
     onOs(function () { scene(desk ? currentStep() : '5a'); });
@@ -518,7 +671,11 @@
   }
 
   document.addEventListener('keydown', function (e) {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    /* A chord of two or more modifiers is not "some shortcut, leave it alone" —
+       on a machine where Caps is remapped to Hyper it IS the gesture the page
+       just asked for. One modifier still bails, so Cmd+C stays copy. */
+    var chord = capsChord(e);
+    if (!chord && (e.metaKey || e.ctrlKey || e.altKey)) return;
     var t = e.target;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' ||
               t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -535,9 +692,11 @@
 
     var d = active();
     if (!d) return;
-    /* Swallowed only when it actually drove a demo, so a key that reached
-       nothing still does whatever the browser would have done with it. */
-    if (d.press(name)) e.preventDefault();
+    /* The key is only swallowed when it actually drove a demo. A press the
+       gate turned away must NOT be swallowed: otherwise a reader whose Caps
+       Lock goes nowhere loses Space as a scroll key and gets nothing back
+       for it. */
+    if (d.press(name, chord || capsHeld())) e.preventDefault();
   });
 
 
@@ -550,13 +709,18 @@
     APPS.forEach(function (a) {
       var b = el('button');
       b.type = 'button';
-      b.setAttribute('aria-label', a.key + ' — ' + a.name);
-      b.appendChild(el('kbd', 'key', a.label));
+      b.setAttribute('aria-label', 'Caps Lock and ' + a.key + ' — ' + a.name);
+      var chord = el('span', 'chord');
+      chord.appendChild(el('kbd', 'key', 'Caps'));
+      chord.appendChild(el('kbd', 'key', a.label));
+      b.appendChild(chord);
       b.appendChild(el('span', null, a.name));
       b.addEventListener('click', function () {
         var d = active() || demos[0];
         d.node.scrollIntoView({ block: 'center' });
-        d.press(a.key);
+        /* `true`: a click is a pointer, and the caps gate is about teaching a
+           keyboard gesture, not about gatekeeping the mouse. */
+        d.press(a.key, true);
       });
       hud.appendChild(b);
     });

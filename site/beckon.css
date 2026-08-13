@@ -637,6 +637,9 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   flex-wrap: wrap; gap: 8px;
   margin-bottom: 14px;
 }
+.press-lead { display: inline-flex; align-items: center; gap: 8px; }
+.press-lead .key { min-width: 34px; height: 34px; font-size: 13.5px; }
+.press-plus { color: var(--fg-dim); font-size: 14px; }
 .press-key {
   font: inherit; background: none; border: 0; padding: 0;
   cursor: pointer; border-radius: 8px;
@@ -648,9 +651,34 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .press-hint {
   flex-basis: 100%;
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 4px 10px;
   font-size: 14px; color: var(--fg-dim);
   margin: 2px 0 0;
 }
+/* The way out of the Caps gate. It appears only after two refused presses and
+   opens nothing until it is clicked — see the gate's own note in beckon.js for
+   why a counter doing this silently was the wrong shape. */
+.press-out {
+  font: inherit; font-size: 13px;
+  color: var(--fg); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  padding: 4px 10px; min-height: 26px; cursor: pointer;
+}
+.press-out:hover { background: var(--bg-raised); }
+/* The lock's own state, which the page can read from any key or pointer event
+   — so it stops saying "unknown" the moment the reader moves the mouse. */
+.caps-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 500 12px/1 var(--mono);
+  color: var(--fg-dim);
+}
+.caps-state::before {
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--rule);
+}
+.caps-state.is-on { color: var(--fg); }
+.caps-state.is-on::before { background: var(--sway-focus); }
 
 /* --- the readout --- */
 
@@ -1041,17 +1069,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    Space. Sized to the cap rather than to a letter: at 30px the Space cap
    overflowed its own column and printed across the app name beside it. */
 .hud button {
-  display: grid; grid-template-columns: 54px 1fr; align-items: center; gap: 10px;
+  display: grid; grid-template-columns: 104px 1fr; align-items: center; gap: 10px;
   font: inherit; font-size: 13px; text-align: left;
   color: var(--fg); background: none; border: 0;
   padding: 4px 7px; border-radius: 7px; cursor: pointer;
   min-height: 32px;
 }
 .hud button:hover { background: var(--bg-raised); }
+.hud button .chord { justify-self: start; }
 .hud button .key {
   pointer-events: none;
   height: 24px; min-width: 24px; font-size: 11.5px;
-  justify-self: start;
 }
 
 
