@@ -1465,7 +1465,17 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    The headline takes `min(5.6vw, 7.4vh)` because it is the biggest single item
    up here and it is TWO LINES — at 72px that is 150px of the budget, on a
    viewport that may only have 625 in total. */
-.hero { padding-top: clamp(16px, 3.4vh, 34px); text-align: center; }
+/* THE BOTTOM PADDING MOVES ONTO .wrap, and the reason is §6's sticky dock.
+   A sticky box is constrained to its CONTAINING BLOCK, which for a static-
+   position child is the parent's CONTENT box — not, as is easy to assume, its
+   padding box. So with `main > section`'s 104px bottom padding still on #hero,
+   the cheat sheet came to rest 104px above the rule it is supposed to land on:
+   measured, hudBottom tracked heroBottom minus exactly `--section-y` at every
+   scroll offset. Moving the same 104px inside .wrap makes #hero's content box
+   end where its border box does, so the dock's resting place IS the rule. The
+   section looks identical; only the dock's floor moved. */
+.hero { padding-top: clamp(16px, 3.4vh, 34px); padding-bottom: 0; text-align: center; }
+.hero > .wrap { padding-bottom: var(--section-y); }
 .hero h1 {
   font-size: clamp(34px, min(5.6vw, 7.4vh), 72px);
   margin-bottom: clamp(10px, 1.9vh, 18px);
@@ -1957,10 +1967,26 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* --- 6. the HUD ----------------------------------------------------------- */
 
-/* Pinned for the whole scroll, the way homerow.app pins its two-row cheat
-   sheet. It is how the letters get learned without anyone reading the table. */
+/* IT IS PINNED TO THE HERO, NOT TO THE SCROLL. It used to be `position: fixed`
+   and it followed the reader down past every section that has no key to press,
+   floating over the install commands and the FAQ as a control for a demo three
+   screens above.
+
+   The dock is a zero-height sticky child of #hero. A sticky element is
+   constrained to its containing block's PADDING box, and #hero's padding box
+   ends exactly at the 1px rule `main > section + section` draws — so the sheet
+   floats at the bottom of the viewport while the hero is on screen, comes to
+   rest on that rule, and never crosses it. No JS, no scroll listener, and no
+   IntersectionObserver that would have to guess a threshold.
+
+   Zero height so it costs the hero no layout: the sheet hangs upward out of it,
+   which is what `bottom: 0` on an absolutely positioned child of a
+   zero-height positioned box does. The dock spans the section's full width
+   because `main > section` has no inline padding, so `right: 22px` lands on the
+   viewport edge — the same place the fixed version sat. */
+.hud-dock { position: sticky; bottom: 22px; height: 0; z-index: 25; }
 .hud {
-  position: fixed; right: 22px; bottom: 22px; z-index: 25;
+  position: absolute; right: 22px; bottom: 0;
   display: grid; gap: 1px;
   padding: 7px;
   border-radius: 11px;

@@ -853,21 +853,28 @@
       readout(out, 'Mouse', deskSayWindow(kind, name));
     }
 
+    /* NO PRESS ROW IN THIS SECTION any more — the element is gone from the
+       markup, not merely hidden. `buildPress` returns null for a null host and
+       every call site below is already guarded, so this stays a one-word change
+       rather than a special case: the desk is still driven by `wireDesk`, the
+       row buttons still set scenes, and the document's keydown routing still
+       reaches `press`. What is lost is the flash on a hit and the nudge on a
+       miss, both of which were painting a control that is no longer there.
+       The hero prints the gesture one screen up; printing it twice was pushing
+       the readout — the one line that actually changes per branch — down. */
     ui = buildPress(document.getElementById('how-press'), press);
     wireDesk(host, { get: function () { return desk; }, act: act, press: press });
     demo.classList.add('is-live');
 
-    /* The shipped transcript describes the LOOP, which is what a JS-off reader
-       watches. Once the reader has the wheel it is describing something that is
-       no longer on screen — after one click on the 5c row it was still talking
-       about two Chrome windows — so it is replaced with what is true now.
-       Rewriting it is only legal because the shipped sentence stands on its own
-       for everyone who never gets here. */
+    /* THE TRANSCRIPT IS HIDDEN, NOT REWRITTEN. It describes the LOOP, which is
+       what a JS-off reader watches, and it has to stay in the markup for them.
+       Once the reader has the wheel the readout says the same kind of thing per
+       branch and says it about what is on screen right now, so a second caption
+       under it was two captions for one picture. The previous version rewrote
+       this paragraph into a third sentence about how to use the section, which
+       is the copy this change exists to delete. */
     var steps = demo.querySelector('.demo-steps');
-    if (steps) {
-      steps.textContent = 'Pick a row to set the desk up, then press Caps Lock and a letter. ' +
-        'The readout names what beckon did, and the row it came from lights up.';
-    }
+    if (steps) steps.hidden = true;
 
     onOs(function () { scene(desk ? currentStep() : '5a'); });
 
@@ -954,14 +961,14 @@
       table.addEventListener('pointerdown', stop, true);
       document.addEventListener('keydown', stop, true);
 
-      /* Said here rather than beside the sentence above, because the two early
-         returns mean this is the only place that knows the tour will actually
-         run. A reader with motion off would otherwise be told about a loop
-         nothing on their screen is doing. */
-      if (steps) {
-        steps.textContent = 'It walks the five rows on its own, and stops for good the moment ' +
-          'you touch it. ' + steps.textContent;
-      }
+      /* The sentence that used to be prepended here — "It walks the five rows
+         on its own, and stops for good the moment you touch it." — is gone with
+         the rest of this section's prose. It was narrating something the reader
+         can see happening: the mark moves down the table, the desk rebuilds
+         under it, and the readout names each branch as it fires. A caption that
+         describes a visible animation is the kind of text this redesign is
+         removing, and it was the third sentence in a section whose whole point
+         is that one key needs no explaining. */
 
       /* Off screen the tour would spend its laps unwatched and leave a reader
          arriving in the middle of a branch. Hold, and pick up where it was. */

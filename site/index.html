@@ -279,6 +279,27 @@
       <p class="hero-meta">v0.9.3 &middot; MIT or Apache-2.0 &middot; Rust, no runtime</p>
 
     </div>
+
+    <!-- The cheat sheet, and it belongs to THIS section now. It used to be
+         `position: fixed`, pinned for the whole scroll, and it followed the
+         reader down past every section that has no key to press — sitting over
+         the install commands and the FAQ as a floating control for a demo three
+         screens above.
+
+         It is a zero-height sticky dock instead, and it is a child of #hero
+         rather than of <body>: a sticky element is constrained to its
+         containing block's PADDING box, and #hero's padding box ends exactly at
+         the rule between this section and the next. So it floats at the bottom
+         of the viewport for as long as the hero is on screen, comes to rest on
+         that rule, and goes no further.
+
+         It is a real labelled group of real buttons — NOT aria-hidden, because
+         a focusable control inside an aria-hidden subtree is a defect, and
+         because these buttons are how a reader with no keyboard presses a key
+         at all. Ships `hidden`; beckon.js fills it. -->
+    <div class="hud-dock">
+      <div class="hud" id="hud" role="group" aria-label="Demo keys" hidden></div>
+    </div>
   </section>
 
   <!-- HOW — the table is the control.
@@ -310,7 +331,7 @@
        not quote a pinned string anywhere in this file, including here. -->
   <section id="how" aria-labelledby="how-h">
     <div class="wrap">
-      <h2 id="how-h">Press it again.</h2>
+      <h2 id="how-h">One key, five answers.</h2>
       <p class="lead">beckon reads down this list and stops at the first line that matches.
       Nothing to configure — it decides from what is already on screen.</p>
 
@@ -374,9 +395,28 @@
             </div>
           </div>
 
-          <div class="press" id="how-press" hidden></div>
+          <!-- NO PRESS ROW HERE, and that is the change rather than an
+               oversight. This section used to carry its own `Caps + T C V F S`
+               strip and the sentence explaining it — the same strip and the
+               same sentence the hero prints one screen above. Twice is once too
+               many: by the time a reader is reading the five branches they have
+               already been taught the gesture, and the row was pushing the
+               readout, which is the one line that changes per branch, further
+               down the column.
+
+               Removing the element rather than hiding it is deliberate:
+               `buildPress(null)` returns null and every call site is guarded, so
+               the desk stays clickable through `wireDesk` and the keyboard still
+               routes here. tools/check-site.sh no longer lists `how-press` among
+               the controls that must ship hidden, because there is no longer a
+               control to ship. -->
           <div class="readout" id="how-readout" hidden></div>
 
+          <!-- The JS-OFF transcript, and beckon.js hides it the moment the
+               readout is live. With JS off this paragraph is the only words this
+               section has; with JS on the readout says the same kind of thing
+               per branch and says it about what is actually on screen, so
+               keeping both would print two captions for one picture. -->
           <p class="demo-steps">Two Chrome windows and a terminal. Three presses: focus, next
           window, back.</p>
         </div>
@@ -643,16 +683,6 @@ scoop install xom11/beckon</code></pre>
     <a href="https://github.com/xom11/beckon/blob/main/LICENSE-APACHE">Apache-2.0</a>
   </div>
 </footer>
-
-<!-- The cheat sheet, pinned for the whole scroll. It is a real labelled group of
-     real buttons — NOT aria-hidden, because a focusable control inside an
-     aria-hidden subtree is a defect, and because these buttons are how a reader
-     with no keyboard presses a key at all.
-
-     Ships `hidden` (it does nothing without JS) and beckon.js fills it. The
-     canonical letter table stays in #config, where it is content; this is the
-     control. -->
-<div class="hud" id="hud" role="group" aria-label="Demo keys" hidden></div>
 
 <script src="desk.js" defer></script>
 <script src="beckon.js" defer></script>

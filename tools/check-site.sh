@@ -223,10 +223,16 @@ os-switch
 theme
 hero-press
 hero-os
-how-press
 how-readout
 hud
 CTLS
+# `how-press` was on this list until the #how section stopped carrying a press
+# row of its own. It is not hidden — it does not exist, and the element must not
+# come back without this line coming back with it.
+if grep -q 'id="how-press"' "$H"; then
+  bad "#how-press is back in the markup — add it to the CTLS list above"
+  ctl_fail=1
+fi
 [ "$ctl_fail" -eq 0 ] && ok "every JS-only control ships hidden"
 
 if grep -qE 'class="panel"[^>]*hidden' "$H"; then
