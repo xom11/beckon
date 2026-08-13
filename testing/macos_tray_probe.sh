@@ -13,9 +13,13 @@
 # RunApplicationEventLoop, which is what `hotkey::run_forever` uses today. If
 # it does, no run loop changes and the hotkey path is not put at risk at all.
 #
-# baseline.png is the CONTROL. If the system clock is not legible in it, the
-# capture is blind and nothing else in the run means anything -- a blind
-# camera and a missing icon produce the same empty menu bar.
+# MEASURED 2026-08-13, and it decides how this script works: a status item
+# that is plainly visible on the menu bar is NOT listed by
+# CGWindowListCopyWindowInfo. The window-server report therefore cannot
+# answer the tray question at all -- it can only confirm ordinary windows,
+# which is why the probe opens one as an enumeration control. The instrument
+# that works is a person looking at the menu bar, so this script asks and
+# records the answer rather than inferring it.
 #
 # Two harness hazards this script now handles, both measured on macmini
 # 2026-08-13 by getting them wrong:
@@ -99,62 +103,93 @@ capture baseline
 # needs a grant that has nothing to do with the question.
 HOLD="${HOLD:-12}"
 
-run_probe() {  # $1 = binary, $2 = arg or "", $3 = capture name
+run_probe() {  # $1 = binary, $2 = arg or "", $3 = name
   local bin="$1" arg="$2" name="$3" try
   for try in 1 2; do
-    if [ -n "$arg" ]; then "$bin" "$arg" >"$OUT/stdout-$name.txt" 2>&1 &
-    else "$bin" >"$OUT/stdout-$name.txt" 2>&1 & fi
+    # Output goes to the terminal AND a file. Live is what matters: a menu
+    # click prints when you click, and a file you read afterwards cannot
+    # tell you whether the click or the drawing was the thing that worked.
+    if [ -n "$arg" ]; then
+      "$bin" "$arg" > >(tee "$OUT/stdout-$name.txt") 2>&1 &
+    else
+      "$bin" > >(tee "$OUT/stdout-$name.txt") 2>&1 &
+    fi
     local pid=$!
-    sleep 2
+    sleep 3
     if kill -0 "$pid" 2>/dev/null; then
-      # The report has printed by now; show it BEFORE the hold, so the
-      # instruction to look at the menu bar is on screen while there is
-      # still something to look at.
-      cat "$OUT/stdout-$name.txt"
-      printf '\n... holding %ss. LOOK AT THE MENU BAR.\n' "$HOLD"
-      sleep "$HOLD"
       capture "$name"
+      ask_about "$name"
       kill "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
       return 0
     fi
     wait "$pid" 2>/dev/null
-    printf 'probe died before the capture (attempt %s); stdout was:\n' "$try"
-    cat "$OUT/stdout-$name.txt"
-    # An empty stdout here means it never reached its first println -- the
-    # SIGKILL, not a beckon failure. A non-empty one is a real refusal and
-    # says so in words.
+    printf 'probe died before it could be observed (attempt %s). Output above.\n' "$try"
   done
   printf 'GIVING UP on %s after two attempts.\n' "$name"
   return 1
 }
 
-for mode in carbon nsapp; do
-  say "mode: $mode"
-  run_probe "$PROBE" "$mode" "$mode"
-done
+# Ask the operator what they can see, and RECORD it.
+#
+# This exists because the previous design asked someone to watch two modes
+# run back to back and remember which was which. They could not, reasonably,
+# and the answer decides whether `run_forever` changes -- so the script asks
+# per mode instead of hoping.
+#
+# A person looking at the menu bar is not a fallback here, it is the only
+# instrument that works: measured on macmini 2026-08-13, a visible status
+# item is NOT listed by CGWindowListCopyWindowInfo, so the window-server
+# report structurally cannot answer this question.
+ANSWERS=""
+ask_about() {
+  local name="$1" a b
+  if [ ! -t 0 ]; then
+    printf '\n(no terminal on stdin -- holding %ss instead of asking)\n' "$HOLD"
+    sleep "$HOLD"
+    ANSWERS="$ANSWERS\n  $name: not asked (non-interactive)"
+    return
+  fi
+  printf '\n'
+  printf '  >>> Is there an item reading "beckon" in the menu bar RIGHT NOW?\n'
+  printf '      (a window titled ENUMERATION CONTROL should also be visible;\n'
+  printf '       if you see neither, say n)\n'
+  read -r -p "      [y/n] " a
+  if [ "$a" = y ] || [ "$a" = Y ]; then
+    printf '  >>> Now click it and choose "PROBE - click me".\n'
+    printf '      Does a line "menu click: id=2" appear above?\n'
+    read -r -p "      [y/n] " b
+  else
+    b="-"
+  fi
+  ANSWERS="$ANSWERS\n  $name: visible=$a  click_dispatched=$b"
+}
 
-say "settings window"
-run_probe "$PROBE_SETTINGS" "" settings
+say "what you reported"
+printf '%b\n' "$ANSWERS"
 
 say "results"
 ls -la "$OUT"/*.png 2>/dev/null || printf '(no screenshots -- not needed, see the reports above)\n'
 cat <<'EOF'
 
-READ THE "window server report" BLOCKS ABOVE. They are the measurement.
-Each carries its own control, so a blind probe says so in words instead of
-looking like a clean negative.
+THE ANSWERS YOU GAVE ARE THE MEASUREMENT -- see the block above.
 
-  VERDICT line in BOTH carbon and nsapp says the status item has a window
+  visible in BOTH carbon and nsapp
       -> keep RunApplicationEventLoop; nothing about hotkeys changes.
-  only nsapp says it
-      -> the run loop must change, and RegisterEventHotKey must then be
+  visible in nsapp ONLY
+      -> run_forever must change, and RegisterEventHotKey must then be
          re-measured under [NSApp run] before that swap is trusted.
-  neither says it, but both report menu-bar windows for other processes
+  visible in carbon ONLY
+      -> keep the loop, and record why [NSApp run] fails so nobody swaps
+         to it later.
+  visible in NEITHER
       -> a single-process status item is not possible; see the spec's
          rejected two-process alternative.
-  INCONCLUSIVE
-      -> the server could not see that layer at all; nothing was measured.
+
+The "window server report" blocks are NOT the answer for the tray -- a
+visible status item does not appear in them. They are there for the
+enumeration control window and for the settings window, both of which are
+ordinary windows and do appear.
 
 Each tray probe now also opens a plain titled window, "ENUMERATION CONTROL".
 That window is the control for the report: if it is listed and no status-item
