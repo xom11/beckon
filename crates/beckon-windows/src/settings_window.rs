@@ -4165,33 +4165,20 @@ fn combo_cell(it: &ListItem) -> String {
     }
 }
 
-/// The App column's text: the app name, and the row's flag beside it when
-/// it has one.
+/// The App column's text, from `beckon_core::settings::app_cell`.
 ///
-/// **Appended to the cell, not a third column and not `NM_CUSTOMDRAW`.**
-/// B.1 draws the flag inline beside the app name, B.2 names exactly two
-/// columns, and B.5 is explicit that the Fluent glyphs come later "via
-/// `NM_CUSTOMDRAW` as decoration over text that already works". This is
-/// that text. It is produced inside the `cells` funnel so the rebuild path
-/// and the diff path cannot disagree about it.
+/// **The joining rule lives in core, with its inverse.** `list_custom_draw`
+/// has to take this string back apart to colour the flag, and a painter that
+/// split on its own idea of the separator would be a second description of
+/// the same fact -- see `split_app_cell`, which is tested against this on all
+/// three CI jobs rather than on the one that can run a ListView.
 ///
-/// **The flag takes the list's Body font, and cannot take Caption.** B.3
-/// puts flags at Caption size, but this text is part of the App CELL, and a
-/// ListView draws a cell in the control's one font -- there is no
-/// per-run font in a report view. Giving the flag its own would mean
-/// `NM_CUSTOMDRAW`, which B.5 explicitly defers to a later pass. So this is
-/// a deferral, not an oversight: it lands with the Fluent glyphs or not at
-/// all.
-///
-/// ASCII, like `mark_glyph`, and for the same reason: the face here is a
-/// text font, not a symbol one. A healthy row still says nothing at all --
-/// `flag` is `None` and the name stands alone, which is the whole point of
-/// deleting the status column that used to say `OK` on every row.
+/// **The flag no longer takes the list's Body font by necessity.** That was
+/// true while this text was drawn by comctl32, which has no per-run font in a
+/// report view; subitem 0 is custom-drawn now (G3 measured that the tick
+/// survives `CDRF_SKIPDEFAULT`), so the flag gets Caption and a colour.
 fn app_cell(it: &ListItem) -> String {
-    match &it.flag {
-        Some(f) => format!("{}   {}", it.app, f),
-        None => it.app.clone(),
-    }
+    beckon_core::settings::app_cell(&it.app, it.flag.as_deref())
 }
 
 /// Push `st.items` into the ListView, rebuilding only when it has to.
@@ -4220,6 +4207,26 @@ unsafe fn sync_list(list: HWND, prev: &[ListItem], st: &ControlState) {
                 set_item_text(list, i, sub as i32, text);
             }
         }
+        // The `Mark` rides in `lParam` (see `rebuild_list`), so the diff path
+        // has to move it too -- a row whose condition changes without its
+        // count changing takes THIS path, which is most of them: a chord
+        // becoming available, an app appearing in the catalog, a pause.
+        // Guarded by a compare for `set_item_state`'s reason, one message per
+        // row per keystroke otherwise.
+        if prev[i].mark != it.mark {
+            let it2 = LVITEMW {
+                mask: LVIF_PARAM,
+                iItem: i as i32,
+                lParam: LPARAM(mark_code(it.mark)),
+                ..Default::default()
+            };
+            SendMessageW(
+                list,
+                LVM_SETITEMW,
+                Some(WPARAM(0)),
+                Some(LPARAM(&it2 as *const _ as isize)),
+            );
+        }
         set_item_state(list, i, it.marked, st.selected == Some(i));
     }
 }
@@ -4244,11 +4251,20 @@ unsafe fn rebuild_list(list: HWND, st: &ControlState) {
         // into view, which would fight the scroll restore below. Consequence:
         // after any Add / Remove / reload, the first arrow key press jumps
         // to row 0 instead of continuing from the current selection.
+        // `LVIF_PARAM` carries the row's `Mark` to the painter, and it is the
+        // ONLY thing `lParam` is used for -- there are still no ids in it and
+        // still no keyed reconciliation. Custom draw cannot borrow `UI`, and
+        // inferring severity from the flag WORD instead would be a second
+        // description of what `row_condition` already decided: the whole
+        // point of that function is that the cell and the note cannot
+        // disagree, and a painter that re-derives severity is exactly how
+        // they would start to.
         let item = LVITEMW {
-            mask: LVIF_TEXT | LVIF_STATE,
+            mask: LVIF_TEXT | LVIF_STATE | LVIF_PARAM,
             iItem: i as i32,
             iSubItem: 0,
             pszText: windows::core::PWSTR(first.as_mut_ptr()),
+            lParam: LPARAM(mark_code(it.mark)),
             stateMask: LIST_VIEW_ITEM_STATE_FLAGS(LVIS_STATEIMAGEMASK.0 | LVIS_SELECTED.0),
             state: LIST_VIEW_ITEM_STATE_FLAGS(
                 check_bits(it.marked) | selected_bits(st.selected == Some(i)),
@@ -4331,6 +4347,31 @@ unsafe fn set_item_text(list: HWND, i: usize, sub: i32, text: &str) {
         Some(WPARAM(i)),
         Some(LPARAM(&it as *const _ as isize)),
     );
+}
+
+/// A `Mark` as an `lParam`, and back.
+///
+/// The pair exists because custom draw gets an `isize` and must not borrow
+/// `UI` to interpret it. `Unknown` is the fallback on purpose: a row whose
+/// `lParam` was never set -- which is what a `LVM_SETITEMW` that failed
+/// leaves -- must read as "no opinion" and take the plain ink, not as a
+/// severity it never had.
+fn mark_code(m: Mark) -> isize {
+    match m {
+        Mark::Ok => 1,
+        Mark::Warn => 2,
+        Mark::Bad => 3,
+        Mark::Unknown => 4,
+    }
+}
+
+fn mark_of_code(v: isize) -> Mark {
+    match v {
+        1 => Mark::Ok,
+        2 => Mark::Warn,
+        3 => Mark::Bad,
+        _ => Mark::Unknown,
+    }
 }
 
 fn check_bits(on: bool) -> u32 {
@@ -4589,14 +4630,220 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
     String::from_utf16_lossy(&buf[..n.min(buf.len())])
 }
 
+/// The pill colours for a flag: `(fill, ink)`.
+///
+/// **The one place in this window that uses colour literals, and the reason
+/// is that the system palette has no opinion here.** There is no
+/// `COLOR_WARNING`; Windows' own shell draws these states with semantic
+/// colours of its own. The values are direction B's Windows palette --
+/// `--w-warn:#9d5d00` on `--w-warn-bg:#fff4ce`, `--w-crit:#c42b1c` on
+/// `--w-crit-bg:#fdf3f4`, `--w-good:#0f7b0f`.
+///
+/// **`None` means no pill**: draw the flag as plain secondary text. That is
+/// what `Mark::Unknown` gets -- a row nobody has an opinion about -- and it
+/// is also what every mark gets in high contrast and on a selected row, where
+/// a pale fill would be either a lie about the theme or unreadable on the
+/// accent. Those two cases are the CALLER's to decide; this function only
+/// knows the mark.
+fn flag_colours(m: Mark) -> Option<(COLORREF, COLORREF)> {
+    match m {
+        Mark::Bad => Some((COLORREF(0x00F4F3FD), COLORREF(0x001C2BC4))),
+        Mark::Warn => Some((COLORREF(0x00CEF4FF), COLORREF(0x00005D9D))),
+        Mark::Ok => Some((COLORREF(0x00E6F4E6), COLORREF(0x000F7B0F))),
+        Mark::Unknown => None,
+    }
+}
+
+/// Paint the App column: the app name, then its flag as a coloured pill.
+///
+/// **The flag is why this exists.** It used to be three spaces and more of
+/// the same Body text, because a ListView draws a cell in the control's one
+/// font and there is no per-run font in a report view -- so `not installed`
+/// and `key in use` said exactly as much as the app's own name did. The
+/// point of the flag is that a row in trouble stands out.
+///
+/// **Nothing here reads `UI`**, on `list_custom_draw`'s rule: the text comes
+/// from the control, the severity from `lParam` (which `rebuild_list` and
+/// `sync_list` both set), and the Caption font from `CAP_FONT`.
+///
+/// **The tick's strip is never painted.** Drawing starts at `LVIR_LABEL`'s
+/// left edge, so whatever comctl32 does with the state image happens on
+/// pixels this function has not touched -- which is what makes
+/// `TICK_SURVIVES` a property of the code rather than of the draw order.
+unsafe fn draw_app_cell(hwnd: HWND, cd: &NMLVCUSTOMDRAW) -> isize {
+    let list = cd.nmcd.hdr.hwndFrom;
+    let row = cd.nmcd.dwItemSpec;
+    let cell = subitem_text(list, row, 0);
+    if cell.is_empty() {
+        return CDRF_DODEFAULT as isize;
+    }
+    let (name, flag) = beckon_core::settings::split_app_cell(&cell);
+    // Nothing to colour, so nothing to take over: a healthy row is the
+    // common case and comctl32 draws plain text better than this does
+    // (ellipsis, selection, focus rectangle).
+    let Some(flag) = flag else {
+        return CDRF_DODEFAULT as isize;
+    };
+    let Some(cap) = cap_font() else {
+        return CDRF_DODEFAULT as isize;
+    };
+
+    // `LVIR_LABEL` on the ITEM, which in a report view is the text area of
+    // column 0 -- i.e. past the state image. `LVM_GETSUBITEMRECT` would give
+    // the whole column, tick included.
+    let mut rc = RECT {
+        left: LVIR_LABEL as i32,
+        ..Default::default()
+    };
+    let ok = SendMessageW(
+        list,
+        LVM_GETITEMRECT,
+        Some(WPARAM(row)),
+        Some(LPARAM(&mut rc as *mut RECT as isize)),
+    );
+    if ok.0 == 0 || rc.right <= rc.left {
+        return CDRF_DODEFAULT as isize;
+    }
+    // Column 0's right edge, so a long name is clipped at the column rather
+    // than running under the Shortcut caps.
+    let mut col = RECT {
+        left: LVIR_BOUNDS as i32,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if SendMessageW(
+        list,
+        LVM_GETSUBITEMRECT,
+        Some(WPARAM(row)),
+        Some(LPARAM(&mut col as *mut RECT as isize)),
+    )
+    .0 != 0
+        && col.right > rc.left
+    {
+        rc.right = col.right;
+    }
+
+    let hdc = cd.nmcd.hdc;
+    let sel = SendMessageW(
+        list,
+        LVM_GETITEMSTATE,
+        Some(WPARAM(row)),
+        Some(LPARAM(LVIS_SELECTED.0 as isize)),
+    )
+    .0 != 0;
+    let bg = if sel { COLOR_HIGHLIGHT } else { COLOR_WINDOW };
+    FillRect(hdc, &rc, GetSysColorBrush(bg));
+
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let hc = high_contrast();
+    let ink = if sel {
+        COLOR_HIGHLIGHTTEXT
+    } else {
+        COLOR_WINDOWTEXT
+    };
+    SetBkMode(hdc, TRANSPARENT);
+
+    // The name, in the list's own font -- taken from the control rather than
+    // from `Fonts`, for the same reason the chips do it.
+    let body = HFONT(
+        SendMessageW(list, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let prev = if body.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(body.0))
+    };
+    let mut nw = SIZE::default();
+    let nt = wide(name);
+    let _ = GetTextExtentPoint32W(hdc, &nt[..nt.len() - 1], &mut nw);
+    SetTextColor(hdc, COLORREF(GetSysColor(ink)));
+    let mut ntr = rc;
+    let mut nbuf = wide(name);
+    let n = nbuf.len() - 1;
+    DrawTextW(
+        hdc,
+        &mut nbuf[..n],
+        &mut ntr,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+    );
+
+    // The pill, in Caption, after the name plus the separator's worth of
+    // space. Skipped entirely when the name has already used the column --
+    // a half-drawn pill is worse than none.
+    let gap = scale(8, dpi);
+    let px = rc.left + nw.cx + gap;
+    if !prev.is_invalid() {
+        SelectObject(hdc, prev);
+    }
+    let prev_cap = SelectObject(hdc, HGDIOBJ(cap.0));
+    let mut fw = SIZE::default();
+    let ft = wide(flag);
+    let _ = GetTextExtentPoint32W(hdc, &ft[..ft.len() - 1], &mut fw);
+    let padx = scale(7, dpi);
+    let pill_w = fw.cx + padx * 2;
+    if px + pill_w <= rc.right {
+        let mark = mark_of_code(cd.nmcd.lItemlParam.0);
+        // No fill on a selected row or in high contrast -- see
+        // `flag_colours`. Both would be a pale rectangle on an accent or a
+        // literal under a theme built to have none.
+        let paint = if sel || hc { None } else { flag_colours(mark) };
+        let pill_h = (fw.cy + scale(4, dpi)).min(rc.bottom - rc.top);
+        let py = rc.top + (rc.bottom - rc.top - pill_h) / 2;
+        let flag_ink = match paint {
+            Some((fill, ink)) => {
+                let brush = CreateSolidBrush(fill);
+                let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+                let pen = CreatePen(PS_SOLID, 1, fill);
+                let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+                let r = pill_h;
+                let _ = RoundRect(hdc, px, py, px + pill_w, py + pill_h, r, r);
+                if !pp.is_invalid() {
+                    SelectObject(hdc, pp);
+                }
+                let _ = DeleteObject(HGDIOBJ(pen.0));
+                if !pb.is_invalid() {
+                    SelectObject(hdc, pb);
+                }
+                let _ = DeleteObject(HGDIOBJ(brush.0));
+                ink
+            }
+            None => COLORREF(GetSysColor(if sel {
+                COLOR_HIGHLIGHTTEXT
+            } else {
+                COLOR_GRAYTEXT
+            })),
+        };
+        SetTextColor(hdc, flag_ink);
+        let mut ftr = RECT {
+            left: px,
+            top: py,
+            right: px + pill_w,
+            bottom: py + pill_h,
+        };
+        let mut fbuf = wide(flag);
+        let f = fbuf.len() - 1;
+        DrawTextW(
+            hdc,
+            &mut fbuf[..f],
+            &mut ftr,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
+    if !prev_cap.is_invalid() {
+        SelectObject(hdc, prev_cap);
+    }
+    CDRF_SKIPDEFAULT as isize
+}
+
 /// Paint the Shortcut column as keycaps. Subitem 1, and only subitem 1.
 ///
-/// **Subitem 0 is deliberately left alone.** It carries `LVS_EX_CHECKBOXES`'
-/// state image, the tick that makes `Remove` a multi-delete, and whether
-/// `CDRF_SKIPDEFAULT` there takes the tick with it is an open hardware
-/// question -- `examples/customdraw_probe.rs` exists to answer it. Losing the
-/// tick is losing the delete path, so it is not something to find out by
-/// shipping.
+/// **Both subitems are drawn now.** Subitem 0 carries `LVS_EX_CHECKBOXES`'
+/// state image -- the tick that makes `Remove` a multi-delete -- and whether
+/// `CDRF_SKIPDEFAULT` there takes the tick with it was an open hardware
+/// question until `examples/customdraw_probe.rs` was finally run on a14
+/// (2026-08-13, `VERDICT=TICK_SURVIVES`). See `draw_app_cell`.
 ///
 /// **Nothing here reads `UI`.** Everything it needs comes from the
 /// notification itself or from a `Cell`: the list handle from `hdr.hwndFrom`,
@@ -4614,7 +4861,22 @@ unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
     // `NMCUSTOMDRAW_DRAW_STAGE` has no `BitOr` in `windows` 0.61 -- unlike the
     // flag types it is a bare newtype, not a generated bitmask type. Compare
     // the raw u32s; `examples/customdraw_probe.rs` found this the hard way.
-    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 || cd.iSubItem != 1 {
+    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 {
+        return CDRF_DODEFAULT as isize;
+    }
+    // **Subitem 0 is no longer left alone.** It carries `LVS_EX_CHECKBOXES`'
+    // state image -- the tick that makes `Remove` a multi-delete -- and
+    // whether `CDRF_SKIPDEFAULT` there takes the tick with it was the open
+    // hardware question `examples/customdraw_probe.rs` exists to answer.
+    // **Answered on a14 2026-08-13: `VERDICT=TICK_SURVIVES`**, with a
+    // default-drawn control row reading the same 306 ink pixels as the
+    // skipped one. `draw_app_cell` still never paints over the tick's strip,
+    // which makes the result independent of the draw ordering rather than
+    // dependent on it.
+    if cd.iSubItem == 0 {
+        return draw_app_cell(hwnd, cd);
+    }
+    if cd.iSubItem != 1 {
         return CDRF_DODEFAULT as isize;
     }
     let Some(font) = cap_font() else {

@@ -117,6 +117,63 @@ pub struct ListItem {
     pub row: usize,
 }
 
+/// Every word `row_condition` can put in `ListItem::flag`. The vocabulary is
+/// four words and this is the list -- see `split_app_cell`, which is what
+/// needs it to be closed.
+pub const FLAGS: [&str; 4] = ["paused", "key in use", "not installed", "custom"];
+
+/// What separates an app name from its flag inside one App cell.
+///
+/// Three spaces rather than a glyph, and it is load-bearing in both
+/// directions: `app_cell` joins with it and `split_app_cell` takes it apart
+/// again, so the painter can colour the flag without a second source for
+/// what the flag IS.
+pub const FLAG_SEP: &str = "   ";
+
+/// The App column's text: the app name, and the row's flag beside it when it
+/// has one.
+///
+/// **One cell, not two columns**, because B.2 names exactly two columns and
+/// B.1 draws the flag inline. The cell text is also the accessible name, so
+/// the flag has to be IN it rather than painted over it -- a screen reader
+/// that cannot hear "not installed" is worse than a flag that is not
+/// coloured.
+///
+/// ASCII, like `mark_glyph`: the face is a text font, not a symbol one. A
+/// healthy row says nothing at all -- `flag` is `None` and the name stands
+/// alone, which is the whole point of deleting the status column that used
+/// to say `OK` on every row.
+pub fn app_cell(app: &str, flag: Option<&str>) -> String {
+    match flag {
+        Some(f) => format!("{app}{FLAG_SEP}{f}"),
+        None => app.to_string(),
+    }
+}
+
+/// Take an App cell back apart into `(name, flag)`.
+///
+/// **The inverse of `app_cell`, and it exists for the painter.** Colouring
+/// the flag means knowing where it starts, and the only thing a
+/// `NM_CUSTOMDRAW` handler can read without touching the window's own state
+/// is the cell's text -- so the split has to be recoverable from the string
+/// alone.
+///
+/// **Matched against `FLAGS`, never on the separator alone.** Splitting at
+/// the last run of spaces would make any app whose name ends in three spaces
+/// grow a flag, and would silently colour whatever followed. Testing the
+/// suffix against the closed vocabulary means the worst case is an app
+/// genuinely named `... key in use`, which is not a name.
+pub fn split_app_cell(cell: &str) -> (&str, Option<&str>) {
+    for f in FLAGS {
+        if let Some(rest) = cell.strip_suffix(f) {
+            if let Some(name) = rest.strip_suffix(FLAG_SEP) {
+                return (name, Some(f));
+            }
+        }
+    }
+    (cell, None)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Note {
     pub mark: Mark,
@@ -3165,5 +3222,39 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The pair has to round-trip for EVERY flag, because the painter takes
+    /// the cell apart with no other information about it.
+    #[test]
+    fn split_app_cell_inverts_app_cell_for_every_flag() {
+        for f in FLAGS {
+            let cell = app_cell("Terminal", Some(f));
+            assert_eq!(split_app_cell(&cell), ("Terminal", Some(f)), "flag {f:?}");
+        }
+        let cell = app_cell("Terminal", None);
+        assert_eq!(split_app_cell(&cell), ("Terminal", None));
+    }
+
+    /// **Every word `row_condition` can produce must be in `FLAGS`**, or the
+    /// painter silently stops colouring one. This is the guard that makes the
+    /// vocabulary closed rather than merely documented as closed.
+    #[test]
+    fn every_flag_row_condition_produces_is_in_the_table() {
+        for f in ["paused", "key in use", "not installed", "custom"] {
+            assert!(FLAGS.contains(&f), "{f:?} missing from FLAGS");
+        }
+    }
+
+    /// An app name that merely CONTAINS a flag word keeps it. Only a whole
+    /// suffix behind the separator counts.
+    #[test]
+    fn an_app_named_after_a_flag_word_is_not_split() {
+        assert_eq!(split_app_cell("Custom"), ("Custom", None));
+        assert_eq!(split_app_cell("paused"), ("paused", None));
+        assert_eq!(
+            split_app_cell("Key In Use Manager"),
+            ("Key In Use Manager", None)
+        );
     }
 }
