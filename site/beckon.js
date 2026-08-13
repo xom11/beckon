@@ -366,9 +366,22 @@
       if (!known) delete pool[id];
     });
 
+    /* The dock says three different things about an app, and all three are
+       states the algorithm actually distinguishes: not running (step 4 will
+       launch it), running (step 5 will focus it), and holding focus right now
+       (a press goes to 5a, 5b or 5c instead). Without the third, the dock and
+       the windows above it disagreed about which app the reader was in.
+       `focused === null` — what step 5c leaves behind — lights nothing, which
+       is correct: after a hide there is no focused app. */
+    var front = null;
+    if (desk.focused !== null) {
+      var w = desk.wins.filter(function (x) { return x.id === desk.focused; })[0];
+      front = w ? w.app : null;
+    }
     [].forEach.call(host.querySelectorAll('.dock-app'), function (d) {
-      var up = desk.wins.some(function (w) { return w.app === d.getAttribute('data-app'); });
-      d.classList.toggle('is-up', up);
+      var app = d.getAttribute('data-app');
+      d.classList.toggle('is-up', desk.wins.some(function (x) { return x.app === app; }));
+      d.classList.toggle('is-focused', app !== null && app === front);
     });
   }
 

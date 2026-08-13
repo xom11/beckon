@@ -177,12 +177,21 @@
           <div class="desk-slot is-wide">
             <div class="desk" data-os="macos" data-scene="hero" id="hero-desk">
               <div class="desk-sky"></div>
+              <!-- `data-key` is the letter that beckons this app, printed on
+                   the icon: the dock is the only place on the page where the
+                   key and the thing it reaches are the same object. It ships in
+                   the markup rather than being written by JS so a reader with
+                   JS off gets it too, and tools/check-site.sh pins every pair
+                   against README's own table, so a rebinding cannot leave the
+                   dock teaching the old letter.
+                   `is-focused` marks the one app that currently has focus —
+                   here Brave, which is what the windows above show. -->
               <div class="desk-bar">
-                <span class="dock-app is-up" data-app="terminal"></span>
-                <span class="dock-app is-up" data-app="Claude"></span>
-                <span class="dock-app is-up" data-app="Brave"></span>
-                <span class="dock-app" data-app="Cursor"></span>
-                <span class="dock-app" data-app="Discord"></span>
+                <span class="dock-app is-up" data-app="terminal" data-key="T"></span>
+                <span class="dock-app is-up" data-app="Claude" data-key="C"></span>
+                <span class="dock-app is-up is-focused" data-app="Brave" data-key="B"></span>
+                <span class="dock-app" data-app="Cursor" data-key="E"></span>
+                <span class="dock-app" data-app="Discord" data-key="D"></span>
               </div>
               <div class="desk-wins">
                 <div class="win is-focused" data-app="Brave" style="--slot:0; z-index:3">
@@ -326,11 +335,11 @@
                   </div>
                 </div>
                 <div class="desk-bar">
-                  <span class="dock-app" data-app="terminal"></span>
-                  <span class="dock-app is-up" data-app="Claude"></span>
-                  <span class="dock-app is-up" data-app="Brave"></span>
-                  <span class="dock-app" data-app="Cursor"></span>
-                  <span class="dock-app" data-app="Discord"></span>
+                  <span class="dock-app" data-app="terminal" data-key="T"></span>
+                  <span class="dock-app is-up is-focused" data-app="Claude" data-key="C"></span>
+                  <span class="dock-app is-up" data-app="Brave" data-key="B"></span>
+                  <span class="dock-app" data-app="Cursor" data-key="E"></span>
+                  <span class="dock-app" data-app="Discord" data-key="D"></span>
                 </div>
               </div>
             </div>

@@ -137,6 +137,12 @@ while IFS='|' read -r _ letter app _; do
   keys=$((keys + 1))
   grep -qF "<kbd class=\"key\">$letter</kbd></th><td>$app</td>" "$H" \
     || { bad "letter table drifted from README: $letter -> $app"; key_fail=1; }
+  # The dock prints the letter ON the icon, so the same pairing exists a second
+  # time in the markup and can drift on its own. Both desks carry a full dock,
+  # so both have to agree — hence -c and the count, not a bare grep.
+  n=$(grep -cF "data-app=\"$app\" data-key=\"$letter\"" "$H" || true)
+  [ "$n" -eq 2 ] \
+    || { bad "dock icon for $app does not print $letter on both desks (found $n of 2)"; key_fail=1; }
 done < <(awk '/^\| Letter \| App \|/{f=1;next} f&&/^\|---/{next} f&&/^\|/{print} f&&!/^\|/{exit}' README.md)
 if [ "$keys" -eq 0 ]; then
   bad "could not find README's letter->app table"

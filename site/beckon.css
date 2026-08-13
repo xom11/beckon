@@ -74,6 +74,7 @@
   --tint:         rgba(60, 64, 72, .18);
 
   --app:          #3B3F48;   /* the default a .win falls back to */
+  --ink:          #EDEFF4;   /* the letter on a dock icon; set per app in §4 */
   --app-terminal: #3B3F48;
   --app-claude:   #C96442;
   --app-brave:    #C9993F;
@@ -788,83 +789,77 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   display: flex; align-items: center; gap: 6px;
 }
 .desk-bar { gap: clamp(4px, .9cqw, 10px); }
-/* FIVE SHAPES, NOT FIVE COLOURS. These were identical rounded squares that
-   differed only in hue, which makes them unreadable to anyone who cannot
-   separate those hues — and hard for everyone else at 13px. Each now carries
-   the outline of its own kind of app, and a mark inside it: a chevron for the
-   shell, a ring for the browser, a bubble for the chat, a caret for the
-   editor, a rail for the one with servers down the side. Genre again, not
-   brand — same rule as the window interiors above. */
+/* FIVE SHAPES AND FIVE LETTERS, not five colours. These were identical rounded
+   squares that differed only in hue, which is unreadable to anyone who cannot
+   separate those hues — and hard for everyone else at 13px.
+   THE LETTER IS THE POINT: the dock is the only place on the page where the key
+   and the thing it reaches are the same object, so `T` sits on the terminal and
+   `C` on Claude. It comes from `data-key` in the markup, which check-site.sh
+   pins against README's own table.
+   The outline stays because the letter alone would need reading: at a glance
+   the shape says what kind of program it is, and the letter says which key. */
 .desk-bar .dock-app {
   position: relative;
+  display: grid; place-items: center;
   width: 13px; height: 13px; border-radius: 4px;
   background: var(--app);
-  opacity: .28;
-  transition: opacity .3s ease, transform .3s ease;
+  color: var(--ink);
+  font: 600 8px/1 var(--mono);
+  transition: opacity .3s ease, transform .3s ease, box-shadow .3s ease;
 }
 .desk-bar .dock-app {
   width: clamp(13px, 2.2cqw, 26px);
   height: clamp(13px, 2.2cqw, 26px);
   border-radius: clamp(3px, .55cqw, 6px);
+  font-size: clamp(7.5px, 1.25cqw, 14px);
 }
-.desk-bar .dock-app.is-up { opacity: 1; }
-.dock-app[data-app="terminal"] { --app: var(--app-terminal); }
-.dock-app[data-app="Claude"]   { --app: var(--app-claude); }
-.dock-app[data-app="Brave"]    { --app: var(--app-brave); }
-.dock-app[data-app="Cursor"]   { --app: var(--app-cursor); }
-.dock-app[data-app="Discord"]  { --app: var(--app-discord); }
+.dock-app::after { content: attr(data-key); }
 
-/* The outlines. */
-.dock-app[data-app="terminal"] { border-radius: clamp(2px, .3cqw, 4px); }  /* a boxy shell */
-.dock-app[data-app="Brave"]    { border-radius: 50%; }                     /* a browser */
-.dock-app[data-app="Claude"]   { border-radius: 46% 46% 46% 15%; }         /* a speech bubble */
-.dock-app[data-app="Cursor"]   { border-radius: 50% 16% 50% 16%; }         /* a caret */
-.dock-app[data-app="Discord"]  { border-radius: 34%; }                     /* a squircle */
-
-/* The marks inside them. Drawn with the icon's own background as the "ink",
-   which is what keeps them legible on both a light and a dark bar without a
-   second token: they are holes in the shape, not paint on top of it. */
-.dock-app::after {
-  content: "";
-  position: absolute; inset: 0;
-  background-repeat: no-repeat;
+/* THREE STATES, because the algorithm distinguishes three: not running (a press
+   is step 4, a launch), running (step 5, a focus), and holding focus right now
+   (the press goes to 5a / 5b / 5c instead). The dock used to draw only the
+   first two, so it could not agree with the windows above it about where the
+   reader was. The ring is what "lit" means here — a glow of the app's own
+   colour, which stays visible on a light Dock pill and a dark taskbar alike. */
+.desk-bar .dock-app { opacity: .32; }
+.desk-bar .dock-app.is-up { opacity: .8; }
+/* A ring AND a glow: the ring alone measured too quiet against the macOS Dock's
+   own translucent pill, which is the lightest ground any of the three bars
+   offers. Both are the app's own hue, so the lit icon reads as more of itself
+   rather than as a generic selection. */
+.desk-bar .dock-app.is-focused {
+  opacity: 1;
+  box-shadow:
+    0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+    0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+      color-mix(in srgb, var(--app) 45%, transparent);
 }
-/* a cursor underscore, low and left. Two bars stacked read as "≡" rather than
-   as a prompt — measured by looking at it — so this is one bar where the
-   caret would blink. */
-.dock-app[data-app="terminal"]::after {
-  background-image: linear-gradient(var(--win-paper), var(--win-paper));
-  background-size: 40% 13%;
-  background-position: 26% 70%;
+/* The hue, the outline, and the ink the letter is set in.
+ *
+ * `--ink` IS PER APP AND NOT ONE COLOUR, because no single one works: white on
+ * Brave's yellow is about 2.4:1, and near-black on the terminal's graphite is
+ * worse. Each is picked against its own background — dark ink on the three
+ * light-ish hues, light ink on the two dark ones — and none of them follow the
+ * page theme, because the icon's background does not either. */
+.dock-app[data-app="terminal"] {
+  --app: var(--app-terminal); --ink: #E8EAF0;
+  border-radius: clamp(2px, .3cqw, 4px);      /* a boxy shell */
 }
-/* a ring: an equator across a circle */
-.dock-app[data-app="Brave"]::after {
-  background-image: linear-gradient(var(--win-paper), var(--win-paper));
-  background-size: 74% 11%;
-  background-position: center;
+.dock-app[data-app="Claude"] {
+  --app: var(--app-claude); --ink: #2A1710;
+  border-radius: 46% 46% 46% 15%;             /* a speech bubble */
 }
-/* two lines of a message. Round dots here read as a face — a smiley in the
-   dock is not what this is — so they are lines, which is what a bubble holds. */
-.dock-app[data-app="Claude"]::after {
-  background-image:
-    linear-gradient(var(--win-paper), var(--win-paper)),
-    linear-gradient(var(--win-paper), var(--win-paper));
-  background-size: 46% 12%, 32% 12%;
-  background-position: 28% 36%, 28% 62%;
+.dock-app[data-app="Brave"] {
+  --app: var(--app-brave); --ink: #2A1D08;
+  border-radius: 50%;                         /* a browser */
 }
-/* a caret bar down the middle */
-.dock-app[data-app="Cursor"]::after {
-  background-image: linear-gradient(var(--win-paper), var(--win-paper));
-  background-size: 13% 56%;
-  background-position: center;
+.dock-app[data-app="Cursor"] {
+  --app: var(--app-cursor); --ink: #06201E;
+  border-radius: 50% 16% 50% 16%;             /* a caret */
 }
-/* the server rail, on the left where Discord's is */
-.dock-app[data-app="Discord"]::after {
-  background-image:
-    linear-gradient(var(--win-paper), var(--win-paper)),
-    linear-gradient(var(--win-paper), var(--win-paper));
-  background-size: 15% 46%, 40% 15%;
-  background-position: 24% center, 62% center;
+.dock-app[data-app="Discord"] {
+  --app: var(--app-discord); --ink: #EDEFFA;
+  border-radius: 34%;                         /* a squircle */
 }
 
 /* `--bar-h` is the bite each bar takes out of the desk, and it is what stops a
@@ -1156,6 +1151,26 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    grey-out, so one pair covers all three dots. */
 @keyframes lightsOn  { 0%, 42% { filter: grayscale(1) opacity(.7); } 50%, 100% { filter: none; } }
 @keyframes lightsOff { 0%, 42% { filter: none; } 50%, 100% { filter: grayscale(1) opacity(.7); } }
+/* The dock follows the window. Without these the JS-off loop raises Claude
+   while the dock keeps Brave lit — the two halves of the same picture
+   disagreeing about which app has focus. `box-shadow` and `opacity` are both
+   animatable, which is why the focus ring is drawn with one. */
+@keyframes dockLight {
+  0%, 42%   { opacity: .8; box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+  50%, 100% { opacity: 1;
+              box-shadow:
+                0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+                0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+                  color-mix(in srgb, var(--app) 45%, transparent); }
+}
+@keyframes dockDim {
+  0%, 42%   { opacity: 1;
+              box-shadow:
+                0 0 0 clamp(2px, .32cqw, 3.5px) color-mix(in srgb, var(--app) 70%, transparent),
+                0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
+                  color-mix(in srgb, var(--app) 45%, transparent); }
+  50%, 100% { opacity: .8; box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+}
 @keyframes capPress {
   0%, 38%   { transform: translateY(0);   border-bottom-width: 2px; }
   44%, 52%  { transform: translateY(1px); border-bottom-width: 1px; }
@@ -1167,6 +1182,8 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    cannot raise anything and the loop had to animate a border colour instead. */
 .hero-demo:not(.is-live) .win[data-app="Claude"] { animation: deskRaise 6s infinite; }
 .hero-demo:not(.is-live) .win[data-app="Brave"]  { animation: deskLower 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="Claude"] { animation: dockLight 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="Brave"]  { animation: dockDim 6s infinite; }
 .hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Claude"] .win-lights {
   animation: lightsOn 6s infinite;
 }
