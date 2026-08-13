@@ -9,6 +9,14 @@
 // colour goes through `col`, which answers the high-contrast branch itself.
 
 use super::*;
+// `ThemeCache` itself is never glob-imported into `mod.rs` -- every call
+// site there spells the qualified `theme::ThemeCache` (see `PAINT_THEME`'s
+// own declaration), so `use super::*` does not carry the bare name across.
+// Named here for the same reason `chrome.rs` names it: `button`, `colours`,
+// `field_border` and `draw_combo_item` all take `&mut ThemeCache` directly,
+// the same convention `chrome::paint` uses and for the same reason -- see
+// `button`'s own doc comment.
+use super::theme::ThemeCache;
 
 /// A card: rounded fill plus a 1 px border. No drop shadow -- Win11's own
 /// cards use a border, and a GDI shadow costs a layered surface for an
@@ -784,4 +792,521 @@ pub(super) unsafe fn draw_chip(hwnd: HWND, di: &DRAWITEMSTRUCT) -> bool {
         let _ = DrawFocusRect(hdc, &f);
     }
     true
+}
+
+/// The corner radius every push button and every field decoration shares,
+/// at 96 DPI. One constant rather than a literal `6` at each call site --
+/// see `scale`'s own rule.
+const BTN_RADIUS: i32 = 6;
+
+/// Which visual family a push button paints as.
+///
+/// `Accent` is `Save` alone. `Secondary` is every plain command (`Add`,
+/// `Remove`, `Reload`, `Open config file`, `Close`, `Keep mine`). `Outline`
+/// and `Danger` are the capture strip's two commands -- `Reset` is always
+/// `Outline`; `Record` is `Outline` while idle and `Danger` once armed,
+/// wearing `Stop`. Neither carries a fill, which is what keeps the strip
+/// reading lighter than the command bar around it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BtnTier {
+    Accent,
+    Secondary,
+    Outline,
+    Danger,
+}
+
+/// `(fill, border, ink)` for one tier in its current state. `fill` is
+/// `None` for a resting `Outline`/`Danger` button -- nothing is drawn under
+/// the caption, and the card underneath shows through.
+///
+/// **Disabled overrides every tier the same way**: a neutral `field`
+/// surface, its own `field_border` edge, and `text_faint` ink -- the row
+/// this task's brief gives every tier. For `Secondary` that is coincidence
+/// rather than a special case: its own resting fill and border ALREADY are
+/// `field`/`field_border`, so disabled only changes the ink there. That is
+/// not a gap; `Secondary` never claimed a stronger surface than a field to
+/// begin with.
+///
+/// **`shade`, not `accent_hover`, for `Accent`'s hot/pressed fill.**
+/// Carried into this task from Task 5's review: `Save`'s hot state used to
+/// darken with `shade(accent, 9, 10)` while `DARK.accent_hover` is
+/// deliberately LIGHTER than `DARK.accent_fill`, which read as the wrong
+/// token for the job. Measured before changing it: `accent_hover` is
+/// calibrated as an INK, not as a FILL under a fixed white ink -- on a card
+/// it clears 6.66:1 (Light) / 6.77:1 (Dark), stronger than `accent` itself,
+/// but used as `Save`'s own fill with `accent_on` on top it is 6.66:1 Light
+/// (fine) and **2.41:1 Dark** -- a real WCAG failure, because
+/// `DARK.accent_hover` (`#7AA7F9`) sits close enough to white that white
+/// text on it nearly disappears. `shade` always darkens, which is the safe
+/// direction against a FIXED white ink regardless of theme: hot
+/// `shade(_, 9, 10)` measures 6.11:1 Light / 5.43:1 Dark, pressed
+/// `shade(_, 4, 5)` measures 7.25:1 Light / 6.50:1 Dark -- both tiers, both
+/// themes, comfortably clear. `Secondary`'s hot/pressed fill reuses the same
+/// two ratios on `field` for the same reason: its ink (`text`) already
+/// flips dark-on-light/light-on-dark with the theme, so darkening the fill
+/// in EITHER theme only widens the gap (Light 14.11:1/11.07:1, Dark
+/// 13.11:1/13.71:1, hot/pressed) -- unlike `Accent`, whose ink is a FIXED
+/// white in both themes.
+///
+/// **`accent_hover` earns its keep on `Outline` instead.** Its own ink, on
+/// its own resting fill-less surface (the card), is exactly the pairing it
+/// is calibrated for: hovering/pressing brightens `Record`/`Reset`'s
+/// border+text from `accent` (5.17:1 Light / 5.36:1 Dark on card) to
+/// `accent_hover` (6.66:1 / 6.77:1) -- an improvement, not a risk, in both
+/// themes. Pressed additionally washes the fill to `accent_soft`, an
+/// already CI-enforced pairing (`beckon_core::theme`'s own
+/// `"accent text on soft fill"` test); `accent_hover` on `accent_soft`
+/// measures 5.82:1 Light / 5.94:1 Dark, still comfortably clear.
+///
+/// **`Danger`'s pressed wash reuses `bad_bg`**, the SAME token
+/// `draw_flag_pill`'s `flag_colours` already pairs with `bad` for the "bad"
+/// flag pill (`beckon_core::theme`'s `"bad pill"` test: `p.bad` on
+/// `p.bad_bg` >= 4.5) -- 5.56:1 Light / 7.55:1 Dark measured here again on
+/// the button-sized area. No new token, no new pairing.
+///
+/// Every fallback below is a matched SYSTEM pair under high contrast, never
+/// a mix: `COLOR_HIGHLIGHT`+`COLOR_HIGHLIGHTTEXT` for `Accent` (already
+/// shipped), `COLOR_BTNFACE`+`COLOR_BTNTEXT` for `Secondary` and for the
+/// disabled row, `COLOR_WINDOW`+`COLOR_WINDOWTEXT` for `Outline` (the same
+/// pairing `chrome::paint` already uses for `accent`-coloured text directly
+/// on a plain background) and for `Danger`'s resting/pressed ink -- there is
+/// no system "danger" colour, so `Danger` reads as plain, matched text under
+/// high contrast rather than inventing an unmatched red.
+fn colours(
+    tier: BtnTier,
+    disabled: bool,
+    pressed: bool,
+    hot: bool,
+    cache: &ThemeCache,
+) -> (Option<COLORREF>, COLORREF, COLORREF) {
+    if disabled {
+        let fill = cache.col(|p| p.field, COLOR_BTNFACE);
+        let border = cache.col(|p| p.field_border, COLOR_BTNSHADOW);
+        let ink = cache.col(|p| p.text_faint, COLOR_GRAYTEXT);
+        return (Some(fill), border, ink);
+    }
+    match tier {
+        BtnTier::Accent => {
+            let accent = cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT);
+            let on = cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT);
+            let fill = if pressed {
+                shade(accent, 4, 5)
+            } else if hot {
+                shade(accent, 9, 10)
+            } else {
+                accent
+            };
+            (Some(fill), fill, on)
+        }
+        BtnTier::Secondary => {
+            let field = cache.col(|p| p.field, COLOR_BTNFACE);
+            let border = cache.col(|p| p.field_border, COLOR_BTNSHADOW);
+            let text = cache.col(|p| p.text, COLOR_BTNTEXT);
+            let fill = if pressed {
+                shade(field, 4, 5)
+            } else if hot {
+                shade(field, 9, 10)
+            } else {
+                field
+            };
+            (Some(fill), border, text)
+        }
+        BtnTier::Outline => {
+            let ink = if hot || pressed {
+                cache.col(|p| p.accent_hover, COLOR_HIGHLIGHT)
+            } else {
+                cache.col(|p| p.accent, COLOR_HIGHLIGHT)
+            };
+            let fill = pressed.then(|| cache.col(|p| p.accent_soft, COLOR_HIGHLIGHT));
+            (fill, ink, ink)
+        }
+        BtnTier::Danger => {
+            let ink = cache.col(|p| p.bad, COLOR_WINDOWTEXT);
+            let fill = pressed.then(|| cache.col(|p| p.bad_bg, COLOR_WINDOW));
+            (fill, ink, ink)
+        }
+    }
+}
+
+/// Paint one push button: fill (if any), border, caption, then -- LAST --
+/// the focus ring.
+///
+/// **Every push button in this window paints through here, `Save`
+/// included, but `Save` still ARRIVES through `NM_CUSTOMDRAW`, not
+/// `WM_DRAWITEM`.** `BS_OWNERDRAW` REPLACES a button's TYPE -- it is a
+/// different value of the same 4-bit field `BS_DEFPUSHBUTTON` occupies, not
+/// a flag beside it -- and `Save` (like every one of the nine
+/// `PUSH_BUTTONS`) can carry the default ring, which `set_default_id` moves
+/// with a `BM_SETSTYLE` read-modify-write through that same field. Making
+/// any of them owner-draw would take that machinery with it: the exact
+/// "Enter on Reload saves" defect this window already shipped once. So
+/// `mod.rs`'s `push_button_custom_draw` builds a synthetic `DRAWITEMSTRUCT`
+/// out of the `NMCUSTOMDRAW` comctl32 hands it and calls this function --
+/// one painter, reached by two honest callers, rather than a painter that
+/// can only be reached by the controls it was safe to convert.
+///
+/// `cache` is the caller's own borrow of `PAINT_THEME`, taken once and
+/// passed down -- `chrome::paint`'s own rule, and for the same reason:
+/// re-reading it through `theme_col`/`theme_brush` here would try to borrow
+/// the same `RefCell` a second time and panic. `cache.theme()` is read
+/// directly for the same reason `chrome::paint` reads it rather than the
+/// separate `HIGH_CONTRAST` `Cell` `draw_keycaps` and its callers use: that
+/// `Cell` only refreshes on `WM_SETTINGCHANGE(SPI_SETHIGHCONTRAST)`, while
+/// `WM_THEMECHANGED` alone already rebuilds `ThemeCache` and invalidates the
+/// window, so a paint that races the two message could see a `Cell` not yet
+/// caught up. Gating on `cache.theme()` removes that race instead of
+/// narrowing it.
+pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut ThemeCache, dpi: u32) {
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+    let disabled = di.itemState.0 & ODS_DISABLED.0 != 0;
+    let pressed = di.itemState.0 & ODS_SELECTED.0 != 0;
+    let hot = di.itemState.0 & ODS_HOTLIGHT.0 != 0;
+
+    // The parent's surface first: a button with no fill (resting
+    // `Outline`/`Danger`) or rounded corners (every tier) leaves pixels
+    // showing that the tier itself does not paint, and whatever was there
+    // last frame would stay there otherwise.
+    let bg = cache.col(|p| p.bg, COLOR_BTNFACE);
+    let bg_brush = cache.brush(bg);
+    FillRect(hdc, &rc, bg_brush);
+
+    let (fill, border, ink) = colours(tier, disabled, pressed, hot, cache);
+
+    let brush = match fill {
+        Some(f) => HGDIOBJ(CreateSolidBrush(f).0),
+        None => GetStockObject(NULL_BRUSH),
+    };
+    let pen = CreatePen(PS_SOLID, 1, border);
+    let prev_brush = SelectObject(hdc, brush);
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    if hc {
+        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    } else {
+        let r = scale(BTN_RADIUS, dpi) * 2;
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    if fill.is_some() {
+        let _ = DeleteObject(brush);
+    }
+
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let font = if font.is_invalid() {
+        HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+    } else {
+        font
+    };
+    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
+    let ui_state = SendMessageW(
+        di.hwndItem,
+        WM_QUERYUISTATE,
+        Some(WPARAM(0)),
+        Some(LPARAM(0)),
+    )
+    .0 as u32;
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if ui_state & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let caption = text_of(di.hwndItem);
+    let mut t = wide(&caption);
+    let n = t.len() - 1;
+    let mut tr = rc;
+    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+
+    // Last, per the brief: a 2 px accent ring, inset 2 px, so it never
+    // fights the caption for the same pixels.
+    if !disabled && di.itemState.0 & ODS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
+        // `Accent` alone substitutes `accent_on` for the ring. `accent` on
+        // `Accent`'s own `accent_fill` is 1.00:1 in Light -- IDENTICAL hex,
+        // `#2563EB` on `#2563EB` -- and 1.49:1 in Dark, both well under even
+        // the 3:1 non-text floor: a ring drawn in the tier's own colour is
+        // invisible on the one tier whose fill IS that colour. `accent_on`
+        // is `Save`'s own ink and already guaranteed >= 4.5 against
+        // `accent_fill` by `beckon_core::theme`'s `"white on accent fill"`
+        // test, so it is guaranteed visible here too, in both themes.
+        let ring = if tier == BtnTier::Accent {
+            cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
+        } else {
+            cache.col(|p| p.accent, COLOR_HIGHLIGHT)
+        };
+        let inset = scale(2, dpi);
+        let ring_rc = RECT {
+            left: rc.left + inset,
+            top: rc.top + inset,
+            right: rc.right - inset,
+            bottom: rc.bottom - inset,
+        };
+        let ring_pen = CreatePen(PS_SOLID, scale(2, dpi), ring);
+        let null_brush = GetStockObject(NULL_BRUSH);
+        let prev_pen = SelectObject(hdc, HGDIOBJ(ring_pen.0));
+        let prev_brush = SelectObject(hdc, null_brush);
+        if hc {
+            let _ = Rectangle(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+            );
+        } else {
+            let r = scale(BTN_RADIUS - 2, dpi).max(0) * 2;
+            let _ = RoundRect(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+                r,
+                r,
+            );
+        }
+        if !prev_pen.is_invalid() {
+            SelectObject(hdc, prev_pen);
+        }
+        if !prev_brush.is_invalid() {
+            SelectObject(hdc, prev_brush);
+        }
+        let _ = DeleteObject(HGDIOBJ(ring_pen.0));
+    }
+}
+
+/// A rounded 1 px border around `ctl`'s own rect, stroked from the PARENT.
+///
+/// **`IDC_APP` and `IDC_FILTER` are never owner-drawn**, and this function
+/// is why that is still enough to look themed. Both keep their native
+/// EDIT/COMBOBOX rendering in full -- comctl32 owns their interior, their
+/// caret, their selection and, for `IDC_APP`, its edit child's typing path,
+/// exactly as before this task; colour comes from `WM_CTLCOLOREDIT` /
+/// `WM_CTLCOLORLISTBOX` in `mod.rs`, not from here. This function touches
+/// only the PARENT's own device context, at a rect it computes itself and
+/// then strokes with `NULL_BRUSH` selected -- nothing here fills, so the
+/// control's own later repaint of its interior can never be erased by it.
+/// Rounding the rect OUTWARD by one device pixel, rather than stroking the
+/// control's own edge, is what keeps the border entirely outside the
+/// control's bounds so the two paints cannot collide.
+///
+/// An owner-drawn `CBS_DROPDOWN` with an edit child is the exact shape that
+/// produced this project's measured data-loss defect (`Ui::shown_external`,
+/// see the module header). This design cannot reach the same place, because
+/// it never asks Windows to hand either control's own paint over to it.
+///
+/// `focused` widens the stroke to 2 px `accent`, the same weight `button`'s
+/// own focus ring uses. The caller (`WM_PAINT`) reads `GetFocus()` fresh
+/// each time it runs, so this never needs its own notification plumbing to
+/// stay correct -- `handle_command`'s `CBN_SETFOCUS`/`EN_SETFOCUS` arms
+/// exist only to ask for the repaint, never to hand this function an
+/// answer.
+pub(super) unsafe fn field_border(
+    hdc: HDC,
+    ctl: HWND,
+    parent: HWND,
+    cache: &mut ThemeCache,
+    focused: bool,
+    dpi: u32,
+) {
+    if ctl.is_invalid() {
+        return;
+    }
+    let mut wr = RECT::default();
+    if GetWindowRect(ctl, &mut wr).is_err() {
+        return;
+    }
+    let mut tl = POINT {
+        x: wr.left,
+        y: wr.top,
+    };
+    let mut br = POINT {
+        x: wr.right,
+        y: wr.bottom,
+    };
+    if !ScreenToClient(parent, &mut tl).as_bool() || !ScreenToClient(parent, &mut br).as_bool() {
+        return;
+    }
+    let out = scale(1, dpi);
+    let rc = RECT {
+        left: tl.x - out,
+        top: tl.y - out,
+        right: br.x + out,
+        bottom: br.y + out,
+    };
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+    let (edge, w) = if focused {
+        (cache.col(|p| p.accent, COLOR_HIGHLIGHT), scale(2, dpi))
+    } else {
+        (
+            cache.col(|p| p.field_border, COLOR_BTNSHADOW),
+            scale(1, dpi),
+        )
+    };
+    let pen = CreatePen(PS_SOLID, w, edge);
+    let null_brush = GetStockObject(NULL_BRUSH);
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    let prev_brush = SelectObject(hdc, null_brush);
+    if hc {
+        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    } else {
+        let r = scale(BTN_RADIUS, dpi) * 2;
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
+
+/// Ask the parent to repaint the decorative ring `field_border` draws
+/// around `ctl`.
+///
+/// Neither `IDC_APP` nor `IDC_FILTER` repaints that pixel itself on a focus
+/// change -- it is the PARENT's paint, not the control's -- so without this
+/// the ring drawn on arrival would keep showing the old state until
+/// something unrelated invalidated the window. The padding is generous and
+/// unscaled on purpose: over-invalidating by a few device pixels costs one
+/// slightly larger `WM_PAINT`, while under-invalidating leaves a stale ring
+/// on screen, and this is called from a focus notification, not a paint --
+/// there is no `dpi` in scope to size it precisely without a `GetDpiForWindow`
+/// call this cheap operation does not need.
+pub(super) unsafe fn invalidate_field_border(parent: HWND, ctl: HWND) {
+    if ctl.is_invalid() {
+        return;
+    }
+    let mut wr = RECT::default();
+    if GetWindowRect(ctl, &mut wr).is_err() {
+        return;
+    }
+    let mut tl = POINT {
+        x: wr.left,
+        y: wr.top,
+    };
+    let mut br = POINT {
+        x: wr.right,
+        y: wr.bottom,
+    };
+    if !ScreenToClient(parent, &mut tl).as_bool() || !ScreenToClient(parent, &mut br).as_bool() {
+        return;
+    }
+    let pad = 8;
+    let rc = RECT {
+        left: tl.x - pad,
+        top: tl.y - pad,
+        right: br.x + pad,
+        bottom: br.y + pad,
+    };
+    let _ = InvalidateRect(Some(parent), Some(&rc), false);
+}
+
+/// Paint one row of `IDC_COMBO` (the key list) or `IDC_TAP` (the Caps-tap
+/// list) -- and, with the same call, the closed box's own display, which
+/// Windows draws through this same message for whichever item is currently
+/// selected.
+///
+/// **Both are `CBS_DROPDOWNLIST` with `CBS_OWNERDRAWFIXED` and no edit
+/// child.** Unlike `IDC_APP` there is nothing here that can go stale: the
+/// text comes back from the SAME constant table each control was populated
+/// from (`key_table()`, `cap::TAP_ITEMS`), indexed by `di.itemID` -- never
+/// read back from the control (no `CBS_HASSTRINGS` is needed for that
+/// reason) and never from `UI` (`CAP_FONT`'s reason: a paint can arrive
+/// while it is borrowed, and it does). Both were filled WITHOUT `CBS_SORT`
+/// (see each creation site's own comment), which is what makes `di.itemID`
+/// a safe index into these same arrays in the same order.
+///
+/// `di.itemID == u32::MAX` is `CB_ERR`'s own value, sent for the closed
+/// display of a combo with nothing selected yet -- filled with the row's
+/// own surface and left blank, the same "nothing to draw" shape
+/// `draw_keycaps`' empty check takes.
+///
+/// `ODS_SELECTED` here means the LISTBOX sense -- "this row is the
+/// highlighted one" -- not the BUTTON sense `button` reads as "currently
+/// pressed"; same bit name, different control, different meaning, so this
+/// function names its own local `picked` rather than reusing `pressed`.
+pub(super) unsafe fn draw_combo_item(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache, dpi: u32) {
+    if di.CtlType != ODT_COMBOBOX {
+        return;
+    }
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    let id = di.CtlID as i32;
+    let disabled = di.itemState.0 & ODS_DISABLED.0 != 0;
+    let picked = di.itemState.0 & ODS_SELECTED.0 != 0;
+
+    let field = cache.col(|p| p.field, COLOR_WINDOW);
+    let (fill, ink) = if disabled {
+        (field, cache.col(|p| p.text_faint, COLOR_GRAYTEXT))
+    } else if picked {
+        // The same treatment the Shortcut column's own selected row takes
+        // (`list_custom_draw`): `accent_soft`, not the stronger
+        // `accent_fill` an armed chip or `Save` gets, and `p.text` rather
+        // than `p.accent` for the ink -- already shipped, already read as
+        // legible on that pale a tint in both themes.
+        (
+            cache.col(|p| p.accent_soft, COLOR_HIGHLIGHT),
+            cache.col(|p| p.text, COLOR_HIGHLIGHTTEXT),
+        )
+    } else {
+        (field, cache.col(|p| p.text, COLOR_WINDOWTEXT))
+    };
+    FillRect(hdc, &rc, cache.brush(fill));
+
+    if di.itemID == u32::MAX {
+        return;
+    }
+    let text = if id == IDC_COMBO {
+        key_table().get(di.itemID as usize).map(|k| k.name.clone())
+    } else {
+        cap::TAP_ITEMS
+            .get(di.itemID as usize)
+            .map(|s| s.to_string())
+    };
+    let Some(text) = text else {
+        return;
+    };
+
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let font = if font.is_invalid() {
+        HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+    } else {
+        font
+    };
+    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    let pad = scale(6, dpi);
+    let mut tr = RECT {
+        left: rc.left + pad,
+        ..rc
+    };
+    let mut t = wide(&text);
+    let n = t.len() - 1;
+    DrawTextW(
+        hdc,
+        &mut t[..n],
+        &mut tr,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
 }

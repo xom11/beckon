@@ -840,9 +840,9 @@ fn role_of(id: i32) -> Role {
         // are unchanged, and `settings_probe` still reads their caption with
         // `WM_GETTEXT`, which a `STATIC` answers identically to a `BUTTON`.
         // `IDC_APPLY` reads its font through this same mapping even though
-        // it is custom-drawn -- `save_custom_draw` asks the button for its
-        // own `WM_GETFONT` rather than picking a role directly, so this arm
-        // is the only place its weight is decided. The ListView's OWN column
+        // it is custom-drawn -- `paint::button` asks the button for its own
+        // `WM_GETFONT` rather than picking a role directly, so this arm is
+        // the only place its weight is decided. The ListView's OWN column
         // headers are a comctl32-owned Header control, never a child of
         // `hwnd` and therefore never routed through `role_of` at all --
         // `build_children` and `WM_DPICHANGED` each set that font directly.
@@ -2319,11 +2319,18 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LBL_COUNT,
         &fonts,
     );
+    // `WS_BORDER` off: this is a field-styled control now, and its border is
+    // `paint::field_border`, drawn from the PARENT's `WM_PAINT` outside the
+    // control's own rect (Task 9) via `WM_CTLCOLOREDIT` for the fill/ink and
+    // this rounded stroke for the edge. Nothing here owner-draws the EDIT
+    // itself -- unlike `IDC_APP`, a plain EDIT has no child of its own for
+    // that to endanger, but the two stay on the same rule rather than one
+    // carving out an exception the other does not need.
     let filter = child(
         hwnd,
         w!("EDIT"),
         "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP,
         IDC_FILTER,
         &fonts,
     );
@@ -2537,11 +2544,22 @@ unsafe fn build_children(hwnd: HWND) {
     // of every letter -- and every index in the window would then name the
     // wrong key. Nothing reachable from a unit test can catch that, so the
     // style bit is simply absent and this comment is the guard.
+    //
+    // **`CBS_OWNERDRAWFIXED`, added in Task 9.** Safe here in a way it is
+    // NOT for `IDC_APP`: this control has no edit child, so there is no
+    // typing path an owner-draw redraw could clobber, and `CB_SETCURSEL` /
+    // `CB_GETCURSEL` still move the same integer index regardless of who
+    // paints the item. `paint::draw_combo_item` reads the row's text back
+    // out of `key_table()` by that index rather than out of the control, so
+    // `CBS_HASSTRINGS` is not needed either. `Ui::defid`/`set_default_id`
+    // never touch this control -- it is not in `PUSH_BUTTONS` and cannot
+    // carry the default ring -- so none of `button`'s own reason for
+    // avoiding `BS_OWNERDRAW` on push buttons applies to a COMBOBOX at all.
     let combo = child(
         hwnd,
         w!("COMBOBOX"),
         "",
-        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED) as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_COMBO,
         &fonts,
     );
@@ -2692,11 +2710,17 @@ unsafe fn build_children(hwnd: HWND) {
     // domain, so unlike the App field there is nothing to free-type here --
     // and a list with no edit field cannot be left holding text that matches
     // no item.
+    //
+    // `CBS_OWNERDRAWFIXED`, added in Task 9, for `IDC_COMBO`'s own reason:
+    // no edit child, so no typing path to endanger, and `paint::draw_combo_item`
+    // reads `cap::TAP_ITEMS` by index rather than the control's own text.
+    // Still no `CBS_SORT` -- three items, filled in the fixed order
+    // `cur_sel`'s callers already assume.
     let tap = child(
         hwnd,
         w!("COMBOBOX"),
         "",
-        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED) as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_TAP,
         &fonts,
     );
@@ -4045,127 +4069,74 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
     String::from_utf16_lossy(&buf[..n.min(buf.len())])
 }
 
-/// Paint `Save` as the accent-filled primary action.
+/// Which tier `button` (`paint.rs`) should paint a push button as.
 ///
-/// **The accent marks the primary action; the default ring marks where Enter
-/// goes, and they are not the same thing.** `set_default_id` moves the ring
-/// onto whichever push button has focus, so tabbing to `Close` takes the ring
-/// away from Save -- correctly, because Enter then closes. Save stays filled
-/// throughout, because it is still the action the window is for. Nothing here
-/// touches the ring.
+/// Every id but `IDC_RECORD` is static. `IDC_RECORD` alone is read back from
+/// its OWN caption -- `Danger` while it reads `cap::STOP` (armed), `Outline`
+/// otherwise -- rather than from a second flag next to it: this file must
+/// not touch `UI` from a paint path (`CAP_FONT`'s reason, a paint can arrive
+/// while it is borrowed), and the caption `set_text_if_changed` last wrote
+/// already says which the button currently is. Reading it back is also what
+/// keeps the two in agreement by construction: a caption and a tier stored
+/// in two places can drift, one read from one place cannot.
+fn tier_of(id: i32, hwnd_item: HWND) -> BtnTier {
+    match id {
+        IDC_APPLY => BtnTier::Accent,
+        IDC_RESET => BtnTier::Outline,
+        IDC_RECORD if text_of(hwnd_item) == cap::STOP => BtnTier::Danger,
+        IDC_RECORD => BtnTier::Outline,
+        _ => BtnTier::Secondary,
+    }
+}
+
+/// Paint any of the nine `PUSH_BUTTONS`, `Save` included, by translating the
+/// `NMCUSTOMDRAW` comctl32 hands this window into the `DRAWITEMSTRUCT`
+/// `paint::button` actually draws from.
 ///
-/// **Disabled is the common state**, not an edge case: Save is greyed until
-/// there is something to save. It takes `COLOR_BTNFACE` and `COLOR_GRAYTEXT`,
-/// so a window with no edits does not show a bright blue button that does
-/// nothing.
-///
-/// High contrast keeps `COLOR_HIGHLIGHT` -- it is a real colour there, and it
-/// is the one the theme uses for exactly this -- but drops the rounded
-/// corners, on `draw_keycaps`' rule.
-unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`, for all nine.** See the call
+/// site's own comment and `button`'s doc for why: every one of these nine
+/// can carry the default ring, and `BS_OWNERDRAW` would take the machinery
+/// that moves it along for the ride.
+unsafe fn push_button_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     let cd = &*p;
     if cd.dwDrawStage != CDDS_PREPAINT {
         return CDRF_DODEFAULT as isize;
     }
     let btn = cd.hdr.hwndFrom;
-    let hdc = cd.hdc;
-    let rc = cd.rc;
+    let id = cd.hdr.idFrom as i32;
+    let tier = tier_of(id, btn);
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let hc = high_contrast();
-    let disabled = cd.uItemState.0 & CDIS_DISABLED.0 != 0;
-    let pressed = cd.uItemState.0 & CDIS_SELECTED.0 != 0;
-    let hot = cd.uItemState.0 & CDIS_HOT.0 != 0;
-
-    // The parent's surface first: a rounded button leaves its corners
-    // showing, and whatever was there last frame would stay in them.
-    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)));
-
-    let accent = theme_col(|p| p.accent_fill, COLOR_HIGHLIGHT);
-    let (fill, ink) = if disabled {
-        (
-            theme_col(|p| p.bg, COLOR_BTNFACE),
-            theme_col(|p| p.text_faint, COLOR_GRAYTEXT),
-        )
-    } else if pressed {
-        (
-            shade(accent, 4, 5),
-            theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
-        )
-    } else if hot {
-        (
-            shade(accent, 9, 10),
-            theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
-        )
-    } else {
-        (accent, theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT))
+    let mut state = ODS_FLAGS(0);
+    if cd.uItemState.0 & CDIS_DISABLED.0 != 0 {
+        state.0 |= ODS_DISABLED.0;
+    }
+    if cd.uItemState.0 & CDIS_SELECTED.0 != 0 {
+        state.0 |= ODS_SELECTED.0;
+    }
+    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 {
+        state.0 |= ODS_FOCUS.0;
+    }
+    // `ODS_HOTLIGHT` is the one bit a REAL `WM_DRAWITEM` never carries for a
+    // classic push button -- Windows does not hover-track an owner-draw
+    // button on its own, which is exactly why `button` staying reachable
+    // from `NM_CUSTOMDRAW` (via this translation) rather than becoming
+    // genuinely owner-draw is worth more than tidiness: true hover feedback,
+    // for free, on all nine. Using it as the carrier here is safe for that
+    // same reason -- nothing else can ever set it on a `DRAWITEMSTRUCT`
+    // `button` receives.
+    if cd.uItemState.0 & CDIS_HOT.0 != 0 {
+        state.0 |= ODS_HOTLIGHT.0;
+    }
+    let di = DRAWITEMSTRUCT {
+        CtlType: ODT_BUTTON,
+        CtlID: id as u32,
+        itemState: state,
+        hwndItem: btn,
+        hDC: cd.hdc,
+        rcItem: cd.rc,
+        ..Default::default()
     };
-    // A disabled button needs an outline or it is a hole in the window; a
-    // filled one is its own shape. The outline takes the same faint tone
-    // every other disabled element in the window uses, not `keycap_edge`:
-    // that token is tuned to nearly vanish into a dark-mode keycap on
-    // purpose (it is a shadow, not an outline) -- `DARK.keycap_edge` sits one
-    // hex digit from `DARK.bg`, which would leave a disabled Save with
-    // effectively no visible outline at all.
-    let border = if disabled {
-        theme_col(|p| p.text_faint, COLOR_BTNSHADOW)
-    } else {
-        fill
-    };
-    let brush = CreateSolidBrush(fill);
-    let pen = CreatePen(PS_SOLID, 1, border);
-    let pb = SelectObject(hdc, HGDIOBJ(brush.0));
-    let pp = SelectObject(hdc, HGDIOBJ(pen.0));
-    if hc {
-        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-    } else {
-        let r = scale(5, dpi) * 2;
-        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
-    }
-    if !pp.is_invalid() {
-        SelectObject(hdc, pp);
-    }
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    if !pb.is_invalid() {
-        SelectObject(hdc, pb);
-    }
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-
-    let font = HFONT(
-        SendMessageW(btn, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut core::ffi::c_void,
-    );
-    let prev = if font.is_invalid() {
-        HGDIOBJ::default()
-    } else {
-        SelectObject(hdc, HGDIOBJ(font.0))
-    };
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, ink);
-    // `&Save`'s mnemonic, on the window's own UI state -- the same read the
-    // chips make, and for the same reason.
-    let ui_state = SendMessageW(btn, WM_QUERYUISTATE, Some(WPARAM(0)), Some(LPARAM(0))).0 as u32;
-    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
-    if ui_state & UISF_HIDEACCEL != 0 {
-        flags |= DT_HIDEPREFIX;
-    }
-    let caption = text_of(btn);
-    let mut t = wide(&caption);
-    let n = t.len() - 1;
-    let mut tr = rc;
-    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
-    if !prev.is_invalid() {
-        SelectObject(hdc, prev);
-    }
-
-    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
-        let d = scale(3, dpi);
-        let f = RECT {
-            left: rc.left + d,
-            top: rc.top + d,
-            right: rc.right - d,
-            bottom: rc.bottom - d,
-        };
-        let _ = DrawFocusRect(hdc, &f);
-    }
+    PAINT_THEME.with(|c| button(&di, tier, &mut c.borrow_mut(), dpi));
     CDRF_SKIPDEFAULT as isize
 }
 
@@ -4589,16 +4560,30 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // ONE borrow, taken and dropped on this line -- `chrome::paint`
                 // below must not run with `UI` still borrowed, on the same
                 // rule every other arm in this function follows.
-                let ui_bits = UI.with(|u| u.borrow().as_ref().map(|ui| (ui.fonts, ui.hot)));
-                if let Some((fonts, hot)) = ui_bits {
+                let ui_bits = UI.with(|u| {
+                    u.borrow()
+                        .as_ref()
+                        .map(|ui| (ui.fonts, ui.hot, ui.app, ui.filter))
+                });
+                if let Some((fonts, hot, app, filter)) = ui_bits {
                     let dpi = GetDpiForWindow(hwnd).max(96);
                     // `PAINT_THEME`'s borrow is passed straight into
-                    // `chrome::paint` rather than read through `theme_col` /
-                    // `theme_brush`, which would try to borrow this same
-                    // `RefCell` a second time and panic.
+                    // `chrome::paint` (and, added in Task 9, `field_border`)
+                    // rather than read through `theme_col` / `theme_brush`,
+                    // which would try to borrow this same `RefCell` a second
+                    // time and panic.
                     PAINT_THEME.with(|c| {
                         let mut cache = c.borrow_mut();
                         chrome::paint(hwnd, hdc, &mut cache, &fonts, dpi, hot);
+                        // `GetFocus()` read fresh here rather than cached
+                        // anywhere: this is the only place that needs the
+                        // answer, and it is what lets `handle_command`'s
+                        // `CBN_SETFOCUS`/`EN_SETFOCUS` arms be pure
+                        // "ask for a repaint" triggers with no state of
+                        // their own to keep in step with this.
+                        let focus = GetFocus();
+                        field_border(hdc, app, hwnd, &mut cache, focus == app, dpi);
+                        field_border(hdc, filter, hwnd, &mut cache, focus == filter, dpi);
                     });
                 }
                 let _ = EndPaint(hwnd, &ps);
@@ -4782,19 +4767,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
                 }
-                // Save is the primary action, so B fills it with the accent.
+                // Every push button paints through here now, `Save` included
+                // -- Task 9 widened this from `Save` alone to all nine of
+                // `PUSH_BUTTONS`.
                 //
-                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `BS_OWNERDRAW`
-                // replaces the button's TYPE, and Save's type is
-                // `BS_DEFPUSHBUTTON` -- the ring `set_default_id` moves around
-                // with a `BM_SETSTYLE` read-modify-write through
-                // `BS_TYPEMASK_BITS`. Owner-draw would take that machinery
-                // with it, and Enter-on-`Reload`-saves is a defect this window
-                // has already had once. Custom draw leaves the type, the
-                // notifications and the ring exactly as they are and only
-                // replaces the pixels.
-                if nm.idFrom == IDC_APPLY as usize && nm.code == NM_CUSTOMDRAW {
-                    return LRESULT(save_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`, for ALL of them.**
+                // `BS_OWNERDRAW` replaces a button's TYPE, and every one of
+                // these nine can carry `BS_DEFPUSHBUTTON` -- the ring
+                // `set_default_id` moves around with a `BM_SETSTYLE`
+                // read-modify-write through `BS_TYPEMASK_BITS` -- not `Save`
+                // alone. Owner-draw would take that machinery with it, and
+                // Enter-on-`Reload`-saves is a defect this window has already
+                // had once. Custom draw leaves the type, the notifications
+                // and the ring exactly as they are and only replaces the
+                // pixels. `push_button_custom_draw` (`mod.rs`) translates the
+                // `NMCUSTOMDRAW` this message carries into the
+                // `DRAWITEMSTRUCT` `paint::button` actually draws from, so
+                // there is one painter behind both `WM_NOTIFY` here and
+                // `WM_DRAWITEM` below.
+                if is_push_button(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(push_button_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
                 if suppressed() {
                     return LRESULT(0);
@@ -4887,6 +4879,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // inside a run of body text.
                 let ctl = HWND(lp.0 as *mut core::ffi::c_void);
                 let id = GetDlgCtrlID(ctl);
+                // **`IDC_APP` / `IDC_FILTER`, disabled.** Windows routes a
+                // disabled EDIT or COMBOBOX through THIS message, not
+                // `WM_CTLCOLOREDIT` -- so without this arm a greyed App
+                // combo or filter box fell through to `DefWindowProcW`'s
+                // `COLOR_3DFACE`, the exact system-grey rectangle Task 8
+                // fixed for the STATICs above, just reached by a different
+                // message. `field`/`text_faint` rather than `card`/`text`:
+                // these two sit on their OWN `field` surface even when
+                // enabled (see `WM_CTLCOLOREDIT` below), and disabled only
+                // dims the ink, matching `button`'s own "Disabled" row for
+                // every push-button tier.
+                if id == IDC_APP || id == IDC_FILTER {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let field = theme_col(|p| p.field, COLOR_BTNFACE);
+                    let text = theme_col(|p| p.text_faint, COLOR_GRAYTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, field);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(field).0 as isize);
+                }
                 let on_card = matches!(
                     id,
                     IDC_LBL_SECTION
@@ -4916,12 +4928,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
+            WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+                // `IDC_APP` (its edit child, via `WM_CTLCOLOREDIT`, AND its
+                // drop-down LISTBOX, via `WM_CTLCOLORLISTBOX` -- a combo
+                // box's internal list shares its own control id, the same
+                // fact `WM_CTLCOLORLISTBOX` handlers everywhere rely on) and
+                // `IDC_FILTER` (`WM_CTLCOLOREDIT` only -- a plain EDIT has no
+                // drop-down). Neither control is owner-drawn (see each
+                // creation comment); this is the ENTIRE extent to which this
+                // window colours either one -- comctl32 still draws every
+                // character, the caret and the selection itself.
+                let ctl = HWND(lp.0 as *mut core::ffi::c_void);
+                let id = GetDlgCtrlID(ctl);
+                if id == IDC_APP || id == IDC_FILTER {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let field = theme_col(|p| p.field, COLOR_WINDOW);
+                    let text = theme_col(|p| p.text, COLOR_WINDOWTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, field);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(field).0 as isize);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
             WM_DRAWITEM => {
-                // The first owner-draw surface in this window, and the seven
-                // toggle chips are all of it. Answered BEFORE any
-                // `suppressed()` consideration, exactly like the ListView's
-                // custom draw one arm up: it is pure painting, it reaches no
-                // callback and it cannot recurse into `apply_state`.
+                // Answered BEFORE any `suppressed()` consideration, exactly
+                // like the ListView's custom draw one arm up: it is pure
+                // painting, it reaches no callback and it cannot recurse
+                // into `apply_state`.
                 //
                 // `DefWindowProcW` on anything else -- and on a menu, whose
                 // `CtlID` is 0 and which this window has none of today.
@@ -4929,10 +4963,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // control blank.
                 let di = &*(lp.0 as *const DRAWITEMSTRUCT);
                 if draw_chip(hwnd, di) {
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wp, lp)
+                    return LRESULT(1);
                 }
+                // `IDC_COMBO` and `IDC_TAP`, added in Task 9: both are
+                // `CBS_OWNERDRAWFIXED` `CBS_DROPDOWNLIST`s with no edit
+                // child, so unlike `IDC_APP` there is no typing path this can
+                // endanger -- see each control's own creation comment.
+                if di.CtlType == ODT_COMBOBOX
+                    && (di.CtlID as i32 == IDC_COMBO || di.CtlID as i32 == IDC_TAP)
+                {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    PAINT_THEME.with(|c| draw_combo_item(di, &mut c.borrow_mut(), dpi));
+                    return LRESULT(1);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_CHIP_STATE => LRESULT(match chip_bit(wp.0 as i32) {
                 Some(bit) if chip_armed(bit) => 2,
@@ -5587,6 +5631,14 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 with_cb(|cb| (cb.on_filter)(t));
             }
         }
+        // Ask the parent to repaint `paint::field_border`'s ring around
+        // `IDC_FILTER` -- see `invalidate_field_border`'s own doc for why
+        // this is the whole of what this arm does: `WM_PAINT` reads
+        // `GetFocus()` itself, so there is no state to write here, only a
+        // repaint to request.
+        (IDC_FILTER, c) if c == EN_SETFOCUS || c == EN_KILLFOCUS => unsafe {
+            invalidate_field_border(hwnd, filter);
+        },
         // ONE of the two codes is deferred, and the asymmetry is the point.
         //
         // `CBN_EDITCHANGE` is deferred through `WM_APP_EDITED`. NOT because
@@ -5655,7 +5707,26 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // `CB_SETCURSEL` can move. `commit_fields` still reads all five
         // controls on Save, which is the backstop that was actually load
         // bearing.
-        (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
+        // Field-border repaint, folded into the SAME arm `CBN_KILLFOCUS`
+        // already reaches rather than a second one ahead of it: two arms
+        // matching the same `(id, code)` would let only the first ever run,
+        // and `commit_fields` here is the one that must not be dropped.
+        // `CBN_CLOSEUP` never carries a focus change on its own (a pick
+        // closes the list but the edit keeps focus), so it is excluded from
+        // the repaint request.
+        (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => {
+            if c == CBN_KILLFOCUS {
+                if let Some(app) = app_handle() {
+                    unsafe { invalidate_field_border(hwnd, app) };
+                }
+            }
+            commit_fields();
+        }
+        (IDC_APP, c) if c == CBN_SETFOCUS => {
+            if let Some(app) = app_handle() {
+                unsafe { invalidate_field_border(hwnd, app) };
+            }
+        }
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
         // One button, two commands: `Record` while idle, `Stop` while armed.
