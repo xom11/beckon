@@ -1261,6 +1261,257 @@ pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut Them
     }
 }
 
+/// Paint `IDC_CAPS` -- the one toggle switch in this window -- as a 40x20
+/// track with a sliding knob, in place of the native check box glyph.
+///
+/// **`IDC_CAPS` stays `BS_AUTOCHECKBOX`, reached through `NM_CUSTOMDRAW`,
+/// exactly `button`'s own pattern one function up.** `BS_OWNERDRAW` is a
+/// different VALUE of the same 4-bit type field `BS_DEFPUSHBUTTON` and
+/// `BS_AUTOCHECKBOX` occupy (`BS_TYPEMASK_BITS`), not a flag beside it, so
+/// adopting it would throw away the check box state machine `handle_command`'s
+/// `(IDC_CAPS, _)` arm and `apply_state`'s own `check(hwnd, IDC_CAPS, ...)`
+/// both depend on, and the UIA role a screen reader announces for the
+/// control. Custom draw leaves `BM_GETCHECK`/`BM_SETCHECK`, `Space` and the
+/// accessible role exactly as they are and only replaces the pixels --
+/// `caps_custom_draw` (`mod.rs`) is the translation, one `NMCUSTOMDRAW` in,
+/// one full repaint out, no `DRAWITEMSTRUCT` needed because nothing here
+/// reads one.
+///
+/// **High contrast: knob and track never share a `sys` index.** `col`
+/// ignores the palette closure under `Theme::HighContrast` and answers
+/// `GetSysColor(sys)` regardless of state, so the FALLBACK argument is what
+/// a high-contrast user actually sees, and the knob is drawn ON the track --
+/// exactly the shape three earlier defects on this branch already got wrong.
+/// Every state below pairs two DIFFERENT indices: `COLOR_BTNFACE` (track) /
+/// `COLOR_BTNTEXT` (knob) off, `COLOR_HIGHLIGHT` (track) /
+/// `COLOR_HIGHLIGHTTEXT` (knob) on, `COLOR_BTNFACE` (track) /
+/// `COLOR_GRAYTEXT` (knob) disabled -- the last of those is the same pairing
+/// `button`'s own disabled row already ships for `field`/`text_faint`, not a
+/// new one invented here. The background wash behind the caption is
+/// `COLOR_WINDOW`, paired with the caption's own `COLOR_WINDOWTEXT` --
+/// `card`'s usual fallback everywhere else in this file (`card`, the
+/// resting list row, the flag pill's least-wrong stand-in), not the
+/// `COLOR_BTNFACE` the pre-Task-11 `WM_CTLCOLORSTATIC` arm used for the same
+/// token: that arm never reaches this control any more once `CDRF_SKIPDEFAULT`
+/// takes its whole paint over here, the same way it already stopped reaching
+/// any of the nine `PUSH_BUTTONS`.
+///
+/// **No `0`/`1` in the knob.** VKey draws one; the knob's own position --
+/// left when off, right when on -- already says everything a digit would.
+///
+/// **Geometry is NOT this function's to fix.** `layout` sizes `IDC_CAPS` at
+/// `tw(cap::CAPS) + glyph` (`glyph` = `s(24)`, the old check box square plus
+/// its gap) -- a budget built for a ~13 px glyph, not a 40 px track. Drawing
+/// the spec's own 40x20 track costs 16 px more than that budget on its own,
+/// before the gap to the caption is even counted; the shortfall is reported
+/// rather than fixed here, per this task's own constraint against a `layout`
+/// edit. `DT_END_ELLIPSIS` below is the same graceful-narrow fallback
+/// `list_custom_draw`'s Shortcut column and `draw_chip`'s empty-cap path
+/// both already take, not a new idea.
+pub(super) unsafe fn toggle(
+    nm: &NMCUSTOMDRAW,
+    on: bool,
+    enabled: bool,
+    focused: bool,
+    cache: &mut ThemeCache,
+    dpi: u32,
+) {
+    let hdc = nm.hdc;
+    let rc = nm.rc;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+
+    // The parent's own surface first, exactly `button`'s own first line and
+    // for the same reason: rounded corners and the gap between the track
+    // and the caption both leave pixels this function's own shapes never
+    // touch, and whatever the LAST frame put there stays unless something
+    // repaints it. `COLOR_WINDOW`, not `COLOR_BTNFACE` -- see the doc above.
+    let bg = cache.col(|p| p.card, COLOR_WINDOW);
+    FillRect(hdc, &rc, cache.brush(bg));
+
+    let track_w = scale(40, dpi);
+    let track_h = scale(20, dpi);
+    let top = rc.top + (rc.bottom - rc.top - track_h) / 2;
+    let track = RECT {
+        left: rc.left,
+        top,
+        right: rc.left + track_w,
+        bottom: top + track_h,
+    };
+
+    // `(fill, edge, knob)` -- disabled outranks on/off, the same precedence
+    // `button`'s own `colours` gives its four tiers.
+    let (fill, edge, knob) = if !enabled {
+        (
+            cache.col(|p| p.field, COLOR_BTNFACE),
+            cache.col(|p| p.field_border, COLOR_BTNSHADOW),
+            cache.col(|p| p.text_faint, COLOR_GRAYTEXT),
+        )
+    } else if on {
+        let accent = cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT);
+        // No separate border colour for the filled state -- the same choice
+        // `BtnTier::Accent` makes in `colours` above, where the edge pen is
+        // the fill colour itself and so draws no visible seam.
+        (
+            accent,
+            accent,
+            cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
+        )
+    } else {
+        (
+            cache.col(|p| p.field, COLOR_BTNFACE),
+            cache.col(|p| p.field_border, COLOR_BTNSHADOW),
+            cache.col(|p| p.text_muted, COLOR_BTNTEXT),
+        )
+    };
+
+    let track_brush = CreateSolidBrush(fill);
+    let track_pen = CreatePen(PS_SOLID, 1, edge);
+    let prev_brush = SelectObject(hdc, HGDIOBJ(track_brush.0));
+    let prev_pen = SelectObject(hdc, HGDIOBJ(track_pen.0));
+    let r = scale(10, dpi) * 2;
+    if hc {
+        let _ = Rectangle(hdc, track.left, track.top, track.right, track.bottom);
+    } else {
+        let _ = RoundRect(hdc, track.left, track.top, track.right, track.bottom, r, r);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    let _ = DeleteObject(HGDIOBJ(track_pen.0));
+    let _ = DeleteObject(HGDIOBJ(track_brush.0));
+
+    // The knob: 14 px, inset 2 px from whichever edge it rests against --
+    // left off, right on. The pen matches the fill, the same "no visible
+    // seam" choice the track's own filled state makes above, so the circle
+    // reads as one shape rather than a ring around a disc.
+    let knob_d = scale(14, dpi);
+    let inset = scale(2, dpi);
+    let knob_top = track.top + (track_h - knob_d) / 2;
+    let knob_left = if on {
+        track.right - inset - knob_d
+    } else {
+        track.left + inset
+    };
+    let knob_brush = CreateSolidBrush(knob);
+    let knob_pen = CreatePen(PS_SOLID, 1, knob);
+    let prev_kb = SelectObject(hdc, HGDIOBJ(knob_brush.0));
+    let prev_kp = SelectObject(hdc, HGDIOBJ(knob_pen.0));
+    let _ = Ellipse(
+        hdc,
+        knob_left,
+        knob_top,
+        knob_left + knob_d,
+        knob_top + knob_d,
+    );
+    if !prev_kp.is_invalid() {
+        SelectObject(hdc, prev_kp);
+    }
+    if !prev_kb.is_invalid() {
+        SelectObject(hdc, prev_kb);
+    }
+    let _ = DeleteObject(HGDIOBJ(knob_pen.0));
+    let _ = DeleteObject(HGDIOBJ(knob_brush.0));
+
+    // The caption, to the right of the track at this window's usual
+    // control-to-control gap (`tok::GAP`). The raw caption text (mnemonic
+    // `&` intact) with prefix processing left ON -- `button`'s own choice,
+    // for the same reason: `IDC_CAPS`' caption carries `&Use`, and whether
+    // the underline SHOWS is the window's UI state to say, not this
+    // function's.
+    let font = HFONT(
+        SendMessageW(
+            nm.hdr.hwndFrom,
+            WM_GETFONT,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+        .0 as *mut core::ffi::c_void,
+    );
+    let prev_font = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    let ink = if enabled {
+        cache.col(|p| p.text, COLOR_WINDOWTEXT)
+    } else {
+        cache.col(|p| p.text_faint, COLOR_GRAYTEXT)
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    let gap = scale(tok::GAP, dpi);
+    let mut tr = RECT {
+        left: track.right + gap,
+        ..rc
+    };
+    let ui_state = SendMessageW(
+        nm.hdr.hwndFrom,
+        WM_QUERYUISTATE,
+        Some(WPARAM(0)),
+        Some(LPARAM(0)),
+    )
+    .0 as u32;
+    let mut flags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+    if ui_state & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let mut t = wide(&text_of(nm.hdr.hwndFrom));
+    let n = t.len() - 1;
+    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+
+    // Focus ring, LAST, per `button`'s own rule -- so it never fights the
+    // knob or the caption for the same pixels. 2 px `accent`, offset 2,
+    // around the TRACK alone: a ring around the whole control would run
+    // through the caption's own baseline.
+    if enabled && focused {
+        let ring = cache.col(|p| p.accent, COLOR_HIGHLIGHT);
+        let off = scale(2, dpi);
+        let ring_rc = RECT {
+            left: track.left - off,
+            top: track.top - off,
+            right: track.right + off,
+            bottom: track.bottom + off,
+        };
+        let ring_pen = CreatePen(PS_SOLID, scale(2, dpi), ring);
+        let null_brush = GetStockObject(NULL_BRUSH);
+        let prev_pen = SelectObject(hdc, HGDIOBJ(ring_pen.0));
+        let prev_brush = SelectObject(hdc, null_brush);
+        if hc {
+            let _ = Rectangle(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+            );
+        } else {
+            let rr = (r + off * 2).max(0);
+            let _ = RoundRect(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+                rr,
+                rr,
+            );
+        }
+        if !prev_pen.is_invalid() {
+            SelectObject(hdc, prev_pen);
+        }
+        if !prev_brush.is_invalid() {
+            SelectObject(hdc, prev_brush);
+        }
+        let _ = DeleteObject(HGDIOBJ(ring_pen.0));
+    }
+}
+
 /// A rounded 1 px border around `ctl`'s own rect, stroked from the PARENT.
 ///
 /// **`IDC_APP` and `IDC_FILTER` are never owner-drawn**, and this function

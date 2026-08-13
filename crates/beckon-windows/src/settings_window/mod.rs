@@ -4359,6 +4359,37 @@ unsafe fn push_button_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     CDRF_SKIPDEFAULT as isize
 }
 
+/// Paint `IDC_CAPS` -- the one toggle switch in this window -- by reading
+/// the three bits `paint::toggle` needs off the `NMCUSTOMDRAW` comctl32
+/// hands this window, the same shape `push_button_custom_draw` uses one
+/// function up for the nine `PUSH_BUTTONS`.
+///
+/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `IDC_CAPS` stays
+/// `BS_AUTOCHECKBOX` -- see its creation call and `paint::toggle`'s own doc
+/// for why: owner-draw is a different VALUE of the same 4-bit type field,
+/// not a flag beside it, and adopting it would throw away the check box
+/// state machine and the UIA role a screen reader announces.
+///
+/// `on` is read with `is_checked`, not off a bit this notification carries
+/// -- a check box's `NMCUSTOMDRAW` has no state bit for "ticked", only
+/// `CDIS_DISABLED` / `CDIS_FOCUS` / `CDIS_SELECTED` / `CDIS_HOT`, none of
+/// which mean checked. `is_checked` already routes `IDC_CAPS` to
+/// `BM_GETCHECK` (see `chip_bit`'s own doc: `IDC_CAPS` is deliberately
+/// absent from the chip table), so this asks the control the same way
+/// `handle_command`'s `(IDC_CAPS, _)` arm already does.
+unsafe fn caps_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as isize;
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let on = is_checked(hwnd, IDC_CAPS);
+    let enabled = cd.uItemState.0 & CDIS_DISABLED.0 == 0;
+    let focused = cd.uItemState.0 & CDIS_FOCUS.0 != 0;
+    PAINT_THEME.with(|c| toggle(cd, on, enabled, focused, &mut c.borrow_mut(), dpi));
+    CDRF_SKIPDEFAULT as isize
+}
+
 unsafe fn refresh_high_contrast() {
     let mut hc = HIGHCONTRASTW {
         cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
@@ -5086,6 +5117,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // `WM_DRAWITEM` below.
                 if is_push_button(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(push_button_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
+                // `IDC_CAPS` (Task 11): the one toggle switch in this
+                // window, reached the same way and for the same reason as
+                // the nine push buttons just above -- pure painting, no
+                // callback, cannot recurse into `apply_state`, so it is
+                // answered before `suppressed()` too.
+                if nm.idFrom == IDC_CAPS as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(caps_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
                 if suppressed() {
                     return LRESULT(0);
