@@ -98,12 +98,16 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark,
+    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+/// `DWMWA_WINDOW_CORNER_PREFERENCE` is not in `windows` 0.61's own constant
+/// table -- `theme.rs` already names the same reason for
+/// `DWMWA_USE_IMMERSIVE_DARK_MODE` -- so `create` defines it locally.
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 /// `MessageBeep` lives under Diagnostics::Debug, not WindowsAndMessaging --
 /// where the `MESSAGEBOX_STYLE` it takes is defined. Named rather than
@@ -120,12 +124,17 @@ use windows::Win32::UI::HiDpi::{
     MDT_EFFECTIVE_DPI,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, IsWindowEnabled, SetFocus,
+    EnableWindow, GetFocus, IsWindowEnabled, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
+    TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// `SS_LEFT` is 0 and `windows` 0.61 does not export it as a constant.
-const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
+mod chrome;
+mod layout;
+use layout::*;
+mod paint;
+use paint::*;
+mod theme;
 
 /// `SS_NOPREFIX` (0x0080), which `windows` 0.61 does not export either.
 ///
@@ -136,15 +145,32 @@ const SS_LEFT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0);
 /// Do`, `Arts & Crafts`) -- so without this an app name renders as a
 /// mangled, underlined string that looks like a beckon bug.
 ///
-/// **`SS_ENDELLIPSIS` is deliberately NOT here.** The three ellipsis styles
-/// force a static onto ONE line with no word wrap (documented on Static
-/// Control Styles, and the reason is that the control switches to a
-/// single-line DrawText path). `IDC_NOTES` is a multi-line strip -- several
-/// `\r\n`-joined note lines, on the line `notes_height` sizes inside the
-/// editor group -- so adding the style would collapse the whole notes band to
-/// its first line. Ellipsised multi-line text needs an owner-draw `DrawText`
-/// with `DT_WORDBREAK | DT_END_ELLIPSIS`, which is not this landing.
+/// **`SS_ENDELLIPSIS` is deliberately NOT here**, which used to matter
+/// because the three ellipsis styles force a static onto ONE line with no
+/// word wrap (documented on Static Control Styles) and `IDC_NOTES` was a
+/// multi-line strip that relied on native word-wrap to show a second note at
+/// all. **Since Task 12, `IDC_NOTES` is `SS_OWNERDRAW`** and neither wraps
+/// nor ellipsises through the control at all -- `paint::draw_notes` draws
+/// each note as its own `DT_SINGLELINE | DT_END_ELLIPSIS` line at a fixed
+/// height, so the risk this paragraph used to warn about (the whole band
+/// collapsing to its first line) cannot recur regardless of what this
+/// constant is combined with.
 const SS_NOPREFIX_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0080);
+
+/// `SS_OWNERDRAW` (0x0000000D). `windows` 0.61 DOES define this constant,
+/// but under `System::SystemServices`, not `WindowsAndMessaging` where the
+/// rest of this file's STATIC style bits live -- named locally rather than
+/// pulling in that whole module for one constant, the same call
+/// `SS_NOPREFIX_STYLE` above already makes for a different gap.
+///
+/// **A different VALUE of a STATIC's type field, not a flag beside
+/// `SS_LEFT`** -- `SS_LEFT` is 0, `SS_OWNERDRAW` is 13, and both occupy the
+/// same low bits (`SS_TYPEMASK`), exactly the relationship `button`'s own
+/// doc comment describes for `BS_OWNERDRAW`/`BS_DEFPUSHBUTTON`. `IDC_NOTES`
+/// is the only control that carries this style (Task 12), and was the only
+/// caller of the file's own `SS_LEFT_STYLE` constant -- deleted along with
+/// this replacing it, rather than left unused.
+const SS_OWNERDRAW_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0000000D);
 
 /// `DM_GETDEFID` is `WM_USER + 0`, `DM_SETDEFID` is `WM_USER + 1`, and
 /// `DC_HASDEFID` is the magic `0x534B` winuser.h gives it -- not a bit flag,
@@ -324,22 +350,29 @@ const IDC_MOD_SHIFT: i32 = 1031;
 const IDC_RECORD: i32 = 1032;
 const IDC_RESET: i32 = 1033;
 
-/// The editor group box. Its caption says which row is being edited, so the
-/// two lines inside it read as one thing rather than as seven controls that
-/// happen to share a band.
+/// The editor card's caption. Names which row is being edited, so the two
+/// lines below it read as one thing rather than as seven controls that
+/// happen to share a card. A `BS_GROUPBOX` until a review fix on Task 8
+/// reclassed it to a plain caption `STATIC` -- a themed group-box frame,
+/// nested inside the new rounded `card()` background, drew as two frames
+/// around one set of controls. See the creation comment in
+/// `build_children` and the `role_of` doc.
 ///
 /// 1034 because 1033 is the current maximum and 1001-1007 are pinned by
-/// `examples/settings_probe.rs`. A group box is not operable, so it carries
-/// no mnemonic and no entry in `mod cap`'s collision table.
+/// `examples/settings_probe.rs`; the reclass did not renumber it. Not
+/// operable, so it carries no mnemonic and no entry in `mod cap`'s
+/// collision table.
 const IDC_GRP_EDITOR: i32 = 1034;
 
 /// The count beside the `Shortcuts` heading -- `· 18 bindings`.
 ///
 /// **A second STATIC rather than a longer caption**, because the two are
 /// different type: B draws the heading at Subtitle and the count small and
-/// grey, and one STATIC has one font. It is also the only control in the
-/// window with a colour of its own, which `WM_CTLCOLORSTATIC` supplies by
-/// id -- see that arm.
+/// grey, and one STATIC has one font. It is also the only on-card control
+/// with a dimmer ink of its own -- `WM_CTLCOLORSTATIC` answers every STATIC,
+/// group box and check box left in this window now (see that arm), but this
+/// id alone keeps `text_faint` rather than the ordinary `text` token the
+/// rest draw with.
 ///
 /// It counts what the LIST is showing, so under a filter it says how many
 /// rows are on screen rather than how many the file holds. That is the
@@ -557,12 +590,11 @@ fn shown(caption: &str) -> String {
 
 /// The window title, without the dirty mark: `beckon - <file name>`.
 ///
-/// **ASCII hyphen, not an em-dash**, for the reason `mark_glyph` already
-/// gives -- this window inherits the shell's text face, and a glyph it does
-/// not carry draws as a box that reads like a rendering bug rather than as
-/// information. beckon has been bitten by exactly this once already: a UTF-8
-/// em-dash written to a `serve --log` came back as `?"` through Windows
-/// PowerShell 5.1's `Get-Content`.
+/// **ASCII hyphen, not an em-dash**: this window inherits the shell's text
+/// face, and a glyph it does not carry draws as a box that reads like a
+/// rendering bug rather than as information. beckon has been bitten by
+/// exactly this once already: a UTF-8 em-dash written to a `serve --log`
+/// came back as `?"` through Windows PowerShell 5.1's `Get-Content`.
 ///
 /// The FILE NAME, not the path: `serve` can be pointed anywhere and nothing
 /// on screen used to say where, but a full path in a title bar is truncated
@@ -574,62 +606,6 @@ fn title_base(config_path: &str) -> String {
         Some(f) => format!("beckon - {}", f.to_string_lossy()),
         None => "beckon".to_string(),
     }
-}
-
-/// Layout tokens, at 96 DPI. Every one of them goes through `scale`.
-///
-/// Two need their reasoning, because they look like they contradict the
-/// a14 measurements (`docs/superpowers/measurements/2026-08-11-landing-1-a14.md`)
-/// and do not:
-///
-/// - **`CTL` is 32, not the measured 22.** `BCM_GETIDEALSIZE` returns the
-///   smallest box the theme can draw a caption in — a floor, not a layout
-///   recommendation. The measurement's job was to prove 32 does not clip,
-///   and it does not.
-/// - **There is no list-row token.** 29 px measured at 144 DPI is 19.33 at
-///   96, and a non-integer is the tell that comctl32 derives the row
-///   height from the font at the live DPI. A 96-DPI token pushed through
-///   `scale` would be wrong at every non-integer scale and would break
-///   again the moment the font changes, so `list_row_height` asks the
-///   control instead.
-mod tok {
-    /// Surface padding — the margin between the client rect and content.
-    pub const PAD: i32 = 16;
-    /// Between two bands.
-    pub const BAND: i32 = 14;
-    /// Between two controls inside one band.
-    pub const GAP: i32 = 8;
-    /// A label and the control it names.
-    pub const LABEL: i32 = 12;
-    /// Height of one band line, and of every button on it.
-    pub const CTL: i32 = 32;
-    /// A button is never narrower than this, nor than its own caption.
-    pub const BTN: i32 = 88;
-    /// The right-aligned `Shortcut` column, the editor field under it, and
-    /// the key list's ceiling.
-    ///
-    /// The key list used to have a token of its own (`KEY_COL`, 140),
-    /// derived rather than designed: band 4 was one line, the App combo
-    /// absorbed whatever the other six controls left, and 60 px had to come
-    /// from somewhere to pay for `Record` and `Reset` sharing that line.
-    /// With App on a line of its own there is nothing left to starve, so the
-    /// key list is back under this ceiling and the arithmetic is retired.
-    pub const SHORTCUT_COL: i32 = 200;
-    /// A modifier chip is never narrower than this, nor than its own caption
-    /// plus `glyph` -- direction B's `.wtog { min-width:46px }`.
-    ///
-    /// It exists because `Alt` is three characters and `Shift` is five, and
-    /// a row of keys whose widths follow the length of their letters does not
-    /// read as a keyboard. Only `Alt` is actually short enough to hit the
-    /// floor at 96 DPI; the other six size themselves.
-    pub const CHIP_MIN: i32 = 46;
-    /// List rows visible without scrolling.
-    pub const ROWS: i32 = 8;
-    /// Widest a tooltip may draw before it wraps. Comfortably narrower than
-    /// `MIN_WIDTH`, so the balloon never overhangs the window that owns it,
-    /// and wide enough that an ordinary `%APPDATA%` config path takes two
-    /// lines rather than six.
-    pub const TOOLTIP_MAX: i32 = 420;
 }
 
 /// ListView columns, in order: title and text alignment.
@@ -668,157 +644,206 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
 /// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
 /// on the un-scaled size or the correction would resize to the wrong target.
-// 860 is spec B.2's stated width.
+// 900x740, up from 860x640 (spec B.2's stated width was 860; Task 8 widens it
+// for three cards at 16 px inner padding). Both numbers are unchanged from
+// Task 8's brief -- what follows is this session's own re-derivation against
+// real control heights, not the brief's, which summed to 740 using a list
+// figure (238) well above what `list_header_height` / `list_row_height`'s own
+// 96-DPI fallbacks give (183) and an editor-card sum whose own listed addends
+// total 184, not the 194 the brief wrote next to them. Both are corrected
+// below; 740 survives the correction with room to spare, so only the
+// commentary changes, not the constant.
 //
-// **640's original justification is spent.** It was raised from 560 so the
-// notes band -- the flex band at the time -- would fit four lines at 96 DPI,
-// on the reasoning that the band took `kb_y`'s leftover directly and every
-// pixel added here became a pixel of notes room. The notes are a fixed line
-// inside the editor group now (`notes_height`), so the leftover no longer
-// lands on them: at 860x640 the list reaches its full `tok::ROWS` and the
-// surplus -- **74 px at 96 DPI, 113 at 150 %** -- is slack between the editor
-// group and the keyboard group. The number is left alone here because
-// re-picking it is a question about what the window should look like at rest,
-// not arithmetic, and nothing on this machine can see the answer.
+// **The real budget, at 96 DPI, banner hidden, list unclamped** (mirrors
+// `layout`'s own `compute_card_rects`, which is the arithmetic this is
+// checked against, not the other way around):
 //
-// **Those two figures were re-derived against the SHIPPED `notes_height`.**
-// They read 78 / 119 when this comment was first written, which was Task 6's
-// 32 px notes stub; Task 9's real body costs 36 px at 96 and 54 at 144, so
-// `grp_h` grew 4 / 6 and the clearance lost exactly that. Neither the window
-// size nor any token moved -- only the number written down here. The
-// clearance, with the banner hidden and the list unclamped, is
+//   title bar (chrome::TITLEBAR_H)                    40
+//   pad                                                16
+//   Shortcuts card: CARD_PAD 16, head row ctl 32,
+//     gap 8, list (header 21 + 8*row 26)       16+32+8+229+16 = 301
+//   gap_card                                           12
+//   editor card: CARD_PAD 16, caption inset s(24) 24,
+//     App ctl 32, gap 8, Shortcut ctl 32, gap 8,
+//     notes 36, bottom inset gap 8, CARD_PAD 16    16+24+32+8+32+8+36+8+16 = 180
+//   gap_card                                           12
+//   keyboard card: CARD_PAD 16, caption inset 24,
+//     one ctl line 32, bottom inset gap 8, CARD_PAD 16       16+24+32+8+16 = 96
+//   gap_card                                           12
+//   command bar (ctl, not a card)                      32
+//   pad                                                16
+//                                                    ----
+//   client (list at its full 8 rows)                  717
+//   frame, bottom only (`chrome::nccalcsize` gives
+//     the rest back to the client; see `MIN_HEIGHT`)     8
+//                                                    ----
+//   window, exact fit                                 725
 //
-//   clearance = kb_y - (grp_y + grp_h)
-//             = h - 2*pad - 5*ctl - 2*band - 2*s(24) - 5*gap - list_h - notes_h
+// **SUPERSEDED BY MEASUREMENT, 2026-08-13.** Everything above this line is
+// the derivation for the 900x740 window with 26 px rows, and every figure in
+// it is now wrong: the compaction pass took the window to 760x600 and moved
+// eight tokens at once (PAD 16->10, CARD_PAD 16->11, GAP_CARD 12->8, GAP
+// 8->6, LABEL 12->10, CTL 32->26, ROW_H 26->22, TITLEBAR_H 40->34).
 //
-// @96, h = 640 - 39 non-client = 601, and pad/ctl/band/gap = 16/32/14/8:
-//   bar_y 553, kb_h 64, kb_y 475; y after band 2 = 56; notes_h 36,
-//   grp_h 148; want = 21 + 20*8 + 2 = 183 and room 405, so list_h = 183;
-//   grp_y 253, group bottom 401 -> 475 - 401 = **74**.
-// @144 (150 %), h = 960 - 58 non-client = 902, tokens 24/48/21/12:
-//   bar_y 830, kb_h 96, kb_y 713; y after band 2 = 84; notes_h 54,
-//   grp_h 222; want = 31 + 30*8 + 2 = 273 and room 608, so list_h = 273;
-//   grp_y 378, group bottom 600 -> 713 - 600 = **113**.
-// Row and header heights are `list_row_height` / `list_header_height`'s own
-// fallbacks, the same honest numbers `MIN_HEIGHT`'s table derives from.
-// Simulated, not seen: nothing on the machine this was written on can display
-// the window.
-const WINDOW_WIDTH: i32 = 860;
-const WINDOW_HEIGHT: i32 = 640;
+// It was not re-derived, and saying so is more useful than a fresh table
+// nobody checked. What replaced it is better evidence: the window was built
+// and run on a14 at 144 DPI, and measured **1140 x 900** -- exactly 760 x 600
+// scaled by 1.5 -- with all eight list rows present and no scroll bar. The
+// arithmetic this block exists to protect is the arithmetic that closes, and
+// it closes.
+//
+// **What the block is still for**, and why it is kept rather than deleted:
+// it records WHICH terms compose the height and in what order, so the next
+// person changing a token knows what they are spending. Re-derive it before
+// trusting any number in it -- and note that a real trace now has to account
+// for `notes_height`, a live font measurement that does not scale by 1.5
+// between DPIs, which is why the previous two versions of this comment both
+// ended in an estimate rather than a figure.
+const WINDOW_WIDTH: i32 = 760;
+const WINDOW_HEIGHT: i32 = 600;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
 /// included, never client ones.
 ///
 /// **This is no longer "the point where `layout` starts overlapping
-/// controls".** That is what this comment used to say, and it stopped being
-/// true when band 4 became a fixed-height group: every subtraction in
-/// `layout` is clamped, and band 3 gives up **its own** height — `list_h`,
-/// the one flexing figure in the window — before anything below it moves, so
-/// a window dragged past this floor produces a list with fewer rows —
-/// eventually none — rather than two controls in the same place. What the
-/// floor buys is that **the list is still worth looking at**.
+/// controls".** Every subtraction in `layout` (and in `compute_card_rects`,
+/// which now runs this arithmetic) is clamped, and card 1 gives up **its
+/// own** height — `list_h`, the one flexing figure in the window — before
+/// anything below it moves, so a window dragged past this floor produces a
+/// list with fewer rows — eventually none — rather than two controls in the
+/// same place. What the floor buys is that **the list is still worth
+/// looking at**.
 ///
 /// (`editor_min` is not that height and must not be read as it: it is what
-/// band 3 RESERVES for band 4 before choosing `list_h`, and it equals
-/// `grp_h`, band 4's own height. The distinction earns its ink here because
-/// this block is the derivation everything vertical is checked against.)
+/// card 1 RESERVES for card 2 before choosing `list_h`, and it equals
+/// `card2_h`, card 2's own height — `CARD_PAD` included, unlike the
+/// pre-Task-8 `grp_h` it replaced, because a card's footprint is its content
+/// plus its own padding. The distinction earns its ink here because this
+/// block is the derivation everything vertical is checked against.)
 ///
-/// `MIN_WIDTH` is spec B.2's number and clears both zero points this file
-/// computes — band 2's heading at a raw client width of ~332, band 4's key
-/// list at ~519 — by a wide margin. Compared like for like, client against
-/// client: a 720 px window with a 16 px frame has `w = 704`, so the two
-/// margins are ~372 px and ~185 px. Both **shrink** as the OS frame grows,
-/// so each is a ceiling on the margin rather than a floor under it.
+/// `MIN_WIDTH` is proportional to `WINDOW_WIDTH`'s own move (`720 * 900/860`,
+/// rounded) and clears both zero points this file computes — the Shortcuts
+/// card's heading at a raw client width of ~364, the editor card's key list
+/// at ~551 — by a wide margin. Both shifted **+32 px** from their pre-Task-8
+/// figures (332, 519): a card's own `CARD_PAD` is now subtracted from `cw`
+/// a second time to reach its interior width, and `2 * tok::CARD_PAD` is
+/// exactly that 32. Compared like for like, client against client: a 753 px
+/// window with a 16 px frame has `w = 737`, so the two margins are ~373 px
+/// and ~186 px — within a pixel of the pre-Task-8 margins (372, 185), since
+/// `MIN_WIDTH` grew by almost the same 32-ish px the zero points did. Both
+/// **shrink** as the OS frame grows, so each is a ceiling on the margin
+/// rather than a floor under it. Not re-simulated at 150 % for this task —
+/// the effort went to height, which the brief asked to re-derive; width was
+/// asked only to move proportionally.
 ///
 /// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
-/// which band 3 still shows **four** rows — half of `tok::ROWS` — **with the
-/// external-change banner up**. Four is enough to see a selection with a row
-/// of context above and below it; a window whose list shows one row is not a
-/// smaller version of this window, it is a broken one.
+/// which card 1's list still shows **four** rows — half of `tok::ROWS` —
+/// **with the external-change banner up**. Four is enough to see a
+/// selection with a row of context above and below it; a window whose list
+/// shows one row is not a smaller version of this window, it is a broken
+/// one.
 ///
 /// ```text
-///   pad                                          16
-///   band 1  banner, ctl                          32
-///           band                                 14
-///   band 2  head, ctl                            32
-///           gap                                   8
-///   band 3  header  (list_header_height, 21)      21
-///           4 * row (list_row_height, 20)         80
-///           border  (2 * SM_CYBORDER)              2
-///   band                                         14
-///   band 4  caption inset s(24)                   24
-///           App line, ctl                         32
-///           gap                                    8
-///           Shortcut line, ctl                    32
-///           gap                                    8
-///           notes  (`notes_height`)               36
-///           bottom inset, gap                      8
-///   band                                         14
-///   band 6  kb_h = s(24) + ctl + gap              64
-///   band                                         14
-///   band 7  command bar, ctl                      32
-///   pad                                          16
-///                                              ----
-///   client                                      507
-///   caption + frame at 96 DPI (SM_CYCAPTION 23
-///     + 2*SM_CYSIZEFRAME + 2*SM_CXPADDEDBORDER)   39
-///                                              ----
-///   window                                      546
+///   title bar  (chrome::TITLEBAR_H)                     40
+///   pad                                                 16
+///   card 0  banner: CARD_PAD 16, ctl 32, CARD_PAD 16     64
+///   gap_card                                             12
+///   card 1  Shortcuts, 4 rows: CARD_PAD 16, head ctl 32,
+///           gap 8, header (list_header_height, 21) 21,
+///           4 * row (list_row_height, 26) 104,
+///           CARD_PAD 16                                 197
+///   gap_card                                             12
+///   card 2  editor: CARD_PAD 16, caption inset s(24) 24,
+///           App ctl 32, gap 8, Shortcut ctl 32, gap 8,
+///           notes (`notes_height`) 36, bottom inset
+///           gap 8, CARD_PAD 16                          180
+///   gap_card                                             12
+///   card 3  keyboard: CARD_PAD 16, caption inset 24,
+///           one ctl line 32, bottom inset gap 8,
+///           CARD_PAD 16                                  96
+///   gap_card                                             12
+///   command bar (ctl -- not a card)                      32
+///   pad                                                  16
+///                                                      ----
+///   client                                              689
+///   frame at 96 DPI -- bottom only, unchanged since
+///     Task 7: `WM_NCCALCSIZE` (`chrome::nccalcsize`)
+///     hands the whole caption back to the client, so
+///     only `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` on the
+///     bottom edge remains non-client                      8
+///                                                      ----
+///   window                                              697
 /// ```
 ///
-/// Shipped as 550. The four pixels are slack against a non-client area the
-/// OS sizes, not a fudge of the derivation — and the whole constant is scaled
+/// **Re-derived for Task 10's 26 px rows** (was header 21 + 4*row 20 +
+/// border 2 = 103; the row figure alone moves to 4*26 = 104, and the
+/// `+ border` term drops out entirely -- `layout.rs`'s own comment on
+/// `compute_card_rects` says why -- for a new content figure of 21+104=125,
+/// +22 on the old 103. That +22 is exactly what card 1, the client and the
+/// window all move by below, since nothing else in the table depends on row
+/// height.) Shipped as 702 (was 680). The five pixels are still slack
+/// against a non-client area the OS sizes, not a fudge of the derivation,
+/// same as the pre-Task-8 constant — and the whole constant is scaled
 /// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
-/// was never exact at 150 % either. Erring high costs nothing; erring low
-/// costs list rows.
-///
-/// **This constant moved with `notes_height`, as documented on that
-/// function, and this is that move.** Task 6 SHIPPED 546 (the old constant,
-/// not the raw figure in the table above -- Task 6's own raw derivation was
-/// 542; that this task's new raw also lands on 546 is coincidence, not the
-/// same number carried forward) against the stub's assumed 32 px notes
-/// line; the real body costs 36, four pixels more, and
-/// this table -- and the constant -- carry that four pixels through rather
-/// than absorbing it as slack. 546 → 550 is that difference and nothing
-/// else: every other row in the table is unchanged from Task 6's derivation.
+/// is not exact at 150 % either. Erring high costs nothing; erring low costs
+/// list rows. Traced by hand through `compute_card_rects`'s own formula at
+/// the shipped client height (694 = 702 − 8): the five pixels land entirely
+/// on `list_h` (130 px, not the 125 four rows need) rather than on the gap
+/// below card 2, which stays exactly one `gap_card` in both cases — the same
+/// "clears by exactly one gap" shape the pre-Task-8 table described for
+/// `band`.
 ///
 /// The two row figures are `list_row_height` / `list_header_height`'s own
 /// 96-DPI fallbacks. They are the honest numbers to derive from: comctl32
 /// picks the real ones from the live font at the live DPI, which is exactly
 /// why neither is a token.
 ///
-/// **Band 1 is in the table, and that is what the number is for.** The banner
-/// contributes no height until the config file moves under us, so reserving
-/// its `ctl + band` costs 46 px of floor for a state that is normally absent
-/// — but the state it pays for is exactly the one in which the window is
-/// least disposable, and the alternative was measured: at a floor derived
-/// without band 1 (500), raising the banner took the list from four rows to
-/// **one**, which the paragraph above calls broken. Nothing overlapped there;
-/// the failure was a useless window, not a corrupt one, and that is the
-/// standard this constant is held to.
+/// **Card 0 is in the table, and that is what the number is for.** The
+/// banner contributes no height until the config file moves under us, so
+/// reserving its `CARD_PAD*2 + ctl` costs 64 px of floor for a state that is
+/// normally absent — but the state it pays for is exactly the one in which
+/// the window is least disposable, and the pre-Task-8 alternative was
+/// measured: at a floor derived without the banner, raising it took the
+/// list from four rows to one. Nothing overlapped there; the failure was a
+/// useless window, not a corrupt one, and that is the standard this
+/// constant is held to.
 ///
-/// So the floor buys **four rows with the banner up, six without it**, at
-/// both 96 DPI and 150 %; the editor group clears the keyboard group by
-/// exactly one `band` in all four cases -- simulated at the new floor the
-/// same way Task 6 simulated the old one: 720x550 @96 gives 103+4=107 px of
-/// list under the banner (4 rows, 4 px of a fifth row's worth of slack, same
-/// shape Task 6's own 103→107 had) and 14 px of clearance; 1080x825 @144
-/// gives 161 px of list (4 rows) and 21 px of clearance. Simulated, not
-/// seen — nothing on the machine this was written on can display the
-/// window.
-const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 550;
+/// **The floor buys four rows with the banner up, and — a genuine
+/// improvement over the pre-Task-8 "four with it, six without" — the list's
+/// full eight rows without it.** Traced by hand at `WINDOW_HEIGHT`'s shipped
+/// client height (732, banner down): the room-based cap evaluates to 244 px,
+/// 15 above `want` (229), so the cap never binds and the list reaches its
+/// full `tok::ROWS` — the same 15 px `WINDOW_HEIGHT`'s own comment reports as
+/// slack, measured the other way. That is a property of these particular
+/// numbers, not a designed-in guarantee — a future change to `notes_height`,
+/// `card2_h` or the row/header fallbacks can move it back below eight — so
+/// re-check it by the same hand trace rather than assuming it survives.
+/// Simulated, not seen: nothing on the machine this was written on can
+/// display the window.
+const MIN_WIDTH: i32 = 660;
+const MIN_HEIGHT: i32 = 560;
 
-/// One of §B.3's three type roles. There is no fourth: the `Keys` role the
-/// spec table also lists belongs to keycap rendering, which this window
-/// does not do -- a combo is four check boxes and a list of plain key
-/// names, all of them Body.
+/// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
+/// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
+/// Caption/Keycap, Chrome). Keycap serves keycap rendering in the editor
+/// strip and shortcut list; Title and Chrome serve the client-drawn title
+/// bar `chrome::paint` draws (Task 7).
 #[derive(Clone, Copy)]
 enum Role {
+    /// The title-bar app name. Read by `chrome::paint`.
+    Title,
     Subtitle,
+    /// Card captions, the ListView column headers, and the `Save` caption.
+    BodyStrong,
     Body,
     Caption,
+    /// Keycap rendering in the editor strip (modifier chips, Tap combo) and
+    /// the shortcut list column. 11 px semibold, matching keycap design
+    /// guidelines.
+    Keycap,
+    /// The two caption-button glyphs. Read by `chrome::paint`.
+    Chrome,
 }
 
 /// Which role a control takes, keyed on its id.
@@ -834,6 +859,23 @@ fn role_of(id: i32) -> Role {
         // The one band heading. Subtitle exists so the list reads as a
         // section of the window rather than as the whole of it.
         IDC_LBL_SECTION => Role::Subtitle,
+        // Card captions and the Save caption. `IDC_GRP_EDITOR` /
+        // `IDC_GRP_KEYBOARD` are the two card heads -- reclassed from
+        // `BS_GROUPBOX` to a plain caption `STATIC` in Task 8's review pass
+        // (see `child`'s creation calls for both ids): a themed group-box
+        // frame nested inside the new rounded `card()` background drew as
+        // two frames around one set of controls, and the fix is a coordinate
+        // shift plus a control-class change, not a renumbering -- both ids
+        // are unchanged, and `settings_probe` still reads their caption with
+        // `WM_GETTEXT`, which a `STATIC` answers identically to a `BUTTON`.
+        // `IDC_APPLY` reads its font through this same mapping even though
+        // it is custom-drawn -- `paint::button` asks the button for its own
+        // `WM_GETFONT` rather than picking a role directly, so this arm is
+        // the only place its weight is decided. The ListView's OWN column
+        // headers are a comctl32-owned Header control, never a child of
+        // `hwnd` and therefore never routed through `role_of` at all --
+        // `build_children` and `WM_DPICHANGED` each set that font directly.
+        IDC_GRP_EDITOR | IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
         // Secondary prose, at Caption size. The banner is deliberately NOT
         // here: it announces that the file moved under us, which is the
         // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
@@ -841,29 +883,47 @@ fn role_of(id: i32) -> Role {
         // heading -- one STATIC has one font, which is the whole reason it
         // is a second control.
         IDC_NOTES | IDC_LBL_COUNT => Role::Caption,
+        // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
+        // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
+        // same font -- the draw font and the measuring font move together,
+        // or a chip is sized for 14 px Body text and drawn with 11 px
+        // Keycap text. The FOUR chips in the editor strip (`IDC_MOD_CTRL`
+        // etc.) stay on `Role::Body` deliberately -- Task 8's brief names
+        // only the `Hold` chips, and `layout`'s plain `chip`/`tw` still
+        // measure those four.
+        IDC_HOLD_CTRL | IDC_HOLD_WIN | IDC_HOLD_ALT => Role::Keycap,
         // Everything the user reads or operates: the ListView, the filter
         // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
-        // (push, check, and the group box), the banner -- and anything added
-        // later that does not say otherwise.
+        // (push and check), the banner -- and anything added later that does
+        // not say otherwise. No group box is left in the window as of the
+        // reclass above.
         _ => Role::Body,
     }
 }
 
-/// The three live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
+/// The seven live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
 /// abort-class rule below keeps holding.
 #[derive(Clone, Copy)]
 struct Fonts {
+    title: HFONT,
     subtitle: HFONT,
+    body_strong: HFONT,
     body: HFONT,
     caption: HFONT,
+    keycap: HFONT,
+    chrome: HFONT,
 }
 
 impl Fonts {
     fn get(self, role: Role) -> HFONT {
         match role {
+            Role::Title => self.title,
             Role::Subtitle => self.subtitle,
+            Role::BodyStrong => self.body_strong,
             Role::Body => self.body,
             Role::Caption => self.caption,
+            Role::Keycap => self.keycap,
+            Role::Chrome => self.chrome,
         }
     }
 
@@ -871,19 +931,27 @@ impl Fonts {
         self.get(role_of(id))
     }
 
-    /// Release all three.
+    /// Release all seven.
     ///
     /// Only ever called AFTER the controls have been told about their
     /// replacements -- deleting a font that is still selected into a DC is
     /// undefined. Landing 1 established this discipline for one font
-    /// because one `HFONT` was leaking per window open; three roles means
-    /// three leaks if only one of them is freed.
+    /// because one `HFONT` was leaking per window open; seven roles means
+    /// seven leaks if only one of them is freed.
     ///
     /// Deduplicated because the total-failure path hands every role the
     /// same stock handle. `DeleteObject` on a stock object is documented
     /// harmless, but "harmless twice" is not a property worth relying on.
     unsafe fn delete(self) {
-        let all = [self.subtitle, self.body, self.caption];
+        let all = [
+            self.title,
+            self.subtitle,
+            self.body_strong,
+            self.body,
+            self.caption,
+            self.keycap,
+            self.chrome,
+        ];
         for (i, f) in all.iter().enumerate() {
             if f.is_invalid() || all[..i].iter().any(|p| p.0 == f.0) {
                 continue;
@@ -916,6 +984,29 @@ fn scale(v: i32, dpi: u32) -> i32 {
 /// order.
 fn shade(c: COLORREF, num: u32, den: u32) -> COLORREF {
     let ch = |sh: u32| ((c.0 >> sh) & 0xFF) * num / den;
+    COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
+}
+
+/// `num/den` of `a` blended with the rest of `b`, per channel. `shade` above
+/// answers "the same colour, darker"; this answers "partway between two
+/// DIFFERENT colours" -- the Shortcut column's hover tint (Task 10),
+/// `accent_soft` blended toward `card` so a hovered row reads as a hint
+/// rather than the stronger, unblended fill a selected row gets.
+///
+/// **Never called under high contrast.** Blending two arbitrary
+/// `GetSysColor` answers has no guaranteed relationship to anything -- the
+/// same high-contrast collision this window has already shipped three
+/// times, just reached through a blend instead of a mismatched `sys` index.
+/// Callers gate on `high_contrast()` themselves rather than this function
+/// gating on it, because there is no single safe fallback colour to hand
+/// back instead: falling through to whichever of `a`/`b` the caller means as
+/// "resting" is a decision only the caller can make.
+fn blend(a: COLORREF, b: COLORREF, num: u32, den: u32) -> COLORREF {
+    let ch = |sh: u32| {
+        let ca = (a.0 >> sh) & 0xFF;
+        let cb = (b.0 >> sh) & 0xFF;
+        (ca * num + cb * (den - num)) / den
+    };
     COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
 }
 
@@ -1029,23 +1120,36 @@ struct Ui {
     /// width, is tolerated rather than guarded -- see `shown_external`.)
     ///
     /// The path runs through `list_row_height`, which cannot measure a row
-    /// that is not there and returns `scale(20, dpi)` when the list is empty
-    /// -- 30 px at a14's 144 DPI, against 29 measured. So a window opened on a
-    /// config with no shortcuts lays out with the fallback, and without this
-    /// field the first Add would keep it: `external_change` does not move, the
-    /// layout is skipped, and the list stays ~8 px taller than the eight rows
-    /// it is sized for.
+    /// that is not there and returns `scale(tok::ROW_H, dpi)` when the list
+    /// is empty -- `scale(26, dpi)`, 39 px at a14's 144 DPI. **CORRECTED**:
+    /// this used to say `scale(20, dpi)` / "30 px ... against 29 measured" /
+    /// "~8 px taller" -- three numbers that were right for the pre-Task-10
+    /// row height (`tok::ROW_H` was 20) and went stale when Task 10 raised
+    /// it to 26 without this block being re-derived. The 39 px figure is
+    /// also not directly comparable to a "measured" figure the way the old
+    /// text implied: since Task 10, `rebuild_state_image_list`'s state
+    /// image list FORCES the live row to be at least `scale(tok::ROW_H,
+    /// dpi)`, but comctl32 is still free to pad further on top of that
+    /// image height (`list_row_height`'s own doc), and no hardware
+    /// measurement of the live, non-empty row exists yet (Gate 05, `NOT YET
+    /// RUN`). So a window opened on a config with no shortcuts lays out
+    /// against a LOWER BOUND that may or may not equal the true row height,
+    /// and without this field the first Add would keep whatever the
+    /// fallback got wrong: `external_change` does not move, the layout is
+    /// skipped, and the list is left at whatever height the fallback
+    /// produced rather than the one the real rows need.
     ///
-    /// **Where those 8 px go changed with Task 9, and the guard is what stops
-    /// mattering more, not less.** They used to be absorbed by the notes
-    /// strip, which flexed into whatever the bands above left; the notes are
-    /// a fixed line inside the editor group now (`notes_height`), so nothing
-    /// absorbs anything. The extra 8 px push `y`, therefore `grp_y`,
-    /// therefore the whole editor group down by 8 -- eating slack above the
-    /// keyboard group, and near `MIN_HEIGHT` running into `y.min(kb_y)`. The
-    /// other reason it is guarded rather than tolerated is unchanged:
-    /// `list_row_height`'s own comment used to justify the fallback by saying
-    /// `apply_state` re-lays-out the instant a row appears, which
+    /// **Where a too-short fallback's slack goes changed with Task 9, and
+    /// the guard is what stops it mattering more, not less.** A shortfall
+    /// used to be absorbed by the notes strip, which flexed into whatever
+    /// the bands above left; the notes are a fixed line inside the editor
+    /// group now (`notes_height`), so nothing absorbs anything -- any gap
+    /// between the fallback and the true row height pushes `y`, therefore
+    /// `grp_y`, therefore the whole editor group, eating slack above the
+    /// keyboard group and, near `MIN_HEIGHT`, running into `y.min(kb_y)`.
+    /// The other reason it is guarded rather than tolerated is unchanged:
+    /// `list_row_height`'s own comment used to justify the fallback by
+    /// saying `apply_state` re-lays-out the instant a row appears, which
     /// `shown_external` made false.
     ///
     /// Empty-vs-not is the whole condition: every non-empty list measures the
@@ -1114,6 +1218,19 @@ struct Ui {
     /// typed controls underneath a live capture. Two writers on one value is
     /// exactly what spec C.4 forbids.
     capture: Option<Capture>,
+    /// The OS's current light/dark/high-contrast answer, and the brushes it
+    /// implies. Resolved once at creation and re-resolved on
+    /// `WM_SETTINGCHANGE`/`WM_THEMECHANGED`; see `on_theme_changed` below.
+    /// Painting code never reads this field -- see `PAINT_THEME`, which is
+    /// kept in step with it at both points it rebuilds.
+    theme: theme::ThemeCache,
+    /// Which title-bar caption button the cursor is over -- `HTCLOSE` or
+    /// `HTMINBUTTON`, or `None` -- kept here rather than recomputed in
+    /// `chrome::paint` because Windows already hands it to `WM_NCMOUSEMOVE`
+    /// as `wParam`, and `chrome`'s own rule is that it never reads `UI`. The
+    /// `WM_NCMOUSEMOVE` / `WM_NCMOUSELEAVE` arms write it and repaint only
+    /// the bar; `chrome::paint` reads it by value, once per call.
+    hot: Option<i32>,
 }
 
 /// What a live capture has to say, rebuilt on every `WM_CAPTURE`.
@@ -1145,46 +1262,6 @@ struct Capture {
     /// duplicated beep is worse than a missing one, and every other outcome
     /// clears it.
     beeped_vk: Option<u32>,
-}
-
-/// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
-/// dropped before a single `SendMessageW` or `SetWindowPos` runs.
-///
-/// This is not tidiness. A second `RefCell` borrow taken across an
-/// `extern "system"` boundary — and every one of those calls can re-enter
-/// this window's wndproc — ABORTS the process rather than unwinding, so it
-/// shows up as neither a panic nor a test failure nor anything a
-/// cross-compile can catch. Copying the handles out first makes it
-/// unrepresentable.
-#[derive(Clone, Copy)]
-struct LayoutHandles {
-    list: HWND,
-    combo: HWND,
-    app: HWND,
-    notes: HWND,
-    filter: HWND,
-    banner: HWND,
-    reload: HWND,
-    keep: HWND,
-    fonts: Fonts,
-    external_change: bool,
-}
-
-impl LayoutHandles {
-    fn of(ui: &Ui) -> Self {
-        Self {
-            list: ui.list,
-            combo: ui.combo,
-            app: ui.app,
-            notes: ui.notes,
-            filter: ui.filter,
-            banner: ui.banner,
-            reload: ui.reload,
-            keep: ui.keep,
-            fonts: ui.fonts,
-            external_change: ui.external_change,
-        }
-    }
 }
 
 thread_local! {
@@ -1651,45 +1728,38 @@ fn show(h: HWND, on: bool) {
     }
 }
 
-/// The severity prefix on a line of the notes STATIC. Not the list: rows
-/// carry `ListItem::flag` beside the app name now (see `app_cell`), and a
-/// healthy row says nothing at all rather than `OK`.
-fn mark_glyph(m: Mark) -> &'static str {
-    // ASCII on purpose: the notes carry a Segoe UI Variable text face, or
-    // the shell's own on the fallback path, and neither is a symbol font --
-    // a missing glyph shows as a box that reads like a rendering bug rather
-    // than a status. (Segoe Fluent Icons IS installed, measured on a14, but
-    // spec B.5 defers those glyphs to the NM_CUSTOMDRAW pass that can give
-    // them their own font.)
-    //
-    // **`Ok` is blank, and this comment used to explain why it was not.** It
-    // said "All four are two columns wide so the note lines line up", which
-    // is a MONOSPACE property asserted about a proportional face -- measured
-    // on a14 and false. Each note is laid out as `glyph + "  " + text`, so
-    // the glyph's advance IS the x where the text starts:
-    //
-    // |            | 144 DPI | 96 DPI |
-    // |------------|---------|--------|
-    // | `OK` + 2sp | 35 px   | 22 px  |
-    // | `!!` + 2sp | 20 px   | 14 px  |
-    // | `! ` + 2sp | 20 px   | 13 px  |
-    // | `..` + 2sp | 18 px   | 12 px  |
-    // | 4 spaces   | 20 px   | 12 px  |
-    //
-    // So `OK` stood 15 px proud of `!!`, and the other three were never
-    // equal either -- just close enough not to be noticed. Two spaces put
-    // `Ok` inside the 2 px spread the shipped marks already had, and say
-    // the same thing spec B.5 says with the list flag: a healthy row is
-    // silent. Exact alignment needs a glyph column drawn at a fixed x,
-    // which is the NM_CUSTOMDRAW work B.5 defers.
-    //
-    // The trailing space on `Warn` is still load-bearing, not a typo.
-    match m {
-        Mark::Ok => "  ",
-        Mark::Warn => "! ",
-        Mark::Bad => "!!",
-        Mark::Unknown => "..",
-    }
+thread_local! {
+    /// What `IDC_NOTES` is currently showing, one severity-tagged line per
+    /// entry -- `paint::draw_notes`'s own input, and the paint-side mirror
+    /// of `CHIPS` for exactly `CHIPS`'s own reason: `WM_DRAWITEM` can arrive
+    /// while `UI` is already borrowed, so the notes cannot be re-derived
+    /// from `Ui::detail` at draw time. `show_notes` keeps this in step with
+    /// whatever it writes to the control's own window text, in the same
+    /// call, so the two can never disagree about which lines are showing.
+    static SHOWN_NOTES: RefCell<Vec<Note>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Push `body` to `IDC_NOTES`: mirrored into `SHOWN_NOTES` for `WM_DRAWITEM`
+/// to paint (`paint::draw_notes` needs the `Mark` beside each line, which
+/// plain window text cannot carry) and, separately, written as plain joined
+/// text through `set_text` -- so `GetWindowText`, which is what a screen
+/// reader and `examples/settings_probe.rs`'s `dump` both read, still answers
+/// with something. The plain text drops the severity a screen reader cannot
+/// see drawn as colour anyway; the note's own words already say what is
+/// wrong, exactly as they did before this task.
+///
+/// Replaces the old per-mark glyph prefix (`mark_glyph`, deleted): alignment
+/// is structural now -- `paint::draw_notes` draws every dot at the same
+/// fixed x regardless of which mark it is -- so there is no glyph column
+/// left to keep aligned inside the string.
+fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
+    let plain = body
+        .iter()
+        .map(|n| n.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    SHOWN_NOTES.with(|c| *c.borrow_mut() = body);
+    set_text(notes_hwnd, &plain);
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,14 +1830,41 @@ unsafe fn create() -> Result<(), String> {
     // (Win32_UI_WindowsAndMessaging), so this is not a new dependency.
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        // Deliberately NOT `CS_HREDRAW | CS_VREDRAW`. The client became a
+        // painted layer of cards in Task 8, so a resize genuinely does need
+        // a full repaint -- but `WM_SIZE`/`WM_DPICHANGED` are not the only
+        // way the card stack moves: the banner appearing or disappearing
+        // (`apply_state`'s `relayout` block) reflows every card below it
+        // with no `WM_SIZE` in sight, so a class style that only fires on a
+        // size change would leave that path uncovered. `WM_SIZE`,
+        // `WM_DPICHANGED` and `apply_state`'s `relayout` block each call
+        // `InvalidateRect(hwnd, None, true)` explicitly instead -- one
+        // mechanism that covers all three, rather than a class style plus a
+        // hand-rolled special case for the one it cannot reach.
+        style: WNDCLASS_STYLES(0),
         lpfnWndProc: Some(wndproc),
         hInstance: hinst.into(),
         lpszClassName: class,
         hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // WNDCLASS takes a system colour index PLUS ONE here, not a brush
-        // and not the raw index -- 0 means "no background", so passing
-        // COLOR_BTNFACE unshifted paints the window with COLOR_BTNSHADOW.
-        hbrBackground: HBRUSH((COLOR_BTNFACE.0 + 1) as isize as *mut _),
+        // **No class background brush at all.** WNDCLASS takes a system
+        // colour index PLUS ONE here, and this was `COLOR_BTNFACE + 1` -- a
+        // LIGHT system colour, which is the only light thing anywhere in this
+        // window's paint path once the theme took over.
+        //
+        // It showed. Measured on a14 2026-08-13, right after `nccalcsize`
+        // began reclaiming the whole frame: a #B1B1B1 band 10 px wide down
+        // the inside of the left and top edges -- exactly the strip that had
+        // just stopped being non-client -- which vanished on the next
+        // repaint. `DefWindowProc` erases a newly-exposed region with this
+        // brush before `WM_PAINT` gets to it, so any region the theme has not
+        // painted yet flashes a system colour, and the wider the client grows
+        // the more of it there is to flash.
+        //
+        // A null brush means `DefWindowProc` erases nothing and
+        // `WM_ERASEBKGND` owns the ground unconditionally -- which it already
+        // did for every tier that paints, and deliberately does not under
+        // Mica, where painting is the thing that would hide the backdrop.
+        hbrBackground: HBRUSH(std::ptr::null_mut()),
         hIcon: icon,
         hIconSm: icon_sm,
         ..Default::default()
@@ -1803,7 +1900,26 @@ unsafe fn create() -> Result<(), String> {
         WINDOW_EX_STYLE(0),
         class,
         PCWSTR(title.as_ptr()),
-        WS_OVERLAPPEDWINDOW,
+        // WS_OVERLAPPEDWINDOW minus WS_MAXIMIZEBOX. Dropping maximize is
+        // LOAD-BEARING, not cosmetic: it removes the HTMAXBUTTON / Snap
+        // Layouts obligation AND makes the maximized state -- where
+        // WM_NCCALCSIZE overflows the monitor by the frame thickness unless
+        // corrected by hand -- unreachable. The window is still resizable by
+        // its edges; `layout` already handles that.
+        // **No `WS_CAPTION`.** Measured on a14 2026-08-13: with it, Windows 11
+        // composites its OWN caption buttons over the reclaimed client area,
+        // so the window wore two minimise glyphs and two close glyphs drawn on
+        // top of each other -- plus a maximise button this design does not
+        // have -- visible as colour fringing where the two renderings of the
+        // same X disagree. `WM_NCCALCSIZE` reclaims the SPACE; it does not
+        // stop DWM drawing the buttons it believes a captioned window needs.
+        //
+        // `WS_POPUP` keeps `WS_THICKFRAME`'s resize border and the DWM shadow
+        // while declaring no caption for DWM to furnish. MSDN says
+        // `WS_SYSMENU` wants `WS_CAPTION`; it is kept anyway because the Alt
+        // +Space menu and the taskbar's own close entry route through it, and
+        // dropping it changes those without fixing anything.
+        WS_POPUP | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         w,
@@ -1814,6 +1930,48 @@ unsafe fn create() -> Result<(), String> {
         None,
     )
     .map_err(|e| format!("CreateWindowExW: {e}"))?;
+
+    // Round the top corners to match Windows 11's own window chrome, which
+    // a client-drawn caption otherwise loses -- DWM owns the window BORDER
+    // even though this window now draws its own caption content. `create`
+    // is already an `unsafe fn`, so -- like every other call in it -- this
+    // is not re-wrapped in its own `unsafe {}`; doing so is what the rest of
+    // this function avoids, and rustc flags it as a redundant block.
+    const DWMWA_WINDOW_CORNER_PREFERENCE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(33);
+    const DWMWCP_ROUND: u32 = 2;
+    let pref = DWMWCP_ROUND;
+    // No-op on Windows 10; the call returns an error we deliberately drop.
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_WINDOW_CORNER_PREFERENCE,
+        &pref as *const _ as *const _,
+        std::mem::size_of::<u32>() as u32,
+    );
+
+    // The OS's theme answer, resolved once up front. `build_children` (run
+    // synchronously inside `WM_CREATE`, above) has already stored a fresh
+    // `Ui` with a default (unresolved) `ThemeCache`, so this is the first
+    // real answer it gets. The borrow is taken and dropped on this one
+    // statement; `apply_dwm_dark` below holds none.
+    //
+    // `PAINT_THEME` is rebuilt right alongside it -- see `PAINT_THEME` for
+    // why painting code needs its own copy rather than reading `ui.theme`.
+    let t = beckon_core::theme::resolve(theme::read_inputs());
+    UI.with(|u| {
+        if let Some(ui) = u.borrow_mut().as_mut() {
+            ui.theme.rebuild(t);
+        }
+    });
+    PAINT_THEME.with(|c| {
+        c.borrow_mut().rebuild(t);
+    });
+    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    // The resize frame is still non-client on three sides, and DWM paints
+    // it black without a caption. Tint it to the window's own ground.
+    theme::apply_dwm_border(hwnd, t);
+    // First backdrop decision. See `apply_current_backdrop`, below, for why
+    // this window never calls `theme::read_backdrop_inputs` directly.
+    apply_current_backdrop(hwnd);
 
     // Position was CW_USEDEFAULT, so Windows -- not the cursor position
     // used above -- decided which monitor the window actually landed on.
@@ -1832,6 +1990,21 @@ unsafe fn create() -> Result<(), String> {
             scale(WINDOW_HEIGHT, real_dpi),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
         );
+    }
+
+    // The list's own theme sync (Task 10) -- `LVM_SETBKCOLOR` and friends,
+    // `SetWindowTheme`, and the state image list that forces `tok::ROW_H`
+    // rows. All three read state that is only final HERE: `theme_list`
+    // through `PAINT_THEME`, already rebuilt above; `rebuild_state_image_list`
+    // through `real_dpi`, not the earlier guess `dpi` -- a wrong initial
+    // monitor guess must not leave the tick sized for the wrong DPI with no
+    // `WM_DPICHANGED` ever arriving to correct it, since the window was
+    // already born on its final monitor (the comment above this block gives
+    // the same reason for the `SetWindowPos` correction it guards). Before
+    // `ShowWindow`, so nothing paints with the wrong sizing first.
+    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
+    if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
+        rebuild_state_image_list(list, real_dpi);
     }
 
     let _ = ShowWindow(hwnd, SW_SHOW);
@@ -2015,32 +2188,60 @@ unsafe fn make_font(
     HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
 }
 
-/// The three type roles of §B.3, built for `dpi`.
+/// The six type roles of §B.3, built for `dpi`.
 ///
 /// | Role | Size | Weight | Used for |
 /// |---|---|---|---|
-/// | Subtitle | 20 px | semibold | band headings |
+/// | Title | 15 px | semibold | the title-bar app name (Task 7) |
+/// | Subtitle | 18 px | semibold | the `Shortcuts` card head |
+/// | BodyStrong | 14 px | semibold | card captions, list column headers, `Save` |
 /// | Body | 14 px | regular | list, fields, buttons |
 /// | Caption | 12 px | regular | notes |
+/// | Chrome | 10 px | regular | the two caption-button glyphs (Task 7) |
 ///
-/// **The face names are spelled in full, from the a14 measurement.**
-/// `Segoe UI Variable Text Semibold` is exactly 31 characters and survives
-/// `lfFaceName` intact; the Display and Small semibolds do not, which is
-/// why the family here is Text rather than whichever optical size a naive
-/// truncation happens to leave valid. `Segoe UI Variable Text` / `Small` /
-/// `Display` were all confirmed present and exact.
+/// **Subtitle is 18 px, not 20.** An 18 px Semibold heading is Win11's own
+/// proportion for a card head, and 20 fought the 14 px body around it.
 ///
-/// Optical size is why Body and Caption differ at all: Segoe UI Variable
-/// ships Small for caption sizes, Text for body and headings up to ~30 px,
-/// Display above that. 20 px is Text territory, not Display's.
+/// **The face names are spelled in full, from the a14 measurement, and are
+/// NOT uniform.** `lfFaceName` holds 32 wchar. `Segoe UI Variable Text
+/// Semibold` is exactly 31 characters and survives intact; `Segoe UI
+/// Variable Display Semib` and `Segoe UI Variable Small Semibol` are cut at
+/// that same 32-wchar limit and must be spelled exactly as truncated --
+/// "regularising" any of the three to match the others hands `make_font` a
+/// name GDI cannot resolve. A wrong spelling does not fail: `CreateFontW`
+/// succeeds and hands back Arial. `make_font`'s `GetTextFace` round-trip is
+/// what actually catches that, which is why this table is written out
+/// rather than generated from one pattern.
+///
+/// Optical size is why Body/Caption/BodyStrong differ in family at all:
+/// Segoe UI Variable ships Small for caption sizes, Text for body and
+/// headings up to ~30 px, Display above that -- Title's 15 px still reads
+/// as a heading (it is the app name in the title bar) and so takes Display
+/// rather than Text.
 unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
     let base = message_logfont(dpi);
     Fonts {
+        title: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Display Semib",
+            15,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
         subtitle: make_font(
             hwnd,
             &base,
             "Segoe UI Variable Text Semibold",
-            20,
+            18,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
+        body_strong: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Text Semibold",
+            14,
             FW_SEMIBOLD.0 as i32,
             dpi,
         ),
@@ -2057,6 +2258,22 @@ unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
             &base,
             "Segoe UI Variable Small",
             12,
+            FW_NORMAL.0 as i32,
+            dpi,
+        ),
+        keycap: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Small Semibol",
+            11,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
+        chrome: make_font(
+            hwnd,
+            &base,
+            "Segoe Fluent Icons",
+            10,
             FW_NORMAL.0 as i32,
             dpi,
         ),
@@ -2116,7 +2333,7 @@ unsafe fn child(
 unsafe fn build_children(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let fonts = build_fonts(hwnd, dpi);
-    set_cap_font(fonts.get(Role::Caption));
+    set_cap_font(fonts.get(Role::Keycap));
 
     // -- Band 1: the external-change banner. Hidden until `apply_state`
     // says the file moved; `layout` gives it no height at all while it is
@@ -2177,11 +2394,18 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LBL_COUNT,
         &fonts,
     );
+    // `WS_BORDER` off: this is a field-styled control now, and its border is
+    // `paint::field_border`, drawn from the PARENT's `WM_PAINT` outside the
+    // control's own rect (Task 9) via `WM_CTLCOLOREDIT` for the fill/ink and
+    // this rounded stroke for the edge. Nothing here owner-draws the EDIT
+    // itself -- unlike `IDC_APP`, a plain EDIT has no child of its own for
+    // that to endanger, but the two stay on the same rule rather than one
+    // carving out an exception the other does not need.
     let filter = child(
         hwnd,
         w!("EDIT"),
         "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_BORDER | WS_TABSTOP,
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32) | WS_TABSTOP,
         IDC_FILTER,
         &fonts,
     );
@@ -2213,12 +2437,16 @@ unsafe fn build_children(hwnd: HWND) {
     );
 
     // -- Band 3: the list.
+    // `WS_BORDER` off (Task 10): the card is the border now
+    // (`paint::card`, drawn by the PARENT's `WM_PAINT` around the whole
+    // Shortcuts card), the same move Task 9 already made for `IDC_FILTER`
+    // and `IDC_APP`. `LVM_GETITEMRECT`/`layout`'s own `border` term drops
+    // with it -- see `compute_card_rects`'s comment in `layout.rs`.
     let list = child(
         hwnd,
         w!("SysListView32"),
         "",
         WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER)
-            | WS_BORDER
             | WS_TABSTOP,
         IDC_LIST,
         &fonts,
@@ -2260,22 +2488,44 @@ unsafe fn build_children(hwnd: HWND) {
             Some(LPARAM(&col as *const _ as isize)),
         );
     }
+    // The Header is comctl32's own child of the ListView, never a child of
+    // `hwnd` -- so it never goes through `child()` and never gets a font
+    // via `role_of`. `set_header_font` is the one place that sets it, so
+    // creation here and the `WM_DPICHANGED` rebroadcast cannot disagree.
+    set_header_font(list, fonts.get(Role::BodyStrong));
 
     // -- Band 4: the editor group. The strip's two lines live inside it and
     // its caption names the row, so seven controls read as one thing (spec
     // A.1).
     //
-    // Created BEFORE its children: a group box is a BUTTON that paints a
-    // frame, and creation order is z-order, so a group created afterwards
-    // paints over the controls it is supposed to surround.
+    // Created BEFORE its children, same order kept across the reclass below:
+    // the caption line at the top of the card should read first regardless
+    // of z-order.
     //
-    // Not a tab stop, and deliberately no BS_NOTIFY: it is not operable, so
-    // it must not join PUSH_BUTTONS and must never take the default ring.
+    // Not a tab stop: it is not operable, so it must never take the default
+    // ring.
+    //
+    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`** (review
+    // finding on Task 8, not a Task 8 original): a themed group-box frame,
+    // drawn inside the new rounded `card()` background, read as two frames
+    // around one set of controls. The id is unchanged (1034) --
+    // `settings_probe` still finds it there and reads its caption with
+    // `WM_GETTEXT`, which a `STATIC` answers the same way a `BUTTON` does.
+    // `SS_CENTERIMAGE_STYLE`, the same single-line style every other label
+    // in this window uses, and deliberately no `BS_NOTIFY` any more --
+    // that style only ever meant something on a `BUTTON`. `&` in the
+    // caption still needs doubling: a plain `STATIC` reads a lone `&` as a
+    // mnemonic prefix exactly like a `BUTTON` caption did, unless
+    // `SS_NOPREFIX` is given -- deliberately not given here, so the
+    // doubling logic at `apply_state` needed no change. `layout.rs` places
+    // this at `grp_x, grp_y, grp_w, s(24)` now, not the group's old full
+    // interior height -- see `compute_card_rects`' and `layout`'s own
+    // comments on why `card2_h`'s budget does not move.
     child(
         hwnd,
-        w!("BUTTON"),
+        w!("STATIC"),
         cap::EDITOR_NONE,
-        WINDOW_STYLE(BS_GROUPBOX as u32),
+        SS_CENTERIMAGE_STYLE,
         IDC_GRP_EDITOR,
         &fonts,
     );
@@ -2373,11 +2623,22 @@ unsafe fn build_children(hwnd: HWND) {
     // of every letter -- and every index in the window would then name the
     // wrong key. Nothing reachable from a unit test can catch that, so the
     // style bit is simply absent and this comment is the guard.
+    //
+    // **`CBS_OWNERDRAWFIXED`, added in Task 9.** Safe here in a way it is
+    // NOT for `IDC_APP`: this control has no edit child, so there is no
+    // typing path an owner-draw redraw could clobber, and `CB_SETCURSEL` /
+    // `CB_GETCURSEL` still move the same integer index regardless of who
+    // paints the item. `paint::draw_combo_item` reads the row's text back
+    // out of `key_table()` by that index rather than out of the control, so
+    // `CBS_HASSTRINGS` is not needed either. `Ui::defid`/`set_default_id`
+    // never touch this control -- it is not in `PUSH_BUTTONS` and cannot
+    // carry the default ring -- so none of `button`'s own reason for
+    // avoiding `BS_OWNERDRAW` on push buttons applies to a COMBOBOX at all.
     let combo = child(
         hwnd,
         w!("COMBOBOX"),
         "",
-        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED) as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_COMBO,
         &fonts,
     );
@@ -2418,13 +2679,24 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
     // On its own line directly beneath the strip, which is where B.1's
-    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE -- and, for
-    // the same reason, no SS_ENDELLIPSIS either; see SS_NOPREFIX_STYLE.
+    // mock-up draws it. Several lines tall, so no SS_CENTERIMAGE.
+    //
+    // **`SS_OWNERDRAW` since Task 12** -- a different VALUE of a STATIC's
+    // type field, replacing `SS_LEFT` rather than joining it (`draw_chip`'s
+    // own reason for `BS_OWNERDRAW`), so this control paints nothing of
+    // itself any more, background included: `paint::draw_notes`, reached
+    // through `WM_DRAWITEM`, owns the whole surface now, and
+    // `WM_CTLCOLORSTATIC` no longer reaches this id (see that arm in
+    // `mod.rs`). `SS_NOPREFIX` is kept anyway -- harmless on an owner-draw
+    // static, since it never runs the native prefix-parsing `DrawText` path
+    // this style would otherwise change (`draw_notes` passes `DT_NOPREFIX`
+    // itself) -- as cheap insurance against a future revert away from
+    // owner-draw silently losing ampersand handling along with it.
     let notes = child(
         hwnd,
         w!("STATIC"),
         "",
-        SS_LEFT_STYLE | SS_NOPREFIX_STYLE,
+        SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
         IDC_NOTES,
         &fonts,
     );
@@ -2442,11 +2714,21 @@ unsafe fn build_children(hwnd: HWND) {
     // alone: Caps Lock` / `Esc` / `nothing`, where the question governing
     // the group was glued to the first option -- so the other two did not
     // read as answers to it, and `Hold` had no representation at all.
+    //
+    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`**, same
+    // review finding and same reasoning as `IDC_GRP_EDITOR` just above: a
+    // themed group-box frame inside the new rounded `card()` background read
+    // as two frames around one set of controls. Id unchanged (1019), no
+    // `SS_NOPREFIX` (this caption carries no `&` today, but if one is ever
+    // added it needs the same doubling `IDC_GRP_EDITOR`'s caption does).
+    // `layout.rs` places this at `kb_x, kb_y, kb_w, s(24)` now, not the
+    // card's full interior height -- see `compute_card_rects`'s and
+    // `layout`'s own comments on why `kb_card_h`'s budget does not move.
     child(
         hwnd,
-        w!("BUTTON"),
+        w!("STATIC"),
         "Keyboard",
-        WINDOW_STYLE(BS_GROUPBOX as u32),
+        SS_CENTERIMAGE_STYLE,
         IDC_GRP_KEYBOARD,
         &fonts,
     );
@@ -2518,11 +2800,17 @@ unsafe fn build_children(hwnd: HWND) {
     // domain, so unlike the App field there is nothing to free-type here --
     // and a list with no edit field cannot be left holding text that matches
     // no item.
+    //
+    // `CBS_OWNERDRAWFIXED`, added in Task 9, for `IDC_COMBO`'s own reason:
+    // no edit child, so no typing path to endanger, and `paint::draw_combo_item`
+    // reads `cap::TAP_ITEMS` by index rather than the control's own text.
+    // Still no `CBS_SORT` -- three items, filled in the fixed order
+    // `cur_sel`'s callers already assume.
     let tap = child(
         hwnd,
         w!("COMBOBOX"),
         "",
-        WINDOW_STYLE(CBS_DROPDOWNLIST as u32) | WS_VSCROLL | WS_TABSTOP,
+        WINDOW_STYLE((CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED) as u32) | WS_VSCROLL | WS_TABSTOP,
         IDC_TAP,
         &fonts,
     );
@@ -2630,6 +2918,8 @@ unsafe fn build_children(hwnd: HWND) {
             app_epoch: 0,
             shown_combo: None,
             capture: None,
+            theme: theme::ThemeCache::default(),
+            hot: None,
         })
     });
 }
@@ -2807,290 +3097,22 @@ enum CapStyle {
     },
 }
 
-/// Lay a run of keycaps out inside `cell`, or report that it does not fit.
-///
-/// Two callers, and `style` says which: the **Shortcut column**, where this
-/// is why the config's own spelling never reaches the screen -- the user
-/// pressed three physical keys, so the column draws three keys, and `super`
-/// is a valid TOML token and a word on no keyboard -- and the **seven toggle
-/// chips**, which pass one cap each.
-///
-/// **Returns `false` when the caps do not fit, and the caller falls back to
-/// the display string with an ellipsis.** That fallback is structural rather
-/// than defensive: `tok::SHORTCUT_COL` is 200 px but `layout` caps the column
-/// at `inner / 2`, and a five-modifier chord, a narrow window and a high DPI
-/// each reach the limit on their own. A clipped keycap reads as a rendering
-/// fault; an ellipsis reads as a narrow column.
-///
-/// **Every colour is `GetSysColor`.** An accent literal would fight the row
-/// highlight four pixels away and would be the first crack in this window's
-/// light-only rule; `COLOR_HIGHLIGHT` is the user's own accent and is already
-/// right in high contrast. `hc` changes the *shape* only -- see
-/// `high_contrast`.
-unsafe fn draw_keycaps(
-    hdc: HDC,
-    cell: RECT,
-    caps: &[String],
-    font: HFONT,
-    dpi: u32,
-    hc: bool,
-    style: CapStyle,
-) -> bool {
-    if caps.is_empty() {
-        return false;
-    }
-    let toggle = matches!(style, CapStyle::Toggle { .. });
-    // **Two sets of metrics, from direction B's own two rules.** The board
-    // gives the column cap (`.wcap`) `height:19px; padding:0 5px` and the
-    // toggle chip (`.wtog`) `height:28px; padding:0 10px; min-width:46px` --
-    // a chip is a key you press, a column cap is a key you read, and sizing
-    // both from the column's numbers is what made the shipped chips look
-    // like small grey buttons. A chip therefore takes its control's whole
-    // height rather than the column's 19 px ceiling.
-    let pad = scale(if toggle { 10 } else { 5 }, dpi);
-    let gap = scale(3, dpi);
-    let inset = scale(if toggle { 2 } else { 4 }, dpi);
-    let row_h = cell.bottom - cell.top;
-    let cap_h = if toggle {
-        (row_h - inset * 2).max(scale(16, dpi))
-    } else {
-        (row_h - scale(6, dpi))
-            .min(scale(19, dpi))
-            .max(scale(12, dpi))
-    };
-    // The bottom edge, and the whole reason a box reads as a key. `.wcap` and
-    // `.wtog` both carry `border-bottom:2px` against a 1 px everywhere else.
-    let edge_h = scale(2, dpi).max(1);
-
-    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
-
-    // Measure the whole set before drawing any of it: the fallback is a
-    // decision about the set, not something to discover halfway along it with
-    // two caps already on screen.
-    let mut widths = Vec::with_capacity(caps.len());
-    let mut total = gap * (caps.len() as i32 - 1);
-    for c in caps {
-        // **Measured through `shown` for a chip and verbatim for a cell**,
-        // which is the same split `layout`'s `tw` already makes. A chip's
-        // caption carries a mnemonic marker -- `C&trl` -- and the `&` is not
-        // drawn, so a cap sized for it is a cap one character too wide. A
-        // cell's text is data and has no mnemonic to strip.
-        let m = if toggle { shown(c) } else { c.clone() };
-        let t = wide(&m);
-        let mut sz = SIZE::default();
-        // `wide` appends a NUL and this API takes a length, so the NUL would
-        // be measured as a character -- same rule as `text_size`.
-        let w = if GetTextExtentPoint32W(hdc, &t[..t.len() - 1], &mut sz).as_bool() {
-            sz.cx + pad * 2
-        } else {
-            scale(8, dpi) * m.chars().count() as i32 + pad * 2
-        };
-        total += w;
-        widths.push(w);
-    }
-    let room = cell.right - cell.left - inset * 2;
-    if total > room {
-        if !prev_font.is_invalid() {
-            SelectObject(hdc, prev_font);
-        }
-        return false;
-    }
-    // **A chip is one cap and it owns its control, so it takes the whole
-    // width** instead of shrinking to its caption. `min-width:46px` on
-    // `.wtog` says the same thing in CSS: a row of keys whose sizes follow
-    // the length of their letters does not read as a keyboard. `layout`
-    // already floors each chip's control at `tok::CHIP_MIN`, so this is
-    // where that floor becomes visible.
-    //
-    // Sized independently of the text, which is also what keeps a chip from
-    // resizing when it is toggled -- the measurement above is now only the
-    // fit test.
-    if toggle {
-        total = room;
-        if let Some(w) = widths.first_mut() {
-            *w = room;
-        }
-    }
-
-    // **A pressed key goes DOWN**: one pixel, and no bottom edge. That is the
-    // whole effect, and it is the ONLY click feedback these chips have --
-    // Windows draws none of its own for an owner-draw button, so without it a
-    // chip held under the mouse looks identical to one that is not.
-    let press = match style {
-        CapStyle::Toggle { pressed: true, .. } => scale(1, dpi),
-        _ => 0,
-    };
-    let top = cell.top + (row_h - cap_h) / 2 + press;
-    // Where the run starts. A chip owns its whole control rect and centres in
-    // it; a cell is one column of many rows, and those line up down the
-    // column, so a chord starts at a fixed inset instead.
-    let mut x = match style {
-        CapStyle::Chord => cell.left + inset,
-        CapStyle::Toggle { .. } => cell.left + ((cell.right - cell.left) - total) / 2,
-    };
-    // **Every colour is `GetSysColor`, or derived from one.** An armed chip's
-    // face is `COLOR_HIGHLIGHT` -- the user's own accent, matching the row
-    // highlight four pixels away and already correct in high contrast -- and
-    // its edge is that same colour through `shade`. Direction B's `#2563eb` /
-    // `#1d4fc4` pair is what the ratio was read off, not a colour to hard-code.
-    let armed_face = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
-    let (edge_col, border_col) = match style {
-        _ if hc => {
-            let c = COLORREF(GetSysColor(COLOR_WINDOWTEXT));
-            (c, c)
-        }
-        CapStyle::Toggle { armed: true, .. } => {
-            let e = shade(armed_face, 4, 5);
-            (e, e)
-        }
-        // A disabled chip keeps its shape and its depth and loses only its
-        // ink -- see the face table below for why it does not also keep the
-        // light face.
-        CapStyle::Toggle { disabled: true, .. } => {
-            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
-            (c, c)
-        }
-        _ => {
-            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
-            (c, c)
-        }
-    };
-    let pen = CreatePen(PS_SOLID, 1, border_col);
-    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
-    SetBkMode(hdc, TRANSPARENT);
-    // **A chip's resting face is `COLOR_WINDOW`, not `COLOR_BTNFACE`**, and
-    // that one substitution is most of why the shipped chips disappeared:
-    // `COLOR_BTNFACE` IS the window's own background, so an unarmed chip was
-    // a grey box on a grey surface with only a hairline to prove it existed.
-    // Direction B puts `--w-cap:#fafafa` on a `--w-bg:#f3f3f3` window -- the
-    // key is LIGHTER than what it sits on, which is how a physical keycap
-    // catches light.
-    //
-    // **Greyed outranks armed, and a disabled chip keeps `COLOR_BTNFACE`.**
-    // The light face is what makes an OPERABLE key stand off the surface, so
-    // giving it to a disabled one inverts the whole point -- measured on a14:
-    // with `keyboard.caps` off, three white `Hold` keys read as the most
-    // prominent thing in the band. `.wtog.dis` puts `#f7f7f7` on a `#f3f3f3`
-    // window, i.e. it deliberately sinks BACK into the surface. Only the ink
-    // and the face change; the box and its edge stay, so the shape survives.
-    //
-    // What a disabled chip stops saying is which way it is set. That is a
-    // real loss on the three `Hold` chips, which are greyed whenever Caps is
-    // off while still describing what Caps would do. No accent-on-grey
-    // pairing exists in the system palette to settle it; it wants eyes
-    // rather than another argument here.
-    let (face, text_colour) = match style {
-        CapStyle::Chord => (None, COLOR_BTNTEXT),
-        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_BTNFACE), COLOR_GRAYTEXT),
-        CapStyle::Toggle { armed: true, .. } => (Some(COLOR_HIGHLIGHT), COLOR_HIGHLIGHTTEXT),
-        CapStyle::Toggle { .. } => (Some(COLOR_WINDOW), COLOR_BTNTEXT),
-    };
-    SetTextColor(hdc, COLORREF(GetSysColor(text_colour)));
-    // A cell's text is data and its `&` is a character; a chip's caption
-    // carries a mnemonic, and whether the underline SHOWS is the window's UI
-    // state to say, not this function's -- see `draw_chip`.
-    let text_flags = match style {
-        CapStyle::Chord => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        CapStyle::Toggle { hide_accel, .. } => {
-            let base = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
-            if hide_accel {
-                base | DT_HIDEPREFIX
-            } else {
-                base
-            }
-        }
-    };
-
-    for (i, c) in caps.iter().enumerate() {
-        let w = widths[i];
-        // For a chord: the main key is last, and it is the one actually
-        // pressed, so it takes the window fill and reads brighter than the
-        // modifiers holding it down. Every row in this column shares the same
-        // three-modifier prefix, so the key is the only part worth finding at
-        // a glance. A chip is one cap and has no such last, which is why the
-        // armed fill is decided above and simply wins here.
-        let fill = match face {
-            Some(f) => f,
-            None if i + 1 == caps.len() => COLOR_WINDOW,
-            None => COLOR_BTNFACE,
-        };
-        if hc {
-            // Flat, hard and no depth: a high-contrast theme is built on
-            // solid fills and hard borders, and a soft edge under one reads
-            // as a rendering artefact rather than as a key.
-            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
-            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-            let _ = Rectangle(hdc, x, top, x + w, top + cap_h);
-            if !prev_brush.is_invalid() {
-                SelectObject(hdc, prev_brush);
-            }
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-        } else {
-            // **Two rounded rects, not a rect plus a line.** The edge is a
-            // 2 px BORDER in CSS, so it follows the corner radius; the old
-            // inset hairline sat inside the box and read as an underline
-            // rather than as the side of a key. Painting the taller shape in
-            // the edge colour first and the face over it, `edge_h` shorter,
-            // leaves exactly that border showing along the bottom.
-            //
-            // A pressed key skips it and drops a pixel: at the bottom of its
-            // travel there is no side left to see.
-            let r = scale(5, dpi) * 2;
-            if press == 0 {
-                let eb = CreateSolidBrush(edge_col);
-                let pb = SelectObject(hdc, HGDIOBJ(eb.0));
-                let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
-                if !pb.is_invalid() {
-                    SelectObject(hdc, pb);
-                }
-                let _ = DeleteObject(HGDIOBJ(eb.0));
-            }
-            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
-            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-            let _ = RoundRect(hdc, x, top, x + w, top + cap_h - edge_h, r, r);
-            if !prev_brush.is_invalid() {
-                SelectObject(hdc, prev_brush);
-            }
-            let _ = DeleteObject(HGDIOBJ(brush.0));
-        }
-
-        // Centred in the FACE, not in the whole cap: the bottom edge is the
-        // side of the key, and text centred over it sits low.
-        let mut tr = RECT {
-            left: x,
-            top,
-            right: x + w,
-            bottom: top + cap_h - if hc || press > 0 { 0 } else { edge_h },
-        };
-        // The RAW caption, `&` intact: `text_flags` decides whether it marks
-        // a mnemonic or is drawn. Only the MEASUREMENT above strips it.
-        let mut t = wide(c);
-        let n = t.len() - 1;
-        DrawTextW(hdc, &mut t[..n], &mut tr, text_flags);
-        x += w + gap;
-    }
-
-    if !prev_pen.is_invalid() {
-        SelectObject(hdc, prev_pen);
-    }
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    if !prev_font.is_invalid() {
-        SelectObject(hdc, prev_font);
-    }
-    true
-}
-
 /// One ListView row, in physical pixels at the live DPI.
 ///
-/// **Queried, never scaled from a token.** 29 px measured on a14 at 144 DPI
-/// is 19.33 at 96, and a non-integer is the tell that comctl32 derives the
-/// row height from the font rather than from a design constant — a 96-DPI
-/// token pushed through `scale` would be wrong at every non-integer scale
-/// and would go wrong again the moment B.3 changes the font.
+/// **Queried, never scaled from a token, when a row exists to measure.**
+/// Pre-Task-10, 29 px measured on a14 at 144 DPI was 19.33 at 96, and a
+/// non-integer was the tell that comctl32 derived the row height from the
+/// font rather than from a design constant. Since Task 10 the height is
+/// FORCED by `rebuild_state_image_list`'s state image list to be at least
+/// `scale(tok::ROW_H, dpi)`, but comctl32 is still free to add its own
+/// padding on top of that image height, so the real answer is asked of the
+/// control rather than assumed either way -- a 96-DPI token pushed through
+/// `scale` would still be wrong at every non-integer scale.
 ///
 /// `LVM_GETITEMRECT` needs a row to measure. When the list is empty there is
-/// none, so this falls back to a scaled token -- 30 px at 144 DPI, against the
-/// 29 a real row measures.
+/// none, so this falls back to `scale(tok::ROW_H, dpi)` -- the forced LOWER
+/// BOUND, not a hardware measurement: since Task 10 the true figure can only
+/// be equal to or greater than it, never less.
 ///
 /// **The list's item count is therefore an input to `layout`, and
 /// `apply_state` has to treat it as one.** This comment used to say the
@@ -3119,7 +3141,41 @@ unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
             return h;
         }
     }
-    scale(20, dpi)
+    scale(tok::ROW_H, dpi)
+}
+
+/// Give the ListView's own Header control a font.
+///
+/// comctl32 does not propagate a `WM_SETFONT` sent to the ListView down to
+/// its Header child -- the two are separate windows -- so without this the
+/// column headers stay on whatever font the Header was born with. Called
+/// once at creation (`build_children`) and again on every `WM_DPICHANGED`,
+/// because the Header is a child of `list`, not of `hwnd`, and so is never
+/// reached by that handler's `GW_CHILD` / `GW_HWNDNEXT` walk.
+unsafe fn set_header_font(list: HWND, font: HFONT) {
+    let hdr = HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _);
+    if !hdr.is_invalid() {
+        SendMessageW(
+            hdr,
+            WM_SETFONT,
+            Some(WPARAM(font.0 as usize)),
+            Some(LPARAM(1)),
+        );
+    }
+}
+
+/// The ListView's Header child, by `HWND` rather than by dialog control id --
+/// the Header carries none of its own, so this is the only way to name it
+/// from a `WM_NOTIFY`'s bare `hwndFrom` (Task 10's header custom draw).  Same
+/// `LVM_GETHEADER` round trip `set_header_font` / `list_header_height` already
+/// pay; a fourth call site rather than a cache, because it is only reached on
+/// a custom-draw notification that neither `IDC_LIST` nor a push button
+/// already claimed -- at most once per repaint.
+unsafe fn header_of(hwnd: HWND) -> HWND {
+    let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) else {
+        return HWND::default();
+    };
+    HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _)
 }
 
 /// The ListView's header, in physical pixels at the live DPI. Measured 31
@@ -3137,6 +3193,145 @@ unsafe fn list_header_height(list: HWND, dpi: u32) -> i32 {
         }
     }
     scale(21, dpi)
+}
+
+/// Replace `list`'s checkbox state image list with one tall enough to force
+/// `tok::ROW_H` rows -- a ListView's row height comes from its image list,
+/// not from a token of its own (see `tok::ROW_H`'s own comment), so the
+/// state list the per-row ticks already ride in is the lever.
+///
+/// **The glyphs are comctl32's own, not hand-drawn.** `LVS_EX_CHECKBOXES`
+/// already built two correctly-themed, correctly-DPI-scaled checkbox images
+/// the moment it was turned on; `DrawFrameControl` would draw the pre-Vista
+/// flat checkbox instead of the rounded one Explorer itself uses, sitting
+/// oddly next to `theme_list`'s `SetWindowTheme("DarkMode_Explorer")`. Each
+/// glyph is copied, unmodified, onto a taller canvas sized
+/// `s(16) x s(tok::ROW_H)`, centred -- the tick itself stays whatever size
+/// comctl32 drew it at (~15 px), only the cell around it grows.
+///
+/// **A real 32-bit alpha canvas, not a legacy colour-key mask.** GDI drawing
+/// onto an ordinary `CreateCompatibleBitmap` does not reliably touch the
+/// alpha byte, so the canvas is a `CreateDIBSection` this function zeroes by
+/// hand (alpha 0, fully transparent) before every frame. `ImageList_Draw` --
+/// unlike a raw `BitBlt`/`DrawFrameControl` -- is comctl32's own API and is
+/// alpha-aware when the destination is a real 32bpp DIB, so the composited
+/// glyph keeps a working alpha channel that `ImageList_Add`'s `ILC_COLOR32`
+/// list (no mask argument) can use directly.
+///
+/// Called once at creation (`create`, after the theme and DPI are both
+/// final) and again on every `WM_DPICHANGED`. **Known limitation, disclosed
+/// rather than fixed**: after the first call, `LVM_GETIMAGELIST` reads back
+/// OUR OWN previous composite as the source to re-centre, not comctl32's
+/// native default -- once we own `LVSIL_STATE` there is no API to ask
+/// comctl32 to regenerate its own default at a new DPI. The CELL still
+/// rescales correctly on a live DPI change (`cx`/`cy` are computed fresh
+/// every call); the tick's own pixel resolution does not, and stays at
+/// whatever DPI first installed it. A monitor move is the only way to reach
+/// this, and the result is a soft-scaled tick, never a missing or
+/// mis-centred one.
+///
+/// **Unverified on hardware.** This host cannot run Windows; Gate 05
+/// (Task 15) is what actually confirms the tick still centres.
+unsafe fn rebuild_state_image_list(list: HWND, dpi: u32) {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let cx = s(16);
+    let cy = s(tok::ROW_H);
+    if cx <= 0 || cy <= 0 {
+        return;
+    }
+
+    let src = HIMAGELIST(
+        SendMessageW(
+            list,
+            LVM_GETIMAGELIST,
+            Some(WPARAM(LVSIL_STATE as usize)),
+            Some(LPARAM(0)),
+        )
+        .0,
+    );
+    if src.is_invalid() {
+        return;
+    }
+    let (mut src_cx, mut src_cy) = (0i32, 0i32);
+    let _ = ImageList_GetIconSize(
+        src,
+        Some(&mut src_cx as *mut i32),
+        Some(&mut src_cy as *mut i32),
+    );
+    if src_cx <= 0 || src_cy <= 0 {
+        return;
+    }
+
+    let il = ImageList_Create(cx, cy, ILC_COLOR32, 2, 0);
+    if il.is_invalid() {
+        return;
+    }
+
+    let screen = GetDC(None);
+    let mem = CreateCompatibleDC(Some(screen));
+    if mem.is_invalid() {
+        let _ = ReleaseDC(None, screen);
+        let _ = ImageList_Destroy(Some(il));
+        return;
+    }
+    let header = BITMAPINFOHEADER {
+        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+        biWidth: cx,
+        // Negative: top-down, so (0,0) is the top-left -- the same sense
+        // `ImageList_Draw`'s own (x, y) offset expects.
+        biHeight: -cy,
+        biPlanes: 1,
+        biBitCount: 32,
+        biCompression: 0, // BI_RGB
+        ..Default::default()
+    };
+    let bmi = BITMAPINFO {
+        bmiHeader: header,
+        ..Default::default()
+    };
+    let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+    let dib = CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0);
+    let _ = ReleaseDC(None, screen);
+    let Ok(dib) = dib else {
+        let _ = DeleteDC(mem);
+        let _ = ImageList_Destroy(Some(il));
+        return;
+    };
+
+    let xoff = ((cx - src_cx) / 2).max(0);
+    let yoff = ((cy - src_cy) / 2).max(0);
+    let px_bytes = (cx as usize) * (cy as usize) * 4;
+
+    // Unchecked (state 1, image list index 0), then checked (state 2, index
+    // 1) -- `LVIS_UNCHECKED`/`LVIS_CHECKED`'s own one-based-minus-one
+    // mapping, unchanged by this swap.
+    for i in 0..2i32 {
+        let old_bmp = SelectObject(mem, HGDIOBJ(dib.0));
+        if !bits.is_null() {
+            std::ptr::write_bytes(bits as *mut u8, 0, px_bytes);
+        }
+        let _ = ImageList_Draw(src, i, mem, xoff, yoff, ILD_TRANSPARENT);
+        // Deselected before `ImageList_Add` touches the bitmap directly --
+        // GDI does not allow a bitmap to be read by one caller while it is
+        // still selected into a DC of ours.
+        SelectObject(mem, old_bmp);
+        ImageList_Add(il, dib, None);
+    }
+    let _ = DeleteObject(HGDIOBJ(dib.0));
+    let _ = DeleteDC(mem);
+
+    let prev = SendMessageW(
+        list,
+        LVM_SETIMAGELIST,
+        Some(WPARAM(LVSIL_STATE as usize)),
+        Some(LPARAM(il.0)),
+    );
+    // `LVM_SETIMAGELIST` does not free the list it displaces -- ours to
+    // free, the same rule as any other `HIMAGELIST` we swap in.
+    let old = HIMAGELIST(prev.0);
+    if !old.is_invalid() && old.0 != il.0 {
+        let _ = ImageList_Destroy(Some(old));
+    }
 }
 
 /// Set a column's width, but only when it is not already right.
@@ -3169,574 +3364,52 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// notes at once reads like, which is exactly the gap the followups record.
 /// It is a cheap guess to change and an expensive band to leave empty.
 ///
-/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`,
-/// and `grp_h` is derived from this -- change what a notes line costs and
-/// the floor moves with it. 16 px (96 DPI, derived) / 24 px (144 DPI,
-/// measured): the 144 figure IS a fresh a14 reading -- item 10 of the
-/// 2026-08-11 a14 pass sized the read-only notes STATIC against "5 lines x
-/// 24" at 144 DPI, the same Caption face this line measures. The 96 DPI
-/// figure comes from applying the same internal-leading ratio the Body font
-/// showed at that pass (`text_h` 28 against a requested 21, i.e. 4/3) to
-/// Caption's 12 px request -- and that same ratio, applied to Caption's
-/// 144-DPI request of 18, reproduces the hardware 24 exactly, which is why
-/// it is trusted for the DPI nobody has measured. If a real 96-DPI reading
-/// disagrees, `MIN_HEIGHT` must be re-derived from it, not nudged -- though
-/// the disagreement is bounded, not open-ended: the derived window height
-/// is `546 + 2(L - 16)` for a real Caption line height `L`, so the shipped
-/// 550 absorbs any `L` up to 18 px with the four-row banner-up guarantee
-/// intact. `L = 19` costs one row and nothing else -- `editor_min = grp_h`
-/// in `layout` (see its own comment there) is computed from the RUNTIME
-/// value, not this estimate, so a wrong `L` can only shrink the list at the
-/// absolute floor; it cannot produce an overlap at any `L`. That is the
-/// safe direction.
+/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `card2_h`
+/// (Task 8's card wrapping `grp_h`), and `card2_h` is derived from this --
+/// change what a notes line costs and the floor moves with it. 16 px (96
+/// DPI, derived) / 24 px (144 DPI, measured): the 144 figure IS a fresh a14
+/// reading -- item 10 of the 2026-08-11 a14 pass sized the read-only notes
+/// STATIC against "5 lines x 24" at 144 DPI, the same Caption face this line
+/// measures. The 96 DPI figure comes from applying the same internal-leading
+/// ratio the Body font showed at that pass (`text_h` 28 against a requested
+/// 21, i.e. 4/3) to Caption's 12 px request -- and that same ratio, applied
+/// to Caption's 144-DPI request of 18, reproduces the hardware 24 exactly,
+/// which is why it is trusted for the DPI nobody has measured. If a real
+/// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
+/// nudged -- though the disagreement is bounded, not open-ended: the derived
+/// window height is `697 + 2(L - 16)` for a real Caption line height `L`
+/// (re-derived for Task 10's rows below; unchanged in FORM from the
+/// pre-Task-8 `546 + 2(L-16)` -- `notes_h` is still a single linear term
+/// inside `card2_h`, which is still a single linear term inside the total,
+/// so the coefficient survives even though the anchor moved with the
+/// table, twice now). The shipped 702 absorbs any `L` up to 18 px with the
+/// four-row banner-up guarantee intact -- the identical threshold every
+/// earlier constant gave, because both the sensitivity and the five-pixel
+/// buffer are unchanged. `L = 19` costs one row and nothing else --
+/// `editor_min = card2_h` in `compute_card_rects` (see its own comment
+/// there) is computed from the RUNTIME value, not this estimate, so a wrong
+/// `L` can only shrink the list at the absolute floor; it cannot produce an
+/// overlap at any `L`. That is the safe direction.
+///
+/// **Re-derived for Task 8's cards** (was `546 + 2(L-16)` before Task 7's
+/// title bar moved it to `555 + 2(L-16)` / shipped 560; that task replaced
+/// both the table and the constant, not just the anchor). Solved from
+/// `compute_card_rects`'s own formula: at the banner-up, four-row floor,
+/// `client = 631 + notes_h` exactly (`notes_h` the only non-constant term
+/// once `card1`'s want/room clamp resolves to the four-row target), and
+/// `notes_h = 2L + scale(4, dpi)`, so `client = 631 + 2L + 4 = 635 + 2L` at
+/// 96 DPI -- `675 + 2(L-16)` once the `+8` non-client frame and the `-32`
+/// from centering the formula on `L=16` are folded in.
+///
+/// **Re-derived again for Task 10's 26 px rows.** The four-row content
+/// figure `header + 4*row (+ border, now gone)` moved from 103 to 125, +22
+/// -- see `MIN_HEIGHT`'s own table -- and that +22 is a constant shift of
+/// the whole linear relationship, since `notes_h` never entered it: `client
+/// = 653 + notes_h`, `697 + 2(L-16)` once the same `+8`/`-32` are folded in.
+/// See `MIN_HEIGHT`'s own table for the raw 697 this now anchors to.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)
-}
-
-/// Seven horizontal bands, top to bottom: the external-change banner (no
-/// height when hidden), the section head, the list, the editor group, the
-/// suggestion row (no control, no height, in this landing), the keyboard
-/// group and the command bar.
-///
-/// Everything is placed from the client rect at the current DPI, so a
-/// 150 % display is not an afterthought — `GetDpiForWindow` scales the
-/// tokens rather than the tokens assuming 96.
-///
-/// **Vertical shape.** The command bar is anchored to the bottom and the
-/// keyboard group sits directly above it; the top bands stack downward.
-///
-/// **The LIST is the one thing that flexes.** It wants `header + 8 rows` and
-/// gives that up rather than let anything overlap when the window is short —
-/// a shrunk list scrolls, an overlapped control is unreachable. Everything
-/// below it is fixed: band 4 is a group box of a computed height (`grp_h`),
-/// which band 3 reserves through `editor_min` before choosing its own.
-///
-/// The notes STATIC used to be the flexing band instead, which is what made
-/// it a 1220x177 control holding one 258 px line at the default size. It is
-/// now a fixed line inside the editor group — see `notes_height` — so a
-/// vertical resize lands on the list, and once the list is at its full 8 rows
-/// the surplus is simply slack above the keyboard group.
-unsafe fn layout(hwnd: HWND) {
-    let mut rc = RECT::default();
-    if GetClientRect(hwnd, &mut rc).is_err() {
-        return;
-    }
-    let dpi = GetDpiForWindow(hwnd).max(96);
-    let s = |v: i32| v * dpi as i32 / 96;
-    // Independent of WM_GETMINMAXINFO: the floor is about the frame, and a
-    // clamp is about the arithmetic. Either alone leaves a negative cy
-    // reachable -- SetWindowPos with one produces a control the user can
-    // never see or focus again. Widths need it as much as heights: WM_SIZE
-    // fires with a 0x0 client rect on minimize (ptMinTrackSize only
-    // constrains dragging, not that), so `w` is 0 here on every minimize,
-    // on every machine, and every subtraction below goes negative without
-    // it.
-    //
-    // **Widths take `clamp`; a POSITION computed leftward from a right edge
-    // takes `.max(cx)` instead.** They are not interchangeable: clamping a
-    // width to 0 hides the control, which is recoverable, while clamping a
-    // position to 0 puts it outside the surface padding -- flush against the
-    // window edge, overlapping whatever is to its left -- which is not.
-    //
-    // No band needs `.max(cx)` today, and that is structural rather than
-    // lucky: every rightward position in this function is spelled
-    // `origin + clamp(...)`, which cannot fall left of its origin. The rule
-    // is written down here, beside the tool it is about, because the band
-    // that reintroduces the hazard will be a NEW one subtracting from a right
-    // edge, and it will have no local precedent to copy.
-    let clamp = |v: i32| v.max(0);
-
-    // ONE borrow of UI, taken here and dropped on this line. Nothing below
-    // may hold one: every SetWindowPos and SendMessageW that follows can
-    // re-enter this window's wndproc, and a second borrow across an
-    // `extern "system"` boundary aborts the process instead of unwinding.
-    let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
-        return;
-    };
-
-    let pad = s(tok::PAD);
-    let band = s(tok::BAND);
-    let gap = s(tok::GAP);
-    let lblgap = s(tok::LABEL);
-    let ctl = s(tok::CTL);
-
-    let w = rc.right - rc.left;
-    let h = rc.bottom - rc.top;
-    let cx = pad;
-    let cw = clamp(w - pad * 2);
-
-    // Body, and only Body: every string measured in this function labels or
-    // captions a Body control -- the three command-bar buttons, Add /
-    // Remove / Reload / Keep mine, the two field labels, the whole keyboard
-    // row, and the "Ag" that sizes the EDIT. The `Shortcuts` heading is the one
-    // Subtitle in the window and its width is never measured; it takes
-    // whatever Add and Remove leave it.
-    //
-    // Measured through `shown`, so a caption's `&` -- a mnemonic marker,
-    // which is not drawn -- does not buy the control a character of width it
-    // will never use.
-    let tw = |t: &str| text_size(hwnd, ui.fonts.get(Role::Body), dpi, &shown(t)).0;
-    let btn = |t: &str| s(tok::BTN).max(tw(t) + s(24));
-
-    let place = |id: i32, x: i32, y: i32, cxx: i32, cy: i32| {
-        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
-            let _ = SetWindowPos(c, None, x, y, cxx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-    };
-    let place_h = |h_: HWND, x: i32, y: i32, cxx: i32, cy: i32| {
-        let _ = SetWindowPos(h_, None, x, y, cxx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
-    };
-
-    // The two bottom bands are anchored, not stacked, so the window's
-    // bottom edge is where they stay however tall the content above is.
-    let bar_y = clamp(h - pad - ctl);
-    // Caption inset, ONE control line, then a bottom inset the same size as
-    // the gap -- the shape band 4's `grp_h` follows too, so the two group
-    // boxes in this window are one rule. It was two lines while the group
-    // held a check box over three radios; the Caps row is one line, so the
-    // group is one `ctl + gap` shorter. Those pixels used to go to the
-    // flexing notes band; now they raise `kb_y`, which is what band 3 sizes
-    // the list against.
-    let kb_h = s(24) + ctl + gap;
-    let kb_y = clamp(bar_y - band - kb_h);
-
-    let mut y = pad;
-
-    // Field geometry, computed before band 2 because the filter box needs it
-    // there and the editor strip needs it in band 4. `combo_h` is therefore
-    // read BEFORE the combo is placed this pass, i.e. it is the height the
-    // combo had on the PREVIOUS pass. That is sound: the value is the theme's
-    // choice for a font and a DPI, so it moves only on WM_DPICHANGED or a
-    // font change, both of which run `layout` again immediately. The one pass
-    // that can read a not-yet-snapped height is the first, and the floor
-    // below falls back to the font-derived height there.
-    let text_h = text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1;
-    let field_h = (text_h + s(10)).min(ctl);
-    let mut arc = RECT::default();
-    let combo_h = if GetWindowRect(ui.app, &mut arc).is_ok() {
-        let ah = arc.bottom - arc.top;
-        if ah > 0 && ah < ctl && ah >= text_h + s(2) {
-            Some(ah)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    // Both EDITs take the combo's height, so the three fields in this window
-    // are one box repeated. A single-line EDIT top-aligns its text -- Win32
-    // gives it no vertical centring at all -- so it is centred in its band
-    // line rather than stretched to it.
-    let (edit_h, edit_dy) = match combo_h {
-        Some(ah) => (ah, clamp(ctl - ah) / 2),
-        None => (field_h, clamp(ctl - field_h) / 2),
-    };
-    // What a caption costs beyond its own width. Two readings, one number,
-    // which is why it is computed here rather than in a band: `IDC_CAPS` is
-    // a real `BS_AUTOCHECKBOX` and this is its square plus the gap before
-    // its text, while for the seven keycap chips it is the padding around
-    // the letters -- `.wtog { padding:0 10px }` plus a hair, since
-    // `draw_keycaps` fills whatever width the chip control is given.
-    let glyph = s(24);
-    // One chip's width: its caption plus that slack, never below
-    // `tok::CHIP_MIN`. Both chip rows go through this, so the four modifier
-    // chips and the three `Hold` chips cannot drift apart -- and `draw_chip`
-    // fills whatever width it is given, so this closure alone decides how
-    // big a key is.
-    let chip = |c: &str| (tw(c) + glyph).max(s(tok::CHIP_MIN));
-
-    // -- Band 1: the banner. Contributes NO height when hidden.
-    if ui.external_change {
-        let bw_reload = btn(cap::RELOAD);
-        let bw_keep = btn(cap::KEEP_MINE);
-        let buttons = bw_reload + gap + bw_keep;
-        place_h(ui.banner, cx, y, clamp(cw - buttons - gap), ctl);
-        place_h(ui.reload, cx + clamp(cw - buttons), y, bw_reload, ctl);
-        place_h(ui.keep, cx + clamp(cw - bw_keep), y, bw_keep, ctl);
-        y += ctl + band;
-    }
-
-    // -- Band 2: the section head. `Shortcuts` leading, then the filter,
-    // then Remove and Add right-aligned.
-    let bw_add = btn(cap::ADD);
-    let bw_remove = btn(cap::REMOVE);
-    // Capped at a third of the width, the same ceiling band 4 puts on the
-    // key list, so the boxes narrow together. The HEADING
-    // takes what is left, which makes it -- not the filter -- the first
-    // thing to run out. At 96 DPI, with `Add`/`Remove` both pinned to
-    // `tok::BTN` (88 px -- neither caption needs more), `heading_w` reduces
-    // to `clamp(cw - 200 - filter_w)`. Below `cw = 600` (where `filter_w` is
-    // itself `floor(cw / 3)`, not the 200 px cap) that clamps to zero at
-    // `cw = 300` -- the raw client width `w` this comes from, before the
-    // PAD margins, is 332. `MIN_WIDTH` is a WINDOW floor, not a `cw` one:
-    // `WM_GETMINMAXINFO` sets `ptMinTrackSize.x`, which bounds the whole
-    // window including the OS's own frame, so its 720 does not translate
-    // into an exact `cw` this file computes -- only into "hundreds of
-    // pixels clear of the 332 px zero point under any frame the OS adds,"
-    // which is the actual reason a drag can never reach it. Every
-    // subtraction is clamped, so the intermediate rects `WM_DPICHANGED` can
-    // suggest below that floor produce a hidden heading rather than a
-    // negative width.
-    let filter_w = s(tok::SHORTCUT_COL).min(clamp(cw / 3));
-    let filter_x = cx + clamp(cw - bw_add - gap - bw_remove - gap - filter_w);
-    place(IDC_ADD, cx + clamp(cw - bw_add), y, bw_add, ctl);
-    place(
-        IDC_REMOVE,
-        cx + clamp(cw - bw_add - gap - bw_remove),
-        y,
-        bw_remove,
-        ctl,
-    );
-    place_h(ui.filter, filter_x, y + edit_dy, filter_w, edit_h);
-    // **The heading is measured now**, where it never used to be: it shares
-    // its line with the count, so it has to end somewhere definite rather
-    // than taking everything up to the filter. Measured in SUBTITLE -- the
-    // only string in `layout` that is not Body, and `tw` would under-measure
-    // it by a third and put the count on top of it.
-    //
-    // The count keeps the leftover, so the heading is still the last thing to
-    // run out and a narrow window clips the count first -- which is the right
-    // order: `Shortcuts` names the band, `· 18 bindings` decorates it.
-    let head_w = text_size(hwnd, ui.fonts.get(Role::Subtitle), dpi, "Shortcuts").0 + s(4);
-    let head_w = head_w.min(clamp(filter_x - gap - cx));
-    place(IDC_LBL_SECTION, cx, y, head_w, ctl);
-    place(
-        IDC_LBL_COUNT,
-        cx + head_w + lblgap,
-        y,
-        clamp(filter_x - gap - (cx + head_w + lblgap)),
-        ctl,
-    );
-    // A control gap, not a band gap: the head labels the list directly
-    // below it, so the two read as one group.
-    y += ctl + gap;
-
-    // Band 4's height, computed HERE because band 3 has to yield to it and
-    // the two must not each hold an opinion about how tall the editor is --
-    // the same reason `glyph` is computed above band 1 rather than twice.
-    //
-    // Caption inset, two content lines, the notes, then a bottom inset the
-    // size of the gap: the same shape band 6's `kb_h` uses, so the two group
-    // boxes in this window are one rule. Fixed, not flexing -- see
-    // `notes_height`.
-    let notes_h = notes_height(hwnd, &ui, dpi);
-    let grp_h = s(24) + ctl + gap + ctl + gap + notes_h + gap;
-
-    // -- Band 3: the list.
-    let row_h = list_row_height(ui.list, dpi);
-    // `want` is a WINDOW height (it feeds SetWindowPos below), but the list
-    // carries WS_BORDER, so its client height -- where header_height + 8
-    // rows actually get drawn -- is 2*SM_CYBORDER less than that. Without
-    // this the 8th row was clipped by the border and comctl32 drew a sliver
-    // of a 9th.
-    let border = 2 * GetSystemMetricsForDpi(SM_CYBORDER, dpi);
-    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS + border;
-    // The editor below is a fixed-height GROUP now, not a two-line strip, so
-    // the figure the list must yield to is the whole of `grp_h` -- caption
-    // inset, both lines, the notes and the bottom inset. It used to be
-    // `ctl + gap + ctl`, which was right when the notes flexed into whatever
-    // was left; against a fixed group that under-reserves by the caption
-    // inset plus a line, and the group draws over the keyboard group instead
-    // of the list giving up a row. **This is the guard**: `y.min(kb_y)` at
-    // the end of band 4 cannot help, because `grp_y` is bound before the
-    // group is placed and clamping `y` afterwards moves nothing.
-    let editor_min = grp_h;
-    let room = clamp(kb_y - band - y);
-    let list_h = clamp(want.min(clamp(room - band - editor_min)));
-    place_h(ui.list, cx, y, cw, list_h);
-
-    // Columns, sized from the list's OWN client width now that it has one,
-    // minus a vertical scroll bar's width whether or not one is showing.
-    // That subtraction is what makes overflow structurally impossible: a
-    // scroll bar appearing later steals client width the columns have
-    // already been told not to use. Measured before this change: 561 px of
-    // columns inside a 482 px list, i.e. a horizontal scroll bar shipped.
-    //
-    // **This `GetClientRect` is `layout`'s fifth input, and the ONE the
-    // `apply_state` guard does not track.** When a scroll bar is up the list
-    // reports `C - SB`, so the columns get `C - 2*SB`; drop back under the
-    // page size and the client returns to `C` while the columns keep the
-    // narrower figure until the next resize, DPI change or banner flip --
-    // roughly a 34 px gutter at 96 DPI, 52 at 150 %.
-    //
-    // Tolerated, on purpose. The subtraction only ever errs in the safe
-    // direction: too narrow is a margin, never a clipped column or a
-    // horizontal scroll bar, which is the failure this line was written to
-    // kill. Guarding it would mean recording this width and re-running
-    // `layout` whenever it moved -- i.e. `SetWindowPos` on the populated App
-    // combo on a data push, the exact call that silently replaced what the
-    // user typed with a catalogue entry (see `Ui::shown_external`). A stale
-    // margin is not worth reopening that.
-    //
-    // If it is ever fixed: the cheap route is a `shown_list_w: Option<i32>`
-    // alongside the other two guards, NOT a wider `layout`.
-    let mut lrc = RECT::default();
-    let inner = if GetClientRect(ui.list, &mut lrc).is_ok() {
-        clamp(lrc.right - lrc.left - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi))
-    } else {
-        0
-    };
-    // `Shortcut` never takes more than half, so `App` -- which leads, and
-    // carries the tick and the flag -- can never be squeezed out.
-    let col_shortcut = s(tok::SHORTCUT_COL).min(inner / 2);
-    let col_app = clamp(inner - col_shortcut);
-    set_column_width(ui.list, 0, col_app);
-    set_column_width(ui.list, 1, col_shortcut);
-    y += list_h + band;
-    // `list_h` clamps to 0 when `room` itself clamped negative -- reachable
-    // only by an intermediate resize below MIN_HEIGHT that WM_DPICHANGED's
-    // suggested rect can hand us without asking WM_GETMINMAXINFO (dragging
-    // can't reach it; a 0x0 client rect clamps everything to 0 and is fine).
-    // In that state `y` here can still land past `kb_y`, and this line is
-    // what stops it: band 4 reads `y` straight into `grp_y`, so this is the
-    // editor group box's TOP edge, and band 4's height is the fixed `grp_h`
-    // -- not something `clamp` shrinks the way it shrinks `list_h` above.
-    //
-    // **It bounds the top, and only the top.** What keeps the group's BOTTOM
-    // off `kb_y` at and above `MIN_HEIGHT` is `editor_min` above, which
-    // reserves the whole of `grp_h` before the list takes any height at all.
-    // This line cannot do that job -- it runs before `grp_h` is added, so it
-    // can pin `grp_y` to `kb_y` but never pull the group's bottom back up.
-    // Drop `editor_min` back to the `ctl + gap + ctl` the one-line strip used
-    // and this line will not save you: simulated at `MIN_HEIGHT` itself, the
-    // group draws 16 px over the keyboard group with the banner down and
-    // 62 px with it up (22 / 91 at 150 %; re-simulated for Task 9's floor of
-    // 550 -- `notes_height`'s real body costs 4 px more than the stub these
-    // figures were first taken against). That is the ordinary minimum drag
-    // size, not a sub-floor `WM_DPICHANGED` edge case.
-    y = y.min(kb_y);
-
-    // -- Band 4: the editor group. TWO lines inside a titled BS_GROUPBOX,
-    // then the notes on a third line inside the same group.
-    //
-    //   +- Editing "Windows Terminal" ----------------------------------+
-    //   |  App       [ ..................................... v ]        |
-    //   |  Shortcut  [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]  [R] [R]  |
-    //   |  ok  Registered. Press Ctrl + Win + Alt + T to focus it.      |
-    //   +---------------------------------------------------------------+
-    //
-    // **App gets a line of its own, and that is the whole point.** On one
-    // line it was the control that absorbed whatever the other six left --
-    // about 209 px at 860, and ~59 px at MIN_WIDTH. Two derived tokens
-    // (`tok::KEY_COL`, `tok::BTN_SM`) existed only to keep that figure above
-    // zero, and Task 7 retires both.
-    //
-    // Bound once, and named rather than left as `y`, because the group's top
-    // edge is now a coordinate other controls are placed against -- the
-    // empty-state STATIC is the next reader. `y` is a running cursor that
-    // three bands above have already moved and a fourth may yet move; this is
-    // a fixed point, and the two must not be spelled the same.
-    let grp_y = y;
-    let grp_x = cx;
-    let grp_w = cw;
-    // Caption inset, then the content, then a bottom inset the size of the
-    // gap -- `grp_h` itself is computed above band 3, which has to yield its
-    // own height to it.
-    let ins_x = grp_x + gap;
-    let ins_w = clamp(grp_w - gap * 2);
-    place(IDC_GRP_EDITOR, grp_x, grp_y, grp_w, grp_h);
-
-    // Both lines share one label column, so `App` and `Shortcut` left-align
-    // with each other instead of each starting wherever its own line does.
-    //
-    // A hair of slack past the measured width: a STATIC clips to its rect,
-    // and SS_CENTERIMAGE clips harder because it also refuses to wrap.
-    let lw_lbl = tw("Shortcut").max(tw("App")) + s(4);
-    let fld_x = ins_x + lw_lbl + lblgap;
-    let fld_w = clamp(ins_x + ins_w - fld_x);
-
-    // Line 1: App, full width.
-    let mut ly = grp_y + s(24);
-    place(IDC_LBL_APP, ins_x, ly, lw_lbl, ctl);
-    // A COMBOBOX's `cy` is the height of its DROPPED-DOWN list, not of the
-    // closed control -- and under comctl32 v6 even that is capped by
-    // `build_children`'s CB_SETMINVISIBLE(8). The closed height is the
-    // system's to choose from the font, which is why `combo_h` above asks
-    // what it took rather than guessing a chrome delta the next font change
-    // would invalidate.
-    //
-    // A single-line EDIT draws its text at the TOP of its client rect --
-    // Win32 gives it no vertical centring at all -- so the fields are centred
-    // within their line (`edit_dy`) rather than stretched to it, and take the
-    // height the COMBOBOX's theme picked. `field_h` is what the font alone
-    // justifies, and remains the fallback for when the combo cannot be
-    // measured -- plus the unit of the dropped-down list's height.
-    place_h(ui.app, fld_x, ly + edit_dy, fld_w, field_h * 9);
-    ly += ctl + gap;
-
-    // Line 2: the shortcut. Chips left, then the key list, then the two
-    // commands right-aligned -- the same "commands close the line" rule band
-    // 2's Add/Remove follow.
-    place(IDC_LBL_SHORTCUT, ins_x, ly, lw_lbl, ctl);
-    // Sized from `RECORD`, never from `STOP`: the armed caption is the
-    // narrower of the two, so a caption flip cannot clip and `layout` never
-    // has to run on the capture path -- which matters, because `layout` means
-    // `SetWindowPos` on the populated App combo, the measured data-loss call
-    // (`Ui::shown_external`).
-    let bw_record = btn(cap::RECORD);
-    let bw_reset = btn(cap::RESET);
-    let res_x = ins_x + clamp(ins_w - bw_reset);
-    let rec_x = ins_x + clamp(ins_w - bw_reset - gap - bw_record);
-    // Each chip is its caption plus `glyph`, floored at `tok::CHIP_MIN` --
-    // exactly as band 6's `Hold` chips are sized, same two constants, one
-    // rule. `chip` is declared above band 4 so both rows read from it.
-    let w_mod_ctrl = chip(cap::MOD_CTRL);
-    let w_mod_win = chip(cap::MOD_WIN);
-    let w_mod_alt = chip(cap::MOD_ALT);
-    let w_mod_shift = chip(cap::MOD_SHIFT);
-    // Chips and key list share the fields' midline (`edit_dy`) and their
-    // height, so App, the key list and the filter are ONE box repeated
-    // rather than three boxes that happen to be concentric. Measured at
-    // 144 DPI before the fields were unified: EDIT 43 px against the
-    // combo's 36, centres agreeing to within half a pixel -- which reads as
-    // a mistake rather than as a pair. `draw_chip` centres its keycap inside
-    // whatever rect the chip is given, both ways, so `edit_h` needs no
-    // separate rule for the four of them.
-    let mut mx = fld_x;
-    place(IDC_MOD_CTRL, mx, ly + edit_dy, w_mod_ctrl, edit_h);
-    mx += w_mod_ctrl + gap;
-    place(IDC_MOD_WIN, mx, ly + edit_dy, w_mod_win, edit_h);
-    mx += w_mod_win + gap;
-    place(IDC_MOD_ALT, mx, ly + edit_dy, w_mod_alt, edit_h);
-    mx += w_mod_alt + gap;
-    place(IDC_MOD_SHIFT, mx, ly + edit_dy, w_mod_shift, edit_h);
-    mx += w_mod_shift + gap;
-    // The key list takes what is between the chips and the commands, under
-    // the shortcut column's ceiling. It no longer needs a token of its own:
-    // with App on line 1 there is nothing left on this line for it to starve.
-    //
-    // **Where line 2 runs out.** The key list is now what this line leaves
-    // over, so it is the figure worth writing down -- the role `app_w` used
-    // to play. At 96 DPI, with `Record` and `Reset` both pinned to `tok::BTN`
-    // (88 px; neither caption needs more, which is what makes `tok::BTN_SM`
-    // redundant), the fixed part of the line is
-    //
-    //   lw_lbl(~54) + lblgap(12) + four chips(~190) + 6*gap(48)
-    //     + bw_record(88) + bw_reset(88)   =   ~480 px of `ins_w`
-    //
-    // -- SIX gaps, not five: three between the chips, one after `Shift`, one
-    // between the key list and `Record`, one between the two commands. The
-    // chip figure is the four `chip()` widths, i.e. `4 * glyph` (96 px) plus
-    // the four measured captions, except that `Alt` is short enough to take
-    // `tok::CHIP_MIN` instead; `lw_lbl` is `tw("Shortcut") + 4`, the wider of
-    // the two labels.
-    //
-    // `ins_w` is `cw - 2*gap` and `cw` is `w - 2*pad`, so below its ceiling
-    // this whole expression collapses to `key_w = min(200, w - 528)` -- the
-    // key list clamps to zero at a raw client `w` of ~528, and above that it
-    // IS the margin over that zero point. One number, read two ways.
-    //
-    // `MIN_WIDTH` is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
-    // `ptMinTrackSize.x`, which bounds the whole window including the OS's
-    // own frame, so its 720 does not translate into an exact `cw` this file
-    // computes. Compare like for like -- client against client -- and a
-    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~176 px clear of
-    // the zero point, which is why a drag cannot reach it. **That margin is a
-    // ceiling, not a floor**: a wider OS frame leaves a narrower client, so
-    // the figure only ever falls from 185. (Do not compare the 720 against
-    // the 519 directly for a "~200 px" margin -- that is the window-against-
-    // client mistake this paragraph exists to avoid.)
-    //
-    // Concretely at `MIN_WIDTH`, then: the key list is 176 px of its 200 px
-    // ceiling -- the same 176, necessarily, by the collapse above -- and the
-    // App combo on line 1 has ~590 px, where the old one-line strip left it
-    // 59. Every subtraction here is clamped regardless, because
-    // `WM_DPICHANGED` can suggest a rect below that floor without asking
-    // `WM_GETMINMAXINFO`.
-    let key_w = s(tok::SHORTCUT_COL).min(clamp(rec_x - gap - mx));
-    // `cy` is the DROPPED-DOWN height here too, capped by the same
-    // CB_SETMINVISIBLE(8) the App combo carries.
-    place_h(ui.combo, mx, ly + edit_dy, key_w, field_h * 9);
-    // Buttons honour `cy` and look right at the band height, so they take
-    // `ctl` directly and sit on the band line rather than on the fields'
-    // midline -- the same rule the command bar's three follow.
-    place(IDC_RECORD, rec_x, ly, bw_record, ctl);
-    place(IDC_RESET, res_x, ly, bw_reset, ctl);
-    ly += ctl + gap;
-
-    // Line 3: the notes, inside the group and beside what they describe.
-    // Fixed height -- see `notes_height`. It used to take every pixel down to
-    // the keyboard group, which measured as a 1220x177 control holding one
-    // 258 px line.
-    place_h(ui.notes, ins_x, ly, ins_w, notes_h);
-
-    // **`y` deliberately stops here.** Band 5 has no control and bands 6 and
-    // 7 are anchored to `kb_y` / `bar_y`, so the `y += grp_h + band` that
-    // would close this band is a store nothing reads -- and the compiler says
-    // so (`unused_assignments`). Restore it, with its `y.min(kb_y)` guard, the
-    // moment band 5 grows a control.
-    //
-    // The guard THAT deleted line used to carry -- not band 3's surviving
-    // `y.min(kb_y)`, which still bounds `grp_y` and is still needed -- has
-    // moved to band 3's `editor_min`. That is the only place it can still do
-    // anything: `grp_y` is read before the group is placed, so clamping `y`
-    // afterwards moves nothing.
-
-    // -- Band 5: the suggestion row. No control, no height.
-
-    // -- Band 6: the keyboard group. ONE line, left to right: the check box,
-    // then `Hold` and its three chips, then `Tap` and its combo.
-    place(IDC_GRP_KEYBOARD, cx, kb_y, cw, kb_h);
-    let inner_x = cx + gap;
-    let ry = kb_y + s(24);
-    // Every width on this line comes from the caption it has to hold. The
-    // s(190)/s(70)/s(90) constants the radios used were sized for one font
-    // at one DPI and clipped the moment either changed.
-    //
-    // `glyph` -- the check box's own square plus the gap before its caption
-    // -- is declared above band 4, which sizes its four modifier chips by
-    // the same rule. The two STATICs get a hair of slack instead, for the
-    // reason the editor strip's labels do: SS_CENTERIMAGE clips rather than
-    // wraps.
-    let w_caps = tw(cap::CAPS) + glyph;
-    let w_hold = tw(cap::HOLD) + s(4);
-    let w_ctrl = chip(cap::HOLD_CTRL);
-    let w_win = chip(cap::HOLD_WIN);
-    let w_alt = chip(cap::HOLD_ALT);
-    let w_tap = tw(cap::TAP) + s(4);
-    // `gap * 2` between the three sections of the line, `lblgap` between a
-    // word and what it names, `gap` between chips -- so the grouping is
-    // legible from the spacing rather than only from the words.
-    let mut kx = inner_x;
-    place(IDC_CAPS, kx, ry, w_caps, ctl);
-    kx += w_caps + gap * 2;
-    place(IDC_LBL_HOLD, kx, ry, w_hold, ctl);
-    kx += w_hold + lblgap;
-    place(IDC_HOLD_CTRL, kx, ry, w_ctrl, ctl);
-    kx += w_ctrl + gap;
-    place(IDC_HOLD_WIN, kx, ry, w_win, ctl);
-    kx += w_win + gap;
-    place(IDC_HOLD_ALT, kx, ry, w_alt, ctl);
-    kx += w_alt + gap * 2;
-    place(IDC_LBL_TAP, kx, ry, w_tap, ctl);
-    kx += w_tap + lblgap;
-    // Whatever the line has left, capped at the same width the filter box
-    // and the key list take, so every box in the window narrows
-    // together. Clamped like every other subtraction here: a window dragged
-    // narrow must produce a combo with no width, never a negative one.
-    //
-    // The `cy` is the DROPPED-DOWN height, not the closed one -- see the App
-    // combo in band 4. Three items need far less than the eight that combo
-    // asks for, so there is no CB_SETMINVISIBLE to go with it.
-    let tap_w = s(tok::SHORTCUT_COL).min(clamp(cx + cw - gap - kx));
-    place(IDC_TAP, kx, ry + edit_dy, tap_w, field_h * 5);
-
-    // -- Band 7: the command bar. Save is the outermost button on the right,
-    // Close inboard of it, `Open config file` hard left -- as far from Save
-    // as the bar allows.
-    let bw_open = btn(cap::OPEN_FILE);
-    let bw_apply = btn(cap::SAVE);
-    let bw_close = btn(cap::CLOSE);
-    place(IDC_OPENFILE, cx, bar_y, bw_open, ctl);
-    place(IDC_APPLY, cx + clamp(cw - bw_apply), bar_y, bw_apply, ctl);
-    place(
-        IDC_CLOSE,
-        cx + clamp(cw - bw_apply - gap - bw_close),
-        bar_y,
-        bw_close,
-        ctl,
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3807,7 +3480,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     // without this it would re-enable the five typed controls and write the
     // model's notes over the prompt -- two writers on one value, which is
     // the defect spec C.4 forbids by name.
-    let cap_notes: Option<String> = UI.with(|u| {
+    let cap_notes: Option<Vec<Note>> = UI.with(|u| {
         u.borrow()
             .as_ref()
             .and_then(|x| x.capture.as_ref().map(capture_notes))
@@ -3886,39 +3559,34 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // The capture prompt outranks the row's notes while one is
                 // live: it is the only thing on screen telling the user what
                 // beckon is doing with their keyboard.
-                match &cap_notes {
-                    Some(t) => set_text(notes, t),
+                let body: Vec<Note> = match &cap_notes {
+                    Some(lines) => lines.clone(),
                     None => {
-                        // Caps at two NOTES, not two RENDERED lines.
-                        // `IDC_NOTES` is `SS_LEFT` and word-wraps (see its
-                        // own comment above), so this cap does not bound
-                        // what actually reaches the screen: a single note
-                        // wider than the control's inset width wraps to two
-                        // lines on its own, a second note then lands on a
-                        // clipped third line, and "(+N more)" -- appended to
-                        // the end of note 2 -- inherits that clipping, so
-                        // the "there is more" text can itself be the part
-                        // nobody sees. `notes_height` reserves exactly two
-                        // RENDERED lines; nothing here guarantees these two
-                        // NOTES fit inside them. The real fix is
-                        // measure-and-truncate or an owner-draw `DrawText`
-                        // with `DT_WORDBREAK | DT_END_ELLIPSIS` -- out of
-                        // scope for this landing; see the hardware
-                        // checklist's wrap-case entry.
+                        // Caps at two NOTES, not two RENDERED lines -- but
+                        // now that IS the same cap: `paint::draw_notes`
+                        // draws exactly one `DT_SINGLELINE | DT_END_ELLIPSIS`
+                        // line per entry, at the fixed height `notes_height`
+                        // budgets, so a long note truncates with an ellipsis
+                        // instead of wrapping onto a line nothing reserved
+                        // room for -- the old failure mode, where a wrapped
+                        // note could push "(+N more)" onto a clipped third
+                        // line, is structurally gone. "(+N more)" is folded
+                        // into the SECOND note's own text rather than added
+                        // as a third entry, so it can never exceed the
+                        // two-line budget either.
                         const NOTE_LINES: usize = 2;
-                        let body: Vec<String> = d
-                            .notes
-                            .iter()
-                            .take(NOTE_LINES)
-                            .map(|n| format!("{}  {}", mark_glyph(n.mark), n.text))
-                            .collect();
-                        let mut text = body.join("\r\n");
+                        let mut body: Vec<Note> =
+                            d.notes.iter().take(NOTE_LINES).cloned().collect();
                         if d.notes.len() > NOTE_LINES {
-                            text.push_str(&format!("  (+{} more)", d.notes.len() - NOTE_LINES));
+                            if let Some(last) = body.last_mut() {
+                                last.text
+                                    .push_str(&format!("  (+{} more)", d.notes.len() - NOTE_LINES));
+                            }
                         }
-                        set_text(notes, &text);
+                        body
                     }
-                }
+                };
+                show_notes(notes, body);
             }
             None => {
                 for id in SHORTCUT_CONTROLS {
@@ -3948,33 +3616,46 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // prompt still outranks the placeholder, and the commit that
                 // follows simply lands nowhere -- `on_edit_combo` reaches a
                 // model with no `selected` and changes nothing.
-                set_text(
-                    notes,
-                    cap_notes
-                        .as_deref()
-                        .unwrap_or("Select a shortcut, or press Add."),
-                );
+                //
+                // `Mark::Unknown` for the placeholder: it is an
+                // informational, not-yet-decided state -- the same meaning
+                // `row_condition` already gives `Mark::Unknown` elsewhere
+                // ("Checking installed apps...", "Not registered yet."), not
+                // a new case invented for this one line.
+                let body = cap_notes.clone().unwrap_or_else(|| {
+                    vec![Note {
+                        mark: Mark::Unknown,
+                        text: "Select a shortcut, or press Add.".into(),
+                    }]
+                });
+                show_notes(notes, body);
             }
         }
-        // The group's caption, and it is a TEXT write, not a geometry one: it
-        // must never reach `layout`, because `layout` means `SetWindowPos` on
-        // the populated App combo -- the measured data-loss call (`Ui::shown_external`).
-        // A group box caption is never measured by `layout`, so there is no
-        // second path back in.
+        // The card head's caption, and it is a TEXT write, not a geometry
+        // one: it must never reach `layout`, because `layout` means
+        // `SetWindowPos` on the populated App combo -- the measured
+        // data-loss call (`Ui::shown_external`). A caption is never measured
+        // by `layout`, so there is no second path back in.
         //
-        // **`&` is DOUBLED here, and only here.** A `BS_GROUPBOX` is a BUTTON,
-        // and a button caption reads a lone `&` as a mnemonic prefix: it is
-        // not drawn, and the letter after it gets an underline that steals a
-        // key. The two static captions (`cap::EDITOR_NONE` /
-        // `EDITOR_UNNAMED`) need no escape because they simply contain no
-        // `&` -- see the note on them. This third caption is the only one in
-        // the window fed from the CATALOG, and Start Menu names really do
-        // carry ampersands: `SS_NOPREFIX_STYLE`'s comment names `Notes & To
-        // Do` and `Arts & Crafts` for exactly this reason. Unescaped, the
-        // first draws as `Editing "Notes  To Do"` with **T** underlined --
+        // **`&` is DOUBLED here, and only here.** `IDC_GRP_EDITOR` is a
+        // plain caption `STATIC` since the review fix on Task 8 (was
+        // `BS_GROUPBOX`, a BUTTON -- see the creation comment in
+        // `build_children`), and a `STATIC` reads a lone `&` as a mnemonic
+        // prefix the same way a `BUTTON` caption does, unless `SS_NOPREFIX`
+        // is given: it is not drawn, and the letter after it gets an
+        // underline that steals a key. The two static captions
+        // (`cap::EDITOR_NONE` / `EDITOR_UNNAMED`) need no escape because
+        // they simply contain no `&` -- see the note on them. This third
+        // caption is the only one in the window fed from the CATALOG, and
+        // Start Menu names really do carry ampersands:
+        // `SS_NOPREFIX_STYLE`'s comment names `Notes & To Do` and
+        // `Arts & Crafts` for exactly this reason. Unescaped, the first
+        // draws as `Editing "Notes  To Do"` with **T** underlined --
         // colliding with the `Ctrl` hold chip -- and the second underlines
-        // **C**, colliding with `Close`. There is no `SS_NOPREFIX` for a
-        // button, so doubling is the only route.
+        // **C**, colliding with `Close`. `SS_NOPREFIX` would also fix this,
+        // and is now available where it was not before the reclass -- but
+        // switching to it is a different change from the reclass this
+        // comment documents, and doubling already works, so it stays.
         //
         // **Not `shown()`**: that helper does the INVERSE (it strips markers
         // so `layout` measures ink, not `&`), and running it here would drop
@@ -4135,6 +3816,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         });
         if relayout {
             layout(hwnd);
+            // The banner appearing/disappearing, or the list gaining its
+            // first row / losing its last, shifts every card below it --
+            // ~76 px for the banner alone. `sync_list`'s own
+            // `InvalidateRect` (below) targets the LIST control, not
+            // `hwnd`, so without this the stack's old position stays
+            // painted behind its new one: cards slide but their old fills
+            // and 1 px borders do not go away. No `UI` borrow is held
+            // here -- the borrow that produced `relayout` above already
+            // ended on the line that computed it, the same discipline
+            // `layout` itself follows.
+            let _ = InvalidateRect(Some(hwnd), None, true);
         }
         // LAST, after every `enable` and every `show` above: this is what
         // makes it the authoritative moment rather than one more place that
@@ -4550,11 +4242,10 @@ thread_local! {
 /// and on the `SPI_SETHIGHCONTRAST` arm that already forwards the message to
 /// every child.
 ///
-/// Only the *shape* of a keycap consults it. Every colour comes from
-/// `GetSysColor`, which is already correct in high contrast without asking --
-/// what is not correct there is a rounded box with a soft bottom edge, which
-/// reads as a rendering artefact against a theme built on flat fills and hard
-/// borders.
+/// Only the *shape* of a keycap consults it. Every colour comes from `col`,
+/// which already answers correctly for high contrast on its own -- what is
+/// not correct there is a rounded box with a soft bottom edge, which reads as
+/// a rendering artefact against a theme built on flat fills and hard borders.
 fn high_contrast() -> bool {
     HIGH_CONTRAST.with(|c| c.get())
 }
@@ -4586,6 +4277,29 @@ fn cap_font() -> Option<HFONT> {
     }
 }
 
+thread_local! {
+    /// Mirrors `Ui::theme`, apart from it for `CAP_FONT`'s own reason: a
+    /// paint reaches this window while `UI` is already borrowed, and `col` /
+    /// `brush` are exactly the calls a paint makes. `RefCell`, not a `Cell`
+    /// like `CAP_FONT` -- `ThemeCache::brush` needs `&mut self` to grow its
+    /// cache, and a `Cell` can hand out a copy but never a borrow. Refreshed
+    /// at both points `Ui::theme.rebuild` runs: creation and
+    /// `on_theme_changed`.
+    static PAINT_THEME: RefCell<theme::ThemeCache> = RefCell::new(theme::ThemeCache::default());
+}
+
+/// A colour, resolved through the paint-safe mirror. See `PAINT_THEME` for
+/// why painting code reaches this instead of `UI`.
+fn theme_col(pick: impl Fn(&beckon_core::theme::Palette) -> u32, sys: SYS_COLOR_INDEX) -> COLORREF {
+    PAINT_THEME.with(|cache| cache.borrow().col(pick, sys))
+}
+
+/// A cached brush from the same mirror. Never a system brush -- see the
+/// `GetSysColorBrush` ban documented at the top of `paint.rs`.
+fn theme_brush(c: COLORREF) -> HBRUSH {
+    PAINT_THEME.with(|cache| cache.borrow_mut().brush(c))
+}
+
 /// One subitem's text, read from the control rather than from the model.
 ///
 /// The paint path must not touch `UI` (see `CAP_FONT`), and it does not need
@@ -4611,554 +4325,106 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
     String::from_utf16_lossy(&buf[..n.min(buf.len())])
 }
 
-/// Paint `Save` as the accent-filled primary action.
+/// Which tier `button` (`paint.rs`) should paint a push button as.
 ///
-/// **The accent marks the primary action; the default ring marks where Enter
-/// goes, and they are not the same thing.** `set_default_id` moves the ring
-/// onto whichever push button has focus, so tabbing to `Close` takes the ring
-/// away from Save -- correctly, because Enter then closes. Save stays filled
-/// throughout, because it is still the action the window is for. Nothing here
-/// touches the ring.
+/// Every id but `IDC_RECORD` is static. `IDC_RECORD` alone is read back from
+/// its OWN caption -- `Danger` while it reads `cap::STOP` (armed), `Outline`
+/// otherwise -- rather than from a second flag next to it: this file must
+/// not touch `UI` from a paint path (`CAP_FONT`'s reason, a paint can arrive
+/// while it is borrowed), and the caption `set_text_if_changed` last wrote
+/// already says which the button currently is. Reading it back is also what
+/// keeps the two in agreement by construction: a caption and a tier stored
+/// in two places can drift, one read from one place cannot.
+fn tier_of(id: i32, hwnd_item: HWND) -> BtnTier {
+    match id {
+        IDC_APPLY => BtnTier::Accent,
+        IDC_RESET => BtnTier::Outline,
+        IDC_RECORD if text_of(hwnd_item) == cap::STOP => BtnTier::Danger,
+        IDC_RECORD => BtnTier::Outline,
+        _ => BtnTier::Secondary,
+    }
+}
+
+/// Paint any of the nine `PUSH_BUTTONS`, `Save` included, by translating the
+/// `NMCUSTOMDRAW` comctl32 hands this window into the `DRAWITEMSTRUCT`
+/// `paint::button` actually draws from.
 ///
-/// **Disabled is the common state**, not an edge case: Save is greyed until
-/// there is something to save. It takes `COLOR_BTNFACE` and `COLOR_GRAYTEXT`,
-/// so a window with no edits does not show a bright blue button that does
-/// nothing.
-///
-/// High contrast keeps `COLOR_HIGHLIGHT` -- it is a real colour there, and it
-/// is the one the theme uses for exactly this -- but drops the rounded
-/// corners, on `draw_keycaps`' rule.
-unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`, for all nine.** See the call
+/// site's own comment and `button`'s doc for why: every one of these nine
+/// can carry the default ring, and `BS_OWNERDRAW` would take the machinery
+/// that moves it along for the ride.
+unsafe fn push_button_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     let cd = &*p;
     if cd.dwDrawStage != CDDS_PREPAINT {
         return CDRF_DODEFAULT as isize;
     }
     let btn = cd.hdr.hwndFrom;
-    let hdc = cd.hdc;
-    let rc = cd.rc;
+    let id = cd.hdr.idFrom as i32;
+    let tier = tier_of(id, btn);
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let hc = high_contrast();
-    let disabled = cd.uItemState.0 & CDIS_DISABLED.0 != 0;
-    let pressed = cd.uItemState.0 & CDIS_SELECTED.0 != 0;
-    let hot = cd.uItemState.0 & CDIS_HOT.0 != 0;
-
-    // The parent's surface first: a rounded button leaves its corners
-    // showing, and whatever was there last frame would stay in them.
-    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
-
-    let accent = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
-    let (fill, ink) = if disabled {
-        (
-            COLORREF(GetSysColor(COLOR_BTNFACE)),
-            COLORREF(GetSysColor(COLOR_GRAYTEXT)),
-        )
-    } else if pressed {
-        (
-            shade(accent, 4, 5),
-            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
-        )
-    } else if hot {
-        (
-            shade(accent, 9, 10),
-            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
-        )
-    } else {
-        (accent, COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)))
-    };
-    // A disabled button needs an outline or it is a hole in the window;
-    // a filled one is its own shape.
-    let border = if disabled {
-        COLORREF(GetSysColor(COLOR_BTNSHADOW))
-    } else {
-        fill
-    };
-    let brush = CreateSolidBrush(fill);
-    let pen = CreatePen(PS_SOLID, 1, border);
-    let pb = SelectObject(hdc, HGDIOBJ(brush.0));
-    let pp = SelectObject(hdc, HGDIOBJ(pen.0));
-    if hc {
-        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-    } else {
-        let r = scale(5, dpi) * 2;
-        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    let mut state = ODS_FLAGS(0);
+    if cd.uItemState.0 & CDIS_DISABLED.0 != 0 {
+        state.0 |= ODS_DISABLED.0;
     }
-    if !pp.is_invalid() {
-        SelectObject(hdc, pp);
+    if cd.uItemState.0 & CDIS_SELECTED.0 != 0 {
+        state.0 |= ODS_SELECTED.0;
     }
-    let _ = DeleteObject(HGDIOBJ(pen.0));
-    if !pb.is_invalid() {
-        SelectObject(hdc, pb);
+    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 {
+        state.0 |= ODS_FOCUS.0;
     }
-    let _ = DeleteObject(HGDIOBJ(brush.0));
-
-    let font = HFONT(
-        SendMessageW(btn, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut core::ffi::c_void,
-    );
-    let prev = if font.is_invalid() {
-        HGDIOBJ::default()
-    } else {
-        SelectObject(hdc, HGDIOBJ(font.0))
-    };
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, ink);
-    // `&Save`'s mnemonic, on the window's own UI state -- the same read the
-    // chips make, and for the same reason.
-    let ui_state = SendMessageW(btn, WM_QUERYUISTATE, Some(WPARAM(0)), Some(LPARAM(0))).0 as u32;
-    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
-    if ui_state & UISF_HIDEACCEL != 0 {
-        flags |= DT_HIDEPREFIX;
+    // `ODS_HOTLIGHT` is the one bit a REAL `WM_DRAWITEM` never carries for a
+    // classic push button -- Windows does not hover-track an owner-draw
+    // button on its own, which is exactly why `button` staying reachable
+    // from `NM_CUSTOMDRAW` (via this translation) rather than becoming
+    // genuinely owner-draw is worth more than tidiness: true hover feedback,
+    // for free, on all nine. Using it as the carrier here is safe for that
+    // same reason -- nothing else can ever set it on a `DRAWITEMSTRUCT`
+    // `button` receives.
+    if cd.uItemState.0 & CDIS_HOT.0 != 0 {
+        state.0 |= ODS_HOTLIGHT.0;
     }
-    let caption = text_of(btn);
-    let mut t = wide(&caption);
-    let n = t.len() - 1;
-    let mut tr = rc;
-    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
-    if !prev.is_invalid() {
-        SelectObject(hdc, prev);
-    }
-
-    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
-        let d = scale(3, dpi);
-        let f = RECT {
-            left: rc.left + d,
-            top: rc.top + d,
-            right: rc.right - d,
-            bottom: rc.bottom - d,
-        };
-        let _ = DrawFocusRect(hdc, &f);
-    }
-    CDRF_SKIPDEFAULT as isize
-}
-
-/// The pill colours for a flag: `(fill, ink)`.
-///
-/// **The one place in this window that uses colour literals, and the reason
-/// is that the system palette has no opinion here.** There is no
-/// `COLOR_WARNING`; Windows' own shell draws these states with semantic
-/// colours of its own. The values are direction B's Windows palette --
-/// `--w-warn:#9d5d00` on `--w-warn-bg:#fff4ce`, `--w-crit:#c42b1c` on
-/// `--w-crit-bg:#fdf3f4`, `--w-good:#0f7b0f`.
-///
-/// **`None` means no pill**, and the caller leaves comctl32's own text
-/// showing. That is what `FlagTone::Neutral` gets -- `custom`, which is true
-/// and not a problem -- and it is also what the caller substitutes in high
-/// contrast and on a selected row, where a pale fill would be either a lie
-/// about the theme or unreadable on the accent.
-fn flag_colours(t: FlagTone) -> Option<(COLORREF, COLORREF)> {
-    match t {
-        FlagTone::Bad => Some((COLORREF(0x00F4F3FD), COLORREF(0x001C2BC4))),
-        FlagTone::Warn => Some((COLORREF(0x00CEF4FF), COLORREF(0x00005D9D))),
-        FlagTone::Neutral => None,
-    }
-}
-
-/// Lay a coloured pill over the flag comctl32 has just drawn in the App cell.
-///
-/// **Additive, never a takeover**, and that is the whole design. comctl32 has
-/// already drawn the check box, the selection, the ellipsis and the whole
-/// cell's text by the time this runs; all this does is cover the flag's own
-/// characters with an opaque pill and redraw them in its colour. Nothing here
-/// can cost a tick, which is the delete path -- see `list_custom_draw` for
-/// what taking the cell over actually did on hardware.
-///
-/// **It runs only when it will change something**: a row with no flag, a
-/// selected row, a high-contrast theme and `FlagTone::Neutral` all leave
-/// comctl32's text exactly as it is. So the common case -- a healthy row --
-/// costs one string compare.
-///
-/// **Nothing here reads `UI`**, on `list_custom_draw`'s rule: the text comes
-/// from the control, the tone from the flag word through
-/// `beckon_core::settings::flag_tone`, the Caption font from `CAP_FONT`.
-///
-/// The flag's x is derived by measuring `name + FLAG_SEP` in the LIST's own
-/// font -- the font comctl32 drew it with -- so the pill lands exactly where
-/// those characters are rather than where this function would have put them.
-unsafe fn draw_flag_pill(hwnd: HWND, cd: &NMLVCUSTOMDRAW) -> isize {
-    let list = cd.nmcd.hdr.hwndFrom;
-    let row = cd.nmcd.dwItemSpec;
-    let cell = subitem_text(list, row, 0);
-    if cell.is_empty() {
-        return CDRF_DODEFAULT as isize;
-    }
-    let (name, flag) = beckon_core::settings::split_app_cell(&cell);
-    let Some(flag) = flag else {
-        return CDRF_DODEFAULT as isize;
-    };
-    // A selected row is white-on-accent and a high-contrast theme has no
-    // pale fills; in both, comctl32's own text is the right answer.
-    let sel = SendMessageW(
-        list,
-        LVM_GETITEMSTATE,
-        Some(WPARAM(row)),
-        Some(LPARAM(LVIS_SELECTED.0 as isize)),
-    )
-    .0 != 0;
-    if sel || high_contrast() {
-        return CDRF_DODEFAULT as isize;
-    }
-    let Some((fill, ink)) = flag_colours(beckon_core::settings::flag_tone(flag)) else {
-        return CDRF_DODEFAULT as isize;
-    };
-    let Some(cap) = cap_font() else {
-        return CDRF_DODEFAULT as isize;
-    };
-
-    // `LVIR_LABEL` on the ITEM: in a report view this is column 0's text
-    // area, i.e. past the state image. `LVM_GETSUBITEMRECT` is NOT usable
-    // here -- with a subitem of 0 it answers for the whole ITEM, every
-    // column, which is how an earlier version of this came to erase the
-    // Shortcut keycaps of the row it was drawing.
-    let mut rc = RECT {
-        left: LVIR_LABEL as i32,
+    let di = DRAWITEMSTRUCT {
+        CtlType: ODT_BUTTON,
+        CtlID: id as u32,
+        itemState: state,
+        hwndItem: btn,
+        hDC: cd.hdc,
+        rcItem: cd.rc,
         ..Default::default()
     };
-    let ok = SendMessageW(
-        list,
-        LVM_GETITEMRECT,
-        Some(WPARAM(row)),
-        Some(LPARAM(&mut rc as *mut RECT as isize)),
-    );
-    if ok.0 == 0 || rc.right <= rc.left {
-        return CDRF_DODEFAULT as isize;
-    }
-
-    let hdc = cd.nmcd.hdc;
-    let dpi = GetDpiForWindow(hwnd).max(96);
-    SetBkMode(hdc, TRANSPARENT);
-
-    // Where the flag's characters START, measured in the list's own font --
-    // taken from the control rather than from `Fonts`, for the reason the
-    // chips do it.
-    let body = HFONT(
-        SendMessageW(list, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
-            as *mut core::ffi::c_void,
-    );
-    let prev = if body.is_invalid() {
-        HGDIOBJ::default()
-    } else {
-        SelectObject(hdc, HGDIOBJ(body.0))
-    };
-    let lead = format!("{name}{}", beckon_core::settings::FLAG_SEP);
-    let lt = wide(&lead);
-    let mut nw = SIZE::default();
-    let _ = GetTextExtentPoint32W(hdc, &lt[..lt.len() - 1], &mut nw);
-    // What comctl32 drew the flag in, so the pill is guaranteed to cover it
-    // even though the pill's own text is Caption and narrower.
-    let ft_body = wide(flag);
-    let mut body_fw = SIZE::default();
-    let _ = GetTextExtentPoint32W(hdc, &ft_body[..ft_body.len() - 1], &mut body_fw);
-    if !prev.is_invalid() {
-        SelectObject(hdc, prev);
-    }
-
-    let prev_cap = SelectObject(hdc, HGDIOBJ(cap.0));
-    let mut fw = SIZE::default();
-    let ft = wide(flag);
-    let _ = GetTextExtentPoint32W(hdc, &ft[..ft.len() - 1], &mut fw);
-    // The pill is padded from the CAPTION width but must never be narrower
-    // than the Body text underneath it, or the old characters peek out of
-    // both ends.
-    let padx = scale(7, dpi);
-    let pill_w = (fw.cx + padx * 2).max(body_fw.cx + padx);
-    let px = rc.left + nw.cx - padx / 2;
-    let pill_h = (fw.cy + scale(4, dpi)).min(rc.bottom - rc.top);
-    let py = rc.top + (rc.bottom - rc.top - pill_h) / 2;
-    // Nothing is drawn at all if the pill would not fit the column: half a
-    // pill over half a word is worse than the plain text comctl32 drew.
-    if px + pill_w <= rc.right {
-        let brush = CreateSolidBrush(fill);
-        let pb = SelectObject(hdc, HGDIOBJ(brush.0));
-        let pen = CreatePen(PS_SOLID, 1, fill);
-        let pp = SelectObject(hdc, HGDIOBJ(pen.0));
-        // A radius of the pill's own height is what makes the ends round
-        // rather than merely soft -- `.chip { border-radius:10px }` on a
-        // 10 px-tall pill.
-        let r = pill_h;
-        let _ = RoundRect(hdc, px, py, px + pill_w, py + pill_h, r, r);
-        if !pp.is_invalid() {
-            SelectObject(hdc, pp);
-        }
-        let _ = DeleteObject(HGDIOBJ(pen.0));
-        if !pb.is_invalid() {
-            SelectObject(hdc, pb);
-        }
-        let _ = DeleteObject(HGDIOBJ(brush.0));
-
-        SetTextColor(hdc, ink);
-        let mut ftr = RECT {
-            left: px,
-            top: py,
-            right: px + pill_w,
-            bottom: py + pill_h,
-        };
-        let mut fbuf = wide(flag);
-        let f = fbuf.len() - 1;
-        DrawTextW(
-            hdc,
-            &mut fbuf[..f],
-            &mut ftr,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
-    }
-    if !prev_cap.is_invalid() {
-        SelectObject(hdc, prev_cap);
-    }
-    CDRF_DODEFAULT as isize
-}
-
-/// Paint the Shortcut column as keycaps. Subitem 1, and only subitem 1.
-///
-/// **Both subitems are drawn now.** Subitem 0 carries `LVS_EX_CHECKBOXES`'
-/// state image -- the tick that makes `Remove` a multi-delete -- and whether
-/// `CDRF_SKIPDEFAULT` there takes the tick with it was an open hardware
-/// question until `examples/customdraw_probe.rs` was finally run on a14
-/// (2026-08-13, `VERDICT=TICK_SURVIVES`). See `draw_app_cell`.
-///
-/// **Nothing here reads `UI`.** Everything it needs comes from the
-/// notification itself or from a `Cell`: the list handle from `hdr.hwndFrom`,
-/// the chord from the cell's own text, the font from `CAP_FONT`. A paint can
-/// arrive while `UI` is borrowed, and it does.
-unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
-    let cd = &*p;
-    let stage = cd.nmcd.dwDrawStage;
-    if stage == CDDS_PREPAINT {
-        return CDRF_NOTIFYITEMDRAW as isize;
-    }
-    if stage == CDDS_ITEMPREPAINT {
-        return CDRF_NOTIFYSUBITEMDRAW as isize;
-    }
-    // `NMCUSTOMDRAW_DRAW_STAGE` has no `BitOr` in `windows` 0.61 -- unlike the
-    // flag types it is a bare newtype, not a generated bitmask type. Compare
-    // the raw u32s; `examples/customdraw_probe.rs` found this the hard way.
-    if stage.0 == CDDS_ITEMPOSTPAINT.0 | CDDS_SUBITEM.0 {
-        return if cd.iSubItem == 0 {
-            draw_flag_pill(hwnd, cd)
-        } else {
-            CDRF_DODEFAULT as isize
-        };
-    }
-    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 {
-        return CDRF_DODEFAULT as isize;
-    }
-    // **Subitem 0 asks to be called back AFTER comctl32 has drawn it**, and
-    // never takes it over.
-    //
-    // `customdraw_probe` answered `TICK_SURVIVES` for `CDRF_SKIPDEFAULT` on
-    // subitem 0, and **taking that as permission to own the cell was wrong**
-    // -- measured on a14 2026-08-13, in this window rather than in the
-    // probe's own: every row that returned `SKIPDEFAULT` lost its check box,
-    // and the selected row lost its keycaps as well. The probe builds a
-    // ListView of its own with no owner-drawn neighbours, so what it proved
-    // is narrower than what it was read to prove. It is a measurement of the
-    // probe's window, not a licence for this one.
-    //
-    // `CDRF_NOTIFYPOSTPAINT` sidesteps the whole question: comctl32 draws the
-    // tick, the selection, the ellipsis and the text exactly as it always
-    // has, and `draw_flag_pill` only lays a pill over the flag afterwards.
-    // Nothing this window draws can cost a tick, which is the delete path.
-    if cd.iSubItem == 0 {
-        return CDRF_NOTIFYPOSTPAINT as isize;
-    }
-    if cd.iSubItem != 1 {
-        return CDRF_DODEFAULT as isize;
-    }
-    let Some(font) = cap_font() else {
-        return CDRF_DODEFAULT as isize;
-    };
-
-    let list = cd.nmcd.hdr.hwndFrom;
-    let row = cd.nmcd.dwItemSpec;
-    let shown = subitem_text(list, row, 1);
-    if shown.is_empty() {
-        return CDRF_DODEFAULT as isize;
-    }
-
-    // `LVM_GETSUBITEMRECT` rather than `nmcd.rc`: the message is unambiguous
-    // about which rect it returns, and it takes the subitem in `rc.top` and
-    // the part in `rc.left`, which is the documented calling convention rather
-    // than a quirk.
-    let mut rc = RECT {
-        left: LVIR_BOUNDS as i32,
-        top: 1,
-        right: 0,
-        bottom: 0,
-    };
-    let ok = SendMessageW(
-        list,
-        LVM_GETSUBITEMRECT,
-        Some(WPARAM(row)),
-        Some(LPARAM(&mut rc as *mut RECT as isize)),
-    );
-    if ok.0 == 0 || rc.right <= rc.left {
-        return CDRF_DODEFAULT as isize;
-    }
-
-    let hdc = cd.nmcd.hdc;
-    // **`LVM_GETITEMSTATE`, not `nmcd.uItemState`.** At the SUBITEM stage
-    // comctl32 reports `CDIS_SELECTED` for every row regardless of the real
-    // selection -- measured on a14: with nothing selected, the whole Shortcut
-    // column painted `COLOR_HIGHLIGHT`. The control's own answer is the only
-    // one worth asking at this stage.
-    let sel = SendMessageW(
-        list,
-        LVM_GETITEMSTATE,
-        Some(WPARAM(row)),
-        Some(LPARAM(LVIS_SELECTED.0 as isize)),
-    )
-    .0 != 0;
-    // `CDRF_SKIPDEFAULT` means we own the background too, not only the text.
-    // Getting this wrong shows up as a selected row with one un-highlighted
-    // cell, which is worse than no keycaps at all. `GetSysColorBrush` returns
-    // a system brush and must not be deleted.
-    let bg = if sel { COLOR_HIGHLIGHT } else { COLOR_WINDOW };
-    FillRect(hdc, &rc, GetSysColorBrush(bg));
-
-    // The cell holds `combo_display`'s output, so splitting on its separator
-    // recovers exactly the caps `combo_caps` would have produced -- without a
-    // second source of truth to keep in step.
-    let caps: Vec<String> = shown.split(" + ").map(|s| s.to_string()).collect();
-    let dpi = GetDpiForWindow(hwnd).max(96);
-    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast(), CapStyle::Chord) {
-        let mut tr = RECT {
-            left: rc.left + scale(6, dpi),
-            ..rc
-        };
-        let mut t = wide(&shown);
-        let n = t.len() - 1;
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(
-            hdc,
-            COLORREF(GetSysColor(if sel {
-                COLOR_HIGHLIGHTTEXT
-            } else {
-                COLOR_WINDOWTEXT
-            })),
-        );
-        DrawTextW(
-            hdc,
-            &mut t[..n],
-            &mut tr,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-        );
-    }
+    PAINT_THEME.with(|c| button(&di, tier, &mut c.borrow_mut(), dpi));
     CDRF_SKIPDEFAULT as isize
 }
 
-/// Paint one toggle chip as a keycap. The four modifier chips and the three
-/// `Hold` chips, and nothing else in this window is owner-draw.
+/// Paint `IDC_CAPS` -- the one toggle switch in this window -- by reading
+/// the three bits `paint::toggle` needs off the `NMCUSTOMDRAW` comctl32
+/// hands this window, the same shape `push_button_custom_draw` uses one
+/// function up for the nine `PUSH_BUTTONS`.
 ///
-/// **Nothing here reads `UI`**, for `list_custom_draw`'s reason: a paint can
-/// arrive while `UI` is borrowed, and it does. Everything comes out of the
-/// `DRAWITEMSTRUCT` or out of the control itself -- the caption through
-/// `text_of`, the font through `WM_GETFONT`, the armed bit from `CHIPS`,
-/// which is a `Cell` precisely so this path cannot be contended.
+/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `IDC_CAPS` stays
+/// `BS_AUTOCHECKBOX` -- see its creation call and `paint::toggle`'s own doc
+/// for why: owner-draw is a different VALUE of the same 4-bit type field,
+/// not a flag beside it, and adopting it would throw away the check box
+/// state machine and the UIA role a screen reader announces.
 ///
-/// **The font is asked of the control, not of `Fonts`.** `child` put the
-/// role's font on it at creation and `WM_DPICHANGED` rebroadcasts a new one,
-/// so `WM_GETFONT` is the live answer and there is no third copy of the
-/// mapping to keep in step. `layout` measures these captions in Body through
-/// `tw`, which is the same font, which is what makes the fit check below a
-/// real one.
-///
-/// **Whether the mnemonic underline shows is the WINDOW's UI state**, read
-/// with `WM_QUERYUISTATE` rather than `SPI_GETKEYBOARDCUES`. The SPI is the
-/// global default; the per-window flags are the live answer, and they are
-/// what Windows itself moves -- through `WM_UPDATEUISTATE` -- the moment the
-/// user presses Alt or navigates by keyboard. Reading the SPI would leave
-/// these three chips underlined while every real control beside them was
-/// not. The same read answers the focus rect, which owner-draw also has to
-/// draw for itself or the keyboard route is silently lost.
-unsafe fn draw_chip(hwnd: HWND, di: &DRAWITEMSTRUCT) -> bool {
-    if di.CtlType != ODT_BUTTON {
-        return false;
+/// `on` is read with `is_checked`, not off a bit this notification carries
+/// -- a check box's `NMCUSTOMDRAW` has no state bit for "ticked", only
+/// `CDIS_DISABLED` / `CDIS_FOCUS` / `CDIS_SELECTED` / `CDIS_HOT`, none of
+/// which mean checked. `is_checked` already routes `IDC_CAPS` to
+/// `BM_GETCHECK` (see `chip_bit`'s own doc: `IDC_CAPS` is deliberately
+/// absent from the chip table), so this asks the control the same way
+/// `handle_command`'s `(IDC_CAPS, _)` arm already does.
+unsafe fn caps_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as isize;
     }
-    let Some(bit) = chip_bit(di.CtlID as i32) else {
-        return false;
-    };
-    let hdc = di.hDC;
-    let rc = di.rcItem;
-    // The parent's background, first and over the WHOLE rect. An owner-draw
-    // button draws nothing of itself, its background included, so any pixel
-    // this function leaves alone keeps whatever the last frame put there --
-    // and the cap is deliberately narrower than its control, so there are
-    // plenty of them. `COLOR_BTNFACE` is what the window class registers;
-    // `GetSysColorBrush` returns a system brush and must not be deleted.
-    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
-
-    // Never zero in practice -- `child` sets a font on every control it
-    // creates -- but a null `HFONT` would make `SelectObject` fail and leave
-    // the cap in the DC's own stock font, which at this size is unreadable
-    // rather than merely wrong.
-    let font = HFONT(
-        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
-            as *mut core::ffi::c_void,
-    );
-    let font = if font.is_invalid() {
-        HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
-    } else {
-        font
-    };
-    let ui_state = SendMessageW(
-        di.hwndItem,
-        WM_QUERYUISTATE,
-        Some(WPARAM(0)),
-        Some(LPARAM(0)),
-    )
-    .0 as u32;
-    let style = CapStyle::Toggle {
-        armed: chip_armed(bit),
-        pressed: di.itemState.0 & ODS_SELECTED.0 != 0,
-        disabled: di.itemState.0 & ODS_DISABLED.0 != 0,
-        hide_accel: ui_state & UISF_HIDEACCEL != 0,
-    };
     let dpi = GetDpiForWindow(hwnd).max(96);
-    // Read back from the CONTROL, not from `mod cap`, for `subitem_text`'s
-    // reason: what is drawn and what an accessibility client reads out are
-    // then the same string by construction, rather than by two code paths
-    // agreeing.
-    let caps = [text_of(di.hwndItem)];
-    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast(), style) {
-        // The same fallback the Shortcut column takes, and for the same
-        // reason: a clipped keycap reads as a rendering fault, plain text
-        // reads as a narrow control. `layout` sizes each chip from its own
-        // caption so this should be unreachable -- which is exactly why it
-        // must not be an empty control if it ever is.
-        let prev = SelectObject(hdc, HGDIOBJ(font.0));
-        let mut tr = rc;
-        let mut t = wide(&caps[0]);
-        let n = t.len() - 1;
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(
-            hdc,
-            COLORREF(GetSysColor(if di.itemState.0 & ODS_DISABLED.0 != 0 {
-                COLOR_GRAYTEXT
-            } else {
-                COLOR_BTNTEXT
-            })),
-        );
-        let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
-        if ui_state & UISF_HIDEACCEL != 0 {
-            flags |= DT_HIDEPREFIX;
-        }
-        DrawTextW(hdc, &mut t[..n], &mut tr, flags);
-        if !prev.is_invalid() {
-            SelectObject(hdc, prev);
-        }
-    }
-    // XOR-drawn, so it goes on LAST or the fill eats it. Suppressed while the
-    // window says cues are hidden, which is the state a mouse-driven session
-    // stays in -- the same flag word that decides the underline.
-    if di.itemState.0 & ODS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
-        let d = scale(1, dpi);
-        let f = RECT {
-            left: rc.left + d,
-            top: rc.top + d,
-            right: rc.right - d,
-            bottom: rc.bottom - d,
-        };
-        let _ = DrawFocusRect(hdc, &f);
-    }
-    true
+    let on = is_checked(hwnd, IDC_CAPS);
+    let enabled = cd.uItemState.0 & CDIS_DISABLED.0 == 0;
+    let focused = cd.uItemState.0 & CDIS_FOCUS.0 != 0;
+    PAINT_THEME.with(|c| toggle(cd, on, enabled, focused, &mut c.borrow_mut(), dpi));
+    CDRF_SKIPDEFAULT as isize
 }
 
 unsafe fn refresh_high_contrast() {
@@ -5239,14 +4505,213 @@ unsafe fn broadcast_theme_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
     // Relayout, not just repaint: high contrast and theme switches can
     // change the system metrics `layout` reads live -- ListView row height
     // (`list_row_height`, the same value WM_DPICHANGED's font swap already
-    // invalidates), SM_CXVSCROLL / SM_CYBORDER, and control heights read
-    // back through GetWindowRect. Those are exactly the metrics that move
+    // invalidates), SM_CXVSCROLL, and control heights read back through
+    // GetWindowRect. `SM_CYBORDER` used to be one of these too, but
+    // `layout.rs`'s `compute_card_rects` stopped reading it once `WS_BORDER`
+    // came off the list (Task 10). Those are exactly the metrics that move
     // when a user enters or leaves high contrast, and layout already
     // queries them at call time instead of assuming a constant -- staying
     // stale here would reintroduce the clipping bug that query was added to
     // fix. Rare, user-initiated events; a handful of extra SetWindowPos
     // calls is not a cost worth avoiding for it.
     layout(hwnd);
+}
+
+/// Does `WM_SETTINGCHANGE`'s `lParam` name the immersive colour set?
+///
+/// `WM_SETTINGCHANGE` fires for dozens of settings that are not the palette
+/// (mouse speed, wallpaper, ...); the light/dark toggle in
+/// Settings > Personalization > Colors is reported by a `lParam` string
+/// naming `"ImmersiveColorSet"`, and is the only reliable signal for it --
+/// unlike the `SPI_SETHIGHCONTRAST` case a few lines below, this change sets
+/// no `wParam` action code at all.
+fn is_immersive_colour_set(lp: LPARAM) -> bool {
+    if lp.0 == 0 {
+        return false;
+    }
+    let p = PCWSTR(lp.0 as *const u16);
+    unsafe {
+        p.to_string()
+            .map(|s| s == "ImmersiveColorSet")
+            .unwrap_or(false)
+    }
+}
+
+/// Re-resolve the theme, rebuild `ThemeCache` if it changed, and repaint.
+///
+/// **Never calls `layout`.** No colour change moves a control, and `layout`
+/// means `SetWindowPos` on the populated App combo -- the measured data-loss
+/// path documented at `Ui::shown_external`.
+///
+/// **The `UI` borrow is taken and dropped on one expression.**
+/// `InvalidateRect` re-enters this wndproc, and a second `RefCell` borrow
+/// across an `extern "system"` boundary aborts the process instead of
+/// unwinding -- the same rule `WM_DPICHANGED` and `WM_DESTROY` already
+/// follow.
+///
+/// `PAINT_THEME` is rebuilt unconditionally, even when `ui.theme` did not
+/// move (or there is no `Ui` at all, mid-teardown) -- `ThemeCache::rebuild`
+/// is a no-op on a repeat theme, so this is never wasted work, and it is
+/// what stops the paint-safe mirror from answering for a theme `Ui` already
+/// left behind.
+unsafe fn on_theme_changed(hwnd: HWND) {
+    let t = beckon_core::theme::resolve(theme::read_inputs());
+    let changed = UI.with(|u| {
+        u.borrow_mut()
+            .as_mut()
+            .map(|ui| ui.theme.rebuild(t))
+            .unwrap_or(false)
+    });
+    PAINT_THEME.with(|c| {
+        c.borrow_mut().rebuild(t);
+    });
+    // The backdrop tier depends on `EnableTransparency` and the high-contrast
+    // flag, NOT on `Theme` — toggling Transparency in Settings > Personalization >
+    // Colors broadcasts "ImmersiveColorSet" without changing Theme, so gating this
+    // on `changed` would leave the window stuck at its old tier. The DWM and
+    // SetWindowLong calls underneath are idempotent, so running it every time
+    // costs nothing.
+    apply_current_backdrop(hwnd);
+    if !changed {
+        return;
+    }
+    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    // The resize frame is still non-client on three sides, and DWM paints
+    // it black without a caption. Tint it to the window's own ground.
+    theme::apply_dwm_border(hwnd, t);
+    theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
+    let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Resolve the current backdrop tier and apply it.
+///
+/// The single call site `theme::read_backdrop_inputs` has -- both `create`
+/// (the window's first paint) and `on_theme_changed` (every later
+/// re-evaluation) go through this function rather than calling
+/// `read_backdrop_inputs` themselves, so `theme::MICA_SUPPORTED` is the one
+/// flag Gate 01 has to flip on a hardware failure. See its doc comment.
+fn apply_current_backdrop(hwnd: HWND) {
+    let inputs = theme::read_backdrop_inputs(theme::MICA_SUPPORTED);
+    theme::apply_backdrop(hwnd, beckon_core::theme::backdrop(inputs));
+}
+
+/// Bring the ListView's own background in line with the theme (Task 10).
+///
+/// **`LVM_SETBKCOLOR` / `LVM_SETTEXTBKCOLOR` / `LVM_SETTEXTCOLOR`, all
+/// three.** Rows are custom-drawn, but comctl32 paints the ground BELOW the
+/// last row -- and, for subitem 0 (the App column), the row's own background
+/// and text too, since `list_custom_draw` deliberately leaves that subitem
+/// to comctl32's default draw so the check box survives
+/// (`CDRF_NOTIFYPOSTPAINT`, see its own comment). Both messages default to
+/// `COLOR_WINDOW`/black until told otherwise, which is why a dark-mode list
+/// used to show themed rows sitting on a light ground with black text on it.
+///
+/// **`SetWindowTheme` rides along.** A public exported function, NOT one of
+/// the uxtheme ordinals the 2026-08-11 spec rejected -- but the theme class
+/// name is undocumented and the call degrades silently on builds that do not
+/// know it, which is why nothing downstream depends on it having worked. It
+/// is also what enables the dark scrollbar AND native hot-item tracking
+/// (`LVM_GETHOTITEM`), which the Shortcut column's own hover tint
+/// (`list_custom_draw`) reads.
+///
+/// Called at creation (`create`, once the theme is resolved) and again on
+/// every theme change (`on_theme_changed`) -- the same two moments
+/// `theme::apply_dwm_dark` already runs at, and for the same reason: nothing
+/// else tells this control its colours moved.
+unsafe fn theme_list(hwnd: HWND, dark: bool) {
+    let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) else {
+        return;
+    };
+    let bg = theme_col(|p| p.card, COLOR_WINDOW);
+    let text = theme_col(|p| p.text, COLOR_WINDOWTEXT);
+    SendMessageW(
+        list,
+        LVM_SETBKCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(bg.0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTBKCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(bg.0 as isize)),
+    );
+    SendMessageW(
+        list,
+        LVM_SETTEXTCOLOR,
+        Some(WPARAM(0)),
+        Some(LPARAM(text.0 as isize)),
+    );
+    let name = if dark {
+        w!("DarkMode_Explorer")
+    } else {
+        w!("Explorer")
+    };
+    let _ = SetWindowTheme(list, name, None);
+
+    // **The header and the four fields need their own theme class, and
+    // nothing else reaches them.** Measured on a14 2026-08-13: with only the
+    // work above, the shipped dark window had a BRIGHT WHITE header band
+    // across it and three white combo faces, because those parts are painted
+    // by the visual style rather than by anything this window controls.
+    //
+    // `WM_CTLCOLOR*` cannot fix either: a `CBS_DROPDOWNLIST` has no edit
+    // child to answer for, and its closed face comes from the theme, not from
+    // `WM_DRAWITEM` -- which is why the `CBS_OWNERDRAWFIXED` added for the
+    // drop-down ITEMS left the closed control untouched.
+    //
+    // **MEASURED INEFFECTIVE on a14 2026-08-13. These calls change nothing
+    // today, and the reason is a constraint this window cannot satisfy.**
+    // Screenshot after adding them is pixel-identical in the header and all
+    // four fields: still white.
+    //
+    // `DarkMode_*` theme classes are inert until the PROCESS opts into dark
+    // mode through uxtheme's undocumented ordinals (`SetPreferredAppMode` #135
+    // / `AllowDarkModeForWindow` #133), and the 2026-08-11 spec rejected
+    // uxtheme ordinals outright. So the class name is accepted, silently does
+    // nothing, and the visual style keeps painting these parts light.
+    //
+    // Kept rather than deleted because the calls are harmless, they are
+    // already correct for the day the ordinal question is reopened, and
+    // deleting them would delete the measurement with them. Nothing depends
+    // on them having worked -- see the caller's own note. The scrollbar call
+    // above is in the same position: it may or may not be doing anything.
+    //
+    // What this leaves: in dark mode the ListView header and the three combo
+    // faces render light. Fixing it needs one of — owner-drawing the header
+    // (possible, and the NM_CUSTOMDRAW path meant to do it is not firing),
+    // replacing the combos with owner-drawn controls, or reopening the
+    // ordinals decision. That is a design call, not a code one.
+    let header = header_of(list);
+    if !header.is_invalid() {
+        let hname = if dark {
+            w!("DarkMode_ItemsView")
+        } else {
+            w!("ItemsView")
+        };
+        let _ = SetWindowTheme(header, hname, None);
+    }
+    // `CFD` is the combo/edit family. The filter box is a plain EDIT and takes
+    // the same class.
+    let fname = if dark { w!("DarkMode_CFD") } else { w!("CFD") };
+    for id in [IDC_APP, IDC_COMBO, IDC_TAP, IDC_FILTER] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = SetWindowTheme(c, fname, None);
+        }
+    }
+}
+
+/// Repaint just the title bar band, not the whole client -- a hover move is
+/// the only thing that changed, and `chrome::paint` fills the whole band
+/// itself, so `erase: false` skips a redundant `WM_ERASEBKGND` pass (the
+/// same reasoning `set_chip` gives for an owner-draw button).
+unsafe fn invalidate_titlebar(hwnd: HWND) {
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let mut rc = RECT::default();
+    if GetClientRect(hwnd, &mut rc).is_ok() {
+        rc.bottom = rc.bottom.min(scale(chrome::TITLEBAR_H, dpi));
+        let _ = InvalidateRect(Some(hwnd), Some(&rc), false);
+    }
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -5319,6 +4784,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_SIZE => {
                 layout(hwnd);
+                // Card 3 is bottom-anchored and cards 1/2 flex with the list
+                // (Task 8), so a resize moves and resizes every card's rect,
+                // not just the children `layout` repositions.
+                // `SetWindowPos` on a child only invalidates what THAT child
+                // vacated -- strictly inside its own card -- so without this
+                // the `CARD_PAD` ring, the inter-card gaps and whatever a
+                // shrunk card used to cover are left painted with the OLD
+                // geometry: `DefWindowProc`'s own erase only knows the new
+                // client size, not where the cards used to be. The
+                // `WNDCLASSEXW` above deliberately carries no
+                // `CS_HREDRAW`/`CS_VREDRAW` -- see its own comment -- so
+                // there is nothing upstream of this call that would do it
+                // instead.
+                let _ = InvalidateRect(Some(hwnd), None, true);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -5328,7 +4807,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // second message arrives to correct it.
                 let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
                 let fonts = build_fonts(hwnd, dpi);
-                set_cap_font(fonts.get(Role::Caption));
+                set_cap_font(fonts.get(Role::Keycap));
                 // The borrow is taken and dropped on these lines. Nothing
                 // below may hold one: `WM_SETFONT` re-enters this wndproc,
                 // and a second `RefCell` borrow across an `extern "system"`
@@ -5356,6 +4835,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         Some(LPARAM(1)),
                     );
                     child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
+                }
+                // The Header is `list`'s child, not `hwnd`'s, so the walk
+                // above never reaches it -- same reason `build_children`
+                // sets it separately rather than through `role_of`.
+                if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
+                    set_header_font(list, fonts.get(Role::BodyStrong));
+                    // The state image list is sized in DEVICE pixels
+                    // (Task 10), so a monitor move needs a fresh one at the
+                    // new DPI for the same reason the font does. Known
+                    // limitation: the composited GLYPH itself is copied from
+                    // whichever image list is CURRENTLY installed, which
+                    // after the first call is our own previous composite,
+                    // not comctl32's native default -- so only the CELL
+                    // rescales cleanly across a live DPI change; the tick's
+                    // own pixels stay at their first-installed resolution.
+                    // Unverified on hardware; see `rebuild_state_image_list`.
+                    rebuild_state_image_list(list, dpi);
                 }
                 // AFTER the broadcast, never before: the old handles were
                 // selected into those controls until the loop above replaced
@@ -5388,17 +4884,175 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 layout(hwnd);
+                // Same reason as `WM_SIZE`: the card stack's geometry moved
+                // (here the fonts changed size too, which can itself move
+                // `card2_h`/`card1_h` through `notes_height`/`list_h`), so
+                // the previous paint is stale everywhere, not only inside
+                // the children `layout` repositioned. See the `WNDCLASSEXW`
+                // comment above for why the class style cannot do this
+                // instead.
+                let _ = InvalidateRect(Some(hwnd), None, true);
+                LRESULT(0)
+            }
+            // -- The client-drawn title bar (Task 7) ------------------------
+            WM_NCCALCSIZE => chrome::nccalcsize(hwnd, wp, lp),
+            WM_NCHITTEST => {
+                // LOWORD/HIWORD of lParam: screen coordinates, signed --
+                // negative on a monitor left of or above the primary.
+                let pt = POINT {
+                    x: (lp.0 & 0xFFFF) as u16 as i16 as i32,
+                    y: ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
+                };
+                match chrome::nchittest(hwnd, pt) {
+                    Some(lr) => lr,
+                    None => DefWindowProcW(hwnd, msg, wp, lp),
+                }
+            }
+            // With no maximize box there is nothing for a caption
+            // double-click to do, and letting DefWindowProc try it is how
+            // the unreachable maximized state gets reached.
+            WM_NCLBUTTONDBLCLK if wp.0 as u32 == HTCAPTION => LRESULT(0),
+            WM_NCMOUSEMOVE => {
+                // wParam is already the hit-test code from OUR OWN
+                // WM_NCHITTEST at this position -- Windows computes it
+                // before sending this message -- so there is no second
+                // geometry calculation here to keep in step with
+                // `chrome::nchittest` / `chrome::hit_button`.
+                let code = wp.0 as u32;
+                let want = (code == HTCLOSE || code == HTMINBUTTON).then_some(code as i32);
+                let moved = UI.with(|u| {
+                    u.borrow_mut()
+                        .as_mut()
+                        .map(|ui| {
+                            let changed = ui.hot != want;
+                            ui.hot = want;
+                            changed
+                        })
+                        .unwrap_or(false)
+                });
+                if moved {
+                    invalidate_titlebar(hwnd);
+                }
+                // WM_NCMOUSELEAVE does not fire on its own: TrackMouseEvent's
+                // tracking is one-shot per arrival, so every move re-arms
+                // it. Cheap -- one syscall -- and idempotent while the
+                // cursor stays inside the bar.
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE | TME_NONCLIENT,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_NCMOUSELEAVE => {
+                let had = UI.with(|u| {
+                    u.borrow_mut()
+                        .as_mut()
+                        .map(|ui| ui.hot.take().is_some())
+                        .unwrap_or(false)
+                });
+                if had {
+                    invalidate_titlebar(hwnd);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_ERASEBKGND => {
+                // Owned by this window since Task 13, not `DefWindowProcW`
+                // and not the class's own `hbrBackground` (`create`, a plain
+                // system colour with no notion of the light/dark palette or
+                // of a backdrop tier at all).
+                //
+                // Under Mica, painting ANYTHING here -- even the theme's own
+                // background colour -- is the one thing that hides it: DWM
+                // has already composited the backdrop into this exact rect
+                // before `WM_PAINT` runs, and an opaque fill on top of it
+                // covers the material just as completely as an unrelated
+                // colour would. Returning 1 with nothing drawn is what keeps
+                // it visible in the gaps between cards; `WM_PAINT`'s own
+                // card loop still draws the four cards on top either way.
+                if theme::current_tier() == beckon_core::theme::Backdrop::Mica {
+                    LRESULT(1)
+                } else {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)));
+                    LRESULT(1)
+                }
+            }
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                // The four cards, painted first: they are this window's own
+                // background layer, and every child control paints itself
+                // separately afterward and lands on top regardless of the
+                // order drawing happens in here. `card_rects` runs the SAME
+                // arithmetic `layout` places controls against -- see its own
+                // comment for why that must stay one function -- and takes
+                // its own `UI` borrow, dropped before it returns, so calling
+                // it here (before the `PAINT_THEME` borrow below) cannot
+                // collide with anything.
+                //
+                // `card` reads the theme through `theme_col` / `theme_brush`,
+                // each of which takes and drops its own `PAINT_THEME` borrow
+                // -- never `Ui::theme` -- so this loop must run OUTSIDE the
+                // `PAINT_THEME.with` block below: nesting it inside would be
+                // a second borrow of the same `RefCell` while the first
+                // (`chrome::paint`'s) is still alive, which panics.
+                for rc in card_rects(hwnd) {
+                    // The banner's rect is zero height when the banner is
+                    // hidden -- `RoundRect` on a degenerate rect is nothing
+                    // worth asking GDI to draw.
+                    if rc.bottom > rc.top {
+                        let dpi = GetDpiForWindow(hwnd).max(96);
+                        card(hdc, rc, dpi);
+                    }
+                }
+                // ONE borrow, taken and dropped on this line -- `chrome::paint`
+                // below must not run with `UI` still borrowed, on the same
+                // rule every other arm in this function follows.
+                let ui_bits = UI.with(|u| {
+                    u.borrow()
+                        .as_ref()
+                        .map(|ui| (ui.fonts, ui.hot, ui.app, ui.filter))
+                });
+                if let Some((fonts, hot, app, filter)) = ui_bits {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    // `PAINT_THEME`'s borrow is passed straight into
+                    // `chrome::paint` (and, added in Task 9, `field_border`)
+                    // rather than read through `theme_col` / `theme_brush`,
+                    // which would try to borrow this same `RefCell` a second
+                    // time and panic.
+                    PAINT_THEME.with(|c| {
+                        let mut cache = c.borrow_mut();
+                        chrome::paint(hwnd, hdc, &mut cache, &fonts, dpi, hot);
+                        // `GetFocus()` read fresh here rather than cached
+                        // anywhere: this is the only place that needs the
+                        // answer, and it is what lets `handle_command`'s
+                        // `CBN_SETFOCUS`/`EN_SETFOCUS` arms be pure
+                        // "ask for a repaint" triggers with no state of
+                        // their own to keep in step with this.
+                        let focus = GetFocus();
+                        field_border(hdc, app, hwnd, &mut cache, focus == app, dpi);
+                        field_border(hdc, filter, hwnd, &mut cache, focus == filter, dpi);
+                    });
+                }
+                let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_SYSCOLORCHANGE => {
                 // System palette changed (e.g. entering/leaving high
-                // contrast). Every control on this window already reads
-                // colours through GetSysColor / DefWindowProcW's own
-                // COLOR_BTNFACE brush -- see the module-level colour audit
-                // -- so there is no cached colour of ours to re-read here;
-                // the forward+invalidate is what makes the CHILDREN's own
-                // cached colours (edit control backgrounds, ListView text/
-                // back colour) catch up.
+                // contrast). This window's own cached colours -- `ThemeCache`
+                // and its paint-safe mirror `PAINT_THEME` -- are refreshed by
+                // `on_theme_changed`, reached separately: `WM_THEMECHANGED`
+                // fires for the same high-contrast transition, and
+                // `WM_SETTINGCHANGE`'s `ImmersiveColorSet` check catches the
+                // light/dark toggle. Nothing here rebuilds them a second
+                // time; the forward+invalidate below is what makes the
+                // CHILDREN's own cached colours (edit control backgrounds,
+                // ListView text/back colour) catch up.
                 broadcast_theme_change(hwnd, msg, wp, lp);
                 LRESULT(0)
             }
@@ -5408,6 +5062,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // told otherwise; WM_THEMECHANGED is that notice, and it
                 // only reaches top-level windows, hence the forward.
                 broadcast_theme_change(hwnd, msg, wp, lp);
+                // High contrast on/off arrives here too (Windows treats it
+                // as a visual-style switch), so this is also a live signal
+                // for the light/dark/high-contrast `ThemeCache`, not just
+                // the keycap-shape flag `HIGH_CONTRAST` above.
+                on_theme_changed(hwnd);
                 LRESULT(0)
             }
             WM_SETTINGCHANGE => {
@@ -5415,8 +5074,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // actions (wallpaper, mouse trails, ...) -- wParam carries
                 // the SPI_ action code when SystemParametersInfo was called
                 // with SPIF_SENDCHANGE, which is how Windows reports a
-                // high-contrast toggle. Only that one is this window's
-                // concern; everything else must fall through to
+                // high-contrast toggle. Only that one is the keycap shape's
+                // concern.
+                //
+                // The light/dark palette additionally watches lParam for
+                // `"ImmersiveColorSet"` (`is_immersive_colour_set`), which is
+                // how Windows reports the Settings > Personalization > Colors
+                // toggle -- a change that sets neither `SPI_SETHIGHCONTRAST`
+                // nor `WM_THEMECHANGED`. Everything else must fall through to
                 // DefWindowProcW untouched rather than relayout on every
                 // unrelated settings change.
                 if wp.0 == SPI_SETHIGHCONTRAST.0 as usize {
@@ -5424,7 +5089,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     // it triggers already see the new answer.
                     refresh_high_contrast();
                     broadcast_theme_change(hwnd, msg, wp, lp);
+                    on_theme_changed(hwnd);
                     LRESULT(0)
+                } else if is_immersive_colour_set(lp) {
+                    on_theme_changed(hwnd);
+                    DefWindowProcW(hwnd, msg, wp, lp)
                 } else {
                     DefWindowProcW(hwnd, msg, wp, lp)
                 }
@@ -5551,19 +5220,45 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
                 }
-                // Save is the primary action, so B fills it with the accent.
+                // The ListView's own Header (Task 10): a child of `IDC_LIST`,
+                // never of `hwnd` -- `set_header_font`'s own reason -- so its
+                // `WM_NOTIFY`s carry `hwndFrom` equal to the HEADER's own
+                // HWND rather than `IDC_LIST`'s, and `idFrom` cannot tell the
+                // two custom-draw sources apart the way it does above.
+                // Answered here, before `suppressed()`, for the same reason
+                // the list's own custom draw is: pure painting, no callback,
+                // cannot recurse into `apply_state`.
+                if nm.code == NM_CUSTOMDRAW && nm.hwndFrom == header_of(hwnd) {
+                    return LRESULT(header_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
+                // Every push button paints through here now, `Save` included
+                // -- Task 9 widened this from `Save` alone to all nine of
+                // `PUSH_BUTTONS`.
                 //
-                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `BS_OWNERDRAW`
-                // replaces the button's TYPE, and Save's type is
-                // `BS_DEFPUSHBUTTON` -- the ring `set_default_id` moves around
-                // with a `BM_SETSTYLE` read-modify-write through
-                // `BS_TYPEMASK_BITS`. Owner-draw would take that machinery
-                // with it, and Enter-on-`Reload`-saves is a defect this window
-                // has already had once. Custom draw leaves the type, the
-                // notifications and the ring exactly as they are and only
-                // replaces the pixels.
-                if nm.idFrom == IDC_APPLY as usize && nm.code == NM_CUSTOMDRAW {
-                    return LRESULT(save_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`, for ALL of them.**
+                // `BS_OWNERDRAW` replaces a button's TYPE, and every one of
+                // these nine can carry `BS_DEFPUSHBUTTON` -- the ring
+                // `set_default_id` moves around with a `BM_SETSTYLE`
+                // read-modify-write through `BS_TYPEMASK_BITS` -- not `Save`
+                // alone. Owner-draw would take that machinery with it, and
+                // Enter-on-`Reload`-saves is a defect this window has already
+                // had once. Custom draw leaves the type, the notifications
+                // and the ring exactly as they are and only replaces the
+                // pixels. `push_button_custom_draw` (`mod.rs`) translates the
+                // `NMCUSTOMDRAW` this message carries into the
+                // `DRAWITEMSTRUCT` `paint::button` actually draws from, so
+                // there is one painter behind both `WM_NOTIFY` here and
+                // `WM_DRAWITEM` below.
+                if is_push_button(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(push_button_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
+                // `IDC_CAPS` (Task 11): the one toggle switch in this
+                // window, reached the same way and for the same reason as
+                // the nine push buttons just above -- pure painting, no
+                // callback, cannot recurse into `apply_state`, so it is
+                // answered before `suppressed()` too.
+                if nm.idFrom == IDC_CAPS as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(caps_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
                 if suppressed() {
                     return LRESULT(0);
@@ -5615,33 +5310,140 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CTLCOLORSTATIC => {
-                // **One control, by id.** Every other STATIC in this window --
-                // the banner, the notes, the four labels -- keeps the default
-                // treatment; answering for all of them would silently grey the
-                // banner, which is the one piece of text here that must not be
-                // played down.
+                // **Every on-card STATIC, group box and check box, by id.**
+                // Before Task 8 this arm answered for `IDC_LBL_COUNT` alone
+                // and let `DefWindowProcW` cover the rest, on the strength of
+                // a comment that read: "the group boxes and the window share
+                // the same `bg` token, and letting the parent's paint show
+                // through is what keeps this correct if that ever stops
+                // being true." Task 8 is exactly the change that comment
+                // named. Every control below now sits on one of the four
+                // `card()` fills (`paint.rs`), which is its OWN token,
+                // distinct from `bg` in both palettes (light: bg 0xF2F4F8 /
+                // card 0xFFFFFF; dark: bg 0x15171C / card 0x1D2027) --
+                // `DefWindowProcW`'s opaque `COLOR_3DFACE` brush is neither,
+                // so the fall-through punched a visible system-grey
+                // rectangle into every one of these: both group-box
+                // captions, the four field labels, the notes, the banner and
+                // the Caps Lock check box.
                 //
-                // `GetSysColorBrush` returns a SYSTEM brush, so it is not
-                // deleted and can be returned safely. `SetBkMode(TRANSPARENT)`
-                // rather than a matching background: the group boxes and the
-                // window share `COLOR_BTNFACE`, and letting the parent's paint
-                // show through is what keeps this correct if that ever stops
-                // being true.
+                // Both the returned fill brush AND `SetBkColor` are set to
+                // the same `card` token, and the mode is `OPAQUE` (the DC
+                // default -- named here rather than left implicit), not the
+                // `TRANSPARENT` the old single-id arm used: the control's own
+                // paint should be correct by itself, not by depending on
+                // whatever the card underneath happens to have been left
+                // showing -- see the `WM_SIZE`/`WM_DPICHANGED`/`apply_state`
+                // repaint fix above for why that dependency used to be
+                // riskier than it looked.
+                //
+                // `theme_brush` returns a brush `PAINT_THEME` owns and frees
+                // on its next theme change -- never here. It survives this
+                // window's own `WM_DESTROY` on purpose: `PAINT_THEME` is a
+                // thread-local, not a field of `Ui`, so the same handle is
+                // still good the next time this window opens on an unchanged
+                // theme. Never a system brush either: `GetSysColorBrush` is
+                // banned from this window's drawing code (see the comment at
+                // the top of `paint.rs`).
+                //
+                // `IDC_LBL_COUNT` alone keeps the dimmer `text_faint` ink
+                // Task 6 gave it -- it sits beside a Subtitle heading, not
+                // inside a run of body text.
                 let ctl = HWND(lp.0 as *mut core::ffi::c_void);
-                if GetDlgCtrlID(ctl) == IDC_LBL_COUNT {
+                let id = GetDlgCtrlID(ctl);
+                // **`IDC_APP` / `IDC_FILTER`, disabled.** Windows routes a
+                // disabled EDIT or COMBOBOX through THIS message, not
+                // `WM_CTLCOLOREDIT` -- so without this arm a greyed App
+                // combo or filter box fell through to `DefWindowProcW`'s
+                // `COLOR_3DFACE`, the exact system-grey rectangle Task 8
+                // fixed for the STATICs above, just reached by a different
+                // message. `field`/`text_faint` rather than `card`/`text`:
+                // these two sit on their OWN `field` surface even when
+                // enabled (see `WM_CTLCOLOREDIT` below), and disabled only
+                // dims the ink, matching `button`'s own "Disabled" row for
+                // every push-button tier.
+                if id == IDC_APP || id == IDC_FILTER {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-                    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
-                    SetBkMode(hdc, TRANSPARENT);
-                    return LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize);
+                    let field = theme_col(|p| p.field, COLOR_BTNFACE);
+                    let text = theme_col(|p| p.text_faint, COLOR_GRAYTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, field);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(field).0 as isize);
+                }
+                // `IDC_NOTES` is deliberately ABSENT since Task 12: it is
+                // `SS_OWNERDRAW` now, and an owner-draw static never asks
+                // its parent for a background brush at all -- `draw_chip`'s
+                // own controls (the seven toggle chips) are absent from this
+                // list for exactly the same reason, and `push_button_custom_draw`'s
+                // nine buttons never were in it either. `paint::draw_notes`
+                // paints this control's background itself, through
+                // `WM_DRAWITEM`.
+                let on_card = matches!(
+                    id,
+                    IDC_LBL_SECTION
+                        | IDC_LBL_COUNT
+                        | IDC_BANNER
+                        | IDC_GRP_EDITOR
+                        | IDC_LBL_APP
+                        | IDC_LBL_SHORTCUT
+                        | IDC_GRP_KEYBOARD
+                        | IDC_CAPS
+                        | IDC_LBL_HOLD
+                        | IDC_LBL_TAP
+                );
+                if on_card {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    // `COLOR_WINDOW`, matching every other `card` fallback
+                    // in this window (`paint::card`, and the six other
+                    // `theme_col(|p| p.card, ...)` sites) -- `COLOR_BTNFACE`
+                    // here was the one place `card` resolved to a DIFFERENT
+                    // sys index, and its ink two lines down is
+                    // `COLOR_WINDOWTEXT`. Under high contrast that pairs a
+                    // BTNFACE fill with WINDOWTEXT ink -- a cross-family
+                    // pair latent only because the four shipped HC schemes
+                    // happen to make those two indices equal.
+                    let card = theme_col(|p| p.card, COLOR_WINDOW);
+                    let text = if id == IDC_LBL_COUNT {
+                        theme_col(|p| p.text_faint, COLOR_GRAYTEXT)
+                    } else {
+                        theme_col(|p| p.text, COLOR_WINDOWTEXT)
+                    };
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, card);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(card).0 as isize);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+                // `IDC_APP` (its edit child, via `WM_CTLCOLOREDIT`, AND its
+                // drop-down LISTBOX, via `WM_CTLCOLORLISTBOX` -- a combo
+                // box's internal list shares its own control id, the same
+                // fact `WM_CTLCOLORLISTBOX` handlers everywhere rely on) and
+                // `IDC_FILTER` (`WM_CTLCOLOREDIT` only -- a plain EDIT has no
+                // drop-down). Neither control is owner-drawn (see each
+                // creation comment); this is the ENTIRE extent to which this
+                // window colours either one -- comctl32 still draws every
+                // character, the caret and the selection itself.
+                let ctl = HWND(lp.0 as *mut core::ffi::c_void);
+                let id = GetDlgCtrlID(ctl);
+                if id == IDC_APP || id == IDC_FILTER {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let field = theme_col(|p| p.field, COLOR_WINDOW);
+                    let text = theme_col(|p| p.text, COLOR_WINDOWTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, field);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(field).0 as isize);
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_DRAWITEM => {
-                // The first owner-draw surface in this window, and the seven
-                // toggle chips are all of it. Answered BEFORE any
-                // `suppressed()` consideration, exactly like the ListView's
-                // custom draw one arm up: it is pure painting, it reaches no
-                // callback and it cannot recurse into `apply_state`.
+                // Answered BEFORE any `suppressed()` consideration, exactly
+                // like the ListView's custom draw one arm up: it is pure
+                // painting, it reaches no callback and it cannot recurse
+                // into `apply_state`.
                 //
                 // `DefWindowProcW` on anything else -- and on a menu, whose
                 // `CtlID` is 0 and which this window has none of today.
@@ -5649,10 +5451,32 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // control blank.
                 let di = &*(lp.0 as *const DRAWITEMSTRUCT);
                 if draw_chip(hwnd, di) {
-                    LRESULT(1)
-                } else {
-                    DefWindowProcW(hwnd, msg, wp, lp)
+                    return LRESULT(1);
                 }
+                // `IDC_NOTES`, added in Task 12. `SHOWN_NOTES` rather than a
+                // read of `Ui::detail`: this arm is answered BEFORE
+                // `suppressed()` below, on `list_custom_draw`'s own rule --
+                // pure painting, no callback, cannot recurse into
+                // `apply_state` -- and a paint can arrive while `UI` is
+                // already borrowed, which is `CHIPS`'s reason too.
+                if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_NOTES {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    let body = SHOWN_NOTES.with(|c| c.borrow().clone());
+                    PAINT_THEME.with(|c| paint::draw_notes(di, &body, &mut c.borrow_mut(), dpi));
+                    return LRESULT(1);
+                }
+                // `IDC_COMBO` and `IDC_TAP`, added in Task 9: both are
+                // `CBS_OWNERDRAWFIXED` `CBS_DROPDOWNLIST`s with no edit
+                // child, so unlike `IDC_APP` there is no typing path this can
+                // endanger -- see each control's own creation comment.
+                if di.CtlType == ODT_COMBOBOX
+                    && (di.CtlID as i32 == IDC_COMBO || di.CtlID as i32 == IDC_TAP)
+                {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    PAINT_THEME.with(|c| draw_combo_item(di, &mut c.borrow_mut(), dpi));
+                    return LRESULT(1);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_CHIP_STATE => LRESULT(match chip_bit(wp.0 as i32) {
                 Some(bit) if chip_armed(bit) => 2,
@@ -5903,13 +5727,21 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 //    first: the `Stop` button, all three of spec F.4's focus layers, the
 //    watchdog, `WM_CLOSE` (before the save prompt) and `WM_DESTROY`.
 
-/// The notes strip's text while a capture is live: the partial combo, then
-/// the hint.
+/// The notes strip's content while a capture is live: the partial combo,
+/// then the hint -- each a `Note` so `paint::draw_notes` draws it exactly
+/// like a row's own notes, through the same function.
 ///
-/// Indented through `mark_glyph(Mark::Ok)` -- the blank one -- so the two
-/// lines sit exactly where a healthy note sits. That is the only reason this
-/// goes through the glyph table rather than writing spaces: a second
-/// indentation rule is a second thing to keep in step with the first.
+/// **`Mark::Unknown` for both, not `Mark::Ok`.** The blank `Ok` glyph this
+/// used to borrow (`mark_glyph(Mark::Ok)`, deleted) was chosen only because
+/// it was blank -- pure alignment, nothing about the mark's real meaning.
+/// Now that alignment is structural (`draw_notes` draws every dot at the
+/// same fixed x regardless of colour), there is no reason left to borrow a
+/// mark whose real meaning is "registered and working". A capture in
+/// progress is informational, not a verdict either way -- exactly what
+/// `Mark::Unknown` already means elsewhere in this window ("Checking
+/// installed apps...", "Not registered yet."), so reusing it here says the
+/// same thing `row_condition` already says about not-yet-known state,
+/// rather than inventing a new case.
 ///
 /// **Two lines is the ceiling `notes_height` reserves, and this fits it
 /// exactly, not by accident.** The `Some(p)` arm below IS two lines -- the
@@ -5918,12 +5750,19 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 /// third capture line would clip exactly as a third NOTE line does, and
 /// nothing here would stop one from being added -- if one ever is, check it
 /// against this ceiling first.
-fn capture_notes(c: &Capture) -> String {
-    let g = mark_glyph(Mark::Ok);
-    match &c.partial {
-        Some(p) => format!("{g}  {p}\r\n{g}  {}", c.hint),
-        None => format!("{g}  {}", c.hint),
+fn capture_notes(c: &Capture) -> Vec<Note> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(p) = &c.partial {
+        out.push(Note {
+            mark: Mark::Unknown,
+            text: p.clone(),
+        });
     }
+    out.push(Note {
+        mark: Mark::Unknown,
+        text: c.hint.clone(),
+    });
+    out
 }
 
 /// Write a caption only when it would change.
@@ -5960,7 +5799,13 @@ fn capture_showing() -> bool {
 /// cleared by something, and there is nothing sensible to clear it on.
 unsafe fn say_unavailable() {
     if let Some(notes) = UI.with(|u| u.borrow().as_ref().map(|x| x.notes)) {
-        set_text(notes, HINT_UNAVAILABLE);
+        show_notes(
+            notes,
+            vec![Note {
+                mark: Mark::Bad,
+                text: HINT_UNAVAILABLE.to_string(),
+            }],
+        );
     }
 }
 
@@ -5971,8 +5816,8 @@ unsafe fn say_unavailable() {
 /// call from anywhere.
 unsafe fn show_capture(hwnd: HWND) {
     // ONE borrow, dropped on this line. `capture_notes` allocates but makes
-    // no OS call, so building the string inside it is sound; every send is
-    // below.
+    // no OS call, so building the `Vec<Note>` inside it is sound; every send
+    // is below.
     let Some((notes, body)) = UI.with(|u| {
         u.borrow()
             .as_ref()
@@ -5980,8 +5825,12 @@ unsafe fn show_capture(hwnd: HWND) {
     }) else {
         return;
     };
-    if text_of(notes) != body {
-        set_text(notes, &body);
+    // Compared against `SHOWN_NOTES`, not `text_of(notes)`: the window text
+    // is now a DERIVED plain-text mirror (`show_notes`'s own doc), so it is
+    // `SHOWN_NOTES` that says whether this call would actually change
+    // anything.
+    if SHOWN_NOTES.with(|c| *c.borrow() != body) {
+        show_notes(notes, body);
     }
     // Two writers on one value is what spec C.4 forbids, and this is the
     // half that enforces it: while the hook is recording, the five controls
@@ -6297,6 +6146,14 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 with_cb(|cb| (cb.on_filter)(t));
             }
         }
+        // Ask the parent to repaint `paint::field_border`'s ring around
+        // `IDC_FILTER` -- see `invalidate_field_border`'s own doc for why
+        // this is the whole of what this arm does: `WM_PAINT` reads
+        // `GetFocus()` itself, so there is no state to write here, only a
+        // repaint to request.
+        (IDC_FILTER, c) if c == EN_SETFOCUS || c == EN_KILLFOCUS => unsafe {
+            invalidate_field_border(hwnd, filter);
+        },
         // ONE of the two codes is deferred, and the asymmetry is the point.
         //
         // `CBN_EDITCHANGE` is deferred through `WM_APP_EDITED`. NOT because
@@ -6365,7 +6222,26 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // `CB_SETCURSEL` can move. `commit_fields` still reads all five
         // controls on Save, which is the backstop that was actually load
         // bearing.
-        (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => commit_fields(),
+        // Field-border repaint, folded into the SAME arm `CBN_KILLFOCUS`
+        // already reaches rather than a second one ahead of it: two arms
+        // matching the same `(id, code)` would let only the first ever run,
+        // and `commit_fields` here is the one that must not be dropped.
+        // `CBN_CLOSEUP` never carries a focus change on its own (a pick
+        // closes the list but the edit keeps focus), so it is excluded from
+        // the repaint request.
+        (IDC_APP, c) if c == CBN_KILLFOCUS || c == CBN_CLOSEUP => {
+            if c == CBN_KILLFOCUS {
+                if let Some(app) = app_handle() {
+                    unsafe { invalidate_field_border(hwnd, app) };
+                }
+            }
+            commit_fields();
+        }
+        (IDC_APP, c) if c == CBN_SETFOCUS => {
+            if let Some(app) = app_handle() {
+                unsafe { invalidate_field_border(hwnd, app) };
+            }
+        }
         (IDC_ADD, _) => with_cb(|cb| (cb.on_add)()),
         (IDC_REMOVE, _) => with_cb(|cb| (cb.on_remove)()),
         // One button, two commands: `Record` while idle, `Stop` while armed.

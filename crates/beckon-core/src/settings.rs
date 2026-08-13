@@ -139,10 +139,10 @@ pub const FLAG_SEP: &str = "   ";
 /// that cannot hear "not installed" is worse than a flag that is not
 /// coloured.
 ///
-/// ASCII, like `mark_glyph`: the face is a text font, not a symbol one. A
-/// healthy row says nothing at all -- `flag` is `None` and the name stands
-/// alone, which is the whole point of deleting the status column that used
-/// to say `OK` on every row.
+/// ASCII, because the face is a text font, not a symbol one. A healthy row
+/// says nothing at all -- `flag` is `None` and the name stands alone, which
+/// is the whole point of deleting the status column that used to say `OK` on
+/// every row.
 pub fn app_cell(app: &str, flag: Option<&str>) -> String {
     match flag {
         Some(f) => format!("{app}{FLAG_SEP}{f}"),
@@ -1483,12 +1483,13 @@ const QUOTED_LINE_MAX: usize = 120;
 /// error's own snippet, which is ASCII art that only lines up in a monospace
 /// font this window does not have.
 ///
-/// **Every string beckon contributes here is ASCII**, for the reason
-/// `mark_glyph` gives. The two pass-through fragments -- the offending line
-/// and the parser's reason -- are not folded: the line is the user's own
-/// data and mangling it would defeat the purpose of quoting it, and every
-/// message `parse_config` produces is ASCII by the rule stated at its array
-/// arm.
+/// **Every string beckon contributes here is ASCII**, because this window
+/// carries a text face (not a symbol one) and a glyph it lacks draws as a box
+/// that reads like a rendering bug. The two pass-through fragments -- the
+/// offending line and the parser's reason -- are not folded: the line is the
+/// user's own data and mangling it would defeat the purpose of quoting it, and
+/// every message `parse_config` produces is ASCII by the rule stated at its
+/// array arm.
 pub fn explain_unreadable(text: &str, err: &str) -> Vec<Note> {
     let mut out = vec![Note {
         mark: Mark::Bad,
@@ -2358,10 +2359,10 @@ mod tests {
         );
     }
 
-    /// Everything beckon itself writes here is ASCII, for the reason
-    /// `mark_glyph` gives: this window carries a text face, and a glyph it
-    /// lacks draws as a box that reads like a beckon bug. The user's own
-    /// file line is the one thing exempt, so it is ASCII in these fixtures.
+    /// Everything beckon itself writes here is ASCII: this window carries a
+    /// text face (not a symbol one), and a glyph it lacks draws as a box that
+    /// reads like a rendering bug. The user's own file line is the one thing
+    /// exempt, so it is ASCII in these fixtures.
     ///
     /// This is a live check on `parse_config`'s messages too, not only on
     /// the wrapper's: two of them carried an em-dash until the read-only

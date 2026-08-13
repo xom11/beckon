@@ -76,3 +76,4 @@ pub mod config_write;
 pub mod menu;
 pub mod settings;
 pub mod shortcuts;
+pub mod theme;
