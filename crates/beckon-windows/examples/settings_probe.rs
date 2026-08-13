@@ -25,7 +25,7 @@ mod win {
     use windows::Win32::Foundation::{
         CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, SIZE, WPARAM,
     };
-    use windows::Win32::Graphics::Gdi::MapWindowPoints;
+    use windows::Win32::Graphics::Gdi::{ClientToScreen, MapWindowPoints};
     use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
     use windows::Win32::System::Memory::{
         VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
@@ -242,6 +242,11 @@ mod win {
     const IDC_CAPS: i32 = 1008;
     const IDC_OPENFILE: i32 = 1012;
     const IDC_CLOSE: i32 = 1013;
+    /// The Caps-tap list -- the second `CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED`
+    /// control Task 9 built, alongside `IDC_COMBO`. Unmoved since it was
+    /// added; pinned here only so `measure_geometry` can read its style bits
+    /// and its three fixed items.
+    const IDC_TAP: i32 = 1025;
     /// The four modifier check boxes that spell a shortcut alongside
     /// `IDC_COMBO`. Driven, not merely read: `BM_CLICK` on one of these is
     /// the real path a mouse takes, unlike the synthesised `WM_COMMAND`
@@ -283,6 +288,30 @@ mod win {
         (56, "comma"),
         (80, "down"),
     ];
+
+    /// The window's own logical size at 96 DPI, and its floor -- transcribed
+    /// from `settings_window::mod::{WINDOW_WIDTH, WINDOW_HEIGHT, MIN_WIDTH,
+    /// MIN_HEIGHT}`. Same reasoning as `KEY_COUNT`/`KEY_ORDER`: the probe
+    /// drives another process and cannot link the crate, so this is an
+    /// independent copy that agrees with the source today, and a later
+    /// resize that changes one without the other shows up as a
+    /// disagreement on hardware rather than being absorbed silently.
+    const WINDOW_WIDTH_96: i32 = 900;
+    const WINDOW_HEIGHT_96: i32 = 740;
+    /// Printed for reference only -- gate 09 (eight rows, no scrollbar) is
+    /// what actually has to be checked at this floor, and that needs a
+    /// human to drag the corner; this probe does not drive a resize.
+    const MIN_WIDTH_96: i32 = 753;
+    const MIN_HEIGHT_96: i32 = 702;
+
+    /// A 96-DPI value scaled to `dpi`, transcribed from
+    /// `settings_window::mod::scale` -- truncating, not `MulDiv`'s
+    /// round-half-up, because the source's own doc comment says the two
+    /// disagree at in-between DPIs and this has to match the source, not
+    /// the "nicer" rounding.
+    fn scale96(v: i32, dpi: u32) -> i32 {
+        v * dpi as i32 / 96
+    }
 
     fn dlg_item(parent: HWND, id: i32) -> Option<HWND> {
         match unsafe { GetDlgItem(Some(parent), id) } {
@@ -754,6 +783,54 @@ mod win {
             );
         }
 
+        // `WM_NCCALCSIZE` (`chrome::nccalcsize`, Task 7) restores
+        // `rgrc[0].top` to the window's OWN top edge, unconditionally -- not
+        // just the caption band, the whole non-client top inset
+        // `DefWindowProcW` would otherwise reserve for `WS_CAPTION`. So the
+        // client's on-screen origin should sit EXACTLY at the window's own
+        // top edge: 0 px of inset, where an unmodified `WS_CAPTION` window
+        // would show `chrome::TITLEBAR_H` (40 @96 DPI) plus a border. That is
+        // a property of the code (`before.top` copied back verbatim), not of
+        // the hardware, so the top figure below is asserted; the bottom
+        // figure is only printed; see the comment beside it for why.
+        let mut wrc = RECT::default();
+        let mut origin = POINT { x: 0, y: 0 };
+        if unsafe { GetWindowRect(parent, &mut wrc) }.is_ok()
+            && unsafe { ClientToScreen(parent, &mut origin) }.as_bool()
+        {
+            let top_inset = origin.y - wrc.top;
+            println!(
+                "    client top inset from window top: {top_inset}px   {}",
+                if top_inset == 0 {
+                    "MATCH -- the caption band was given back to the client"
+                } else {
+                    "<<< FAIL -- still inset as if a system caption were reserved"
+                }
+            );
+            // Everything left over (window height minus client height minus
+            // the top inset already accounted for) is whatever
+            // `DefWindowProcW` still reserves at the BOTTOM -- a resize
+            // border, not a caption, now that the top figure above reads 0.
+            // The task brief for this probe describes the new shape as
+            // `window_height - 2*border` against an old
+            // `window_height - caption - 2*border`; this code only restores
+            // the TOP unconditionally (`nccalcsize`'s `rgrc[0].top =
+            // before.top`), so whether the bottom figure below actually
+            // equals one border or two is exactly what this line is for --
+            // printed rather than asserted, because the precise pixel count
+            // depends on `GetSystemMetricsForDpi(SM_CYSIZEFRAME, ...)` plus
+            // `SM_CXPADDEDBORDER`, both DPI- and theme-dependent in ways
+            // this probe cannot verify from source alone.
+            let vertical_inset = (wrc.bottom - wrc.top) - (rc.bottom - rc.top);
+            println!(
+                "    total vertical inset (window - client): {vertical_inset}px \
+                 ({top_inset}px top + {}px bottom)",
+                vertical_inset - top_inset
+            );
+        } else {
+            println!("    client/window top-inset check: FAIL -- could not read one of the rects");
+        }
+
         measure_listview(parent, "as built");
 
         // `BCM_GETIDEALSIZE` is what the THEME wants; the window rect is what
@@ -794,20 +871,29 @@ mod win {
                 "    COMBOBOX IDC_COMBO:   {} closed   CB_GETCOUNT {count}   style 0x{st:08X}",
                 fmt_wh(w, h)
             );
-            // Three claims, none of them checkable anywhere else.
+            // Four claims, none of them checkable anywhere else.
             //
             // CBS_DROPDOWNLIST is what makes the resize defect structurally
             // impossible on this control: a CBS_DROPDOWN would have an edit
             // field for `SetWindowPos` to re-synchronise, which is what cost
-            // this project a day. CBS_SORT absent, plus the fixed points
-            // below, ARE the index contract -- `CB_SETCURSEL i` means
-            // `key_table()[i]`, and that holds only while the list is in the
-            // table's own order. Sorted, `f10` would come before `f2` and
-            // every selection would name the wrong key, silently, and
-            // invisibly to every unit test.
+            // this project a day. CBS_OWNERDRAWFIXED, added in Task 9, is
+            // what makes the tick-centring and font-role gates (05, 08)
+            // possible at all -- without it `paint::draw_combo_item` never
+            // runs and the row falls back to comctl32's own default draw.
+            // CBS_SORT absent, plus the fixed points below, ARE the index
+            // contract -- `CB_SETCURSEL i` means `key_table()[i]`, and that
+            // holds only while the list is in the table's own order.
+            // Sorted, `f10` would come before `f2` and every selection would
+            // name the wrong key, silently, and invisibly to every unit
+            // test.
             println!(
-                "      CBS_DROPDOWNLIST: {}   CBS_SORT: {}",
+                "      CBS_DROPDOWNLIST: {}   CBS_OWNERDRAWFIXED: {}   CBS_SORT: {}",
                 if st & 0x3 == 3 { "yes" } else { "NO <<< FAIL" },
+                if st & 0x0010 != 0 {
+                    "yes"
+                } else {
+                    "NO <<< FAIL, Task 9's owner-draw row never paints"
+                },
                 if st & 0x0100 == 0 {
                     "absent"
                 } else {
@@ -833,6 +919,88 @@ mod win {
             }
         } else {
             println!("    COMBOBOX IDC_COMBO:   MISSING");
+        }
+
+        // The other `CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED` list Task 9
+        // built. Same three style claims as `IDC_COMBO` above, for the same
+        // reasons -- a `CBS_SORT` here would move `Esc` ahead of `Caps Lock`
+        // and `paint::draw_combo_item`'s `cap::TAP_ITEMS[di.itemID]` lookup
+        // would silently draw the wrong caption for the row's own
+        // selection -- but only three fixed items, not 81, so they are
+        // checked inline rather than through `KEY_ORDER`.
+        if let Some(ctl) = dlg_item(parent, IDC_TAP) {
+            let (_, _, w, h) = box_in_client(parent, ctl);
+            let st = unsafe { GetWindowLongPtrW(ctl, GWL_STYLE) } as u32;
+            let count = send(ctl, CB_GETCOUNT, 0, 0);
+            println!(
+                "    COMBOBOX IDC_TAP:     {} closed   CB_GETCOUNT {count}   style 0x{st:08X}",
+                fmt_wh(w, h)
+            );
+            println!(
+                "      CBS_DROPDOWNLIST: {}   CBS_OWNERDRAWFIXED: {}   CBS_SORT: {}",
+                if st & 0x3 == 3 { "yes" } else { "NO <<< FAIL" },
+                if st & 0x0010 != 0 {
+                    "yes"
+                } else {
+                    "NO <<< FAIL, Task 9's owner-draw row never paints"
+                },
+                if st & 0x0100 == 0 {
+                    "absent"
+                } else {
+                    "PRESENT <<< FAIL, TAP_ITEMS order is broken"
+                },
+            );
+            // Transcribed from `cap::TAP_ITEMS` -- the probe cannot link the
+            // crate, so this is an independent copy, exactly like
+            // `KEY_ORDER` above.
+            const TAP_COUNT: isize = 3;
+            const TAP_ITEMS: [&str; 3] = ["Caps Lock", "Esc", "Nothing"];
+            println!(
+                "      CB_GETCOUNT == {TAP_COUNT}: {}",
+                if count == TAP_COUNT {
+                    "yes"
+                } else {
+                    "NO <<< FAIL"
+                }
+            );
+            for (i, want) in TAP_ITEMS.iter().enumerate() {
+                let i = i as isize;
+                match combo_item(ctl, i) {
+                    Some(got) if got == *want => println!("      item {i:>3}: {got:?} ok"),
+                    Some(got) => {
+                        println!("      item {i:>3}: {got:?} <<< FAIL, expected {want:?}")
+                    }
+                    None => println!("      item {i:>3}: CB_ERR <<< FAIL, expected {want:?}"),
+                }
+            }
+        } else {
+            println!("    COMBOBOX IDC_TAP:     MISSING");
+        }
+
+        // `IDC_CAPS` -- the one toggle switch in the window -- is
+        // deliberately UNCHANGED since before this redesign: it stays a
+        // real `BS_AUTOCHECKBOX`, painted through `NM_CUSTOMDRAW`, so it
+        // keeps both the check-box state machine and the UIA checkbox role
+        // that `BS_OWNERDRAW` would drop. Eight OTHER controls in this
+        // window traded that role away on purpose (the four modifier chips,
+        // the three `Hold` chips, and neither `IDC_COMBO` nor `IDC_TAP`
+        // count here since a `CBS_DROPDOWNLIST` was never a check box to
+        // begin with) -- so this assertion exists to catch a future edit
+        // that "simplifies" `IDC_CAPS` the same way, here, at a style-bit
+        // read, rather than in a screen reader. `BS_TYPEMASK` is the low
+        // nibble (0x0F); `BS_AUTOCHECKBOX` is 0x03.
+        if let Some(ctl) = dlg_item(parent, IDC_CAPS) {
+            let st = unsafe { GetWindowLongPtrW(ctl, GWL_STYLE) } as u32;
+            println!(
+                "    BUTTON   IDC_CAPS:     style 0x{st:08X}   BS_AUTOCHECKBOX: {}",
+                if st & 0x0F == 0x03 {
+                    "yes"
+                } else {
+                    "NO <<< FAIL, the UIA checkbox role would be gone"
+                },
+            );
+        } else {
+            println!("    BUTTON   IDC_CAPS:     MISSING");
         }
 
         if let Some(ctl) = dlg_item(parent, IDC_APP) {
@@ -1614,12 +1782,25 @@ mod win {
         println!("  visible: {}", unsafe { IsWindowVisible(h) }.as_bool());
         let mut rc = RECT::default();
         if unsafe { GetWindowRect(h, &mut rc) }.is_ok() {
+            let (win_w, win_h) = (rc.right - rc.left, rc.bottom - rc.top);
+            println!("  rect:    {win_w}x{win_h} at ({}, {})", rc.left, rc.top);
+            let dpi = unsafe { GetDpiForWindow(h) };
+            let (want_w, want_h) = (
+                scale96(WINDOW_WIDTH_96, dpi),
+                scale96(WINDOW_HEIGHT_96, dpi),
+            );
             println!(
-                "  rect:    {}x{} at ({}, {})",
-                rc.right - rc.left,
-                rc.bottom - rc.top,
-                rc.left,
-                rc.top
+                "  size:    wanted {want_w}x{want_h} ({WINDOW_WIDTH_96}x{WINDOW_HEIGHT_96} @96 \
+                 DPI, scaled to {dpi})   {}",
+                if (win_w, win_h) == (want_w, want_h) {
+                    "MATCH"
+                } else {
+                    "<<< FAIL, or the window was left resized by a human before this run"
+                }
+            );
+            println!(
+                "  floor:   {MIN_WIDTH_96}x{MIN_HEIGHT_96} @96 DPI -- not driven by this probe, \
+                 gate 09 must resize down to it by hand"
             );
         }
 
