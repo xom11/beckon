@@ -28,14 +28,11 @@ pub struct Palette {
     pub field: u32,
     pub field_border: u32,
     pub keycap: u32,
-    pub keycap_border: u32,
     pub keycap_edge: u32,
     pub bad_bg: u32,
     pub bad: u32,
     pub warn_bg: u32,
     pub warn: u32,
-    pub unk_bg: u32,
-    pub unk: u32,
     pub ok: u32,
     pub divider: u32,
 }
@@ -55,14 +52,11 @@ pub const LIGHT: Palette = Palette {
     field: 0xFFFFFF,
     field_border: 0xD2D8E3,
     keycap: 0xFFFFFF,
-    keycap_border: 0xCDD4E1,
     keycap_edge: 0xB6BFCF,
     bad_bg: 0xFDE7E7,
     bad: 0xB42318,
     warn_bg: 0xFDF0D5,
     warn: 0x8A5406,
-    unk_bg: 0xEDEFF4,
-    unk: 0x5A6270,
     ok: 0x067647,
     divider: 0xDDE1E9,
 };
@@ -82,14 +76,11 @@ pub const DARK: Palette = Palette {
     field: 0x23262E,
     field_border: 0x353A45,
     keycap: 0x292D36,
-    keycap_border: 0x39404B,
     keycap_edge: 0x131519,
     bad_bg: 0x3A1C1C,
     bad: 0xFF9A92,
     warn_bg: 0x372911,
     warn: 0xF2C46B,
-    unk_bg: 0x252932,
-    unk: 0x9FA6B4,
     ok: 0x5CCB92,
     divider: 0x333944,
 };
@@ -221,7 +212,6 @@ mod tests {
             ("accent text on soft fill", p.accent, p.accent_soft, 4.5),
             ("bad pill", p.bad, p.bad_bg, 4.5),
             ("warn pill", p.warn, p.warn_bg, 4.5),
-            ("unknown pill", p.unk, p.unk_bg, 4.5),
             // The four `IDC_NOTES` severity-dot colours against the card
             // they sit on (beckon-windows `paint::draw_notes`, Task 12).
             // `Mark::Unknown`'s dot is `text_faint`, already covered by
@@ -233,6 +223,101 @@ mod tests {
             ("card border on bg", p.card_border, p.bg, 1.2),
             ("field border on card", p.field_border, p.card, 1.2),
             ("divider on card", p.divider, p.card, 1.2),
+            // -- Added by the whole-branch review, 2026-08-13: nine pairs
+            // that were drawn on screen but unchecked. Sites are all in
+            // `beckon-windows/src/settings_window/{chrome,paint,mod}.rs`;
+            // see that crate's source for the exact `col`/`theme_col` call
+            // at each one.
+            //
+            // `chrome.rs`'s "beckon" wordmark, in the accent colour, on the
+            // title bar's own `bg` fill.
+            ("accent title on chrome bg", p.accent, p.bg, 4.5),
+            // Two sites, same token pair: `chrome.rs`'s minimize/close
+            // caption ink at rest, on the title bar's `bg` fill; and
+            // `paint.rs`'s `draw_keycaps`, the Shortcut column's chord
+            // cells -- every key EXCEPT the last (main) one takes `bg` as
+            // its face, all sharing the row's one `text` ink.
+            ("body text on window bg", p.text, p.bg, 4.5),
+            // Three sites, same token pair, all LIVE (non-disabled) text:
+            // `mod.rs`'s `WM_CTLCOLOREDIT` arm (the App combo and the
+            // filter box while enabled), `paint.rs`'s `draw_combo_item`'s
+            // plain (non-disabled, non-picked) branch, and `paint.rs`'s
+            // `BtnTier::Secondary` ink (`Add`, `Remove`, `Reload`, `Open
+            // config file`, `Close`, `Keep mine`).
+            ("body text on field", p.text, p.field, 4.5),
+            // Two sites, same token pair: `paint.rs`'s `draw_combo_item`'s
+            // picked branch (a selected dropdown item) and
+            // `list_custom_draw`'s selected-row fallback (a selected
+            // Shortcut cell whose caps did not fit and fell back to plain
+            // text).
+            ("body text on accent_soft fill", p.text, p.accent_soft, 4.5),
+            // `paint.rs`'s `BtnTier::Outline` (`Record` idle, `Reset`),
+            // hovered or pressed-but-not-filled: ink is `accent_hover`.
+            //
+            // **Ground is `bg`, not `card`.** The pre-fix version of this
+            // finding paired this ink against `card`, matching both the
+            // shipped design-intent comment on `colours` (now corrected,
+            // see S1) and the assumption that a resting/hot `Outline`
+            // button lets the surrounding card show through. It does not:
+            // `button` (the sole caller) fills the WHOLE control rect with
+            // `p.bg` before this tier's fill-less state is painted, so `bg`
+            // is the surface this ink is literally drawn on. Both clear the
+            // floor regardless (measured: card 6.66/6.77, bg 6.05/7.45);
+            // `bg` is the one actually on screen.
+            (
+                "outline-tier hover/hot ink on bg",
+                p.accent_hover,
+                p.bg,
+                4.5,
+            ),
+            // `paint.rs`'s `BtnTier::Outline`, PRESSED: fill becomes
+            // `accent_soft` -- an actual `RoundRect` fill this time, not
+            // the bare `bg` above -- ink stays `accent_hover`.
+            (
+                "outline-tier pressed ink on accent_soft",
+                p.accent_hover,
+                p.accent_soft,
+                4.5,
+            ),
+            // `paint.rs`'s `draw_keycaps`, resting (non-armed,
+            // non-disabled) toggle chip: the chip's own border colour
+            // against its own `keycap` face. A border-visibility floor,
+            // like the other borders above, not a text floor.
+            ("keycap edge on keycap face", p.keycap_edge, p.keycap, 1.2),
+            // -- Exemptions. WCAG 2.1 SC 1.4.3 itself excepts "text ... that
+            // is part of an inactive user interface component" from the 4.5
+            // floor. These two rows are the disabled-state ink the review's
+            // Must-Fix list found under 4.5; every site was traced by hand
+            // and is a genuinely disabled control, not live text -- see
+            // `final-fix-report.md` for the per-site reasoning. The floor
+            // is lowered, not removed: a future edit that drives either
+            // pair toward 1:1 (effectively invisible, not merely exempt)
+            // still fails.
+            //
+            // `text_faint` on `bg`: the one LIVE site on this exact token
+            // pair was `chrome.rs`'s title-bar version string, fixed (M1)
+            // to `text_muted` -- now covered by "muted text on window bg"
+            // above instead. The remaining site is `paint.rs`'s
+            // `draw_keycaps`, a disabled toggle chip's ink on its own
+            // disabled `bg` face.
+            (
+                "disabled chip ink on bg (exempt, SC 1.4.3)",
+                p.text_faint,
+                p.bg,
+                3.0,
+            ),
+            // `text_faint` on `field`: `mod.rs`'s `WM_CTLCOLORSTATIC` arm
+            // for a disabled App combo / filter box, `paint.rs`'s
+            // `draw_combo_item` disabled branch (a disabled dropdown item),
+            // and `paint.rs`'s `colours()` disabled branch (every push
+            // button's disabled ink, all four tiers) -- three sites, all
+            // disabled controls.
+            (
+                "disabled field/combo/button ink on field (exempt, SC 1.4.3)",
+                p.text_faint,
+                p.field,
+                3.0,
+            ),
         ]
     }
 
