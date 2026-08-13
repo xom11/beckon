@@ -170,6 +170,87 @@ not define (accent-on-grey, `COLOR_GRAYTEXT` on `COLOR_HIGHLIGHT`), and this
 window's rule is that every colour comes from `GetSysColor`. Left as the
 handoff specified. Worth a human glance before it is called settled.
 
+## Round two: the design board, fetched back
+
+The chips shipped and still did not look like B. The board's URL
+(`claude.ai/code/artifact/3aaeb923-…`) is not fetchable from here -- the
+page is a private SPA shell and a plain fetch returns 0.1 KB of nothing --
+but **the HTML it was published from was still in the previous session's
+scratchpad**, and reading `.wtog` off it settled the question in one step.
+
+The colour was never wrong. `COLOR_HIGHLIGHT` *is* the accent. Six numbers
+were, five of them borrowed from the column's rule rather than the chip's:
+
+| | `.wtog` | shipped 0.9.2 |
+|---|---|---|
+| height | 28 (fills the control) | 27, capped by the column's 19 |
+| padding | `0 10px` | 5 |
+| min width | 46 | none, so `Alt` was visibly smaller |
+| bottom edge | `2px`, following the radius | 1 px hairline inset 2 px each side |
+| resting face | `#fafafa` on a `#f3f3f3` window | `COLOR_BTNFACE`, **the window's own colour** |
+| armed edge | `#1d4fc4` under `#2563eb` | none |
+
+The fifth is most of it: an unarmed chip was a grey box on a grey surface. B
+makes the key LIGHTER than what it sits on, which is how a keycap catches
+light. `COLOR_WINDOW` for the face and `shade(COLOR_HIGHLIGHT, 4, 5)` for the
+armed edge -- derived, so a green accent gets a green shadow.
+
+**One correction from looking at the result**: the light face was given to
+disabled chips too, and three greyed `Hold` keys became the most prominent
+thing in the band. Disabled sinks back to `COLOR_BTNFACE`; only the ink
+fades. `.wtog.dis` says the same thing in CSS (`#f7f7f7` on `#f3f3f3`).
+
+Bold on an armed chip (`font-weight:600`) is the one `.wtog` property not
+implemented: it needs a fourth `HFONT` and a measurement that can disagree
+with `layout`'s, for the smallest of the deltas.
+
+## Round three: the flag pills, the accent Save, the count
+
+- **`· N bindings`** beside the heading, a second STATIC because one has one
+  font, greyed through a `WM_CTLCOLORSTATIC` arm scoped to that id alone.
+- **`Save`** is accent-filled through **`NM_CUSTOMDRAW` on the button**, not
+  `BS_OWNERDRAW`. Owner-draw replaces a button's TYPE, and Save's type is
+  `BS_DEFPUSHBUTTON` -- the ring `set_default_id` moves with a `BM_SETSTYLE`
+  read-modify-write. Custom draw leaves the type, the notifications and the
+  ring untouched and replaces only pixels.
+- **Flag pills**: `key in use` red, `not installed` amber.
+
+### `TICK_SURVIVES` did not mean what it was read to mean
+
+G3 said `CDRF_SKIPDEFAULT` on subitem 0 keeps the check box, so the first
+attempt took the cell over. **Measured in this window: every flagged row lost
+its check box, and the selected row lost its keycaps too.** The probe builds
+a ListView of its own with no owner-drawn neighbours; what it proved is
+narrower than what it was read to prove. A green probe is a measurement of
+the probe's window.
+
+Two separate faults, and the second is the instructive one:
+
+1. `LVM_GETSUBITEMRECT` with a subitem of **0** answers for the whole ITEM,
+   every column -- so the fill erased the Shortcut column of the row it was
+   drawing.
+2. Owning subitem 0 at all costs the state image here.
+
+`CDRF_NOTIFYPOSTPAINT` removes the question: comctl32 draws the tick, the
+selection, the ellipsis and the text, and the pill is laid over the flag's
+characters afterwards. Nothing this window draws can now cost a tick, which
+is the delete path.
+
+### Severity could not pick the colour
+
+`key in use` and `not installed` are **both `Mark::Bad`** -- each pushes a
+`Bad` note -- while the design draws one red and the other amber. So the
+`lParam`-carried `Mark` was removed again and `beckon_core::settings::
+flag_tone` decides, keyed on the flag word. That is not a second opinion
+about severity; it is a property of a closed four-word vocabulary, and it
+lives beside `FLAGS` with a test asserting the two `Bad` flags do NOT share
+a tone.
+
+Pill colours are the **only** literals in this window, because the system
+palette has no `COLOR_WARNING`. High contrast and selected rows both fall
+back to comctl32's own text -- verified: under a high-contrast theme the
+pills vanish and the plain words remain.
+
 ## Machine state at close
 
 - Scoop updated 0.9.1 → 0.9.2. **Verified against the trap**: the running
