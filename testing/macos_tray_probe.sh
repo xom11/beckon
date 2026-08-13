@@ -92,18 +92,30 @@ capture() {
 say "control: menu bar with no probe running"
 capture baseline
 
+# How long each probe stays up. Long enough for a person to LOOK at the menu
+# bar, which is the only instrument that settles the tray question: the
+# window-server report cannot distinguish "the item is not on screen" from
+# "NSStatusItem produces no window this API enumerates", and a screenshot
+# needs a grant that has nothing to do with the question.
+HOLD="${HOLD:-12}"
+
 run_probe() {  # $1 = binary, $2 = arg or "", $3 = capture name
   local bin="$1" arg="$2" name="$3" try
   for try in 1 2; do
     if [ -n "$arg" ]; then "$bin" "$arg" >"$OUT/stdout-$name.txt" 2>&1 &
     else "$bin" >"$OUT/stdout-$name.txt" 2>&1 & fi
     local pid=$!
-    sleep 4
+    sleep 2
     if kill -0 "$pid" 2>/dev/null; then
+      # The report has printed by now; show it BEFORE the hold, so the
+      # instruction to look at the menu bar is on screen while there is
+      # still something to look at.
+      cat "$OUT/stdout-$name.txt"
+      printf '\n... holding %ss. LOOK AT THE MENU BAR.\n' "$HOLD"
+      sleep "$HOLD"
       capture "$name"
       kill "$pid" 2>/dev/null
       wait "$pid" 2>/dev/null
-      cat "$OUT/stdout-$name.txt"
       return 0
     fi
     wait "$pid" 2>/dev/null
@@ -144,8 +156,15 @@ looking like a clean negative.
   INCONCLUSIVE
       -> the server could not see that layer at all; nothing was measured.
 
-Then open the menu by hand and click a row: stdout must print "menu click".
-The screenshot cannot show that, and a drawn-but-dead menu looks identical.
+Each tray probe now also opens a plain titled window, "ENUMERATION CONTROL".
+That window is the control for the report: if it is listed and no status-item
+window is, the report has told you all it can, and the remaining question --
+is the item on screen, or does NSStatusItem simply not produce an enumerable
+window here? -- is settled by looking, not by this script.
+
+So while each probe holds: LOOK AT THE MENU BAR. Then click the item if it is
+there; stdout must print "menu click". A drawn-but-dead menu looks identical
+to a working one until something is clicked.
 
 settings-full.png is the settings window. Nothing it does touches a config
 file -- Save prints the TOML it would have written. Worth doing by hand,
