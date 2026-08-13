@@ -209,7 +209,12 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     let kb_h = s(24) + ctl + gap;
     let kb_y = clamp(bar_y - band - kb_h);
 
-    let mut y = pad;
+    // Offset by the client-drawn title bar (Task 7): `GetClientRect` now
+    // includes that band -- `nccalcsize` gave it back to the client -- so
+    // every content band has to start below it or draw underneath it.
+    // One-line change, deliberately: see the header above for why nothing
+    // else in this function may move.
+    let mut y = pad + s(chrome::TITLEBAR_H);
 
     // Field geometry, computed before band 2 because the filter box needs it
     // there and the editor strip needs it in band 4. `combo_h` is therefore

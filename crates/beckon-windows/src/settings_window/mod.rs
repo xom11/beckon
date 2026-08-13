@@ -106,6 +106,10 @@ use beckon_core::shortcuts::{
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+/// `DWMWA_WINDOW_CORNER_PREFERENCE` is not in `windows` 0.61's own constant
+/// table -- `theme.rs` already names the same reason for
+/// `DWMWA_USE_IMMERSIVE_DARK_MODE` -- so `create` defines it locally.
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::*;
 /// `MessageBeep` lives under Diagnostics::Debug, not WindowsAndMessaging --
 /// where the `MESSAGEBOX_STYLE` it takes is defined. Named rather than
@@ -122,7 +126,8 @@ use windows::Win32::UI::HiDpi::{
     MDT_EFFECTIVE_DPI,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, IsWindowEnabled, SetFocus,
+    EnableWindow, GetFocus, IsWindowEnabled, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
+    TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -765,17 +770,12 @@ const MIN_HEIGHT: i32 = 550;
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
-/// Caption/Keycap, Chrome), with Title and Chrome having no consumer until
-/// Task 7 builds the title bar, and Keycap serving keycap rendering in the
-/// editor strip and shortcut list.
+/// Caption/Keycap, Chrome). Keycap serves keycap rendering in the editor
+/// strip and shortcut list; Title and Chrome serve the client-drawn title
+/// bar `chrome::paint` draws (Task 7).
 #[derive(Clone, Copy)]
 enum Role {
-    /// The title-bar app name.
-    ///
-    /// No consumer until Task 7 builds the title bar. `#[allow(dead_code)]`
-    /// on the variant rather than deleting it: the role is this task's
-    /// deliverable, and Task 7 is what removes the allow.
-    #[allow(dead_code)]
+    /// The title-bar app name. Read by `chrome::paint`.
     Title,
     Subtitle,
     /// Card captions, the ListView column headers, and the `Save` caption.
@@ -786,12 +786,7 @@ enum Role {
     /// the shortcut list column. 11 px semibold, matching keycap design
     /// guidelines.
     Keycap,
-    /// The two caption-button glyphs.
-    ///
-    /// No consumer until Task 7 builds the title bar. `#[allow(dead_code)]`
-    /// on the variant rather than deleting it, for the same reason as
-    /// `Title`.
-    #[allow(dead_code)]
+    /// The two caption-button glyphs. Read by `chrome::paint`.
     Chrome,
 }
 
@@ -1163,6 +1158,13 @@ struct Ui {
     /// Painting code never reads this field -- see `PAINT_THEME`, which is
     /// kept in step with it at both points it rebuilds.
     theme: theme::ThemeCache,
+    /// Which title-bar caption button the cursor is over -- `HTCLOSE` or
+    /// `HTMINBUTTON`, or `None` -- kept here rather than recomputed in
+    /// `chrome::paint` because Windows already hands it to `WM_NCMOUSEMOVE`
+    /// as `wParam`, and `chrome`'s own rule is that it never reads `UI`. The
+    /// `WM_NCMOUSEMOVE` / `WM_NCMOUSELEAVE` arms write it and repaint only
+    /// the bar; `chrome::paint` reads it by value, once per call.
+    hot: Option<i32>,
 }
 
 /// What a live capture has to say, rebuilt on every `WM_CAPTURE`.
@@ -1802,7 +1804,13 @@ unsafe fn create() -> Result<(), String> {
         WINDOW_EX_STYLE(0),
         class,
         PCWSTR(title.as_ptr()),
-        WS_OVERLAPPEDWINDOW,
+        // WS_OVERLAPPEDWINDOW minus WS_MAXIMIZEBOX. Dropping maximize is
+        // LOAD-BEARING, not cosmetic: it removes the HTMAXBUTTON / Snap
+        // Layouts obligation AND makes the maximized state -- where
+        // WM_NCCALCSIZE overflows the monitor by the frame thickness unless
+        // corrected by hand -- unreachable. The window is still resizable by
+        // its edges; `layout` already handles that.
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         w,
@@ -1813,6 +1821,23 @@ unsafe fn create() -> Result<(), String> {
         None,
     )
     .map_err(|e| format!("CreateWindowExW: {e}"))?;
+
+    // Round the top corners to match Windows 11's own window chrome, which
+    // a client-drawn caption otherwise loses -- DWM owns the window BORDER
+    // even though this window now draws its own caption content. `create`
+    // is already an `unsafe fn`, so -- like every other call in it -- this
+    // is not re-wrapped in its own `unsafe {}`; doing so is what the rest of
+    // this function avoids, and rustc flags it as a redundant block.
+    const DWMWA_WINDOW_CORNER_PREFERENCE: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(33);
+    const DWMWCP_ROUND: u32 = 2;
+    let pref = DWMWCP_ROUND;
+    // No-op on Windows 10; the call returns an error we deliberately drop.
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_WINDOW_CORNER_PREFERENCE,
+        &pref as *const _ as *const _,
+        std::mem::size_of::<u32>() as u32,
+    );
 
     // The OS's theme answer, resolved once up front. `build_children` (run
     // synchronously inside `WM_CREATE`, above) has already stored a fresh
@@ -2698,6 +2723,7 @@ unsafe fn build_children(hwnd: HWND) {
             shown_combo: None,
             capture: None,
             theme: theme::ThemeCache::default(),
+            hot: None,
         })
     });
 }
@@ -4170,6 +4196,19 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
 
+/// Repaint just the title bar band, not the whole client -- a hover move is
+/// the only thing that changed, and `chrome::paint` fills the whole band
+/// itself, so `erase: false` skips a redundant `WM_ERASEBKGND` pass (the
+/// same reasoning `set_chip` gives for an owner-draw button).
+unsafe fn invalidate_titlebar(hwnd: HWND) {
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let mut rc = RECT::default();
+    if GetClientRect(hwnd, &mut rc).is_ok() {
+        rc.bottom = rc.bottom.min(scale(chrome::TITLEBAR_H, dpi));
+        let _ = InvalidateRect(Some(hwnd), Some(&rc), false);
+    }
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -4315,6 +4354,91 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 layout(hwnd);
+                LRESULT(0)
+            }
+            // -- The client-drawn title bar (Task 7) ------------------------
+            WM_NCCALCSIZE => chrome::nccalcsize(hwnd, wp, lp),
+            WM_NCHITTEST => {
+                // LOWORD/HIWORD of lParam: screen coordinates, signed --
+                // negative on a monitor left of or above the primary.
+                let pt = POINT {
+                    x: (lp.0 & 0xFFFF) as u16 as i16 as i32,
+                    y: ((lp.0 >> 16) & 0xFFFF) as u16 as i16 as i32,
+                };
+                match chrome::nchittest(hwnd, pt) {
+                    Some(lr) => lr,
+                    None => DefWindowProcW(hwnd, msg, wp, lp),
+                }
+            }
+            // With no maximize box there is nothing for a caption
+            // double-click to do, and letting DefWindowProc try it is how
+            // the unreachable maximized state gets reached.
+            WM_NCLBUTTONDBLCLK if wp.0 as u32 == HTCAPTION => LRESULT(0),
+            WM_NCMOUSEMOVE => {
+                // wParam is already the hit-test code from OUR OWN
+                // WM_NCHITTEST at this position -- Windows computes it
+                // before sending this message -- so there is no second
+                // geometry calculation here to keep in step with
+                // `chrome::nchittest` / `chrome::hit_button`.
+                let code = wp.0 as u32;
+                let want = (code == HTCLOSE || code == HTMINBUTTON).then_some(code as i32);
+                let moved = UI.with(|u| {
+                    u.borrow_mut()
+                        .as_mut()
+                        .map(|ui| {
+                            let changed = ui.hot != want;
+                            ui.hot = want;
+                            changed
+                        })
+                        .unwrap_or(false)
+                });
+                if moved {
+                    invalidate_titlebar(hwnd);
+                }
+                // WM_NCMOUSELEAVE does not fire on its own: TrackMouseEvent's
+                // tracking is one-shot per arrival, so every move re-arms
+                // it. Cheap -- one syscall -- and idempotent while the
+                // cursor stays inside the bar.
+                let mut tme = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE | TME_NONCLIENT,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut tme);
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_NCMOUSELEAVE => {
+                let had = UI.with(|u| {
+                    u.borrow_mut()
+                        .as_mut()
+                        .map(|ui| ui.hot.take().is_some())
+                        .unwrap_or(false)
+                });
+                if had {
+                    invalidate_titlebar(hwnd);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                // ONE borrow, taken and dropped on this line -- `chrome::paint`
+                // below must not run with `UI` still borrowed, on the same
+                // rule every other arm in this function follows.
+                let ui_bits = UI.with(|u| u.borrow().as_ref().map(|ui| (ui.fonts, ui.hot)));
+                if let Some((fonts, hot)) = ui_bits {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    // `PAINT_THEME`'s borrow is passed straight into
+                    // `chrome::paint` rather than read through `theme_col` /
+                    // `theme_brush`, which would try to borrow this same
+                    // `RefCell` a second time and panic.
+                    PAINT_THEME.with(|c| {
+                        let mut cache = c.borrow_mut();
+                        chrome::paint(hwnd, hdc, &mut cache, &fonts, dpi, hot);
+                    });
+                }
+                let _ = EndPaint(hwnd, &ps);
                 LRESULT(0)
             }
             WM_SYSCOLORCHANGE => {
