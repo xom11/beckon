@@ -10,6 +10,42 @@
 
 use super::*;
 
+/// A card: rounded fill plus a 1 px border. No drop shadow -- Win11's own
+/// cards use a border, and a GDI shadow costs a layered surface for an
+/// effect nobody asked for.
+///
+/// **Reads the theme through `theme_col` / `theme_brush`, not a
+/// `ThemeCache` parameter.** Every other painter in this file does the
+/// same -- see the `GetSysColorBrush` ban at the top of it -- and it is
+/// what lets `WM_PAINT` call this once per card without pre-borrowing
+/// `PAINT_THEME` itself: each call takes and drops its own borrow, so four
+/// calls in a row cannot collide with each other or with a borrow a
+/// sibling call (`chrome::paint`) is holding, as long as none of them are
+/// nested inside one another. `card_rects(hwnd)` (in `layout.rs`) is the
+/// matching geometry -- the same arithmetic `layout` places controls
+/// against, so the two cannot drift apart.
+pub(super) unsafe fn card(hdc: HDC, rc: RECT, dpi: u32) {
+    let r = tok::CARD_RADIUS * dpi as i32 / 96;
+    let fill = theme_col(|p| p.card, COLOR_WINDOW);
+    let edge = theme_col(|p| p.card_border, COLOR_BTNSHADOW);
+    let br = theme_brush(fill);
+    let pen = CreatePen(PS_SOLID, 1, edge);
+    let old_br = SelectObject(hdc, HGDIOBJ(br.0));
+    let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    // RoundRect strokes with the pen AND fills with the brush in one call,
+    // so the border lands exactly on the fill's edge with no seam.
+    let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r * 2, r * 2);
+    if !old_br.is_invalid() {
+        SelectObject(hdc, old_br);
+    }
+    if !old_pen.is_invalid() {
+        SelectObject(hdc, old_pen);
+    }
+    // The pen is ours; the brush belongs to the cache (`theme_brush`) and
+    // must NOT be deleted here.
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
+
 /// Lay a run of keycaps out inside `cell`, or report that it does not fit.
 ///
 /// Two callers, and `style` says which: the **Shortcut column**, where this

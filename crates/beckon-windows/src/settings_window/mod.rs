@@ -626,176 +626,167 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
 /// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
 /// on the un-scaled size or the correction would resize to the wrong target.
-// 860 is spec B.2's stated width.
+// 900x740, up from 860x640 (spec B.2's stated width was 860; Task 8 widens it
+// for three cards at 16 px inner padding). Both numbers are unchanged from
+// Task 8's brief -- what follows is this session's own re-derivation against
+// real control heights, not the brief's, which summed to 740 using a list
+// figure (238) well above what `list_header_height` / `list_row_height`'s own
+// 96-DPI fallbacks give (183) and an editor-card sum whose own listed addends
+// total 184, not the 194 the brief wrote next to them. Both are corrected
+// below; 740 survives the correction with room to spare, so only the
+// commentary changes, not the constant.
 //
-// **640's original justification is spent.** It was raised from 560 so the
-// notes band -- the flex band at the time -- would fit four lines at 96 DPI,
-// on the reasoning that the band took `kb_y`'s leftover directly and every
-// pixel added here became a pixel of notes room. The notes are a fixed line
-// inside the editor group now (`notes_height`), so the leftover no longer
-// lands on them: at 860x640 the list reaches its full `tok::ROWS` and the
-// surplus -- **74 px at 96 DPI, 113 at 150 %** -- is slack between the editor
-// group and the keyboard group. The number is left alone here because
-// re-picking it is a question about what the window should look like at rest,
-// not arithmetic, and nothing on this machine can see the answer.
+// **The real budget, at 96 DPI, banner hidden, list unclamped** (mirrors
+// `layout`'s own `compute_card_rects`, which is the arithmetic this is
+// checked against, not the other way around):
 //
-// **Those two figures were re-derived against the SHIPPED `notes_height`.**
-// They read 78 / 119 when this comment was first written, which was Task 6's
-// 32 px notes stub; Task 9's real body costs 36 px at 96 and 54 at 144, so
-// `grp_h` grew 4 / 6 and the clearance lost exactly that. Neither the window
-// size nor any token moved -- only the number written down here. The
-// clearance, with the banner hidden and the list unclamped, is
+//   title bar (chrome::TITLEBAR_H)                    40
+//   pad                                                16
+//   Shortcuts card: CARD_PAD 16, head row ctl 32,
+//     gap 8, list (header 21 + 8*row 20 + border 2)   16+32+8+183+16 = 255
+//   gap_card                                           12
+//   editor card: CARD_PAD 16, caption inset s(24) 24,
+//     App ctl 32, gap 8, Shortcut ctl 32, gap 8,
+//     notes 36, bottom inset gap 8, CARD_PAD 16    16+24+32+8+32+8+36+8+16 = 180
+//   gap_card                                           12
+//   keyboard card: CARD_PAD 16, caption inset 24,
+//     one ctl line 32, bottom inset gap 8, CARD_PAD 16       16+24+32+8+16 = 96
+//   gap_card                                           12
+//   command bar (ctl, not a card)                      32
+//   pad                                                16
+//                                                    ----
+//   client (list at its full 8 rows)                  671
+//   frame, bottom only (`chrome::nccalcsize` gives
+//     the rest back to the client; see `MIN_HEIGHT`)     8
+//                                                    ----
+//   window, exact fit                                 679
 //
-//   clearance = kb_y - (grp_y + grp_h)
-//             = h - 2*pad - 5*ctl - 2*band - 2*s(24) - 5*gap - list_h - notes_h
-//
-// @96, h = 640 - 39 non-client = 601, and pad/ctl/band/gap = 16/32/14/8:
-//   bar_y 553, kb_h 64, kb_y 475; y after band 2 = 56; notes_h 36,
-//   grp_h 148; want = 21 + 20*8 + 2 = 183 and room 405, so list_h = 183;
-//   grp_y 253, group bottom 401 -> 475 - 401 = **74**.
-// @144 (150 %), h = 960 - 58 non-client = 902, tokens 24/48/21/12:
-//   bar_y 830, kb_h 96, kb_y 713; y after band 2 = 84; notes_h 54,
-//   grp_h 222; want = 31 + 30*8 + 2 = 273 and room 608, so list_h = 273;
-//   grp_y 378, group bottom 600 -> 713 - 600 = **113**.
-// Row and header heights are `list_row_height` / `list_header_height`'s own
-// fallbacks, the same honest numbers `MIN_HEIGHT`'s table derives from.
-// Simulated, not seen: nothing on the machine this was written on can display
-// the window.
-const WINDOW_WIDTH: i32 = 860;
-const WINDOW_HEIGHT: i32 = 640;
+// 740 leaves **61 px of slack** at rest (`900x740` client 732, needed 671) --
+// the same role the old 860x640's 74 px played, between the editor card's
+// bottom and the keyboard card's top, since the keyboard card stays anchored
+// to the window's bottom edge and the editor card follows the list rather
+// than filling whatever room is left. Simulated against
+// `compute_card_rects`'s own formula by hand-tracing it at `h = 732`, not
+// measured: nothing on the machine this was written on can display the
+// window. At 144 DPI (150 %) the same trace gives 93 px of slack (client
+// 1098, needed 1005 with the 144-DPI fallbacks `list_header_height` 31 /
+// `list_row_height` 30 / `notes_height` 54), consistent with the 96-DPI
+// figure scaled by 1.5 (61 * 1.5 = 91.5).
+const WINDOW_WIDTH: i32 = 900;
+const WINDOW_HEIGHT: i32 = 740;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
 /// included, never client ones.
 ///
 /// **This is no longer "the point where `layout` starts overlapping
-/// controls".** That is what this comment used to say, and it stopped being
-/// true when band 4 became a fixed-height group: every subtraction in
-/// `layout` is clamped, and band 3 gives up **its own** height — `list_h`,
-/// the one flexing figure in the window — before anything below it moves, so
-/// a window dragged past this floor produces a list with fewer rows —
-/// eventually none — rather than two controls in the same place. What the
-/// floor buys is that **the list is still worth looking at**.
+/// controls".** Every subtraction in `layout` (and in `compute_card_rects`,
+/// which now runs this arithmetic) is clamped, and card 1 gives up **its
+/// own** height — `list_h`, the one flexing figure in the window — before
+/// anything below it moves, so a window dragged past this floor produces a
+/// list with fewer rows — eventually none — rather than two controls in the
+/// same place. What the floor buys is that **the list is still worth
+/// looking at**.
 ///
 /// (`editor_min` is not that height and must not be read as it: it is what
-/// band 3 RESERVES for band 4 before choosing `list_h`, and it equals
-/// `grp_h`, band 4's own height. The distinction earns its ink here because
-/// this block is the derivation everything vertical is checked against.)
+/// card 1 RESERVES for card 2 before choosing `list_h`, and it equals
+/// `card2_h`, card 2's own height — `CARD_PAD` included, unlike the
+/// pre-Task-8 `grp_h` it replaced, because a card's footprint is its content
+/// plus its own padding. The distinction earns its ink here because this
+/// block is the derivation everything vertical is checked against.)
 ///
-/// `MIN_WIDTH` is spec B.2's number and clears both zero points this file
-/// computes — band 2's heading at a raw client width of ~332, band 4's key
-/// list at ~519 — by a wide margin. Compared like for like, client against
-/// client: a 720 px window with a 16 px frame has `w = 704`, so the two
-/// margins are ~372 px and ~185 px. Both **shrink** as the OS frame grows,
-/// so each is a ceiling on the margin rather than a floor under it.
+/// `MIN_WIDTH` is proportional to `WINDOW_WIDTH`'s own move (`720 * 900/860`,
+/// rounded) and clears both zero points this file computes — the Shortcuts
+/// card's heading at a raw client width of ~364, the editor card's key list
+/// at ~551 — by a wide margin. Both shifted **+32 px** from their pre-Task-8
+/// figures (332, 519): a card's own `CARD_PAD` is now subtracted from `cw`
+/// a second time to reach its interior width, and `2 * tok::CARD_PAD` is
+/// exactly that 32. Compared like for like, client against client: a 753 px
+/// window with a 16 px frame has `w = 737`, so the two margins are ~373 px
+/// and ~186 px — within a pixel of the pre-Task-8 margins (372, 185), since
+/// `MIN_WIDTH` grew by almost the same 32-ish px the zero points did. Both
+/// **shrink** as the OS frame grows, so each is a ceiling on the margin
+/// rather than a floor under it. Not re-simulated at 150 % for this task —
+/// the effort went to height, which the brief asked to re-derive; width was
+/// asked only to move proportionally.
 ///
 /// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
-/// which band 3 still shows **four** rows — half of `tok::ROWS` — **with the
-/// external-change banner up**. Four is enough to see a selection with a row
-/// of context above and below it; a window whose list shows one row is not a
-/// smaller version of this window, it is a broken one.
+/// which card 1's list still shows **four** rows — half of `tok::ROWS` —
+/// **with the external-change banner up**. Four is enough to see a
+/// selection with a row of context above and below it; a window whose list
+/// shows one row is not a smaller version of this window, it is a broken
+/// one.
 ///
 /// ```text
-///   title bar  (chrome::TITLEBAR_H)              40
-///   pad                                          16
-///   band 1  banner, ctl                          32
-///           band                                 14
-///   band 2  head, ctl                            32
-///           gap                                   8
-///   band 3  header  (list_header_height, 21)      21
-///           4 * row (list_row_height, 20)         80
-///           border  (2 * SM_CYBORDER)              2
-///   band                                         14
-///   band 4  caption inset s(24)                   24
-///           App line, ctl                         32
-///           gap                                    8
-///           Shortcut line, ctl                    32
-///           gap                                    8
-///           notes  (`notes_height`)               36
-///           bottom inset, gap                      8
-///   band                                         14
-///   band 6  kb_h = s(24) + ctl + gap              64
-///   band                                         14
-///   band 7  command bar, ctl                      32
-///   pad                                          16
-///                                              ----
-///   client                                      547
-///   frame at 96 DPI -- bottom only: `WM_NCCALCSIZE`
-///     (`chrome::nccalcsize`) hands the whole caption
-///     back to the client and restores only `.top`,
-///     so nothing is subtracted there any more; what's
-///     left is `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`
-///     on the bottom edge alone                       8
-///                                              ----
-///   window                                      555
+///   title bar  (chrome::TITLEBAR_H)                     40
+///   pad                                                 16
+///   card 0  banner: CARD_PAD 16, ctl 32, CARD_PAD 16     64
+///   gap_card                                             12
+///   card 1  Shortcuts, 4 rows: CARD_PAD 16, head ctl 32,
+///           gap 8, header (list_header_height, 21) 21,
+///           4 * row (list_row_height, 20) 80,
+///           border (2 * SM_CYBORDER) 2, CARD_PAD 16     175
+///   gap_card                                             12
+///   card 2  editor: CARD_PAD 16, caption inset s(24) 24,
+///           App ctl 32, gap 8, Shortcut ctl 32, gap 8,
+///           notes (`notes_height`) 36, bottom inset
+///           gap 8, CARD_PAD 16                          180
+///   gap_card                                             12
+///   card 3  keyboard: CARD_PAD 16, caption inset 24,
+///           one ctl line 32, bottom inset gap 8,
+///           CARD_PAD 16                                  96
+///   gap_card                                             12
+///   command bar (ctl -- not a card)                      32
+///   pad                                                  16
+///                                                      ----
+///   client                                              667
+///   frame at 96 DPI -- bottom only, unchanged since
+///     Task 7: `WM_NCCALCSIZE` (`chrome::nccalcsize`)
+///     hands the whole caption back to the client, so
+///     only `SM_CXSIZEFRAME + SM_CXPADDEDBORDER` on the
+///     bottom edge remains non-client                      8
+///                                                      ----
+///   window                                              675
 /// ```
 ///
-/// **This table used to subtract `SM_CYCAPTION 23 + 2*SM_CYSIZEFRAME +
-/// 2*SM_CXPADDEDBORDER = 39` for the whole non-client area, and did not
-/// list a title-bar row at all — both wrong since Task 7 made the caption
-/// client-drawn.** The client area now INCLUDES the 40 px bar (`nccalcsize`
-/// hands the whole caption back), and only the bottom resize frame (8 px)
-/// remains non-client. Net effect against the old table: +40 px of client
-/// consumed by the bar, -31 px of what used to be subtracted as
-/// non-client — a real loss of 9 px of usable content at any given window
-/// height, which is one list row (20 px) once the 4 px of old slack is
-/// spent. The table above is the corrected derivation; `MIN_HEIGHT` below
-/// was raised to keep the four-row promise rather than silently dropping to
-/// three.
-///
-/// Shipped as 560. The five pixels are slack against a non-client area the
-/// OS sizes, not a fudge of the derivation — and the whole constant is scaled
-/// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
-/// was never exact at 150 % either. Erring high costs nothing; erring low
-/// costs list rows.
-///
-/// **This constant moved with `notes_height`, as documented on that
-/// function, and this is that move.** Task 6 SHIPPED 546 (the old constant,
-/// not the raw figure in the table above -- Task 6's own raw derivation was
-/// 542; that this task's new raw also lands on 546 is coincidence, not the
-/// same number carried forward) against the stub's assumed 32 px notes
-/// line; the real body costs 36, four pixels more, and
-/// this table -- and the constant -- carry that four pixels through rather
-/// than absorbing it as slack. 546 → 550 is that difference and nothing
-/// else: every other row in the table is unchanged from Task 6's derivation.
+/// Shipped as 680. The five pixels are slack against a non-client area the
+/// OS sizes, not a fudge of the derivation, same as the pre-Task-8 constant
+/// — and the whole constant is scaled linearly by `scale(MIN_HEIGHT, dpi)`
+/// rather than re-derived per DPI, so it is not exact at 150 % either.
+/// Erring high costs nothing; erring low costs list rows. Traced by hand
+/// through `compute_card_rects`'s own formula at the shipped client height
+/// (672): the five pixels land entirely on `list_h` (108 px, not the 103
+/// four rows need) rather than on the gap below card 2, which stays exactly
+/// one `gap_card` in both cases — the same "clears by exactly one gap" shape
+/// the pre-Task-8 table described for `band`.
 ///
 /// The two row figures are `list_row_height` / `list_header_height`'s own
 /// 96-DPI fallbacks. They are the honest numbers to derive from: comctl32
 /// picks the real ones from the live font at the live DPI, which is exactly
 /// why neither is a token.
 ///
-/// **Band 1 is in the table, and that is what the number is for.** The banner
-/// contributes no height until the config file moves under us, so reserving
-/// its `ctl + band` costs 46 px of floor for a state that is normally absent
-/// — but the state it pays for is exactly the one in which the window is
-/// least disposable, and the alternative was measured: at a floor derived
-/// without band 1 (500), raising the banner took the list from four rows to
-/// **one**, which the paragraph above calls broken. Nothing overlapped there;
-/// the failure was a useless window, not a corrupt one, and that is the
-/// standard this constant is held to.
+/// **Card 0 is in the table, and that is what the number is for.** The
+/// banner contributes no height until the config file moves under us, so
+/// reserving its `CARD_PAD*2 + ctl` costs 64 px of floor for a state that is
+/// normally absent — but the state it pays for is exactly the one in which
+/// the window is least disposable, and the pre-Task-8 alternative was
+/// measured: at a floor derived without the banner, raising it took the
+/// list from four rows to one. Nothing overlapped there; the failure was a
+/// useless window, not a corrupt one, and that is the standard this
+/// constant is held to.
 ///
-/// So the floor buys **four rows with the banner up, six without it**, at
-/// both 96 DPI and 150 %; the editor group clears the keyboard group by
-/// exactly one `band` in all four cases -- simulated at the floor Task 6
-/// shipped: 720x550 @96 gave 103+4=107 px of list under the banner (4 rows,
-/// 4 px of a fifth row's worth of slack, same shape Task 6's own 103→107
-/// had) and 14 px of clearance; 1080x825 @144 gave 161 px of list (4 rows)
-/// and 21 px of clearance. Simulated, not seen — nothing on the machine
-/// this was written on can display the window.
-///
-/// **That paragraph describes 720x550, which is now below the floor and
-/// therefore unreachable.** Task 7 (the client-drawn title bar) moved the
-/// floor to 720x560 -- see the corrected table above -- and the four-row
-/// guarantee was rechecked against the table's own arithmetic for the new
-/// floor (room shrinks by the same 9 px the table's revision note
-/// describes, which is under one row, so four rows survive). The specific
-/// per-row/clearance pixel figures one paragraph up (107 px, 14 px, 161 px,
-/// 21 px) were NOT re-simulated for 720x560/1080x840 -- they describe the
-/// superseded 550/825 floor and are left as historical record rather than
-/// guessed at without hardware. Re-simulate them, the same way this
-/// paragraph says Task 6 did, before relying on their exact figures.
-const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 560;
+/// **The floor buys four rows with the banner up, and — a genuine
+/// improvement over the pre-Task-8 "four with it, six without" — the list's
+/// full eight rows without it.** Traced by hand at the shipped client height
+/// (672, banner down): `list_h` caps at 184, one pixel above `want` (183),
+/// so the cap never binds and the list reaches its full `tok::ROWS`. That is
+/// a property of these particular numbers, not a designed-in guarantee — a
+/// future change to `notes_height`, `card2_h` or the row/header fallbacks
+/// can move it back below eight — so re-check it by the same hand trace
+/// rather than assuming it survives. Simulated, not seen: nothing on the
+/// machine this was written on can display the window.
+const MIN_WIDTH: i32 = 753;
+const MIN_HEIGHT: i32 = 680;
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
@@ -850,6 +841,15 @@ fn role_of(id: i32) -> Role {
         // heading -- one STATIC has one font, which is the whole reason it
         // is a second control.
         IDC_NOTES | IDC_LBL_COUNT => Role::Caption,
+        // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
+        // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
+        // same font -- the draw font and the measuring font move together,
+        // or a chip is sized for 14 px Body text and drawn with 11 px
+        // Keycap text. The FOUR chips in the editor strip (`IDC_MOD_CTRL`
+        // etc.) stay on `Role::Body` deliberately -- Task 8's brief names
+        // only the `Hold` chips, and `layout`'s plain `chip`/`tw` still
+        // measure those four.
+        IDC_HOLD_CTRL | IDC_HOLD_WIN | IDC_HOLD_ALT => Role::Keycap,
         // Everything the user reads or operates: the ListView, the filter
         // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
         // (push, check, and the group box), the banner -- and anything added
@@ -3039,34 +3039,43 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// notes at once reads like, which is exactly the gap the followups record.
 /// It is a cheap guess to change and an expensive band to leave empty.
 ///
-/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `grp_h`,
-/// and `grp_h` is derived from this -- change what a notes line costs and
-/// the floor moves with it. 16 px (96 DPI, derived) / 24 px (144 DPI,
-/// measured): the 144 figure IS a fresh a14 reading -- item 10 of the
-/// 2026-08-11 a14 pass sized the read-only notes STATIC against "5 lines x
-/// 24" at 144 DPI, the same Caption face this line measures. The 96 DPI
-/// figure comes from applying the same internal-leading ratio the Body font
-/// showed at that pass (`text_h` 28 against a requested 21, i.e. 4/3) to
-/// Caption's 12 px request -- and that same ratio, applied to Caption's
-/// 144-DPI request of 18, reproduces the hardware 24 exactly, which is why
-/// it is trusted for the DPI nobody has measured. If a real 96-DPI reading
-/// disagrees, `MIN_HEIGHT` must be re-derived from it, not nudged -- though
-/// the disagreement is bounded, not open-ended: the derived window height
-/// is `546 + 2(L - 16)` for a real Caption line height `L`, so the shipped
-/// 550 absorbs any `L` up to 18 px with the four-row banner-up guarantee
-/// intact. `L = 19` costs one row and nothing else -- `editor_min = grp_h`
-/// in `layout` (see its own comment there) is computed from the RUNTIME
-/// value, not this estimate, so a wrong `L` can only shrink the list at the
-/// absolute floor; it cannot produce an overlap at any `L`. That is the
-/// safe direction.
+/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `card2_h`
+/// (Task 8's card wrapping `grp_h`), and `card2_h` is derived from this --
+/// change what a notes line costs and the floor moves with it. 16 px (96
+/// DPI, derived) / 24 px (144 DPI, measured): the 144 figure IS a fresh a14
+/// reading -- item 10 of the 2026-08-11 a14 pass sized the read-only notes
+/// STATIC against "5 lines x 24" at 144 DPI, the same Caption face this line
+/// measures. The 96 DPI figure comes from applying the same internal-leading
+/// ratio the Body font showed at that pass (`text_h` 28 against a requested
+/// 21, i.e. 4/3) to Caption's 12 px request -- and that same ratio, applied
+/// to Caption's 144-DPI request of 18, reproduces the hardware 24 exactly,
+/// which is why it is trusted for the DPI nobody has measured. If a real
+/// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
+/// nudged -- though the disagreement is bounded, not open-ended: the derived
+/// window height is `675 + 2(L - 16)` for a real Caption line height `L`
+/// (re-derived for Task 8's cards below; unchanged in FORM from the
+/// pre-Task-8 `546 + 2(L-16)` -- `notes_h` is still a single linear term
+/// inside `card2_h`, which is still a single linear term inside the total,
+/// so the coefficient survives even though the anchor moved with the
+/// table). The shipped 680 absorbs any `L` up to 18 px with the four-row
+/// banner-up guarantee intact -- the identical threshold the pre-Task-8
+/// constant gave, because both the sensitivity and the five-pixel buffer
+/// are unchanged. `L = 19` costs one row and nothing else -- `editor_min =
+/// card2_h` in `compute_card_rects` (see its own comment there) is computed
+/// from the RUNTIME value, not this estimate, so a wrong `L` can only
+/// shrink the list at the absolute floor; it cannot produce an overlap at
+/// any `L`. That is the safe direction.
 ///
-/// **The 546/550 pair above predates Task 7's client-drawn title bar**,
-/// which moved the table's own base to 555 and the shipped floor to 560
-/// (see `MIN_HEIGHT`'s comment). The `+2(L-16)` sensitivity itself is
-/// unaffected -- the title bar is a fixed 40 px addition, not one that
-/// scales with `L` -- but the two anchor numbers in this paragraph were not
-/// rewritten to 555/560 here; do that before trusting the exact `L = 19`
-/// threshold post-Task-7.
+/// **Re-derived for Task 8's cards** (was `546 + 2(L-16)` before Task 7's
+/// title bar moved it to `555 + 2(L-16)` / shipped 560; this task replaces
+/// both the table and the constant, not just the anchor). Solved from
+/// `compute_card_rects`'s own formula: at the banner-up, four-row floor,
+/// `client = 631 + notes_h` exactly (`notes_h` the only non-constant term
+/// once `card1`'s want/room clamp resolves to the four-row target), and
+/// `notes_h = 2L + scale(4, dpi)`, so `client = 631 + 2L + 4 = 635 + 2L` at
+/// 96 DPI -- `675 + 2(L-16)` once the `+8` non-client frame and the `-32`
+/// from centering the formula on `L=16` are folded in. See `MIN_HEIGHT`'s
+/// own table for the raw 675 this anchors to.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)
@@ -4460,6 +4469,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
                 let hdc = BeginPaint(hwnd, &mut ps);
+                // The four cards, painted first: they are this window's own
+                // background layer, and every child control paints itself
+                // separately afterward and lands on top regardless of the
+                // order drawing happens in here. `card_rects` runs the SAME
+                // arithmetic `layout` places controls against -- see its own
+                // comment for why that must stay one function -- and takes
+                // its own `UI` borrow, dropped before it returns, so calling
+                // it here (before the `PAINT_THEME` borrow below) cannot
+                // collide with anything.
+                //
+                // `card` reads the theme through `theme_col` / `theme_brush`,
+                // each of which takes and drops its own `PAINT_THEME` borrow
+                // -- never `Ui::theme` -- so this loop must run OUTSIDE the
+                // `PAINT_THEME.with` block below: nesting it inside would be
+                // a second borrow of the same `RefCell` while the first
+                // (`chrome::paint`'s) is still alive, which panics.
+                for rc in card_rects(hwnd) {
+                    // The banner's rect is zero height when the banner is
+                    // hidden -- `RoundRect` on a degenerate rect is nothing
+                    // worth asking GDI to draw.
+                    if rc.bottom > rc.top {
+                        let dpi = GetDpiForWindow(hwnd).max(96);
+                        card(hdc, rc, dpi);
+                    }
+                }
                 // ONE borrow, taken and dropped on this line -- `chrome::paint`
                 // below must not run with `UI` still borrowed, on the same
                 // rule every other arm in this function follows.
