@@ -233,18 +233,28 @@ document.querySelectorAll('#faq details').forEach(d =>
        first. Every line of copy says "turn Caps Lock on", never "hold Caps".
      - beckon SWALLOWS the Caps key-down (`caps.rs`: `(VK_CAPITAL, Edge::Down)
        => Action::Swallow`) inside a `WH_KEYBOARD_LL` hook, which CLAUDE.md
-       records as running "before the keystroke reaches any queue". So the lock
-       never flips, and the chord goes out as one `SendInput` burst instead.
+       records as running "before the keystroke reaches any queue". THAT ARM
+       INJECTS NOTHING — it only eats the key, which is why the lock never
+       flips. The burst comes later and from the other key: `(vk, Edge::Down)
+       if st.held => SwallowAndInject(chord(hold, vk))`, and `chord()` puts the
+       bound key INSIDE the modifiers. Getting that backwards — a burst of
+       three modifiers, emitted on the Caps press — describes the one shape
+       `chord()`'s doc comment rejects by name, the gesture that opens the
+       Start menu, and it was on the page for a commit.
        A page cannot do any of that, so pressing Caps here really does turn the
        reader's Caps Lock on. `.caps-truth` says so, and turns the cost into
-       the argument. NOTHING HERE CALLS preventDefault ON THE CAPS KEY: whether
+       the argument — and says how to get back out, because the page induces a
+       persistent global OS state and nothing on it used to mention the
+       recovery. NOTHING HERE CALLS preventDefault ON THE CAPS KEY: whether
        that would stop the lock has not been measured, and a page that tried it
        and failed would be quietly lying about the mechanism.
 
    CLICK IS STILL THE PRIMARY PATH. A phone has no Caps Lock at all, and a
    screen-reader user very often has Caps Lock bound as the NVDA/JAWS modifier,
    where it never reaches the lock. Every demo is fully operable by pointer:
-   one button per letter, each with the app it beckons on its face.
+   one button per letter, each with the app it beckons on its face — and
+   `Space terminal` is a button ONLY, because the keyboard path may not take
+   the page's own scroll key. See `beckonKeys`.
    ========================================================================== */
 
 // README.md's letter table — `examples/windows/serve/apps.toml` binds the same
@@ -252,12 +262,36 @@ document.querySelectorAll('#faq details').forEach(d =>
 // to README byte for byte. `key` is what is printed on the cap AND what is
 // compared against the event; `Space` is the one whose label is not its
 // `KeyboardEvent.key`.
+//
+// SPACE IS POINTER-ONLY, and that is the one place this page declines to
+// listen for a key it draws. Space is the page's scroll key and the native
+// activation key of whatever has focus, and taking it costs a reader
+// something they cannot get back:
+//
+//   - Nothing focused, playground on screen, lock on: `preventDefault` ate
+//     the scroll. Measured — scrollY 1649 before and 1649 after — over a
+//     block about 1000px tall, after the page's own instruction talked the
+//     reader into switching the lock on. WCAG 2.1.4 offers three escapes
+//     from a single-character shortcut (turn it off, remap it, require
+//     focus) and none of them was here.
+//   - Something focused, which is the NORMAL state after the first thing
+//     this page asks a reader to click: Space belonged to that button, so
+//     the advertised key silently ran Reset — or ran the app of whichever
+//     letter button was clicked last — instead of the terminal.
+//
+// Both are gone by not taking the key at all. `Space terminal` is still a
+// button and still runs the fifth row, so the pointer path — the primary
+// path, per the header above — is untouched, and `.try-lead` says so rather
+// than advertising a press that will not happen. The four letters have no
+// native page behaviour to protect and stay on the keyboard path; they are
+// inert until the reader switches a lock on, which is itself the opt-in
+// 2.1.4 is about.
 const beckonKeys = [
   { key: 'C',     app: 'Claude' },
   { key: 'B',     app: 'Brave' },
   { key: 'E',     app: 'Cursor' },
   { key: 'D',     app: 'Discord' },
-  { key: 'Space', app: 'terminal' },
+  { key: 'Space', app: 'terminal', pointerOnly: true },
 ];
 
 // `e.key`, not `e.code`. With Caps Lock on a letter arrives uppercase already,
@@ -305,9 +339,18 @@ const beckonChordEl = (os, letter) => {
   return ch;
 };
 
-const beckonCapsChordEl = () => {
+// THE LETTER IS PART OF THE BURST AND MUST BE RENDERED, which is why this
+// takes one. `chord()` in `beckon-core/src/caps.rs` builds
+// `ctrl↓ win↓ alt↓ key↓ key↑ alt↑ win↑ ctrl↑` — the bound key sits inside the
+// modifiers. Rendering the modifiers alone described a burst of three
+// modifiers with nothing between them, which is the shape `chord()`'s own doc
+// comment rejects by name: "A bare Caps tap would press and release the
+// Windows key with nothing in between, which is exactly the gesture that opens
+// the Start menu." `T` is the letter README, #serve and the FAQ all use for
+// this example, so the page shows one letter here rather than four.
+const beckonCapsChordEl = letter => {
   const ch = beckonEl('span', 'chord');
-  beckonCapsHold.forEach((k, i) => {
+  beckonCapsHold.concat(letter ? [letter] : []).forEach((k, i) => {
     if (i) ch.appendChild(beckonEl('span', 'plus', '+'));
     ch.appendChild(beckonEl('kbd', 'key', k));
   });
@@ -336,6 +379,30 @@ const beckonOs = () => {
 let beckonCapsOn = null;
 const beckonCapsSubs = [];
 
+// STATE AND CAUSATION ARE TWO DIFFERENT FACTS AND THE PAGE USED TO CONFLATE
+// THEM. `beckonCapsOn` is resolved by the FIRST event that carries
+// `getModifierState` — any letter, or a click on a try button, a scenario pick
+// or `Reset` — never by a Caps press specifically. So "your Caps Lock is on,
+// and pressing it here is what did that" fired for a reader who arrived with
+// the lock already on and only ever pressed `C`: measured, zero Caps events,
+// and the sentence claimed credit anyway. That reader is in a legitimate state
+// (see above), so the page must describe it rather than take responsibility
+// for it.
+//
+// `beckonCapsFlipped` is set ONLY by an actual Caps key event, and it is the
+// only thing that may license the past tense.
+let beckonCapsFlipped = false;
+
+// Whether a keyboard has spoken at all, which is what makes a click safe to
+// read the lock from. `MouseEvent.getModifierState('CapsLock')` returns false
+// on every pointer device, INCLUDING a touchscreen with no Caps Lock key at
+// all — so a tap on a phone used to replace the honest "unknown" with a
+// confident "off", under an instruction still telling the reader to switch on
+// a key their device does not have. A pointer-only session on a touch device
+// therefore stays at "unknown"; `maxTouchPoints === 0` is a machine that has a
+// keyboard whether or not it has used it yet, so a click there still resolves.
+let beckonCapsSawKey = false;
+
 // Subscribers are called once on registration, so a caller may build its
 // initial text through the same path that later updates it — no second copy of
 // the wording, and nothing populated after insertion.
@@ -349,11 +416,23 @@ const beckonOnCaps = fn => { beckonCapsSubs.push(fn); fn(); };
 // clicks before typing gets a resolved indicator instead of "unknown".
 const beckonCapsRead = e => {
   if (!e || typeof e.getModifierState !== 'function') return;
+  const fromKey = e.type === 'keydown' || e.type === 'keyup';
+  let moved = false;
+  if (fromKey) {
+    beckonCapsSawKey = true;
+    // `key`, not `code`: `code` is the physical position, and a reader who
+    // has remapped Caps still means Caps by it. Either spelling is enough.
+    if (!beckonCapsFlipped && (e.key === 'CapsLock' || e.code === 'CapsLock')) {
+      beckonCapsFlipped = true;
+      moved = true;   // the wording is keyed on this too, so it must republish
+    }
+  } else if (!beckonCapsSawKey && navigator.maxTouchPoints > 0) {
+    return;   // touch device, no keyboard has spoken — stay honest, stay unknown
+  }
   let v;
-  try { v = e.getModifierState('CapsLock'); } catch (err) { return; }
-  if (typeof v !== 'boolean' || v === beckonCapsOn) return;
-  beckonCapsOn = v;
-  beckonCapsSubs.forEach(fn => fn());
+  try { v = e.getModifierState('CapsLock'); } catch (err) { v = undefined; }
+  if (typeof v === 'boolean' && v !== beckonCapsOn) { beckonCapsOn = v; moved = true; }
+  if (moved) beckonCapsSubs.forEach(fn => fn());
 };
 
 // The pressed look is the shared .key contract's own `data-down`, held long
@@ -382,13 +461,14 @@ const beckonTap = caps => {
 //    button anyone added near a demo, and it was not. A letter has no native
 //    behaviour on a button to protect, so there is nothing here to exclude.
 //
-//    SPACE IS THE ONE EXCEPTION AND IT IS NOT THAT LIST COMING BACK. Space
-//    really is the native activation key of whatever has focus, and stealing
-//    it would break every button on the page for a reader holding the lock on.
-//    The guard is one state check — is anything focused at all — rather than a
-//    roll-call of element types, so it cannot go stale the way the old list
-//    did: focus something and Space belongs to it, focus nothing and Space is
-//    ours. The four letters are never gated this way.
+//    SPACE IS NEVER ON THE KEYBOARD PATH AT ALL, which is not that list
+//    coming back either — it is a property of the KEY (`pointerOnly` on the
+//    row in `beckonKeys`), decided once, with no reference to what is on
+//    screen or what has focus, so there is nothing here that can go stale.
+//    The reasoning is at that table. The earlier shape was a focus check
+//    — take Space when nothing is focused, decline when something is — and
+//    it was wrong in both arms: declining, it went silent under an
+//    instruction advertising the key; taking it, it ate the page's scroll.
 // 2. It only reaches a demo the reader can actually SEE. Without that, a
 //    letter typed while reading the FAQ would walk a ring three sections up
 //    the page and the reader would find it moved when they scrolled back. The
@@ -419,15 +499,11 @@ document.addEventListener('keydown', e => {
   const name = beckonKeyOf(e);
   if (!name) return;
   const hit = beckonKeys.find(k => k.key === name);
-  if (!hit) return;
+  if (!hit || hit.pointerOnly) return;
   const t = e.target;
   if (t && t.closest && t.closest(
     'input, textarea, select, [contenteditable=""], [contenteditable="true"]'
   )) return;
-  if (name === 'Space') {
-    const a = document.activeElement;
-    if (a && a !== document.body && a !== document.documentElement) return;
-  }
 
   let best = null, seen = 0.4;
   beckonPressables.forEach(p => {
@@ -436,10 +512,18 @@ document.addEventListener('keydown', e => {
   });
   if (!best) return;
 
+  // ORDER MATTERS AND IT IS `takes` FIRST. Gated the other way round, a letter
+  // the demo cannot act on still produced the lock nudge — so pressing `E`
+  // over the hero, which draws only Claude and Brave, answered "Caps Lock is
+  // off — switch it on, then press E. Or click E." over a row with no `E`
+  // button in it, and contradicted itself one state later once the lock was
+  // on. Whether the demo has anything to say about this key does not depend on
+  // the lock, so it is asked first.
+  //
   // No preventDefault on either nudge path: nothing happened, so nothing was
-  // consumed, and Space must still scroll the page when it did not act.
-  if (beckonCapsOn !== true) { best.nudge('caps', hit); return; }
+  // consumed.
   if (!best.takes(hit)) { best.nudge('key', hit); return; }
+  if (beckonCapsOn !== true) { best.nudge('caps', hit); return; }
   e.preventDefault();
   best.fire(hit);
 });
@@ -448,11 +532,15 @@ document.addEventListener('keydown', e => {
 //
 //   <p class="try-lead">Turn Caps Lock on, then press C or B…</p>
 //   <div class="try">
-//     <span class="try-caps"><kbd class="key">Caps</kbd><span class="plus">+</span></span>
-//     <button class="try-press"><kbd class="key">C</kbd><span class="try-app">Claude</span></button>
-//     …one per letter…
-//     <span class="try-lock">Caps Lock: on</span>
-//     <button class="try-reset">Reset</button>          (playground only)
+//     <span class="try-caps" aria-hidden><kbd class="key">Caps</kbd><span class="plus">+</span></span>
+//     <div class="try-keys">
+//       <button class="try-press"><kbd class="key">C</kbd><span class="try-app">Claude</span></button>
+//       …one per letter…
+//     </div>
+//     <div class="try-end">
+//       <span class="try-lock">Caps Lock: on</span>
+//       <button class="try-reset">Reset</button>        (playground only)
+//     </div>
 //   </div>
 //
 // THE INSTRUCTION IS ABOVE THE ROW, not beside it and not after it: it names a
@@ -472,23 +560,46 @@ const beckonTryRow = (items, onPress, opts) => {
   const o = opts || {};
   const wrap = beckonEl('div', 'try-wrap');
 
-  const names = items.map(i => i.key);
+  // The instruction lists only the keys the KEYBOARD path takes. `Space` is
+  // pointer-only (see `beckonKeys`), so advertising a press of it would be
+  // advertising a key that does nothing — and the row still draws it, so the
+  // reader is told plainly what it is instead of being left to discover the
+  // gap. The clause appears only where such a key exists, so the hero's row
+  // of two never carries it.
+  const typed = items.filter(i => !i.pointerOnly);
+  const clickOnly = items.filter(i => i.pointerOnly);
+  const names = typed.map(i => i.key);
   const list = names.length > 1
     ? names.slice(0, -1).join(', ') + ' or ' + names[names.length - 1]
     : names[0];
   const leadText = 'Turn Caps Lock on, then press ' + list +
-    '. Or click a key — that always works.';
+    '. Or click a key — that always works' +
+    (clickOnly.length
+      ? '. ' + clickOnly.map(i => i.key).join(' and ') +
+        ' is click-only, so this page never takes your scroll key.'
+      : '.');
 
   const lead = beckonEl('p', 'try-lead', leadText);
   lead.setAttribute('role', 'status');
 
   const row = beckonEl('div', 'try');
 
+  // The whole span is decorative — aria-hidden belonged on the WRAPPER, not on
+  // the `Caps` cap alone. With only the cap hidden, browse mode read a bare
+  // "+" with nothing on either side of it, once per demo. The gesture is
+  // already spelled out in `.try-lead` and in every button's aria-label, so
+  // nothing is lost by hiding the pair.
   const capsWrap = beckonEl('span', 'try-caps');
+  capsWrap.setAttribute('aria-hidden', 'true');
   const capsCap = beckonEl('kbd', 'key', 'Caps');
-  capsCap.setAttribute('aria-hidden', 'true');
   capsWrap.append(capsCap, beckonEl('span', 'plus', '+'));
   row.appendChild(capsWrap);
+
+  // The letter buttons live in a wrapper of their own so `Caps +` cannot be
+  // orphaned by wrapping — see `.try-keys` in beckon.css §4a for the
+  // measurements that forced it.
+  const keys = beckonEl('div', 'try-keys');
+  row.appendChild(keys);
 
   const caps = {};
   items.forEach(it => {
@@ -497,7 +608,15 @@ const beckonTryRow = (items, onPress, opts) => {
     // The visible name is aria-hidden and the whole gesture is the accessible
     // name, because "C" and "Claude" as two separate strings read as two
     // controls in a button list.
-    b.setAttribute('aria-label', 'Run beckon ' + it.app + ' — Caps Lock plus ' + it.key);
+    //
+    // `o.what` disambiguates the two rows. Both demos offer `C Claude` and
+    // `B Brave`, so a screen reader's button list held two controls called
+    // "Run beckon Claude — Caps Lock plus C" that do different things: one
+    // toggles a three-machine illustration, the other runs the focus
+    // algorithm against the chosen scenario. Out of context they were
+    // indistinguishable.
+    b.setAttribute('aria-label', 'Run beckon ' + it.app + ' — Caps Lock plus ' + it.key +
+      (o.what ? ' — ' + o.what : ''));
     const cap = beckonEl('kbd', 'key', it.key);
     cap.setAttribute('aria-hidden', 'true');
     const nm = beckonEl('span', 'try-app', it.app);
@@ -505,45 +624,56 @@ const beckonTryRow = (items, onPress, opts) => {
     b.append(cap, nm);
     b.addEventListener('click', ev => { beckonCapsRead(ev); onPress(it); });
     caps[it.key] = cap;
-    row.appendChild(b);
+    keys.appendChild(b);
   });
+
+  // The chip and `Reset` are the row's tail and travel together — see
+  // `.try-end` in beckon.css. Separately they wrapped onto a line each.
+  const end = beckonEl('div', 'try-end');
+  row.appendChild(end);
 
   // Not a live region, deliberately, though it is real content and is not
   // aria-hidden. There is one of these per demo, so two would announce the
   // same lock change twice, and the reader's own OS already says the lock
   // flipped. The word is there to be read, by eye or in browse mode.
   const lock = beckonEl('span', 'try-lock');
-  row.appendChild(lock);
+  end.appendChild(lock);
 
   if (o.onReset) {
     const r = beckonEl('button', 'try-reset', 'Reset');
     r.type = 'button';
     r.addEventListener('click', ev => { beckonCapsRead(ev); o.onReset(); });
-    row.appendChild(r);
+    end.appendChild(r);
   }
 
-  beckonOnCaps(() => {
-    const s = beckonCapsOn === null ? 'unknown' : beckonCapsOn ? 'on' : 'off';
-    lock.dataset.caps = s;
-    lock.textContent = 'Caps Lock: ' + s;
-    if (beckonCapsOn) capsCap.setAttribute('data-lock', '');
-    else capsCap.removeAttribute('data-lock');
-  });
-
   let timer = 0;
+  let standing = null;   // the nudge currently on screen: { kind, hit }
+
   // Putting the instruction back is `settle`, and every press calls it —
   // including a successful one. Without that, a reader who pressed with the
   // lock off, read "Caps Lock is off", switched it on and pressed again got
   // the demo advancing under a line still telling them the lock was off.
+  //
+  // A no-op when there is nothing to put back. `.try-lead` is `role="status"`,
+  // and reassigning `textContent` replaces the text node whether or not the
+  // string changed — a live-region mutation on every successful press, of a
+  // line that had not moved. Measured: one `childList` record per press,
+  // added text byte-identical to removed.
   const settle = () => {
+    if (!timer && !standing) return;
     clearTimeout(timer);
     timer = 0;
+    standing = null;
     delete lead.dataset.nudge;
     lead.textContent = leadText;
   };
   const nudge = (kind, hit) => {
     clearTimeout(timer);
-    lead.dataset.nudge = '';
+    standing = { kind: kind, hit: hit };
+    // The VALUE is the kind; the CSS selector is `[data-nudge]`, presence
+    // only, so it is unaffected. The subscriber below needs to know which
+    // kind is standing.
+    lead.dataset.nudge = kind;
     lead.textContent =
       kind === 'key'   ? hit.key + ' is ' + hit.app + '. ' + (o.unknownSay || '')
       : beckonCapsOn === null
@@ -552,6 +682,29 @@ const beckonTryRow = (items, onPress, opts) => {
           '. Or click ' + hit.key + '.';
     timer = setTimeout(settle, 3200);
   };
+
+  beckonOnCaps(() => {
+    const s = beckonCapsOn === null ? 'unknown' : beckonCapsOn ? 'on' : 'off';
+    lock.dataset.caps = s;
+    lock.textContent = 'Caps Lock: ' + s;
+    if (beckonCapsOn) capsCap.setAttribute('data-lock', '');
+    else capsCap.removeAttribute('data-lock');
+
+    // A STANDING LOCK NUDGE IS ABOUT THE LOCK, so a lock change invalidates
+    // it — and the reader flipping Caps is the likeliest thing to happen next,
+    // since the nudge just told them to. It used to survive: measured, the
+    // chip said "Caps Lock: on" while the line 40px away still read "Caps
+    // Lock is off — switch it on", for the remaining 3.2s of the timer. The
+    // comment on `settle` claimed this was fixed, but only for the success
+    // path.
+    //
+    // Re-nudging rather than settling on the off/unknown arms, because the
+    // wording differs between them and the reader still has not pressed
+    // anything. `key` nudges are not about the lock and are left alone.
+    if (!standing || standing.kind !== 'caps') return;
+    if (beckonCapsOn === true) settle();
+    else nudge('caps', standing.hit);
+  });
 
   wrap.append(lead, row);
   return { wrap: wrap, caps: caps, capsCap: capsCap, nudge: nudge, settle: settle };
@@ -592,13 +745,27 @@ const beckonReadout = () => {
 //   "beckon is asked first"                    — CLAUDE.md: a WH_KEYBOARD_LL
 //       callback "runs before the keystroke reaches any queue and before shell
 //       hotkey processing".
-//   "tick the box — Windows only, off until you do"
+//   "tick the box — Windows only, off by default"
 //                                              — README *Caps Lock as the
 //       beckon key (Windows, opt-in)*; CLAUDE.md "off by default, on one OS".
-//   "swallows the Caps key-down"               — caps.rs, `(VK_CAPITAL,
-//       Edge::Down) => Action::Swallow`, unconditional.
-//   "sends … on as one burst"                  — CLAUDE.md "The chord is
-//       injected as one burst", and `chord()` builds exactly one Vec<Stroke>.
+//       IT QUALIFIES THE SETTING AND NOT THE HOOK. "off until you tick it"
+//       used to sit on the hook clause, which CLAUDE.md contradicts in terms:
+//       "Since 2026-08-12 there are TWO reasons to hold that hook, not one …
+//       the exception is now reachable on a machine where the user left
+//       `keyboard.caps = false`, for the seconds a recording lasts."
+//       (`capture::HookReason`, `caps_hook.rs`'s
+//       `install_for(HookReason::Capture)`, `IDC_RECORD`.) Hence the last
+//       sentence, which is the whole of what the page says about capture.
+//   "swallows the Caps key itself"             — caps.rs, `(VK_CAPITAL,
+//       Edge::Down) => Action::Swallow`, unconditional, injecting NOTHING.
+//   "press a bound key while Caps is down … injects … as one burst"
+//                                              — caps.rs `(vk, Edge::Down) if
+//       st.held => … SwallowAndInject(chord(hold, vk))`. THE TRIGGER IS THE
+//       BOUND KEY AND THE LETTER IS INSIDE THE BURST, both of which the older
+//       wording ("swallows the Caps key-down and sends Ctrl+Win+Alt on as one
+//       burst instead") got backwards: it described an emission on the Caps
+//       press, made of modifiers alone, which is precisely the shape
+//       `chord()`'s doc comment rejects as the gesture that opens Start.
 //   "the lock never flips"                     — nothing on the used-hold path
 //       injects VK_CAPITAL; the up emits `release_modifiers` only.
 //   "a bare tap still toggles it, because beckon puts that keystroke back"
@@ -606,22 +773,40 @@ const beckonReadout = () => {
 //       `#[default]` and its arm is `SwallowAndInject(tap(VK_CAPITAL))`.
 //       README: "Tapping Caps on its own still toggles Caps Lock by default."
 //       NOT "a tap does nothing unless you configure it" — that is backwards.
+//   "tap Caps again when you are done"         — not a claim about beckon at
+//       all. The page induces a persistent global OS state and nothing on it
+//       used to say how to get out; the recovery costs half a sentence.
 const beckonCapsTruth = () => {
   const p = beckonEl('p', 'caps-truth caps');
   beckonOnCaps(() => {
+    // THREE STATES, not two. `beckonCapsOn` is `null` until an event resolves
+    // it, and a plain truthiness test folded that into the "off" branch — so
+    // at load the page asserted "press Caps here and it really will turn your
+    // Caps Lock on" to a reader who had arrived with it on, for whom pressing
+    // Caps turns it OFF. And `true` is two states: the page may only claim
+    // credit when it actually saw a Caps key event.
+    const say = beckonCapsOn === null
+      ? 'Press Caps here and it toggles your real Caps Lock — this page cannot tell yet ' +
+        'which way round it is.'
+      : beckonCapsOn === false
+        ? 'Press Caps here and it really will turn your Caps Lock on.'
+        : beckonCapsFlipped
+          ? 'Your Caps Lock is on, and pressing Caps here is what did that.'
+          : 'Your Caps Lock is on — it was already on when you arrived.';
     p.textContent = '';
     p.append(
-      beckonEl('strong', null, beckonCapsOn
-        ? 'Your Caps Lock is on, and pressing it here is what did that.'
-        : 'Press Caps here and it really will turn your Caps Lock on.'),
+      beckonEl('strong', null, say),
       document.createTextNode(
-        ' A page is only told that a key happened; beckon is asked first. With the Caps Lock ' +
-        'box ticked in Settings — Windows only, and off until you tick it — its low-level ' +
-        'keyboard hook swallows the Caps key-down and sends '),
-      beckonCapsChordEl(),
+        ' Tap Caps again when you are done; the chip in the row above follows it. A page is ' +
+        'only told that a key happened — beckon is asked first. Tick the Caps Lock box in ' +
+        'Settings — Windows only, off by default — and beckon’s low-level keyboard hook ' +
+        'swallows the Caps key itself; press a bound key while Caps is down and beckon injects '),
+      beckonCapsChordEl('T'),
       document.createTextNode(
-        ' on as one burst instead, so the chord fires and the lock never flips. A bare Caps ' +
-        'tap still toggles the lock, but only because beckon puts that keystroke back itself.'));
+        ' as one burst, so the chord fires and the lock never flips. A bare Caps tap still ' +
+        'toggles the lock, but only because beckon puts that keystroke back itself. Ticking ' +
+        'the box is not the only thing that arms that hook — Settings holds the same one for ' +
+        'the seconds it spends recording a chord.'));
   });
   return p;
 };
@@ -706,14 +891,23 @@ const beckonCapsTruth = () => {
     t.settle();
     beckonTap(caps.concat([t.capsCap, t.caps[hit.key]]));
     say(hit.app, back, hit.app === 'Brave' ? 'Claude' : 'Brave');
-    // The transcript names the line that is being run, so it follows the
-    // letter too. With JS off the sentence in index.html is untouched.
+    // The transcript names the line that is being run AND what came forward,
+    // so it follows both the letter and the branch. Naming only the
+    // invocation left it describing the wrong app on every step-5b press: a
+    // single `B` from the resting state runs `beckon Brave` and brings CLAUDE
+    // to the front, and the transcript said "beckon Brave … all three machines
+    // move". `.hero-stage` is aria-hidden, so this line plus the readout are
+    // the whole non-visual account of the drawing, and beckon.css's demo
+    // contract calls this one "the same thing in words". With JS off the
+    // sentence in index.html is untouched.
     steps.textContent = 'One line — beckon ' + hit.app + ' — bound to each machine’s own ' +
-      'modifier. One press, and all three machines move at the same instant.';
+      'modifier. One press, and ' + (front === 'claude' ? 'Claude' : 'Brave') +
+      ' comes to the front on all three at the same instant.';
     drawNote();
   };
 
   const t = beckonTryRow(mine, fire, {
+    what: 'three-OS demo',
     unknownSay: 'These three cards only draw Claude and Brave — the playground under ' +
                 '“Focus is only the first press.” takes all five.',
   });
@@ -726,12 +920,27 @@ const beckonCapsTruth = () => {
   const note = beckonEl('p', 'try-note caps');
   const drawNote = () => {
     const os = beckonOs();
-    // Self-describing link text, and the same words in both caps states: a
+    // Self-describing link text, and the same words in every caps state: a
     // link labelled "beckon does not" reads fine in the sentence and is
     // useless in a screen reader's link list, which is the one place a link
-    // has to stand on its own.
-    const link = beckonEl('a', null, 'why beckon’s own Caps key does not');
+    // has to stand on its own. It DOES follow the OS, because on macOS and
+    // Linux beckon has no Caps key to speak of — "beckon’s own Caps key" one
+    // clause after "beckon’s Caps Lock mode is Windows-only" named a thing
+    // the same sentence had just said does not exist here.
+    const link = beckonEl('a', null, os === 'windows'
+      ? 'why beckon’s own Caps key does not'
+      : 'why beckon’s Windows Caps mode does not');
     link.href = '#how';
+    // Tri-state, and the `true` arm is split on causation, for the reasons
+    // spelled out at `beckonCapsFlipped` and in `beckonCapsTruth`.
+    const state = beckonCapsOn === null
+      ? 'Pressing Caps here toggles your real Caps Lock — tap it again when you are done: '
+      : beckonCapsOn === false
+        ? 'Pressing Caps here really does turn your Caps Lock on — tap it again when you are ' +
+          'done: '
+        : beckonCapsFlipped
+          ? 'Your Caps Lock is on because you pressed it here; tap it again when you are done: '
+          : 'Your Caps Lock was already on when you arrived: ';
     note.textContent = '';
     note.append(
       document.createTextNode('Your chord is '),
@@ -741,9 +950,7 @@ const beckonCapsTruth = () => {
           + 'fold the chord onto Caps for real, off until you tick the box. '
         : ' — a page never sees that, but it does see Caps Lock. beckon’s Caps Lock mode is '
           + 'Windows-only, so here it is only the trigger. '),
-      document.createTextNode(beckonCapsOn
-        ? 'Your Caps Lock is on now, and this page turned it on: '
-        : 'Pressing Caps here really does turn your Caps Lock on: '),
+      document.createTextNode(state),
       link,
       document.createTextNode('.'));
   };
@@ -819,6 +1026,16 @@ const beckonCapsTruth = () => {
   //             `ctrl+super+alt+c` — examples/windows/serve/apps.toml:22 — is
   //             delivered to beckon because beckon registered it, and
   //             RegisterHotKey is not even subject to UIPI.
+  //             The Windows branch also lost a causal tail — "…which is the
+  //             wall that makes beckon reach for a low-level keyboard hook."
+  //             The clause before it says beckon's own chord IS delivered, so
+  //             shell interception is no wall for any chord beckon uses, and
+  //             the repo nowhere gives it as the reason for the hook. README's
+  //             reason is ergonomic — "`ctrl+super+alt+<key>` is a lot of
+  //             fingers" — and CLAUDE.md lists exactly two things that hold
+  //             the hook, Caps and chord capture, with the shell-hotkey fact
+  //             appearing only under capture. A wall would also make the
+  //             feature compulsory, which the same paragraph says it is not.
   //   Linux   — the first draft ended "which is why beckon leaves the binding
   //             to your own bindsym line". CLAUDE.md's *Wayland hotkey* entry
   //             was rewritten specifically to retire that causal story; its
@@ -836,10 +1053,19 @@ const beckonCapsTruth = () => {
            'for a system-wide hotkey at all.',
     windows: 'a chord beckon has registered with RegisterHotKey is delivered to beckon rather ' +
              'than to whatever window you are looking at — and Windows hands the shell its own ' +
-             'Win-key shortcuts before any ordinary window is offered them, which is the wall ' +
-             'that makes beckon reach for a low-level keyboard hook.',
+             'Win-key shortcuts before any ordinary window is offered them at all.',
     linux: 'your compositor takes that chord before any client sees it — a browser is just ' +
            'another client.',
+  };
+
+  // The lede, per OS, because it used to be unconditional and asserted on
+  // macOS and Linux that Caps Lock is a beckon key — one clause before the
+  // same paragraph says beckon's Caps mode is Windows-only. CLAUDE.md: "off by
+  // default, on one OS"; README's heading is "(Windows, opt-in)".
+  const LEDE = {
+    windows: 'Caps Lock is the one beckon key a page can see.',
+    macos:   'A page can read Caps Lock. That is why the demo above uses it.',
+    linux:   'A page can read Caps Lock. That is why the demo above uses it.',
   };
 
   // What the reader may actually switch on, per OS. The Windows branch is the
@@ -847,21 +1073,34 @@ const beckonCapsTruth = () => {
   // an illustration, so nobody goes looking for a check box that is not there.
   // UIPI is named because README lists it first of the three caveats and
   // CLAUDE.md measured both halves on a14 against an elevated Task Manager.
+  //
+  // It USED to re-explain the setting itself here — "tick the Caps Lock box in
+  // Settings and Caps stands in for that chord, so your bindings do not
+  // change" — which `.caps-truth` says at length in the column immediately
+  // beside this one at 900px up (measured: both start at the same y, both
+  // 241px tall), and #serve and the FAQ each say again. Four tellings, two of
+  // them side by side. The two columns now have disjoint jobs: this one is why
+  // a page cannot have the chord, `.caps-truth` is what beckon's Caps mode
+  // actually does. UIPI stays because it is the one fact `.caps-truth` has no
+  // room for.
   const OWN = {
-    windows: 'On Windows this is a real setting rather than an illustration: tick the Caps Lock ' +
-             'box in Settings and Caps stands in for that chord, so your bindings do not ' +
-             'change. It does nothing while an elevated window has focus — typing the chord by ' +
-             'hand still works there. ',
+    windows: 'On Windows this is a real setting rather than an illustration, and it does ' +
+             'nothing while an elevated window has focus — typing the chord by hand still ' +
+             'works there. ',
     macos: 'beckon’s Caps Lock mode is Windows-only, so on macOS this is the demo’s trigger and ' +
            'not something you can switch on. ',
     linux: 'beckon’s Caps Lock mode is Windows-only, so on Linux this is the demo’s trigger and ' +
            'not something you can switch on. ',
   };
 
-  // The gap between what beckon reads and what a page can read, in one
-  // sentence, shared by every OS branch so it cannot drift between them.
-  const HOLD_VS_LOCK = 'beckon reads Caps as a key you hold; a page is only told the lock ' +
-    'changed, so here you switch the lock on first.';
+  // The gap between what a page can read and what it must therefore ask for.
+  // The tail is shared by every OS branch so it cannot drift between them; the
+  // head is not, because "beckon reads Caps as a key you hold" is true only
+  // where beckon reads Caps at all.
+  const holdVsLock = os => (os === 'windows'
+    ? 'beckon reads Caps as a key you hold; a page is only told the lock changed, '
+    : 'A page is only told the lock changed rather than that a key is being held, ')
+    + 'so here you switch the lock on first.';
 
   const TAG = {
     absent:  'not running',
@@ -887,7 +1126,8 @@ const beckonCapsTruth = () => {
       slots: [{ app: 'Claude', present: true }, { app: 'Brave', present: true }],
       focus: 1,
       ready: 'One Claude window; Brave is in front.',
-      steps: 'One Claude window, with Brave in front. The first press focuses Claude and the ' +
+      steps: 'Starts with one Claude window and Brave in front. The first press focuses Claude ' +
+             'and the ' +
              'second goes back to Brave, and it keeps alternating — the same key gets you there ' +
              'and back, so it doubles as the switch between the two apps you are actually using.',
     },
@@ -906,8 +1146,17 @@ const beckonCapsTruth = () => {
       // repeat "every window exactly once per lap" and "Brave and hide are out
       // of reach" back at the reader while the readout was saying both, 40px
       // apart on the same panel.
-      steps: 'Three Claude windows and Brave, with Brave in front. Verified live on sway: ' +
-             'three foot windows, seven presses, 35 → 36 → 37 → 35.',
+      //
+      // "STARTS WITH", present tense nowhere. `stage` is aria-hidden, so this
+      // sentence plus the last readout line is the whole non-visual account of
+      // the desk — and a letter for an app the scenario never named adds a
+      // window to that desk (step 4, which is the honest answer to `Caps+D`).
+      // Measured: three Claude windows, Brave and a focused Discord on screen
+      // under a transcript still asserting "Three Claude windows and Brave,
+      // with Brave in front." A precondition cannot go stale; a description of
+      // the present can.
+      steps: 'Starts with three Claude windows and Brave, Brave in front. Verified live on ' +
+             'sway: three foot windows, seven presses, 35 → 36 → 37 → 35.',
     },
     {
       pick: 'One window, nothing else open',
@@ -922,7 +1171,8 @@ const beckonCapsTruth = () => {
       slots: [{ app: 'Claude', present: true }],
       focus: 0,
       ready: 'One Claude window, focused, and nothing else is running.',
-      steps: 'One Claude window and nothing else running. The press that would switch back to ' +
+      steps: 'Starts with one Claude window and nothing else running. The press that would ' +
+             'switch back to ' +
              'another app has nowhere to go, so it hides Claude instead — and the next press ' +
              'brings it back.',
     },
@@ -975,16 +1225,31 @@ const beckonCapsTruth = () => {
     }
 
     if (focus === null || slots[focus].app !== app) {
-      // "its first window", not "its most recent". CLAUDE.md's step 5 is
-      // "focus first window", `algorithm.rs` picks the minimum of
-      // recency-then-address, and on sway and i3 every recency is 0 so the
-      // address alone decides — the test block there is literally headed
-      // "sway-style: every recency=0, ties broken by address". "Most recent"
-      // also contradicts the 5a line one press later, which says the ring is
-      // ordered by address. MRU belongs to 5b, and only 5b.
-      focusTo(mine[0]);
+      // THE MOST-RECENT SAME-APP WINDOW, NOT THE FIRST, and this was the other
+      // way round until it was checked against the code rather than the prose.
+      // CLAUDE.md's *Focus algorithm* step 5 does say "focus first window",
+      // but that is the doc's simplification: `algorithm.rs:167-176` picks
+      // `min_by(cmp_recency_then_address)`, and CLAUDE.md itself gives
+      // `recency` as real focus history on Hyprland (`focusHistoryID`), X11
+      // (`_NET_CLIENT_LIST_STACKING`) and GNOME (`Meta.TabList.NORMAL_ALL`).
+      // On three of the five backends the last-focused window wins, and the
+      // divergence is four presses away in scenario 3 (C, C, B, C: the real
+      // thing returns to 2/3, the drawing used to return to 1/3).
+      //
+      // sway and i3 are the exception the old comment generalised from: their
+      // tree carries no focus history, every recency is 0, and the address
+      // tie-break alone decides — which is the first window. The readout names
+      // both, since the page cannot pick a backend for the reader.
+      //
+      // This does NOT contradict the 5a line one press later. Entry pick and
+      // ring order are different questions, and `algorithm.rs` answers them
+      // differently on purpose: `min_by` recency here, `sort_by` address there.
+      const first = mru.filter(i => mine.indexOf(i) >= 0)[0];
+      focusTo(first === undefined ? mine[0] : first);
       return ['step 5',
-        app + ' is running but not focused, so beckon focuses its first window.'];
+        app + ' is running but not focused, so beckon focuses the window you were last on. ' +
+        'On sway and i3 the tree carries no focus history, so there it is the first window ' +
+        'instead.'];
     }
 
     if (mine.length > 1) {
@@ -998,14 +1263,30 @@ const beckonCapsTruth = () => {
           'window’s own address, so it visits every window exactly once per lap.'];
     }
 
+    // A HIDDEN WINDOW IS STILL A TOGGLE-BACK TARGET. This filter used to carry
+    // `&& !slots[i].hidden`, which `algorithm.rs` has no equivalent of —
+    // `WindowSnapshot` is address, class and recency, with no hidden flag at
+    // all, so `decide`'s 5b lookup finds a minimised window and returns
+    // `ToggleBack`. CLAUDE.md's X11 note is the confirmation: an iconified
+    // window stays in `_NET_CLIENT_LIST_STACKING`, and `ensure_mapped` exists
+    // precisely to un-iconify one on a focus request. Reproduced before the
+    // fix, scenario 4, three presses — C hides Claude, B launches Brave, B
+    // then reported "nothing else to switch to" with two windows on the desk,
+    // which also broke this file's own claim that the readout and the drawing
+    // cannot disagree about which step fired.
     const back = mru.filter(i =>
-      i !== focus && slots[i].present && !slots[i].hidden && slots[i].app !== app)[0];
+      i !== focus && slots[i].present && slots[i].app !== app)[0];
     if (back !== undefined) {
       const name = slots[back].app;
+      const wasHidden = slots[back].hidden;
       focusTo(back);
       return ['step 5b',
         'one window, already focused, and another app is open — so beckon switches back to ' +
-        name + ', the app you came from.'];
+        name + ', the app you came from.' +
+        (wasHidden
+          ? ' ' + name + ' was hidden, which is not the same as closed: beckon un-minimises it ' +
+            'first, the way the X11 backend maps a window before asking for focus.'
+          : '')];
     }
 
     slots[focus].hidden = true;
@@ -1133,7 +1414,10 @@ const beckonCapsTruth = () => {
     drawWhy();
   };
 
-  const t = beckonTryRow(beckonKeys, fire, { onReset: () => reset('Reset') });
+  const t = beckonTryRow(beckonKeys, fire, {
+    what: 'playground',
+    onReset: () => reset('Reset'),
+  });
 
   // The constraint sentence is rebuilt whenever the OS axis moves, because the
   // chord in it is the reader's own and so is the reason beside it — and
@@ -1144,12 +1428,12 @@ const beckonCapsTruth = () => {
     const os = beckonOs();
     why.textContent = '';
     why.append(
-      beckonEl('strong', null, 'Caps Lock is the one beckon key a page can see.'),
+      beckonEl('strong', null, LEDE[os]),
       document.createTextNode(' Your chord is '),
       beckonChordEl(os, letter),
       document.createTextNode(
         ', and ' + WHY[os] + ' A page also only gets keys while the browser is in front, ' +
-        'which is the one moment nobody needs a hotkey. ' + OWN[os] + HOLD_VS_LOCK));
+        'which is the one moment nobody needs a hotkey. ' + OWN[os] + holdVsLock(os)));
   };
 
   // ORDER: the affordance first, the caveat after it. `.pg-why` used to sit

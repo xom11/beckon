@@ -367,14 +367,30 @@ This entry used to read *"The stand-in key, which is also the pitch: a browser
 cannot have beckon's chord."* Half of that survived and half of it was
 measured to be false, so the framing was rewritten rather than patched.
 
-**REVISED 2026-08-13: a web page DOES receive Caps Lock.** Measured in a
-browser by a person at the keyboard. Unlike `Win` and `Super`, Caps is not
-taken by the shell or the compositor first; the page gets `keydown` with
-`event.code === 'CapsLock'`, and `KeyboardEvent.getModifierState('CapsLock')`
-reports the lock on every key event. So both demos listen for the real
-gesture — Caps Lock on, then one of the five letters from README's own table
-(`C` Claude, `B` Brave, `E` Cursor, `D` Discord, `Space` terminal) — instead
-of standing in for it with a bare `C`.
+**REVISED 2026-08-13: the trigger is Caps Lock plus a letter.** The design
+assumes a page receives Caps Lock — that unlike `Win` and `Super` it is not
+taken by the shell or the compositor first, that the page gets `keydown` with
+`event.code === 'CapsLock'`, and that
+`KeyboardEvent.getModifierState('CapsLock')` reports the lock on every key
+event. So both demos listen for the real gesture — Caps Lock on, then one of
+README's own letters (`C` Claude, `B` Brave, `E` Cursor, `D` Discord) —
+instead of standing in for it with a bare `C`. `Space` terminal is drawn and
+is a button, but is deliberately not on the keyboard path; see
+`beckonKeys` in `site/beckon.js`.
+
+**UNVERIFIED, and this entry said the opposite for one commit.** It read
+"Measured in a browser by a person at the keyboard", which no artefact
+supports: `docs/superpowers/measurements/2026-08-13-caps-gesture-manual-check.md`
+was created by the same commit and opens **"Nothing in this file has been
+run."** — the session that wrote the feature had no physical keyboard, and
+every keyboard result it holds came from
+`document.dispatchEvent(new KeyboardEvent(…, { modifierCapsLock: true }))`.
+That proves the page's *handler* is correct and proves nothing about the
+*lock*: a synthetic event cannot flip one, and cannot tell you what a real
+macOS keyup reports. CLAUDE.md's own repeated lesson is that a blind detector
+and a clean result are indistinguishable without a control. What still needs a
+person at a keyboard is in that measurement file; treat everything above as
+the design's assumption until it comes back.
 
 What is still true is narrower and is what the per-OS reasons below are
 about: a page never sees the **modifier chord** (`ctrl+super+alt+c` /

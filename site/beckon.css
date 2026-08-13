@@ -538,17 +538,26 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
      <div class="try-wrap">
        <p class="try-lead" role="status">Turn Caps Lock on, then press C…</p>
        <div class="try">
-         <span class="try-caps">
+         <span class="try-caps" aria-hidden="true">
            <kbd class="key" data-lock>Caps</kbd><span class="plus">+</span>
          </span>
-         <button class="try-press" type="button">
-           <kbd class="key" aria-hidden="true">C</kbd>      <- the real .key
-           <span class="try-app" aria-hidden="true">Claude</span>
-         </button>
-         …one button per letter…
-         <span class="try-lock" data-caps="on">Caps Lock: on</span>
-         <button class="try-reset" type="button">Reset</button>  (playground only)
+         <div class="try-keys">
+           <button class="try-press" type="button">
+             <kbd class="key" aria-hidden="true">C</kbd>    <- the real .key
+             <span class="try-app" aria-hidden="true">Claude</span>
+           </button>
+           …one button per letter…
+         </div>
+         <div class="try-end">
+           <span class="try-lock" data-caps="on">Caps Lock: on</span>
+           <button class="try-reset" type="button">Reset</button>  (playground only)
+         </div>
        </div>
+
+   THREE FLEX ITEMS, NOT EIGHT, and both wrappers are load-bearing rather than
+   tidiness: `.try-keys` keeps `Caps +` in front of every letter when the
+   letters wrap, and `.try-end` keeps the chip and `Reset` on one line. Both
+   were measured failures as loose siblings — see those rules below.
      </div>
 
    The buttons are TRANSPARENT WRAPPERS around real `.key`s, not a second
@@ -586,10 +595,33 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 12px;
 }
+/* THE LETTERS ARE ONE FLEX ITEM, WHICH IS WHAT KEEPS `Caps +` IN FRONT OF ALL
+   OF THEM. They used to be five siblings in the row above, so the prefix held
+   only whichever letters happened to land on its wrap row: measured at 1280px
+   the row read `Caps+ | C | B | E` and then `D | Space` on a bare second row;
+   at 430px `Caps+ | C | B`, then `E | D`, then `Space`. Three of the five
+   letters were drawn as keys with no chord in front of them, which is the one
+   thing this row exists to show. Wrapping them in a block of their own means
+   the row has three items — prefix, letter block, chip — and the block wraps
+   internally, underneath itself, still to the right of the prefix. */
+/* `flex: 1 1 0` is the load-bearing half. Left at the default `0 1 auto` the
+   block's base size is its max-content width — all five buttons on one line —
+   which does not fit beside the prefix, so the flex algorithm gives the block
+   a line of its own and the prefix ends up orphaned from ALL the letters
+   rather than from two of them. A zero flex-basis always fits, so the block
+   takes the remaining width of the row and does its wrapping inside. */
+.try-keys {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 12px;
+  flex: 1 1 0; min-width: 0;
+}
 /* Same font-size as the buttons beside it, so `Caps` and `C` read as one chord
    rather than as a label and a control. It is not a button: clicking it could
    not turn a lock on, and this page does not render a control that silently
-   does nothing. */
+   does nothing.
+
+   `align-self: center` is the default and is right: with the letters wrapped
+   onto two rows the prefix centres against the block, which reads as
+   "Caps + {all of this}" rather than as a prefix to the first row only. */
 .try-caps { display: inline-flex; align-items: center; gap: 6px; font-size: 1.15rem; }
 .try-press {
   display: inline-flex; align-items: center; gap: 8px;
@@ -615,6 +647,21 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
   border-radius: var(--radius-sm);
 }
 .try-lock[data-caps="on"] { color: var(--accent); border-color: var(--accent); }
+/* The row's tail: the lock's state, and the way back to the start. It takes a
+   line of its own (`flex-basis: 100%`) rather than competing with the letters
+   for the last one, which is what keeps the chord above it whole — and it does
+   not wrap internally, so `Reset` can no longer end up alone on a line below
+   the chip the way it did at 375px and 900px.
+
+   IT COSTS THE HERO A LINE, where two letters and a chip would have fitted on
+   one, and that is the trade rather than an oversight: `.try-keys` can only
+   guarantee it never orphans `Caps +` by taking a zero flex-basis and growing,
+   which leaves no room on that line for anything after it. Both rows are the
+   same shape as a result, which is worth more than the hero's saved 34px. */
+.try-end {
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 12px;
+  flex: 0 0 100%;
+}
 .try-reset {
   margin-inline-start: auto;
   min-height: 32px; padding: 6px 12px;
@@ -690,9 +737,29 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 }
 .hero-demo.is-live .os-win .os-dot { transition: background .2s; }
 
-.hero-stage[data-front="brave"] .os-win.is-brave { color: var(--fg); }
+/* BOTH HALVES OF THE STATE, NOT JUST THE UNDOING OF THE OTHER ONE. This block
+   used to strip Claude's accent and re-light Brave's text and stop there, so
+   the brave-front state was drawn with both windows at --fg, both borders at
+   --rule and both dots neutral — measured, and byte-identical to the resting
+   state. Half of the hero's presses therefore looked like nothing had happened
+   while the readout claimed a focus change. The page's focus vocabulary
+   (accent border, accent dot, the other window at --fg-dim) is a vocabulary,
+   so it has to be speakable about Brave too.
+
+   The 6px RAISE stays Claude-only and that is geometry rather than an
+   omission: Claude is the lower of the two overlapping windows, so lifting it
+   is how it comes forward. Brave is already the upper one; lifting it would
+   open a gap under the stack instead of putting it in front. z-index carries
+   that half — Brave 2 over Claude 1. */
+.hero-stage[data-front="brave"] .os-win.is-brave {
+  color: var(--fg);
+  border-color: var(--accent);
+  box-shadow: 0 10px 26px -12px color-mix(in srgb, var(--accent) 62%, transparent);
+}
+.hero-stage[data-front="brave"] .os-win.is-brave .os-dot { background: var(--accent); }
 .hero-stage[data-front="brave"] .os-win.is-claude {
   z-index: 1;
+  color: var(--fg-dim);
   transform: translateY(0);
   border-color: var(--rule);
   box-shadow: 0 10px 26px -12px transparent;
@@ -1598,16 +1665,25 @@ pre code { padding: 0; background: none; border: 0; font: inherit; overflow-wrap
 
   .how-grid { gap: 28px; }
 
-  /* Four scenario buttons cannot share a row at 375px; they wrap to two, and
-     shrinking them until they did would put a 12px tap target on a phone —
-     the same call the install tabs make below. `Reset` gives up its auto
-     margin so it does not sit alone on a line of its own once the row wraps.
+  /* The four scenario buttons take a row each at 375px and 430px — measured,
+     and the comment here used to say "they wrap to two", which was never
+     true at any width in this block (720px is the only one that gets 3 + 1).
+     They are shrunk a little and no further: taking them down until four
+     shared a row would put a 12px tap target on a phone, the same call the
+     install tabs make below.
 
-     The five letter buttons wrap for the same reason and are NOT shrunk: a
+     `Reset` gives up its auto margin so it sits next to the chip rather than
+     at the far edge of a narrow screen. It does not need the margin to avoid
+     a line of its own any more — the comment here used to claim that and it
+     was measured false at 375px, where `Reset` ended up alone on the last
+     line and the chip alone on the one before it. `.try-end` is what fixed
+     that: the pair is one non-wrapping flex item now.
+
+     The five letter buttons wrap inside `.try-keys` and are NOT shrunk: a
      phone has no Caps Lock key, so the pointer is the only path there and its
      targets have to stay full size. Only the gap tightens. */
   .pg-pick { padding: 7px 10px; font-size: 12px; }
-  .try { gap: 8px; }
+  .try, .try-keys, .try-end { gap: 8px; }
   .try-reset { margin-inline-start: 0; }
 
   .compare-row { grid-template-columns: minmax(0, 1fr); }

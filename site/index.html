@@ -56,9 +56,17 @@
      someone reading about a tool for their computer, and for an Apple reader
      that is the Apple column: Homebrew, the Hyper chord, the Accessibility
      note. Sending them to linux instead would be picking a wrong answer over a
-     probably-right one. What this does cost is a `Press C` hint on a device
-     with no keyboard; the keycap is a button and is tappable, which is why the
-     demos are built click-first with the key as the alternative.
+     probably-right one. What this does cost is larger than it was when this
+     comment first said "a `Press C` hint on a device with no keyboard". The
+     demos now ask for beckon's real gesture — "Turn Caps Lock on, then press
+     C, B, E or D" — and an iPhone or iPad has no Caps Lock key at all, so the
+     leading clause of that instruction names a precondition the device cannot
+     satisfy, and the `Caps +` prefix in the row draws a chord it cannot
+     produce. It is still not a dead end and it is still not worth a second
+     detection axis: every key in both rows is a real button, the same
+     instruction says so in its own second half ("Or click a key — that always
+     works"), and `(pointer: coarse)` would be the wrong test anyway — plenty
+     of Windows laptops are touchscreens with a Caps Lock key right there.
 
      ANDROID AND CHROME OS land in linux, and that is a change: the sniff this
      replaced tested /Android/ first and sent those readers to the Homebrew
@@ -552,7 +560,7 @@ beckon doctor</code></pre>
       does what
       <span class="chord"><kbd class="key">Ctrl</kbd><span class="plus">+</span><kbd class="key">Win</kbd><span class="plus">+</span><kbd class="key">Alt</kbd><span class="plus">+</span><kbd class="key">T</kbd></span>
       does and your bindings do not change. It installs a low-level keyboard hook, and the
-      three caveats that come with one are in the
+      three things to know before ticking it are in the
       <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a>.</p>
 
       <p class="note">Ready-to-use setups, including the launchd agent and the Scheduled Task
@@ -708,10 +716,11 @@ scoop install xom11/beckon</code></pre>
           <summary>Is it fast?</summary>
           <p>The whole focus-or-launch path measured about <strong>57 ms</strong> on the ARM64
           Windows 11 laptop beckon is developed against, and about <strong>95&ndash;105 ms</strong> on
-          an M3 MacBook Air. Each figure is one machine and one run series, not a
-          benchmark suite. Both are dominated by the OS rather than by beckon: on macOS,
-          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of the total, and
-          no API avoids that round trip.</p>
+          the macOS laptop it is developed against. Each figure is one machine and one run
+          series, not a benchmark suite. The macOS figure is mostly the OS rather than beckon:
+          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of it, and no API
+          avoids that round trip. The Windows figure has no such breakdown &mdash; it started at
+          about 443 ms and came down by changing beckon, not the OS.</p>
         </details>
 
         <details>
