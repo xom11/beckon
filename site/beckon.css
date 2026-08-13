@@ -505,18 +505,38 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   color: var(--win-bar-ink);
   letter-spacing: .01em;
 }
+/* THE TITLE BAR IS DRAWN LARGER THAN SCALE, DELIBERATELY. The desk is a model
+ * of a whole screen, so anything drawn to true proportion is tiny: measured at
+ * the previous sizes, a window control was 5x7.8px with an 11x17.8px hit area
+ * on a 680px desk — and 13x21.5px even at the 1000px cap, which is the widest
+ * this page can ever be. So growing the DESK cannot fix a control that small;
+ * a 24px target would need a desk about 1850px across. The chrome grows
+ * instead, roughly 2-3x true proportion, which is the trade this makes: the
+ * desk reads slightly less like a photograph and its buttons can be hit.
+ * The numbers below are set by one constraint — three controls whose hit areas
+ * do not overlap. Centre-to-centre is button + gap, so the hit area can never
+ * be wider than that, and every size here was measured rather than guessed. */
 .win-bar {
-  height: clamp(20px, 3.4cqw, 34px);
-  padding-inline: clamp(6px, 1.1cqw, 12px);
+  height: clamp(26px, 4cqw, 40px);
+  padding-inline: clamp(7px, 1.2cqw, 14px);
   gap: clamp(4px, .8cqw, 9px);
-  font-size: clamp(8.5px, 1.35cqw, 13px);
+  font-size: clamp(10.5px, 1.6cqw, 15px);
 }
 .win-lights { display: none; gap: 4px; }
-.win-lights { gap: clamp(3px, .55cqw, 6px); }
+.win-lights { gap: clamp(8px, 1.25cqw, 12px); }
 .win-lights i { width: 7px; height: 7px; border-radius: 50%; background: #C8C8CC; }
-.win-lights i { width: clamp(5px, .95cqw, 11px); height: clamp(5px, .95cqw, 11px); }
+.win-lights i { width: clamp(9px, 1.35cqw, 14px); height: clamp(9px, 1.35cqw, 14px); }
 .win-ctl { display: none; gap: 7px; margin-left: auto; font-size: 8px; }
-.win-ctl { gap: clamp(5px, 1.1cqw, 12px); font-size: clamp(7px, 1.15cqw, 12px); }
+.win-ctl { gap: clamp(4px, .75cqw, 9px); font-size: clamp(9.5px, 1.45cqw, 13.5px); }
+/* A square cell rather than a bare glyph, so the control has a size of its own
+   that the hit area can be measured against — and so the three of them sit on a
+   predictable pitch. `min-` is what keeps it honest on the small desk beside
+   the table in #how, where 1.9em alone comes to 19px. */
+.win-ctl i {
+  display: grid; place-items: center;
+  width: 1.9em; height: 1.9em;
+  min-width: 20px; min-height: 20px;
+}
 .win-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* The window's interior: a sidebar tinted with the app's hue, and three lines
@@ -558,7 +578,16 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * caption under it. A filter is a property, so a keyframe can reach it. */
 .desk[data-os="macos"] .win { border-radius: 9px; }
 .desk[data-os="macos"] .win-lights { display: flex; }
-.desk[data-os="macos"] .win-name { margin-inline: auto; padding-right: 25px; }
+/* Centred by giving the name the whole middle and padding it by the width of
+   the cluster on the other side — NOT by `margin-inline: auto`, which competes
+   with the `margin-left: auto` on the control group: three auto margins split
+   the slack three ways and the title lands left of centre. It was only ever
+   nearly right here because the lights are small; on the Linux bar, whose
+   controls are three 1.9em cells, it was out by 59px. */
+.desk[data-os="macos"] .win-name {
+  flex: 1; text-align: center;
+  padding-right: clamp(46px, 7.3cqw, 74px);
+}
 .desk[data-os="macos"] .win-lights i:nth-child(1) { background: #FF5F57; }
 .desk[data-os="macos"] .win-lights i:nth-child(2) { background: #FEBC2E; }
 .desk[data-os="macos"] .win-lights i:nth-child(3) { background: #28C840; }
@@ -607,10 +636,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .desk[data-os="linux"] .win-ctl { display: flex; }
 /* Round buttons rather than Windows' bare glyphs, which is the difference a
    Breeze or Adwaita reader will recognise from across the room. */
-.desk[data-os="linux"] .win-ctl { gap: clamp(3px, .65cqw, 7px); }
 .desk[data-os="linux"] .win-ctl i {
-  display: grid; place-items: center;
-  width: 1.75em; height: 1.75em;
   border-radius: 50%;
   background: var(--win-line);
 }
@@ -621,12 +647,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    button cluster on the right; without it "centred" is centred in what is left
    over, which is visibly off. */
 /* The left padding balances the button cluster on the right, and it is sized to
-   MEASURE it rather than to look about right: three 1.75em buttons at the bar's
-   own clamp(7px, 1.15cqw, 12px) plus two gaps comes to ~7.3cqw. At 5.6 the
-   title sat visibly left of centre on a 1000px desk. */
+   MEASURE it rather than to look about right: three cells at max(20px, 1.9em)
+   plus two gaps comes to ~70px on a 680px desk and ~92px on a 1000px one. At
+   5.6cqw the title sat visibly left of centre. */
 .desk[data-os="linux"] .win-name {
-  margin-inline: auto;
-  padding-left: clamp(40px, 7.4cqw, 78px);
+  flex: 1; text-align: center;
+  padding-left: clamp(70px, 10.5cqw, 100px);
   font-weight: 640;
 }
 .desk[data-os="linux"] .win.is-focused { box-shadow: var(--shadow), 0 0 0 1px rgba(0, 0, 0, .25); }
@@ -709,14 +735,25 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .demo.is-live .win-ctl i,
 .demo.is-live .dock-app { cursor: pointer; }
 
-/* A 7px traffic light is not a pointer target. The hit area is grown with a
-   pseudo element rather than with padding, which would move the dots apart. */
+/* The hit area is grown with a pseudo element rather than with padding, which
+   would move the controls apart and change the drawing.
+   HOW FAR IT CAN GROW IS SET BY THE PITCH, not by a guideline: centre-to-centre
+   is the control plus the gap, so a hit area wider than that steals the
+   neighbour's clicks — which on a title bar means closing a window the reader
+   meant to minimise. Measured on a 680px desk: the Windows/Linux cells sit on a
+   ~25px pitch, so -2px all round gives ~24px and stops there; the macOS lights
+   sit on a ~17px pitch, so they grow sideways only to -4px and take their
+   height from the bar instead. macOS's real traffic lights are on a 20px pitch,
+   so this is not a limitation of the model. */
 .demo.is-live .win-lights i,
 .demo.is-live .win-ctl i { position: relative; }
-.demo.is-live .win-lights i::after,
 .demo.is-live .win-ctl i::after {
-  content: ""; position: absolute; inset: -5px -3px;
-  border-radius: 5px;
+  content: ""; position: absolute; inset: -2px;
+  border-radius: 6px;
+}
+.demo.is-live .win-lights i::after {
+  content: ""; position: absolute; inset: -7px -3px;
+  border-radius: 6px;
 }
 .demo.is-live .win-lights i { transition: transform .15s ease, background-color .3s ease; }
 .demo.is-live .win-lights i:hover { transform: scale(1.3); }
