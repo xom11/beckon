@@ -666,19 +666,6 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   padding: 4px 10px; min-height: 26px; cursor: pointer;
 }
 .press-out:hover { background: var(--bg-raised); }
-/* The lock's own state, which the page can read from any key or pointer event
-   — so it stops saying "unknown" the moment the reader moves the mouse. */
-.caps-state {
-  display: inline-flex; align-items: center; gap: 6px;
-  font: 500 12px/1 var(--mono);
-  color: var(--fg-dim);
-}
-.caps-state::before {
-  content: ""; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--rule);
-}
-.caps-state.is-on { color: var(--fg); }
-.caps-state.is-on::before { background: var(--sway-focus); }
 
 /* --- the readout --- */
 

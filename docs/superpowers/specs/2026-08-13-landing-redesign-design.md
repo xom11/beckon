@@ -76,21 +76,16 @@ modifier and follows the OS strip, so switching to Windows rewrites it to
 `Ctrl Win Alt`.
 
 **A page cannot see a *held* Caps Lock** — there is no `capsKey` on a keyboard
-event the way there is `shiftKey`. Measured 2026-08-13, there are three
-observable signals, and the gate accepts any of them:
+event the way there is `shiftKey`. Two signals are observable, and the gate
+accepts either:
 
-1. **The lock is on** — `getModifierState('CapsLock')`. It is available on
-   `MouseEvent` and `PointerEvent` as well as `KeyboardEvent`, so the state
-   becomes known as soon as the reader moves the mouse. The earlier version of
-   this page could only learn it from a keypress, which is why it shipped a
-   readout reading `Caps Lock: unknown` on first sight.
-2. **The Caps key was just touched** — a `keydown`/`keyup` whose `key` is
+1. **The Caps key was just touched** — a `keydown`/`keyup` whose `key` is
    `CapsLock`, within 1.5s. macOS fires only keydown on the way on and only
-   keyup on the way off, so both arm it. This is also the only half a
+   keyup on the way off, so both arm it. This is also the only signal a
    synthetic-event test can reach: Chrome does not flip its caps modifier for
    injected keys, measured with the same probe.
 
-3. **The real chord arrived** — two or more of `ctrlKey` / `altKey` / `metaKey`
+2. **The real chord arrived** — two or more of `ctrlKey` / `altKey` / `metaKey`
    on the letter's own event. **On a machine where Caps Lock is remapped to
    Hyper this is the only signal that fires, and the reader is doing exactly
    the right thing**: Karabiner or kanata swallow the Caps key and send
@@ -101,10 +96,21 @@ observable signals, and the gate accepts any of them:
    is as much of `Ctrl+Win+Alt` as will ever arrive; and two is what keeps
    `Cmd+C` out of it.
 
-**A Caps Lock remapped to something that is not a modifier satisfies none of
-the three** — remapped to Escape, say. A demo that cannot be operated is worse
-than one that teaches its gesture loosely, so there is a way out, and **it is a
-button, not a counter**.
+**`getModifierState('CapsLock')` was a third signal and had to go.** It is
+available on `PointerEvent` as well as `KeyboardEvent`, which made it tempting:
+the lock state was knowable as soon as the reader moved the mouse. But it
+reports the LOCK, and a page cannot tell a held Caps Lock from a lit one —
+there is no separate fact to read. So a reader who turned Caps Lock on to
+satisfy the gate left it on, and from that moment **every bare letter passed**.
+The demo stopped asking for anything and looked broken, which is exactly how it
+was reported. Arming on the keypress instead makes the gesture per-press:
+leaving the lock on buys nothing, and tapping Caps works whichever way the lock
+happens to be pointing. Do not add it back.
+
+**A Caps Lock remapped to something that is not a modifier satisfies neither**
+— remapped to Escape, say. A demo that cannot be operated is worse than one
+that teaches its gesture loosely, so there is a way out, and **it is a button,
+not a counter**.
 
 Two refused presses used to open the gate by themselves. That was worse than
 either alternative: a reader whose Caps works fine reached it by fumbling

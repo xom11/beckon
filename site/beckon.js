@@ -206,17 +206,21 @@
    * event the way there is `shiftKey`. So there are exactly two observable
    * signals, and this accepts either:
    *
-   *   1. THE LOCK IS ON — `getModifierState('CapsLock')`. Measured 2026-08-13:
-   *      it is available on KeyboardEvent AND on MouseEvent/PointerEvent, so
-   *      the state becomes known the moment the reader moves the mouse. The
-   *      previous version of this page could only learn it from a keypress and
-   *      therefore shipped a readout saying `Caps Lock: unknown` — a control
-   *      admitting it does not know its own state, on first sight.
-   *   2. THE CAPS KEY WAS JUST TOUCHED — a `keydown`/`keyup` whose key is
+   *   1. THE CAPS KEY WAS JUST TOUCHED — a `keydown`/`keyup` whose key is
    *      `CapsLock`, within ARM_MS. macOS fires only keydown on the way on and
    *      only keyup on the way off, which is why both arm it. This is also the
-   *      only half a synthetic-event test can reach: Chrome does not flip its
-   *      caps modifier for injected keys, measured with the same probe.
+   *      only signal a synthetic-event test can reach.
+   *   2. THE REAL CHORD ARRIVED — see `capsChord` below.
+   *
+   * `getModifierState('CapsLock')` WAS A THIRD SIGNAL AND HAD TO GO, which is
+   * the one thing to re-read before adding it back. It reports the LOCK, and a
+   * page cannot tell a held Caps Lock from a lit one — there is no separate
+   * fact to read. So a reader who turned Caps Lock on to satisfy the gate left
+   * it on, and from that moment every bare letter passed. The demo stopped
+   * asking for anything and looked broken, which is exactly how it was
+   * reported. Arming on the keypress instead makes the gesture per-press:
+   * leaving the lock on buys nothing, and tapping Caps still works whichever
+   * way the lock happens to be pointing.
    *
    * AND A REMAPPED CAPS LOCK SATISFIES NEITHER. kanata, PowerToys and a Hyper
    * remap all swallow the key before the browser sees anything — and that is
@@ -231,41 +235,14 @@
    * because having answered the question here should not mean answering it
    * again further down the page. */
   var CAPS_ARM_MS = 1500;
-  var capsOn = null;         /* null until the first event that can tell us */
   var capsArmed = 0;
   var capsOpen = false;      /* the escape hatch, and only a click opens it */
   var capsMiss = 0;
-  var capsSubs = [];
-  var capsMoved = 0;
   var capsRows = [];         /* every press row, so one answer serves them all */
 
-  function capsRead(e) {
-    if (typeof e.getModifierState !== 'function') return;
-    var v;
-    try { v = e.getModifierState('CapsLock'); } catch (err) { return; }
-    if (v === capsOn) return;
-    capsOn = v;
-    capsSubs.forEach(function (fn) { fn(capsOn); });
-  }
-
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'CapsLock') capsArmed = Date.now();
-    capsRead(e);
-  }, true);
-  document.addEventListener('keyup', function (e) {
-    if (e.key === 'CapsLock') capsArmed = Date.now();
-    capsRead(e);
-  }, true);
-  document.addEventListener('pointerdown', capsRead, true);
-  document.addEventListener('pointermove', function (e) {
-    /* Throttled: this runs on every mouse move for the life of the page, and
-       all it is here to do is notice a lock that changed while the reader was
-       not typing. */
-    var t = Date.now();
-    if (t - capsMoved < 250) return;
-    capsMoved = t;
-    capsRead(e);
-  }, { capture: true, passive: true });
+  function capsArm(e) { if (e.key === 'CapsLock') capsArmed = Date.now(); }
+  document.addEventListener('keydown', capsArm, true);
+  document.addEventListener('keyup', capsArm, true);
 
   /* SIGNAL 3, AND ON A REMAPPED MACHINE IT IS THE ONLY ONE THAT FIRES: the
    * reader's real chord arrived. If Caps Lock has been remapped to Hyper —
@@ -283,9 +260,8 @@
   }
 
   function capsHeld() {
-    return capsOpen || capsOn === true || (Date.now() - capsArmed) < CAPS_ARM_MS;
+    return capsOpen || (Date.now() - capsArmed) < CAPS_ARM_MS;
   }
-  function onCaps(fn) { capsSubs.push(fn); fn(capsOn); }
 
   /* The reader's own answer to "is Caps reaching this page?", given once. */
   function capsGiveUp() {
@@ -428,10 +404,8 @@
     out.type = 'button';
     out.hidden = true;
     out.addEventListener('click', capsGiveUp);
-    var state = el('span', 'caps-state');
     hint.appendChild(words);
     hint.appendChild(out);
-    hint.appendChild(state);
     host.appendChild(hint);
     host.hidden = false;
 
@@ -449,11 +423,6 @@
       out.hidden = capsOpen || mode !== 'stuck';
     }
     onOs(paint);
-
-    onCaps(function (on) {
-      state.textContent = 'Caps Lock: ' + (on === null ? '—' : on ? 'on' : 'off');
-      state.classList.toggle('is-on', on === true);
-    });
 
     var row = {
       opened: paint,
