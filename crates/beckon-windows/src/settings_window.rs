@@ -103,13 +103,17 @@ use beckon_core::shortcuts::{
 };
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::*;
 /// `MessageBeep` lives under Diagnostics::Debug, not WindowsAndMessaging --
 /// where the `MESSAGEBOX_STYLE` it takes is defined. Named rather than
 /// glob-imported so the surprise is written down once.
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+/// `HIGHCONTRASTW` is filed under Accessibility, not WindowsAndMessaging
+/// where `SPI_GETHIGHCONTRAST` itself lives. Named rather than glob-imported
+/// so the surprise is written down once -- the same reason `MessageBeep` is.
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::{
     GetDpiForMonitor, GetDpiForWindow, GetSystemMetricsForDpi, SystemParametersInfoForDpi,
@@ -1992,6 +1996,7 @@ unsafe fn child(
 unsafe fn build_children(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let fonts = build_fonts(hwnd, dpi);
+    set_cap_font(fonts.get(Role::Caption));
 
     // -- Band 1: the external-change banner. Hidden until `apply_state`
     // says the file moved; `layout` gives it no height at all while it is
@@ -2101,6 +2106,11 @@ unsafe fn build_children(hwnd: HWND) {
             (LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_CHECKBOXES) as isize,
         )),
     );
+    // Seed the cache the Shortcut column's custom draw reads. It is refreshed
+    // on `SPI_SETHIGHCONTRAST`; this is the only other moment the answer can
+    // be wrong, because the window can be opened into a theme that was already
+    // active.
+    refresh_high_contrast();
     // No LVCF_WIDTH: `layout` owns every column width, so there is exactly
     // one place a column can be made too wide for its list.
     for (i, (title, fmt)) in LIST_COLUMNS.iter().enumerate() {
@@ -2609,6 +2619,137 @@ unsafe fn text_size(hwnd: HWND, font: HFONT, dpi: u32, s: &str) -> (i32, i32) {
     } else {
         est
     }
+}
+
+/// Lay a chord out as keycaps inside `cell`, or report that it does not fit.
+///
+/// This is the Shortcut column, and it is why the config's own spelling never
+/// reaches the screen: the user pressed three physical keys, so the column
+/// draws three keys. `super` is a valid TOML token and a word on no keyboard.
+///
+/// **Returns `false` when the caps do not fit, and the caller falls back to
+/// the display string with an ellipsis.** That fallback is structural rather
+/// than defensive: `tok::SHORTCUT_COL` is 200 px but `layout` caps the column
+/// at `inner / 2`, and a five-modifier chord, a narrow window and a high DPI
+/// each reach the limit on their own. A clipped keycap reads as a rendering
+/// fault; an ellipsis reads as a narrow column.
+///
+/// **Every colour is `GetSysColor`.** An accent literal would fight the row
+/// highlight four pixels away and would be the first crack in this window's
+/// light-only rule; `COLOR_HIGHLIGHT` is the user's own accent and is already
+/// right in high contrast. `hc` changes the *shape* only -- see
+/// `high_contrast`.
+unsafe fn draw_keycaps(
+    hdc: HDC,
+    cell: RECT,
+    caps: &[String],
+    font: HFONT,
+    dpi: u32,
+    hc: bool,
+) -> bool {
+    if caps.is_empty() {
+        return false;
+    }
+    let pad = scale(5, dpi);
+    let gap = scale(3, dpi);
+    let inset = scale(4, dpi);
+    let row_h = cell.bottom - cell.top;
+    let cap_h = (row_h - scale(6, dpi))
+        .min(scale(19, dpi))
+        .max(scale(12, dpi));
+
+    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
+
+    // Measure the whole set before drawing any of it: the fallback is a
+    // decision about the set, not something to discover halfway along it with
+    // two caps already on screen.
+    let mut widths = Vec::with_capacity(caps.len());
+    let mut total = gap * (caps.len() as i32 - 1);
+    for c in caps {
+        let t = wide(c);
+        let mut sz = SIZE::default();
+        // `wide` appends a NUL and this API takes a length, so the NUL would
+        // be measured as a character -- same rule as `text_size`.
+        let w = if GetTextExtentPoint32W(hdc, &t[..t.len() - 1], &mut sz).as_bool() {
+            sz.cx + pad * 2
+        } else {
+            scale(8, dpi) * c.chars().count() as i32 + pad * 2
+        };
+        total += w;
+        widths.push(w);
+    }
+    if total > cell.right - cell.left - inset * 2 {
+        if !prev_font.is_invalid() {
+            SelectObject(hdc, prev_font);
+        }
+        return false;
+    }
+
+    let top = cell.top + (row_h - cap_h) / 2;
+    let mut x = cell.left + inset;
+    let line = COLORREF(GetSysColor(if hc {
+        COLOR_WINDOWTEXT
+    } else {
+        COLOR_BTNSHADOW
+    }));
+    let pen = CreatePen(PS_SOLID, 1, line);
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
+
+    for (i, c) in caps.iter().enumerate() {
+        let w = widths[i];
+        // The main key is last, and it is the one actually pressed: it takes
+        // the window fill so it reads brighter than the modifiers holding it
+        // down. Every row in this column shares the same three-modifier
+        // prefix, so the key is the only part worth finding at a glance.
+        let fill = if i + 1 == caps.len() {
+            COLOR_WINDOW
+        } else {
+            COLOR_BTNFACE
+        };
+        let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+        let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+        if hc {
+            let _ = Rectangle(hdc, x, top, x + w, top + cap_h);
+        } else {
+            let r = scale(4, dpi) * 2;
+            let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
+            // The one decorative line in this window, and what makes a box
+            // read as a key rather than as a badge.
+            let _ = MoveToEx(hdc, x + scale(2, dpi), top + cap_h - 1, None);
+            let _ = LineTo(hdc, x + w - scale(2, dpi), top + cap_h - 1);
+        }
+        if !prev_brush.is_invalid() {
+            SelectObject(hdc, prev_brush);
+        }
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+
+        let mut tr = RECT {
+            left: x,
+            top,
+            right: x + w,
+            bottom: top + cap_h,
+        };
+        let mut t = wide(c);
+        let n = t.len() - 1;
+        DrawTextW(
+            hdc,
+            &mut t[..n],
+            &mut tr,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        x += w + gap;
+    }
+
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+    true
 }
 
 /// One ListView row, in physical pixels at the live DPI.
@@ -3982,6 +4123,205 @@ fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.suppress).unwrap_or(true))
 }
 
+thread_local! {
+    /// Is a high-contrast theme active? See `high_contrast`.
+    static HIGH_CONTRAST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Is a high-contrast theme active?
+///
+/// **Cached, never asked per paint.** `SystemParametersInfoW` is a round trip
+/// into the system's own settings, and the Shortcut column asks this once per
+/// visible row. Refreshed exactly where the answer can change: at creation,
+/// and on the `SPI_SETHIGHCONTRAST` arm that already forwards the message to
+/// every child.
+///
+/// Only the *shape* of a keycap consults it. Every colour comes from
+/// `GetSysColor`, which is already correct in high contrast without asking --
+/// what is not correct there is a rounded box with a soft bottom edge, which
+/// reads as a rendering artefact against a theme built on flat fills and hard
+/// borders.
+fn high_contrast() -> bool {
+    HIGH_CONTRAST.with(|c| c.get())
+}
+
+thread_local! {
+    /// The Caption `HFONT` the Shortcut column draws its keycaps in, as a raw
+    /// handle.
+    ///
+    /// **A `Cell`, and deliberately not read from `UI`.** Custom draw runs
+    /// inside a paint, and a paint reaches this window while `UI` is already
+    /// borrowed -- measured on a14: every subitem-1 notification exited at
+    /// `try_borrow` and the column silently drew as text. A `Cell` cannot be
+    /// contended, so the paint path never depends on who else is mid-borrow.
+    /// Refreshed wherever `build_fonts` runs, which is creation and
+    /// `WM_DPICHANGED`.
+    static CAP_FONT: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+fn set_cap_font(f: HFONT) {
+    CAP_FONT.with(|c| c.set(f.0 as isize));
+}
+
+fn cap_font() -> Option<HFONT> {
+    let v = CAP_FONT.with(|c| c.get());
+    if v == 0 {
+        None
+    } else {
+        Some(HFONT(v as *mut core::ffi::c_void))
+    }
+}
+
+/// One subitem's text, read from the control rather than from the model.
+///
+/// The paint path must not touch `UI` (see `CAP_FONT`), and it does not need
+/// to: the cell already holds the display spelling, which is exactly what
+/// `combo_display` produced when the row was pushed. Reading it back keeps
+/// the caps and the accessible name the same string by construction rather
+/// than by two code paths agreeing.
+unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
+    let mut buf = [0u16; 256];
+    let it = LVITEMW {
+        iSubItem: subitem,
+        pszText: windows::core::PWSTR(buf.as_mut_ptr()),
+        cchTextMax: buf.len() as i32,
+        ..Default::default()
+    };
+    let n = SendMessageW(
+        list,
+        LVM_GETITEMTEXTW,
+        Some(WPARAM(item)),
+        Some(LPARAM(&it as *const LVITEMW as isize)),
+    );
+    let n = n.0.max(0) as usize;
+    String::from_utf16_lossy(&buf[..n.min(buf.len())])
+}
+
+/// Paint the Shortcut column as keycaps. Subitem 1, and only subitem 1.
+///
+/// **Subitem 0 is deliberately left alone.** It carries `LVS_EX_CHECKBOXES`'
+/// state image, the tick that makes `Remove` a multi-delete, and whether
+/// `CDRF_SKIPDEFAULT` there takes the tick with it is an open hardware
+/// question -- `examples/customdraw_probe.rs` exists to answer it. Losing the
+/// tick is losing the delete path, so it is not something to find out by
+/// shipping.
+///
+/// **Nothing here reads `UI`.** Everything it needs comes from the
+/// notification itself or from a `Cell`: the list handle from `hdr.hwndFrom`,
+/// the chord from the cell's own text, the font from `CAP_FONT`. A paint can
+/// arrive while `UI` is borrowed, and it does.
+unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    let stage = cd.nmcd.dwDrawStage;
+    if stage == CDDS_PREPAINT {
+        return CDRF_NOTIFYITEMDRAW as isize;
+    }
+    if stage == CDDS_ITEMPREPAINT {
+        return CDRF_NOTIFYSUBITEMDRAW as isize;
+    }
+    // `NMCUSTOMDRAW_DRAW_STAGE` has no `BitOr` in `windows` 0.61 -- unlike the
+    // flag types it is a bare newtype, not a generated bitmask type. Compare
+    // the raw u32s; `examples/customdraw_probe.rs` found this the hard way.
+    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 || cd.iSubItem != 1 {
+        return CDRF_DODEFAULT as isize;
+    }
+    let Some(font) = cap_font() else {
+        return CDRF_DODEFAULT as isize;
+    };
+
+    let list = cd.nmcd.hdr.hwndFrom;
+    let row = cd.nmcd.dwItemSpec;
+    let shown = subitem_text(list, row, 1);
+    if shown.is_empty() {
+        return CDRF_DODEFAULT as isize;
+    }
+
+    // `LVM_GETSUBITEMRECT` rather than `nmcd.rc`: the message is unambiguous
+    // about which rect it returns, and it takes the subitem in `rc.top` and
+    // the part in `rc.left`, which is the documented calling convention rather
+    // than a quirk.
+    let mut rc = RECT {
+        left: LVIR_BOUNDS as i32,
+        top: 1,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = SendMessageW(
+        list,
+        LVM_GETSUBITEMRECT,
+        Some(WPARAM(row)),
+        Some(LPARAM(&mut rc as *mut RECT as isize)),
+    );
+    if ok.0 == 0 || rc.right <= rc.left {
+        return CDRF_DODEFAULT as isize;
+    }
+
+    let hdc = cd.nmcd.hdc;
+    // **`LVM_GETITEMSTATE`, not `nmcd.uItemState`.** At the SUBITEM stage
+    // comctl32 reports `CDIS_SELECTED` for every row regardless of the real
+    // selection -- measured on a14: with nothing selected, the whole Shortcut
+    // column painted `COLOR_HIGHLIGHT`. The control's own answer is the only
+    // one worth asking at this stage.
+    let sel = SendMessageW(
+        list,
+        LVM_GETITEMSTATE,
+        Some(WPARAM(row)),
+        Some(LPARAM(LVIS_SELECTED.0 as isize)),
+    )
+    .0 != 0;
+    // `CDRF_SKIPDEFAULT` means we own the background too, not only the text.
+    // Getting this wrong shows up as a selected row with one un-highlighted
+    // cell, which is worse than no keycaps at all. `GetSysColorBrush` returns
+    // a system brush and must not be deleted.
+    let bg = if sel { COLOR_HIGHLIGHT } else { COLOR_WINDOW };
+    FillRect(hdc, &rc, GetSysColorBrush(bg));
+
+    // The cell holds `combo_display`'s output, so splitting on its separator
+    // recovers exactly the caps `combo_caps` would have produced -- without a
+    // second source of truth to keep in step.
+    let caps: Vec<String> = shown.split(" + ").map(|s| s.to_string()).collect();
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast()) {
+        let mut tr = RECT {
+            left: rc.left + scale(6, dpi),
+            ..rc
+        };
+        let mut t = wide(&shown);
+        let n = t.len() - 1;
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(
+            hdc,
+            COLORREF(GetSysColor(if sel {
+                COLOR_HIGHLIGHTTEXT
+            } else {
+                COLOR_WINDOWTEXT
+            })),
+        );
+        DrawTextW(
+            hdc,
+            &mut t[..n],
+            &mut tr,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+        );
+    }
+    CDRF_SKIPDEFAULT as isize
+}
+
+unsafe fn refresh_high_contrast() {
+    let mut hc = HIGHCONTRASTW {
+        cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        ..Default::default()
+    };
+    let ok = SystemParametersInfoW(
+        SPI_GETHIGHCONTRAST,
+        std::mem::size_of::<HIGHCONTRASTW>() as u32,
+        Some(&mut hc as *mut HIGHCONTRASTW as *mut std::ffi::c_void),
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+    )
+    .is_ok();
+    HIGH_CONTRAST.with(|c| c.set(ok && hc.dwFlags.0 & HCF_HIGHCONTRASTON.0 != 0));
+}
+
 /// The App combo box's handle, fetched under a borrow that returns a `Copy`
 /// value and drops with its closure.
 ///
@@ -4134,6 +4474,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // second message arrives to correct it.
                 let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
                 let fonts = build_fonts(hwnd, dpi);
+                set_cap_font(fonts.get(Role::Caption));
                 // The borrow is taken and dropped on these lines. Nothing
                 // below may hold one: `WM_SETFONT` re-enters this wndproc,
                 // and a second `RefCell` borrow across an `extern "system"`
@@ -4225,6 +4566,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // DefWindowProcW untouched rather than relayout on every
                 // unrelated settings change.
                 if wp.0 == SPI_SETHIGHCONTRAST.0 as usize {
+                    // Before the broadcast, so the relayout and every repaint
+                    // it triggers already see the new answer.
+                    refresh_high_contrast();
                     broadcast_theme_change(hwnd, msg, wp, lp);
                     LRESULT(0)
                 } else {
@@ -4342,10 +4686,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // boundary, where a second RefCell borrow ABORTS the process
                 // instead of unwinding. Landing 2a writes item state for the
                 // first time, so this guard has to exist before any of it.
+                let nm = &*(lp.0 as *const NMHDR);
+                // Custom draw is answered BEFORE the `suppressed()` guard, and
+                // deliberately: it is pure painting, it reaches no callback and
+                // it cannot recurse into `apply_state`, so the guard's reason
+                // does not apply to it. Falling through while suppressed would
+                // paint the raw display string for that frame -- legible,
+                // because the cell really does hold it, but a visible flicker
+                // between two spellings of the same chord.
+                if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
+                }
                 if suppressed() {
                     return LRESULT(0);
                 }
-                let nm = &*(lp.0 as *const NMHDR);
                 if nm.idFrom == IDC_LIST as usize && nm.code == LVN_ITEMCHANGED {
                     let lv = &*(lp.0 as *const NMLISTVIEW);
                     // iItem is -1 on the notifications that speak for the
