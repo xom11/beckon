@@ -176,11 +176,10 @@ pub fn combo_view(s: &str) -> ComboView {
 /// One key's label as it appears on the keyboard, for display only.
 ///
 /// **ASCII, exhaustively.** The settings window's faces are Segoe UI
-/// Variable Text and Small -- text fonts, not symbol fonts -- and
-/// `mark_glyph` already records what a missing glyph looks like there: a box
-/// that reads as a rendering fault rather than as a key. So the punctuation
-/// keys take their own ASCII symbol (which any text font has) and the arrow
-/// keys take words (because an arrow is not ASCII).
+/// Variable Text and Small -- text fonts, not symbol fonts -- and a missing
+/// glyph renders as a box that reads as a rendering fault rather than as a
+/// key. So the punctuation keys take their own ASCII symbol (which any text
+/// font has) and the arrow keys take words (because an arrow is not ASCII).
 ///
 /// Never used for serialisation. `Combo::canonical` is that.
 pub fn key_label(name: &str) -> String {
@@ -534,8 +533,8 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
                     // string `parse_config` produces is now something a
                     // STATIC in that window may have to draw -- and it
                     // carries a text face, not a symbol one, so a glyph it
-                    // lacks draws as a box that reads like a beckon bug.
-                    // Same rule `mark_glyph` and `title_base` already state.
+                    // lacks draws as a box that reads like a rendering bug.
+                    // This is the same reason `title_base` enforces ASCII.
                     "value for `{raw_key}` is an array -- candidate lists are not supported, \
                      write exactly one app name"
                 ));
@@ -1119,10 +1118,9 @@ mod tests {
     }
 
     /// Exhaustive over the 81-key table: every key must produce a non-empty,
-    /// ASCII label. ASCII on purpose -- `mark_glyph`'s comment records that the
-    /// window's faces are text fonts, not symbol fonts, and a missing glyph
-    /// reads as a rendering bug rather than as a key. That is why the arrow keys
-    /// are words and not arrows.
+    /// ASCII label. ASCII on purpose: the window's faces are text fonts, not
+    /// symbol fonts, and a missing glyph reads as a rendering bug rather than
+    /// as a key. That is why the arrow keys are words and not arrows.
     #[test]
     fn every_key_in_the_table_has_an_ascii_label() {
         for k in key_table() {

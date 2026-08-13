@@ -1816,10 +1816,12 @@ fn hc_severity_word(m: Mark) -> &'static str {
 /// to `cache.col` below for the four marks are consequently dead code on
 /// that branch, kept only because `col`'s signature requires one --
 /// `flag_colours`' own doc names the same situation), and `hc_severity_word`
-/// prepends a WORD to the note's text instead. This is the same choice
-/// `draw_flag_pill` already makes for the App column's flag: plain,
-/// uncoloured text under high contrast, full stop -- not a new policy
-/// invented here.
+/// prepends a WORD to the note's text instead. This shares the philosophy
+/// `draw_flag_pill` uses for the App column's flag (do not lean on colour
+/// alone under high contrast), but not its mechanism: `draw_flag_pill` returns
+/// `CDRF_DODEFAULT` to let comctl32 render existing text, while `draw_notes`
+/// synthesizes the severity word because this control is fully `SS_OWNERDRAW`
+/// and would render nothing otherwise.
 ///
 /// Font and line height come from `di.hwndItem`'s own `WM_GETFONT` and an
 /// "Ag" measurement, matching `notes_height`'s own calculation in the same

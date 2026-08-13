@@ -1774,8 +1774,8 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
         .map(|n| n.text.as_str())
         .collect::<Vec<_>>()
         .join("\r\n");
-    set_text(notes_hwnd, &plain);
     SHOWN_NOTES.with(|c| *c.borrow_mut() = body);
+    set_text(notes_hwnd, &plain);
 }
 
 // ---------------------------------------------------------------------------
