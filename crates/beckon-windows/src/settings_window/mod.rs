@@ -763,15 +763,31 @@ const WINDOW_HEIGHT: i32 = 640;
 const MIN_WIDTH: i32 = 720;
 const MIN_HEIGHT: i32 = 550;
 
-/// One of §B.3's three type roles. There is no fourth: the `Keys` role the
-/// spec table also lists belongs to keycap rendering, which this window
-/// does not do -- a combo is four check boxes and a list of plain key
-/// names, all of them Body.
+/// §B.3's type roles. `Keycap` is not among them: it belongs to keycap
+/// rendering, which reads its font from `cap_font()` (a `Role::Caption`
+/// build) rather than from this ramp, so a seventh variant with no
+/// consumer anywhere would sit dead forever rather than for one task.
 #[derive(Clone, Copy)]
 enum Role {
+    /// The title-bar app name.
+    ///
+    /// No consumer until Task 7 builds the title bar. `#[allow(dead_code)]`
+    /// on the variant rather than deleting it: the role is this task's
+    /// deliverable, and Task 7 is what removes the allow.
+    #[allow(dead_code)]
+    Title,
     Subtitle,
+    /// Card captions, the ListView column headers, and the `Save` caption.
+    BodyStrong,
     Body,
     Caption,
+    /// The two caption-button glyphs.
+    ///
+    /// No consumer until Task 7 builds the title bar. `#[allow(dead_code)]`
+    /// on the variant rather than deleting it, for the same reason as
+    /// `Title`.
+    #[allow(dead_code)]
+    Chrome,
 }
 
 /// Which role a control takes, keyed on its id.
@@ -787,6 +803,17 @@ fn role_of(id: i32) -> Role {
         // The one band heading. Subtitle exists so the list reads as a
         // section of the window rather than as the whole of it.
         IDC_LBL_SECTION => Role::Subtitle,
+        // Card captions and the Save caption. `IDC_GRP_EDITOR` /
+        // `IDC_GRP_KEYBOARD` are the two group-box captions Task 8 turns
+        // into card heads; `IDC_APPLY` reads its font through this same
+        // mapping even though it is custom-drawn -- `save_custom_draw` asks
+        // the button for its own `WM_GETFONT` rather than picking a role
+        // directly, so this arm is the only place its weight is decided.
+        // The ListView's OWN column headers are a comctl32-owned Header
+        // control, never a child of `hwnd` and therefore never routed
+        // through `role_of` at all -- `build_children` and `WM_DPICHANGED`
+        // each set that font directly.
+        IDC_GRP_EDITOR | IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
         // Secondary prose, at Caption size. The banner is deliberately NOT
         // here: it announces that the file moved under us, which is the
         // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
@@ -802,21 +829,27 @@ fn role_of(id: i32) -> Role {
     }
 }
 
-/// The three live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
+/// The six live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
 /// abort-class rule below keeps holding.
 #[derive(Clone, Copy)]
 struct Fonts {
+    title: HFONT,
     subtitle: HFONT,
+    body_strong: HFONT,
     body: HFONT,
     caption: HFONT,
+    chrome: HFONT,
 }
 
 impl Fonts {
     fn get(self, role: Role) -> HFONT {
         match role {
+            Role::Title => self.title,
             Role::Subtitle => self.subtitle,
+            Role::BodyStrong => self.body_strong,
             Role::Body => self.body,
             Role::Caption => self.caption,
+            Role::Chrome => self.chrome,
         }
     }
 
@@ -824,19 +857,26 @@ impl Fonts {
         self.get(role_of(id))
     }
 
-    /// Release all three.
+    /// Release all six.
     ///
     /// Only ever called AFTER the controls have been told about their
     /// replacements -- deleting a font that is still selected into a DC is
     /// undefined. Landing 1 established this discipline for one font
-    /// because one `HFONT` was leaking per window open; three roles means
-    /// three leaks if only one of them is freed.
+    /// because one `HFONT` was leaking per window open; six roles means
+    /// six leaks if only one of them is freed.
     ///
     /// Deduplicated because the total-failure path hands every role the
     /// same stock handle. `DeleteObject` on a stock object is documented
     /// harmless, but "harmless twice" is not a property worth relying on.
     unsafe fn delete(self) {
-        let all = [self.subtitle, self.body, self.caption];
+        let all = [
+            self.title,
+            self.subtitle,
+            self.body_strong,
+            self.body,
+            self.caption,
+            self.chrome,
+        ];
         for (i, f) in all.iter().enumerate() {
             if f.is_invalid() || all[..i].iter().any(|p| p.0 == f.0) {
                 continue;
@@ -1985,32 +2025,60 @@ unsafe fn make_font(
     HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
 }
 
-/// The three type roles of §B.3, built for `dpi`.
+/// The six type roles of §B.3, built for `dpi`.
 ///
 /// | Role | Size | Weight | Used for |
 /// |---|---|---|---|
-/// | Subtitle | 20 px | semibold | band headings |
+/// | Title | 15 px | semibold | the title-bar app name (Task 7) |
+/// | Subtitle | 18 px | semibold | the `Shortcuts` card head |
+/// | BodyStrong | 14 px | semibold | card captions, list column headers, `Save` |
 /// | Body | 14 px | regular | list, fields, buttons |
 /// | Caption | 12 px | regular | notes |
+/// | Chrome | 10 px | regular | the two caption-button glyphs (Task 7) |
 ///
-/// **The face names are spelled in full, from the a14 measurement.**
-/// `Segoe UI Variable Text Semibold` is exactly 31 characters and survives
-/// `lfFaceName` intact; the Display and Small semibolds do not, which is
-/// why the family here is Text rather than whichever optical size a naive
-/// truncation happens to leave valid. `Segoe UI Variable Text` / `Small` /
-/// `Display` were all confirmed present and exact.
+/// **Subtitle is 18 px, not 20.** An 18 px Semibold heading is Win11's own
+/// proportion for a card head, and 20 fought the 14 px body around it.
 ///
-/// Optical size is why Body and Caption differ at all: Segoe UI Variable
-/// ships Small for caption sizes, Text for body and headings up to ~30 px,
-/// Display above that. 20 px is Text territory, not Display's.
+/// **The face names are spelled in full, from the a14 measurement, and are
+/// NOT uniform.** `lfFaceName` holds 32 wchar. `Segoe UI Variable Text
+/// Semibold` is exactly 31 characters and survives intact; `Segoe UI
+/// Variable Display Semib` and `Segoe UI Variable Small Semibol` are cut at
+/// that same 32-wchar limit and must be spelled exactly as truncated --
+/// "regularising" any of the three to match the others hands `make_font` a
+/// name GDI cannot resolve. A wrong spelling does not fail: `CreateFontW`
+/// succeeds and hands back Arial. `make_font`'s `GetTextFace` round-trip is
+/// what actually catches that, which is why this table is written out
+/// rather than generated from one pattern.
+///
+/// Optical size is why Body/Caption/BodyStrong differ in family at all:
+/// Segoe UI Variable ships Small for caption sizes, Text for body and
+/// headings up to ~30 px, Display above that -- Title's 15 px still reads
+/// as a heading (it is the app name in the title bar) and so takes Display
+/// rather than Text.
 unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
     let base = message_logfont(dpi);
     Fonts {
+        title: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Display Semib",
+            15,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
         subtitle: make_font(
             hwnd,
             &base,
             "Segoe UI Variable Text Semibold",
-            20,
+            18,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
+        body_strong: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Text Semibold",
+            14,
             FW_SEMIBOLD.0 as i32,
             dpi,
         ),
@@ -2027,6 +2095,14 @@ unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
             &base,
             "Segoe UI Variable Small",
             12,
+            FW_NORMAL.0 as i32,
+            dpi,
+        ),
+        chrome: make_font(
+            hwnd,
+            &base,
+            "Segoe Fluent Icons",
+            10,
             FW_NORMAL.0 as i32,
             dpi,
         ),
@@ -2230,6 +2306,11 @@ unsafe fn build_children(hwnd: HWND) {
             Some(LPARAM(&col as *const _ as isize)),
         );
     }
+    // The Header is comctl32's own child of the ListView, never a child of
+    // `hwnd` -- so it never goes through `child()` and never gets a font
+    // via `role_of`. `set_header_font` is the one place that sets it, so
+    // creation here and the `WM_DPICHANGED` rebroadcast cannot disagree.
+    set_header_font(list, fonts.get(Role::BodyStrong));
 
     // -- Band 4: the editor group. The strip's two lines live inside it and
     // its caption names the row, so seven controls read as one thing (spec
@@ -2818,6 +2899,26 @@ unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
         }
     }
     scale(20, dpi)
+}
+
+/// Give the ListView's own Header control a font.
+///
+/// comctl32 does not propagate a `WM_SETFONT` sent to the ListView down to
+/// its Header child -- the two are separate windows -- so without this the
+/// column headers stay on whatever font the Header was born with. Called
+/// once at creation (`build_children`) and again on every `WM_DPICHANGED`,
+/// because the Header is a child of `list`, not of `hwnd`, and so is never
+/// reached by that handler's `GW_CHILD` / `GW_HWNDNEXT` walk.
+unsafe fn set_header_font(list: HWND, font: HFONT) {
+    let hdr = HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _);
+    if !hdr.is_invalid() {
+        SendMessageW(
+            hdr,
+            WM_SETFONT,
+            Some(WPARAM(font.0 as usize)),
+            Some(LPARAM(1)),
+        );
+    }
 }
 
 /// The ListView's header, in physical pixels at the live DPI. Measured 31
@@ -4160,6 +4261,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         Some(LPARAM(1)),
                     );
                     child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
+                }
+                // The Header is `list`'s child, not `hwnd`'s, so the walk
+                // above never reaches it -- same reason `build_children`
+                // sets it separately rather than through `role_of`.
+                if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
+                    set_header_font(list, fonts.get(Role::BodyStrong));
                 }
                 // AFTER the broadcast, never before: the old handles were
                 // selected into those controls until the loop above replaced
