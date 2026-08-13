@@ -52,6 +52,30 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
+/// Ask the window server what it can see, for the probes.
+///
+/// The honest answer to "did the menu bar item appear?" without a
+/// screenshot, and therefore without the Screen Recording grant that has
+/// nothing to do with the question. A status item is a real window at a
+/// high layer owned by this process; if the window server does not list
+/// one, it is not on screen.
+///
+/// **Use it with the control it makes possible**: other applications' menu
+/// bar extras are listed the same way, so "we see theirs but not ours" is a
+/// real negative, while "we see nothing at any layer" means the enumeration
+/// itself is blind and the run proves nothing.
+#[cfg(target_os = "macos")]
+pub fn window_server_windows() -> Vec<CgWindow> {
+    ffi::cg_windows_all()
+}
+
+/// One window as the window server describes it. Re-exported alone rather
+/// than by making `ffi` public: that module's surface is raw `unsafe`
+/// bindings with hand-written lifetime contracts, and none of it belongs to
+/// anyone outside this crate.
+#[cfg(target_os = "macos")]
+pub use ffi::CgWindow;
+
 /// Installed-app display names, for the settings window's App field.
 ///
 /// Names only: the window is filling in a Name while someone authors a

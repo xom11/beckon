@@ -72,11 +72,14 @@ capture() {
   local name="$1"
   screencapture -x "$OUT/$name-full.png"
   local rc=$?
-  printf 'screencapture(%s) exit=%s\n' "$name" "$rc"
   if [ $rc -ne 0 ]; then
-    printf '  NO IMAGE. Grant Terminal.app Screen Recording and rerun.\n'
+    # Not fatal any more. The probes ask the window server directly, which
+    # needs no grant; a screenshot is now corroboration, not the evidence.
+    printf 'screencapture(%s): no image (Screen Recording not granted to this\n' "$name"
+    printf '  terminal). The window server report below is the real answer.\n'
     return 1
   fi
+  printf 'screencapture(%s) ok\n' "$name"
   local w
   w=$(sips -g pixelWidth "$OUT/$name-full.png" 2>/dev/null | awk '/pixelWidth/{print $2}')
   if [ -n "$w" ]; then
@@ -95,7 +98,7 @@ run_probe() {  # $1 = binary, $2 = arg or "", $3 = capture name
     if [ -n "$arg" ]; then "$bin" "$arg" >"$OUT/stdout-$name.txt" 2>&1 &
     else "$bin" >"$OUT/stdout-$name.txt" 2>&1 & fi
     local pid=$!
-    sleep 3
+    sleep 4
     if kill -0 "$pid" 2>/dev/null; then
       capture "$name"
       kill "$pid" 2>/dev/null
@@ -123,21 +126,23 @@ say "settings window"
 run_probe "$PROBE_SETTINGS" "" settings
 
 say "results"
-ls -la "$OUT"/*.png 2>/dev/null || printf 'NO IMAGES AT ALL -- nothing was measured.\n'
+ls -la "$OUT"/*.png 2>/dev/null || printf '(no screenshots -- not needed, see the reports above)\n'
 cat <<'EOF'
 
-Look for the word "beckon" in the menu bar of carbon-bar.png and nsapp-bar.png.
-FIRST check baseline-bar.png: if the system clock is not legible there, the
-capture is blind and the other frames prove nothing.
+READ THE "window server report" BLOCKS ABOVE. They are the measurement.
+Each carries its own control, so a blind probe says so in words instead of
+looking like a clean negative.
 
-  visible in BOTH carbon and nsapp
+  VERDICT line in BOTH carbon and nsapp says the status item has a window
       -> keep RunApplicationEventLoop; nothing about hotkeys changes.
-  visible in nsapp ONLY
+  only nsapp says it
       -> the run loop must change, and RegisterEventHotKey must then be
          re-measured under [NSApp run] before that swap is trusted.
-  visible in NEITHER, clock visible in baseline
+  neither says it, but both report menu-bar windows for other processes
       -> a single-process status item is not possible; see the spec's
          rejected two-process alternative.
+  INCONCLUSIVE
+      -> the server could not see that layer at all; nothing was measured.
 
 Then open the menu by hand and click a row: stdout must print "menu click".
 The screenshot cannot show that, and a drawn-but-dead menu looks identical.

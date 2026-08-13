@@ -196,7 +196,41 @@ caps_hold = "ctrl+super+alt"
             std::process::exit(1);
         }
         refresh();
-        println!("window opened (NOT proof it is visible -- screenshot it)");
+        println!("window opened (constructing one proves nothing -- see below)");
+
+        // Same window-server question the tray probe asks, and for the same
+        // reason: it needs no Screen Recording grant. A settings window is
+        // an ordinary layer-0 window, so this also acts as the control for
+        // the tray probe's high-layer query -- if THIS is not listed either,
+        // the enumeration is blind rather than the UI missing.
+        let me = std::process::id() as i32;
+        let mut reported = false;
+        beckon_macos::hotkey::add_tick(
+            1.0,
+            Box::new(move || {
+                if reported {
+                    return;
+                }
+                reported = true;
+                let all = beckon_macos::window_server_windows();
+                let mine: Vec<_> = all.iter().filter(|w| w.pid == me).collect();
+                println!("--- window server report (pid {me}) ---");
+                println!("windows, all processes       : {}", all.len());
+                println!("windows owned by THIS process: {}", mine.len());
+                for w in &mine {
+                    println!("  layer={:<4} {:.0}x{:.0}", w.layer, w.width, w.height);
+                }
+                if mine.iter().any(|w| w.width > 200.0 && w.height > 200.0) {
+                    println!("VERDICT: the settings window is on screen.");
+                } else if all.is_empty() {
+                    println!("VERDICT: INCONCLUSIVE -- the server listed no windows at all.");
+                } else {
+                    println!("VERDICT: NO settings window. Other processes ARE listed, so");
+                    println!("         this is a real negative.");
+                }
+                println!("--- end report ---");
+            }),
+        );
 
         use objc2_app_kit::NSApplication;
         use objc2_foundation::MainThreadMarker;

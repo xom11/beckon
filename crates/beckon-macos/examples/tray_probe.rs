@@ -111,7 +111,62 @@ fn main() {
         }
         tray::set_status("beckon - tray_probe");
 
-        println!("entering {mode} loop; screenshot the menu bar now");
+        // Ask the window server directly. A screenshot needs Screen
+        // Recording -- a permission about something else, granted per
+        // terminal app -- and three probe runs were lost to it. A status
+        // item is a real window at a high layer owned by this process, so
+        // the question can be asked without any grant at all.
+        //
+        // The report is deferred to a run-loop tick because the window is
+        // not published until the loop has turned once; asking here, before
+        // the loop starts, would report an absence that means nothing.
+        let me = std::process::id() as i32;
+        let mut reported = false;
+        hotkey::add_tick(
+            1.0,
+            Box::new(move || {
+                // The tick repeats; the report does not need to.
+                if reported {
+                    return;
+                }
+                reported = true;
+                let all = beckon_macos::window_server_windows();
+                let mine: Vec<_> = all.iter().filter(|w| w.pid == me).collect();
+                let bar: Vec<_> = all.iter().filter(|w| w.layer >= 20).collect();
+                println!("--- window server report (pid {me}) ---");
+                println!(
+                    "windows visible to the server, all processes : {}",
+                    all.len()
+                );
+                // The CONTROL. Other applications' menu bar extras sit on
+                // the same high layers. If this is 0, the enumeration is
+                // blind and our own absence below proves nothing; if it is
+                // healthy and ours is empty, that is a real negative.
+                println!(
+                    "  of those, at menu-bar layers (>=20)        : {}",
+                    bar.len()
+                );
+                println!(
+                    "windows owned by THIS process                : {}",
+                    mine.len()
+                );
+                for w in &mine {
+                    println!("  layer={:<4} {:.0}x{:.0}", w.layer, w.width, w.height);
+                }
+                if mine.iter().any(|w| w.layer >= 20 && w.width > 0.0) {
+                    println!("VERDICT: the status item has a real window on screen.");
+                } else if bar.is_empty() {
+                    println!("VERDICT: INCONCLUSIVE -- the server listed no menu-bar windows");
+                    println!("         for ANY process, so it cannot see that layer here.");
+                } else {
+                    println!("VERDICT: NO status item window. Other apps' menu bar extras ARE");
+                    println!("         listed, so this is a real negative, not a blind probe.");
+                }
+                println!("--- end report ---");
+            }),
+        );
+
+        println!("entering {mode} loop; report follows in ~1s");
         if mode == "nsapp" {
             use objc2_app_kit::NSApplication;
             use objc2_foundation::MainThreadMarker;
