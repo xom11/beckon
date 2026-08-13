@@ -184,8 +184,13 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // bottom edge is where they stay however tall the content above is.
     // The keyboard card's CONTENT keeps `kb_h`'s exact pre-Task-8 shape --
     // caption inset, one control line, a bottom inset the size of `gap` --
-    // because `IDC_GRP_KEYBOARD` is still the same `BS_GROUPBOX` it always
-    // was; only the card's own `CARD_PAD` wrapping around it is new.
+    // because that shape was always the caption's own `s(24)` line plus one
+    // control line plus a bottom inset, and none of those three numbers
+    // changed when the review fix reclassed `IDC_GRP_KEYBOARD` from
+    // `BS_GROUPBOX` to a plain caption `STATIC` (see its creation comment in
+    // `build_children`) -- only the CONTROL drawing that first `s(24)`
+    // changed, not its height. Only the card's own `CARD_PAD` wrapping
+    // around it is new, same as before that reclass.
     let bar_y = clamp(h - pad - ctl);
     let kb_content_h = s(24) + ctl + gap;
     let kb_card_h = card_pad * 2 + kb_content_h;
@@ -193,11 +198,13 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     let card3 = card(kb_y, kb_card_h);
 
     // The editor card's content keeps `grp_h`'s exact pre-Task-8 shape too
-    // -- caption inset, two lines, the notes, a bottom inset -- for the
-    // same reason: `IDC_GRP_EDITOR` is unchanged, only its card wrapping is
-    // new. Computed HERE, before the banner and card 1, because card 1 has
-    // to yield to it below and the two must not each hold an opinion about
-    // how tall the editor card is.
+    // -- caption inset, two lines, the notes, a bottom inset -- for the same
+    // reason as `kb_content_h` above: `IDC_GRP_EDITOR`'s caption `s(24)` line
+    // is the same height whether a `BS_GROUPBOX` or a plain caption `STATIC`
+    // draws it, and the review fix that reclassed it changed the control,
+    // not this arithmetic. Computed HERE, before the banner and card 1,
+    // because card 1 has to yield to it below and the two must not each
+    // hold an opinion about how tall the editor card is.
     let notes_h = notes_height(hwnd, ui, dpi);
     let grp_content_h = s(24) + ctl + gap + ctl + gap + notes_h + gap;
     let card2_h = card_pad * 2 + grp_content_h;
@@ -547,10 +554,10 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     set_column_width(ui.list, 0, col_app);
     set_column_width(ui.list, 1, col_shortcut);
 
-    // -- Card 2: the editor card. TWO lines inside a titled BS_GROUPBOX,
-    // then the notes on a third line inside the same group -- unchanged
-    // internally from before Task 8; only its origin now comes from card 2
-    // instead of a running `y` cursor.
+    // -- Card 2: the editor card. A caption line, then TWO lines of fields,
+    // then the notes on a third line below that -- unchanged internally
+    // from before Task 8; only its origin now comes from card 2 instead of
+    // a running `y` cursor.
     //
     //   +- Editing "Windows Terminal" ----------------------------------+
     //   |  App       [ ..................................... v ]        |
@@ -558,15 +565,25 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     //   |  ok  Registered. Press Ctrl + Win + Alt + T to focus it.      |
     //   +---------------------------------------------------------------+
     //
-    // Bound once, and named rather than left as `y`, because the group's top
-    // edge is a coordinate other controls are placed against.
+    // Bound once, and named rather than left as `y`, because the caption's
+    // top edge is a coordinate other controls are placed against.
+    //
+    // `IDC_GRP_EDITOR` is placed at `grp_x, grp_y, grp_w, s(24)` -- ITS OWN
+    // caption line, not the card's whole interior -- since the review fix
+    // that reclassed it from `BS_GROUPBOX` to a plain caption `STATIC` (see
+    // the creation comment in `build_children`). Before that fix this
+    // control was the group box's own frame and got the full `grp_h`,
+    // `card2.bottom - card2.top - card_pad * 2`; a `STATIC` paints no frame
+    // at all, so giving it that same full height bought nothing and cost a
+    // click-through dead zone over the fields below it. `card2_h` (in
+    // `compute_card_rects`) still budgets `s(24)` for this line -- the
+    // reclass moved which control draws it, not how tall it is.
     let grp_y = card2.top + card_pad;
     let grp_x = card2.left + card_pad;
     let grp_w = clamp(card2.right - card2.left - card_pad * 2);
-    let grp_h = clamp(card2.bottom - card2.top - card_pad * 2);
     let ins_x = grp_x + gap;
     let ins_w = clamp(grp_w - gap * 2);
-    place(IDC_GRP_EDITOR, grp_x, grp_y, grp_w, grp_h);
+    place(IDC_GRP_EDITOR, grp_x, grp_y, grp_w, s(24));
 
     // Both lines share one label column, so `App` and `Shortcut` left-align
     // with each other instead of each starting wherever its own line does.
@@ -626,7 +643,7 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     place(IDC_RESET, res_x, ly, bw_reset, ctl);
     ly += ctl + gap;
 
-    // Line 3: the notes, inside the group and beside what they describe.
+    // Line 3: the notes, inside the card and beside what they describe.
     // Fixed height -- see `notes_height`. `notes_h` is recomputed here
     // (the same pure call `compute_card_rects` already made once, to size
     // card 2) rather than threaded through, because the value cannot
@@ -635,13 +652,17 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     let notes_h = notes_height(hwnd, &ui, dpi);
     place_h(ui.notes, ins_x, ly, ins_w, notes_h);
 
-    // -- Card 3: the keyboard card. ONE line, left to right: the check box,
-    // then `Hold` and its three chips, then `Tap` and its combo.
+    // -- Card 3: the keyboard card. A caption line, then ONE content line,
+    // left to right: the check box, then `Hold` and its three chips, then
+    // `Tap` and its combo.
     let kb_x = card3.left + card_pad;
     let kb_y = card3.top + card_pad;
     let kb_w = clamp(card3.right - card3.left - card_pad * 2);
-    let kb_content_h = clamp(card3.bottom - card3.top - card_pad * 2);
-    place(IDC_GRP_KEYBOARD, kb_x, kb_y, kb_w, kb_content_h);
+    // `IDC_GRP_KEYBOARD` gets its own `s(24)` caption line, not the card's
+    // whole interior -- same reclass, same reasoning as `IDC_GRP_EDITOR`
+    // above. `kb_card_h` (in `compute_card_rects`) still budgets `s(24)`
+    // for this line; only the control drawing it changed.
+    place(IDC_GRP_KEYBOARD, kb_x, kb_y, kb_w, s(24));
     let inner_x = kb_x + gap;
     let ry = kb_y + s(24);
     // Every width on this line comes from the caption it has to hold.

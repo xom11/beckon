@@ -338,22 +338,29 @@ const IDC_MOD_SHIFT: i32 = 1031;
 const IDC_RECORD: i32 = 1032;
 const IDC_RESET: i32 = 1033;
 
-/// The editor group box. Its caption says which row is being edited, so the
-/// two lines inside it read as one thing rather than as seven controls that
-/// happen to share a band.
+/// The editor card's caption. Names which row is being edited, so the two
+/// lines below it read as one thing rather than as seven controls that
+/// happen to share a card. A `BS_GROUPBOX` until a review fix on Task 8
+/// reclassed it to a plain caption `STATIC` -- a themed group-box frame,
+/// nested inside the new rounded `card()` background, drew as two frames
+/// around one set of controls. See the creation comment in
+/// `build_children` and the `role_of` doc.
 ///
 /// 1034 because 1033 is the current maximum and 1001-1007 are pinned by
-/// `examples/settings_probe.rs`. A group box is not operable, so it carries
-/// no mnemonic and no entry in `mod cap`'s collision table.
+/// `examples/settings_probe.rs`; the reclass did not renumber it. Not
+/// operable, so it carries no mnemonic and no entry in `mod cap`'s
+/// collision table.
 const IDC_GRP_EDITOR: i32 = 1034;
 
 /// The count beside the `Shortcuts` heading -- `· 18 bindings`.
 ///
 /// **A second STATIC rather than a longer caption**, because the two are
 /// different type: B draws the heading at Subtitle and the count small and
-/// grey, and one STATIC has one font. It is also the only control in the
-/// window with a colour of its own, which `WM_CTLCOLORSTATIC` supplies by
-/// id -- see that arm.
+/// grey, and one STATIC has one font. It is also the only on-card control
+/// with a dimmer ink of its own -- `WM_CTLCOLORSTATIC` answers every STATIC,
+/// group box and check box left in this window now (see that arm), but this
+/// id alone keeps `text_faint` rather than the ordinary `text` token the
+/// rest draw with.
 ///
 /// It counts what the LIST is showing, so under a filter it says how many
 /// rows are on screen rather than how many the file holds. That is the
@@ -824,15 +831,21 @@ fn role_of(id: i32) -> Role {
         // section of the window rather than as the whole of it.
         IDC_LBL_SECTION => Role::Subtitle,
         // Card captions and the Save caption. `IDC_GRP_EDITOR` /
-        // `IDC_GRP_KEYBOARD` are the two group-box captions Task 8 turns
-        // into card heads; `IDC_APPLY` reads its font through this same
-        // mapping even though it is custom-drawn -- `save_custom_draw` asks
-        // the button for its own `WM_GETFONT` rather than picking a role
-        // directly, so this arm is the only place its weight is decided.
-        // The ListView's OWN column headers are a comctl32-owned Header
-        // control, never a child of `hwnd` and therefore never routed
-        // through `role_of` at all -- `build_children` and `WM_DPICHANGED`
-        // each set that font directly.
+        // `IDC_GRP_KEYBOARD` are the two card heads -- reclassed from
+        // `BS_GROUPBOX` to a plain caption `STATIC` in Task 8's review pass
+        // (see `child`'s creation calls for both ids): a themed group-box
+        // frame nested inside the new rounded `card()` background drew as
+        // two frames around one set of controls, and the fix is a coordinate
+        // shift plus a control-class change, not a renumbering -- both ids
+        // are unchanged, and `settings_probe` still reads their caption with
+        // `WM_GETTEXT`, which a `STATIC` answers identically to a `BUTTON`.
+        // `IDC_APPLY` reads its font through this same mapping even though
+        // it is custom-drawn -- `save_custom_draw` asks the button for its
+        // own `WM_GETFONT` rather than picking a role directly, so this arm
+        // is the only place its weight is decided. The ListView's OWN column
+        // headers are a comctl32-owned Header control, never a child of
+        // `hwnd` and therefore never routed through `role_of` at all --
+        // `build_children` and `WM_DPICHANGED` each set that font directly.
         IDC_GRP_EDITOR | IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
         // Secondary prose, at Caption size. The banner is deliberately NOT
         // here: it announces that the file moved under us, which is the
@@ -852,8 +865,9 @@ fn role_of(id: i32) -> Role {
         IDC_HOLD_CTRL | IDC_HOLD_WIN | IDC_HOLD_ALT => Role::Keycap,
         // Everything the user reads or operates: the ListView, the filter
         // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
-        // (push, check, and the group box), the banner -- and anything added
-        // later that does not say otherwise.
+        // (push and check), the banner -- and anything added later that does
+        // not say otherwise. No group box is left in the window as of the
+        // reclass above.
         _ => Role::Body,
     }
 }
@@ -1790,6 +1804,18 @@ unsafe fn create() -> Result<(), String> {
     // (Win32_UI_WindowsAndMessaging), so this is not a new dependency.
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+        // Deliberately NOT `CS_HREDRAW | CS_VREDRAW`. The client became a
+        // painted layer of cards in Task 8, so a resize genuinely does need
+        // a full repaint -- but `WM_SIZE`/`WM_DPICHANGED` are not the only
+        // way the card stack moves: the banner appearing or disappearing
+        // (`apply_state`'s `relayout` block) reflows every card below it
+        // with no `WM_SIZE` in sight, so a class style that only fires on a
+        // size change would leave that path uncovered. `WM_SIZE`,
+        // `WM_DPICHANGED` and `apply_state`'s `relayout` block each call
+        // `InvalidateRect(hwnd, None, true)` explicitly instead -- one
+        // mechanism that covers all three, rather than a class style plus a
+        // hand-rolled special case for the one it cannot reach.
+        style: WNDCLASS_STYLES(0),
         lpfnWndProc: Some(wndproc),
         hInstance: hinst.into(),
         lpszClassName: class,
@@ -2386,17 +2412,34 @@ unsafe fn build_children(hwnd: HWND) {
     // its caption names the row, so seven controls read as one thing (spec
     // A.1).
     //
-    // Created BEFORE its children: a group box is a BUTTON that paints a
-    // frame, and creation order is z-order, so a group created afterwards
-    // paints over the controls it is supposed to surround.
+    // Created BEFORE its children, same order kept across the reclass below:
+    // the caption line at the top of the card should read first regardless
+    // of z-order.
     //
-    // Not a tab stop, and deliberately no BS_NOTIFY: it is not operable, so
-    // it must not join PUSH_BUTTONS and must never take the default ring.
+    // Not a tab stop: it is not operable, so it must never take the default
+    // ring.
+    //
+    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`** (review
+    // finding on Task 8, not a Task 8 original): a themed group-box frame,
+    // drawn inside the new rounded `card()` background, read as two frames
+    // around one set of controls. The id is unchanged (1034) --
+    // `settings_probe` still finds it there and reads its caption with
+    // `WM_GETTEXT`, which a `STATIC` answers the same way a `BUTTON` does.
+    // `SS_CENTERIMAGE_STYLE`, the same single-line style every other label
+    // in this window uses, and deliberately no `BS_NOTIFY` any more --
+    // that style only ever meant something on a `BUTTON`. `&` in the
+    // caption still needs doubling: a plain `STATIC` reads a lone `&` as a
+    // mnemonic prefix exactly like a `BUTTON` caption did, unless
+    // `SS_NOPREFIX` is given -- deliberately not given here, so the
+    // doubling logic at `apply_state` needed no change. `layout.rs` places
+    // this at `grp_x, grp_y, grp_w, s(24)` now, not the group's old full
+    // interior height -- see `compute_card_rects`' and `layout`'s own
+    // comments on why `card2_h`'s budget does not move.
     child(
         hwnd,
-        w!("BUTTON"),
+        w!("STATIC"),
         cap::EDITOR_NONE,
-        WINDOW_STYLE(BS_GROUPBOX as u32),
+        SS_CENTERIMAGE_STYLE,
         IDC_GRP_EDITOR,
         &fonts,
     );
@@ -2563,11 +2606,21 @@ unsafe fn build_children(hwnd: HWND) {
     // alone: Caps Lock` / `Esc` / `nothing`, where the question governing
     // the group was glued to the first option -- so the other two did not
     // read as answers to it, and `Hold` had no representation at all.
+    //
+    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`**, same
+    // review finding and same reasoning as `IDC_GRP_EDITOR` just above: a
+    // themed group-box frame inside the new rounded `card()` background read
+    // as two frames around one set of controls. Id unchanged (1019), no
+    // `SS_NOPREFIX` (this caption carries no `&` today, but if one is ever
+    // added it needs the same doubling `IDC_GRP_EDITOR`'s caption does).
+    // `layout.rs` places this at `kb_x, kb_y, kb_w, s(24)` now, not the
+    // card's full interior height -- see `compute_card_rects`'s and
+    // `layout`'s own comments on why `kb_card_h`'s budget does not move.
     child(
         hwnd,
-        w!("BUTTON"),
+        w!("STATIC"),
         "Keyboard",
-        WINDOW_STYLE(BS_GROUPBOX as u32),
+        SS_CENTERIMAGE_STYLE,
         IDC_GRP_KEYBOARD,
         &fonts,
     );
@@ -3298,25 +3351,31 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 );
             }
         }
-        // The group's caption, and it is a TEXT write, not a geometry one: it
-        // must never reach `layout`, because `layout` means `SetWindowPos` on
-        // the populated App combo -- the measured data-loss call (`Ui::shown_external`).
-        // A group box caption is never measured by `layout`, so there is no
-        // second path back in.
+        // The card head's caption, and it is a TEXT write, not a geometry
+        // one: it must never reach `layout`, because `layout` means
+        // `SetWindowPos` on the populated App combo -- the measured
+        // data-loss call (`Ui::shown_external`). A caption is never measured
+        // by `layout`, so there is no second path back in.
         //
-        // **`&` is DOUBLED here, and only here.** A `BS_GROUPBOX` is a BUTTON,
-        // and a button caption reads a lone `&` as a mnemonic prefix: it is
-        // not drawn, and the letter after it gets an underline that steals a
-        // key. The two static captions (`cap::EDITOR_NONE` /
-        // `EDITOR_UNNAMED`) need no escape because they simply contain no
-        // `&` -- see the note on them. This third caption is the only one in
-        // the window fed from the CATALOG, and Start Menu names really do
-        // carry ampersands: `SS_NOPREFIX_STYLE`'s comment names `Notes & To
-        // Do` and `Arts & Crafts` for exactly this reason. Unescaped, the
-        // first draws as `Editing "Notes  To Do"` with **T** underlined --
+        // **`&` is DOUBLED here, and only here.** `IDC_GRP_EDITOR` is a
+        // plain caption `STATIC` since the review fix on Task 8 (was
+        // `BS_GROUPBOX`, a BUTTON -- see the creation comment in
+        // `build_children`), and a `STATIC` reads a lone `&` as a mnemonic
+        // prefix the same way a `BUTTON` caption does, unless `SS_NOPREFIX`
+        // is given: it is not drawn, and the letter after it gets an
+        // underline that steals a key. The two static captions
+        // (`cap::EDITOR_NONE` / `EDITOR_UNNAMED`) need no escape because
+        // they simply contain no `&` -- see the note on them. This third
+        // caption is the only one in the window fed from the CATALOG, and
+        // Start Menu names really do carry ampersands:
+        // `SS_NOPREFIX_STYLE`'s comment names `Notes & To Do` and
+        // `Arts & Crafts` for exactly this reason. Unescaped, the first
+        // draws as `Editing "Notes  To Do"` with **T** underlined --
         // colliding with the `Ctrl` hold chip -- and the second underlines
-        // **C**, colliding with `Close`. There is no `SS_NOPREFIX` for a
-        // button, so doubling is the only route.
+        // **C**, colliding with `Close`. `SS_NOPREFIX` would also fix this,
+        // and is now available where it was not before the reclass -- but
+        // switching to it is a different change from the reclass this
+        // comment documents, and doubling already works, so it stays.
         //
         // **Not `shown()`**: that helper does the INVERSE (it strips markers
         // so `layout` measures ink, not `&`), and running it here would drop
@@ -3477,6 +3536,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         });
         if relayout {
             layout(hwnd);
+            // The banner appearing/disappearing, or the list gaining its
+            // first row / losing its last, shifts every card below it --
+            // ~76 px for the banner alone. `sync_list`'s own
+            // `InvalidateRect` (below) targets the LIST control, not
+            // `hwnd`, so without this the stack's old position stays
+            // painted behind its new one: cards slide but their old fills
+            // and 1 px borders do not go away. No `UI` borrow is held
+            // here -- the borrow that produced `relayout` above already
+            // ended on the line that computed it, the same discipline
+            // `layout` itself follows.
+            let _ = InvalidateRect(Some(hwnd), None, true);
         }
         // LAST, after every `enable` and every `show` above: this is what
         // makes it the authoritative moment rather than one more place that
@@ -4325,6 +4395,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_SIZE => {
                 layout(hwnd);
+                // Card 3 is bottom-anchored and cards 1/2 flex with the list
+                // (Task 8), so a resize moves and resizes every card's rect,
+                // not just the children `layout` repositions.
+                // `SetWindowPos` on a child only invalidates what THAT child
+                // vacated -- strictly inside its own card -- so without this
+                // the `CARD_PAD` ring, the inter-card gaps and whatever a
+                // shrunk card used to cover are left painted with the OLD
+                // geometry: `DefWindowProc`'s own erase only knows the new
+                // client size, not where the cards used to be. The
+                // `WNDCLASSEXW` above deliberately carries no
+                // `CS_HREDRAW`/`CS_VREDRAW` -- see its own comment -- so
+                // there is nothing upstream of this call that would do it
+                // instead.
+                let _ = InvalidateRect(Some(hwnd), None, true);
                 LRESULT(0)
             }
             WM_DPICHANGED => {
@@ -4400,6 +4484,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
                 layout(hwnd);
+                // Same reason as `WM_SIZE`: the card stack's geometry moved
+                // (here the fonts changed size too, which can itself move
+                // `card2_h`/`card1_h` through `notes_height`/`list_h`), so
+                // the previous paint is stale everywhere, not only inside
+                // the children `layout` repositioned. See the `WNDCLASSEXW`
+                // comment above for why the class style cannot do this
+                // instead.
+                let _ = InvalidateRect(Some(hwnd), None, true);
                 LRESULT(0)
             }
             // -- The client-drawn title bar (Task 7) ------------------------
@@ -4754,11 +4846,32 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 LRESULT(0)
             }
             WM_CTLCOLORSTATIC => {
-                // **One control, by id.** Every other STATIC in this window --
-                // the banner, the notes, the four labels -- keeps the default
-                // treatment; answering for all of them would silently grey the
-                // banner, which is the one piece of text here that must not be
-                // played down.
+                // **Every on-card STATIC, group box and check box, by id.**
+                // Before Task 8 this arm answered for `IDC_LBL_COUNT` alone
+                // and let `DefWindowProcW` cover the rest, on the strength of
+                // a comment that read: "the group boxes and the window share
+                // the same `bg` token, and letting the parent's paint show
+                // through is what keeps this correct if that ever stops
+                // being true." Task 8 is exactly the change that comment
+                // named. Every control below now sits on one of the four
+                // `card()` fills (`paint.rs`), which is its OWN token,
+                // distinct from `bg` in both palettes (light: bg 0xF2F4F8 /
+                // card 0xFFFFFF; dark: bg 0x15171C / card 0x1D2027) --
+                // `DefWindowProcW`'s opaque `COLOR_3DFACE` brush is neither,
+                // so the fall-through punched a visible system-grey
+                // rectangle into every one of these: both group-box
+                // captions, the four field labels, the notes, the banner and
+                // the Caps Lock check box.
+                //
+                // Both the returned fill brush AND `SetBkColor` are set to
+                // the same `card` token, and the mode is `OPAQUE` (the DC
+                // default -- named here rather than left implicit), not the
+                // `TRANSPARENT` the old single-id arm used: the control's own
+                // paint should be correct by itself, not by depending on
+                // whatever the card underneath happens to have been left
+                // showing -- see the `WM_SIZE`/`WM_DPICHANGED`/`apply_state`
+                // repaint fix above for why that dependency used to be
+                // riskier than it looked.
                 //
                 // `theme_brush` returns a brush `PAINT_THEME` owns and frees
                 // on its next theme change -- never here. It survives this
@@ -4767,17 +4880,39 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // still good the next time this window opens on an unchanged
                 // theme. Never a system brush either: `GetSysColorBrush` is
                 // banned from this window's drawing code (see the comment at
-                // the top of `paint.rs`). `SetBkMode(TRANSPARENT)` rather
-                // than a matching background: the group boxes and the window
-                // share the same `bg` token, and letting the parent's paint
-                // show through is what keeps this correct if that ever stops
-                // being true.
+                // the top of `paint.rs`).
+                //
+                // `IDC_LBL_COUNT` alone keeps the dimmer `text_faint` ink
+                // Task 6 gave it -- it sits beside a Subtitle heading, not
+                // inside a run of body text.
                 let ctl = HWND(lp.0 as *mut core::ffi::c_void);
-                if GetDlgCtrlID(ctl) == IDC_LBL_COUNT {
+                let id = GetDlgCtrlID(ctl);
+                let on_card = matches!(
+                    id,
+                    IDC_LBL_SECTION
+                        | IDC_LBL_COUNT
+                        | IDC_BANNER
+                        | IDC_GRP_EDITOR
+                        | IDC_LBL_APP
+                        | IDC_LBL_SHORTCUT
+                        | IDC_NOTES
+                        | IDC_GRP_KEYBOARD
+                        | IDC_CAPS
+                        | IDC_LBL_HOLD
+                        | IDC_LBL_TAP
+                );
+                if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-                    SetTextColor(hdc, theme_col(|p| p.text_faint, COLOR_GRAYTEXT));
-                    SetBkMode(hdc, TRANSPARENT);
-                    return LRESULT(theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)).0 as isize);
+                    let card = theme_col(|p| p.card, COLOR_BTNFACE);
+                    let text = if id == IDC_LBL_COUNT {
+                        theme_col(|p| p.text_faint, COLOR_GRAYTEXT)
+                    } else {
+                        theme_col(|p| p.text, COLOR_WINDOWTEXT)
+                    };
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, card);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(card).0 as isize);
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
             }
