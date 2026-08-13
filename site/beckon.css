@@ -735,7 +735,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .os-seg {
   display: inline-flex; gap: 3px;
   padding: 3px;
-  margin-bottom: 12px;
+  margin-bottom: clamp(6px, 1.3vh, 12px);
   border: 1px solid var(--rule);
   border-radius: 9px;
   background: var(--bg-raised);
@@ -770,7 +770,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .press {
   display: flex; align-items: center; justify-content: center;
   flex-wrap: wrap; gap: 8px;
-  margin-bottom: 14px;
+  margin-bottom: clamp(8px, 1.5vh, 14px);
 }
 .press-lead { display: inline-flex; align-items: center; gap: 8px; }
 .press-lead .key { min-width: 34px; height: 34px; font-size: 13.5px; }
@@ -837,16 +837,24 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    tuned to one requirement: THE DESKS HAVE TO BE ON SCREEN WITHOUT SCROLLING
    at a 900px viewport, which is the shortest laptop worth designing for. The
    demo is the argument; a demo below the fold is a screenshot of an argument. */
-/* 34px, not 44: everything above the desk is subtracted from the desk, because
-   the whole thing has to stay above the fold (see the slot's max-width below).
-   Measured in headless Chrome at 1440x900 — the desk's top edge sat at 545px,
-   and this plus the demo's own margin below brought that to 523. */
-.hero { padding-top: 34px; text-align: center; }
-.hero h1 { font-size: clamp(40px, 5.6vw, 72px); margin-bottom: 18px; }
-.hero .lead { margin-inline: auto; margin-bottom: 24px; }
+/* EVERYTHING ABOVE THE DESK IS SUBTRACTED FROM THE DESK, so on a short viewport
+   all of it shrinks — continuously, with vh in the clamp, rather than at a
+   breakpoint. A breakpoint would put a step in the desk's width at the moment
+   it crosses: measured, tightening the headline is worth ~150px of desk, and
+   150px appearing between one pixel of viewport height and the next is a worse
+   artefact than the thing it fixes.
+   The headline takes `min(5.6vw, 7.4vh)` because it is the biggest single item
+   up here and it is TWO LINES — at 72px that is 150px of the budget, on a
+   viewport that may only have 625 in total. */
+.hero { padding-top: clamp(16px, 3.4vh, 34px); text-align: center; }
+.hero h1 {
+  font-size: clamp(34px, min(5.6vw, 7.4vh), 72px);
+  margin-bottom: clamp(10px, 1.9vh, 18px);
+}
+.hero .lead { margin-inline: auto; margin-bottom: clamp(14px, 2.6vh, 24px); }
 .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 .hero-meta { margin: 16px 0 0; font-size: 14px; color: var(--fg-dim); }
-.hero-demo { margin-top: 26px; }
+.hero-demo { margin-top: clamp(14px, 2.8vh, 26px); }
 /* ONE desk, at the size a desktop has to be to read as one. 340px across —
    what three side by side came to — was a thumbnail of a desktop; this is a
    desktop. 1000px is as wide as it can go: `--maxw` minus the wrap's two 28px
@@ -864,8 +872,19 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    step 5, because launching an app and focusing one end with the same window
    in the same place and differ only in a slot lighting up.
    So the slot is capped by whichever is smaller: its own 1000px, or the width
-   at which a 16:9 desk still fits the height the copy above it leaves. The
-   420px floor keeps a very short window from collapsing it to nothing.
+   at which a 16:9 desk still fits the height the copy above it leaves.
+
+   THE FLOOR WINS OVER THAT RULE, and it is 680px because 380 was measured to
+   be useless. On a 1366x768 Windows laptop, and on 1920x1080 at 150% display
+   scaling — which is a default, not an exotic setting — the height term came
+   out at 380px, and a 380px desk is the thumbnail this whole redesign exists to
+   stop drawing: the title bars are 8px tall and the buttons a reader is now
+   invited to click are 5px across. 1920x1080 at 125% was barely better at
+   428px. Below about 910px of viewport the floor takes over and the desk hangs
+   past the fold, which is the trade this makes deliberately: a demo you have to
+   scroll to finish reading beats one too small to use. Everything the reader
+   needs FIRST — the headline, the press row, the top of the desk — is still
+   above it, and the clamps above shrink the copy so the overhang stays small.
    Desktop widths only — below 760px the page stacks and scrolling is the
    expected way through it. */
 @media (min-width: 761px) {
@@ -883,8 +902,8 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
        place raising the cap above from 860 to 1000 can show up, because below
        about 1045px of viewport the height binds first and the cap never
        applies at all. */
-    max-width: min(1000px, max(380px, calc((100vh - 528px) * 1.7778)));
-    max-width: min(1000px, max(380px, calc((100svh - 528px) * 1.7778)));
+    max-width: min(1000px, max(680px, calc((100vh - 528px) * 1.7778)));
+    max-width: min(1000px, max(680px, calc((100svh - 528px) * 1.7778)));
   }
 }
 .hero-demo .demo-steps { text-align: center; margin-inline: auto; }
@@ -1215,7 +1234,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   .cards { grid-template-columns: 1fr; gap: 22px; }
   .keys { grid-template-columns: 1fr; gap: 30px; }
-  .how-demo .desk-slot { max-width: 620px; }
+  /* Stacked under the table, the desk has the whole column and no reason to
+     stay at the width it had beside one. Its title-bar buttons are clickable
+     now, and at 620px they were 8px across. */
+  .how-demo .desk-slot { max-width: 820px; }
 }
 
 @media (max-width: 900px) {
