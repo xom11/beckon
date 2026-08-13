@@ -4656,6 +4656,40 @@ unsafe fn theme_list(hwnd: HWND, dark: bool) {
         w!("Explorer")
     };
     let _ = SetWindowTheme(list, name, None);
+
+    // **The header and the four fields need their own theme class, and
+    // nothing else reaches them.** Measured on a14 2026-08-13: with only the
+    // work above, the shipped dark window had a BRIGHT WHITE header band
+    // across it and three white combo faces, because those parts are painted
+    // by the visual style rather than by anything this window controls.
+    //
+    // `WM_CTLCOLOR*` cannot fix either: a `CBS_DROPDOWNLIST` has no edit
+    // child to answer for, and its closed face comes from the theme, not from
+    // `WM_DRAWITEM` -- which is why the `CBS_OWNERDRAWFIXED` added for the
+    // drop-down ITEMS left the closed control untouched.
+    //
+    // Same family as the scrollbar call above, and the same caveat: these
+    // class names are undocumented and the call degrades silently, so nothing
+    // may depend on it having worked. It is the difference between a window
+    // that reads as dark and one with three white bars in it, which is worth
+    // an undocumented name.
+    let header = header_of(list);
+    if !header.is_invalid() {
+        let hname = if dark {
+            w!("DarkMode_ItemsView")
+        } else {
+            w!("ItemsView")
+        };
+        let _ = SetWindowTheme(header, hname, None);
+    }
+    // `CFD` is the combo/edit family. The filter box is a plain EDIT and takes
+    // the same class.
+    let fname = if dark { w!("DarkMode_CFD") } else { w!("CFD") };
+    for id in [IDC_APP, IDC_COMBO, IDC_TAP, IDC_FILTER] {
+        if let Ok(c) = GetDlgItem(Some(hwnd), id) {
+            let _ = SetWindowTheme(c, fname, None);
+        }
+    }
 }
 
 /// Repaint just the title bar band, not the whole client -- a hover move is
