@@ -64,7 +64,7 @@ pub const LIGHT: Palette = Palette {
     unk_bg: 0xEDEFF4,
     unk: 0x5A6270,
     ok: 0x067647,
-    divider: 0xE8EBF1,
+    divider: 0xDDE1E9,
 };
 
 pub const DARK: Palette = Palette {
@@ -91,7 +91,7 @@ pub const DARK: Palette = Palette {
     unk_bg: 0x252932,
     unk: 0x9FA6B4,
     ok: 0x5CCB92,
-    divider: 0x272B33,
+    divider: 0x333944,
 };
 
 fn channel(c: u32) -> f64 {
@@ -226,6 +226,7 @@ mod tests {
             ("keycap letter", p.text, p.keycap, 4.5),
             ("card border on bg", p.card_border, p.bg, 1.2),
             ("field border on card", p.field_border, p.card, 1.2),
+            ("divider on card", p.divider, p.card, 1.2),
         ]
     }
 
