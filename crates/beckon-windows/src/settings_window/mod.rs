@@ -696,6 +696,7 @@ const WINDOW_HEIGHT: i32 = 640;
 /// smaller version of this window, it is a broken one.
 ///
 /// ```text
+///   title bar  (chrome::TITLEBAR_H)              40
 ///   pad                                          16
 ///   band 1  banner, ctl                          32
 ///           band                                 14
@@ -718,14 +719,31 @@ const WINDOW_HEIGHT: i32 = 640;
 ///   band 7  command bar, ctl                      32
 ///   pad                                          16
 ///                                              ----
-///   client                                      507
-///   caption + frame at 96 DPI (SM_CYCAPTION 23
-///     + 2*SM_CYSIZEFRAME + 2*SM_CXPADDEDBORDER)   39
+///   client                                      547
+///   frame at 96 DPI -- bottom only: `WM_NCCALCSIZE`
+///     (`chrome::nccalcsize`) hands the whole caption
+///     back to the client and restores only `.top`,
+///     so nothing is subtracted there any more; what's
+///     left is `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`
+///     on the bottom edge alone                       8
 ///                                              ----
-///   window                                      546
+///   window                                      555
 /// ```
 ///
-/// Shipped as 550. The four pixels are slack against a non-client area the
+/// **This table used to subtract `SM_CYCAPTION 23 + 2*SM_CYSIZEFRAME +
+/// 2*SM_CXPADDEDBORDER = 39` for the whole non-client area, and did not
+/// list a title-bar row at all — both wrong since Task 7 made the caption
+/// client-drawn.** The client area now INCLUDES the 40 px bar (`nccalcsize`
+/// hands the whole caption back), and only the bottom resize frame (8 px)
+/// remains non-client. Net effect against the old table: +40 px of client
+/// consumed by the bar, -31 px of what used to be subtracted as
+/// non-client — a real loss of 9 px of usable content at any given window
+/// height, which is one list row (20 px) once the 4 px of old slack is
+/// spent. The table above is the corrected derivation; `MIN_HEIGHT` below
+/// was raised to keep the four-row promise rather than silently dropping to
+/// three.
+///
+/// Shipped as 560. The five pixels are slack against a non-client area the
 /// OS sizes, not a fudge of the derivation — and the whole constant is scaled
 /// linearly by `scale(MIN_HEIGHT, dpi)` rather than re-derived per DPI, so it
 /// was never exact at 150 % either. Erring high costs nothing; erring low
@@ -758,15 +776,26 @@ const WINDOW_HEIGHT: i32 = 640;
 ///
 /// So the floor buys **four rows with the banner up, six without it**, at
 /// both 96 DPI and 150 %; the editor group clears the keyboard group by
-/// exactly one `band` in all four cases -- simulated at the new floor the
-/// same way Task 6 simulated the old one: 720x550 @96 gives 103+4=107 px of
-/// list under the banner (4 rows, 4 px of a fifth row's worth of slack, same
-/// shape Task 6's own 103→107 had) and 14 px of clearance; 1080x825 @144
-/// gives 161 px of list (4 rows) and 21 px of clearance. Simulated, not
-/// seen — nothing on the machine this was written on can display the
-/// window.
+/// exactly one `band` in all four cases -- simulated at the floor Task 6
+/// shipped: 720x550 @96 gave 103+4=107 px of list under the banner (4 rows,
+/// 4 px of a fifth row's worth of slack, same shape Task 6's own 103→107
+/// had) and 14 px of clearance; 1080x825 @144 gave 161 px of list (4 rows)
+/// and 21 px of clearance. Simulated, not seen — nothing on the machine
+/// this was written on can display the window.
+///
+/// **That paragraph describes 720x550, which is now below the floor and
+/// therefore unreachable.** Task 7 (the client-drawn title bar) moved the
+/// floor to 720x560 -- see the corrected table above -- and the four-row
+/// guarantee was rechecked against the table's own arithmetic for the new
+/// floor (room shrinks by the same 9 px the table's revision note
+/// describes, which is under one row, so four rows survive). The specific
+/// per-row/clearance pixel figures one paragraph up (107 px, 14 px, 161 px,
+/// 21 px) were NOT re-simulated for 720x560/1080x840 -- they describe the
+/// superseded 550/825 floor and are left as historical record rather than
+/// guessed at without hardware. Re-simulate them, the same way this
+/// paragraph says Task 6 did, before relying on their exact figures.
 const MIN_WIDTH: i32 = 720;
-const MIN_HEIGHT: i32 = 550;
+const MIN_HEIGHT: i32 = 560;
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
@@ -3030,6 +3059,14 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// value, not this estimate, so a wrong `L` can only shrink the list at the
 /// absolute floor; it cannot produce an overlap at any `L`. That is the
 /// safe direction.
+///
+/// **The 546/550 pair above predates Task 7's client-drawn title bar**,
+/// which moved the table's own base to 555 and the shipped floor to 560
+/// (see `MIN_HEIGHT`'s comment). The `+2(L-16)` sensitivity itself is
+/// unaffected -- the title bar is a fixed 40 px addition, not one that
+/// scales with `L` -- but the two anchor numbers in this paragraph were not
+/// rewritten to 555/560 here; do that before trusting the exact `L = 19`
+/// threshold post-Task-7.
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)

@@ -24,20 +24,31 @@
 //! This file owns the pixel and the hit-test region; it does not own what a
 //! click on either DOES.
 //!
-//! **`button_rects` is the one geometry function**, read by both `paint`
-//! (client coordinates) and `hit_button` (screen coordinates, via its own
-//! `GetWindowRect`) so the drawn pixel and the hit-tested pixel cannot
-//! disagree -- each caller supplies its own right edge and top, in its own
-//! coordinate space, and the two 46 px-wide rects fall out the same way
-//! either time.
+//! **`button_rects` is the one geometry function**, read by both `paint` and
+//! `hit_button` -- and both now read it from the SAME rect: `GetClientRect`.
+//! `hit_button` receives `pt` in screen coordinates (as `WM_NCHITTEST`
+//! delivers them) and converts with `ScreenToClient` before calling
+//! `button_rects`, rather than reading `GetWindowRect` on its own. That
+//! matters because after `nccalcsize` restores only `.top`, the window rect
+//! and the client rect are NOT the same physical edge on the horizontal
+//! axis: the client stays inset left/right/bottom by the resize-frame
+//! metrics (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, ~8 px at 96 DPI). An
+//! earlier version had `hit_button` read `GetWindowRect` while `paint` read
+//! `GetClientRect` and called that "each caller supplies its own right edge,
+//! in its own coordinate space" -- which is exactly backwards: two different
+//! rulers were being compared as if they were one, so the drawn pixel and
+//! the hit-tested pixel disagreed by that same inset. Reading the same rect
+//! in the same space is what actually makes them agree, not "each caller
+//! owns its own space."
 
 use super::theme::ThemeCache;
-use super::{high_contrast, scale, text_size, wide, Fonts, Role};
+use super::{scale, text_size, wide, Fonts, Role};
+use beckon_core::theme::Theme;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    DrawTextW, FillRect, SelectObject, SetBkMode, SetTextColor, COLOR_BTNFACE, COLOR_BTNTEXT,
-    COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, DT_CENTER, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, TRANSPARENT,
+    DrawTextW, FillRect, ScreenToClient, SelectObject, SetBkMode, SetTextColor, COLOR_BTNFACE,
+    COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, DT_CENTER, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -57,10 +68,13 @@ pub(super) const TITLEBAR_H: i32 = 40;
 const BUTTON_W: i32 = 46;
 
 /// The minimize and close buttons' rects, right-aligned against `right` /
-/// `top` -- whatever coordinate space the caller supplies, client for
-/// `paint`, screen for `hit_button` -- paired with the hit-test code each
-/// one answers. Close is outermost, matching every native Windows title
-/// bar's own left-to-right order.
+/// `top`. Both callers now pass CLIENT coordinates -- `paint` reads them
+/// straight from `GetClientRect`, and `hit_button` converts its
+/// screen-coordinate `pt` with `ScreenToClient` before reading the same
+/// `GetClientRect` -- so `right`/`top` name the same physical edge either
+/// time. Paired with the hit-test code each rect answers. Close is
+/// outermost, matching every native Windows title bar's own left-to-right
+/// order.
 fn button_rects(right: i32, top: i32, dpi: u32) -> [(RECT, u32); 2] {
     let bw = scale(BUTTON_W, dpi);
     let bh = scale(TITLEBAR_H, dpi);
@@ -97,18 +111,32 @@ pub(super) fn nccalcsize(hwnd: HWND, wparam: WPARAM, lparam: LPARAM) -> LRESULT 
     LRESULT(0)
 }
 
-/// Which caption button, if any, `pt` (screen coordinates) is over.
+/// Which caption button, if any, `pt` -- screen coordinates, exactly as
+/// `WM_NCHITTEST` delivers them -- is over.
 ///
-/// One `GetWindowRect` call, then two rect tests against `button_rects` --
-/// the same geometry `paint` fills, so the drawn pixel and the hit-tested
-/// pixel cannot disagree.
+/// Converts to client coordinates with `ScreenToClient`, then reads
+/// `GetClientRect` -- the same rect `paint` fills, not `GetWindowRect`.
+/// `nccalcsize` restores only `.top`, so the window rect and the client
+/// rect are inset from each other on the left/right/bottom by the
+/// resize-frame metrics; comparing screen-space hits against a
+/// client-space fill was the bug (see the module header). Working entirely
+/// in client space is what makes the drawn pixel and the hit-tested pixel
+/// unable to disagree, not "each caller owns its own space."
 pub(super) fn hit_button(hwnd: HWND, pt: POINT, dpi: u32) -> Option<i32> {
-    let mut rc = RECT::default();
-    if unsafe { GetWindowRect(hwnd, &mut rc) }.is_err() {
+    let mut client_pt = pt;
+    if !unsafe { ScreenToClient(hwnd, &mut client_pt) }.as_bool() {
         return None;
     }
-    for (r, code) in button_rects(rc.right, rc.top, dpi) {
-        if pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom {
+    let mut rc = RECT::default();
+    if unsafe { GetClientRect(hwnd, &mut rc) }.is_err() {
+        return None;
+    }
+    for (r, code) in button_rects(rc.right, 0, dpi) {
+        if client_pt.x >= r.left
+            && client_pt.x < r.right
+            && client_pt.y >= r.top
+            && client_pt.y < r.bottom
+        {
             return Some(code as i32);
         }
     }
@@ -235,11 +263,20 @@ pub(super) fn paint(
 
     // The two caption buttons, right-aligned.
     unsafe { SelectObject(hdc, HGDIOBJ(fonts.get(Role::Chrome).0)) };
+    // Read once from the cache that is actually about to draw -- not the
+    // separate `HIGH_CONTRAST` `Cell` in `mod.rs`. That `Cell` refreshes
+    // only on `WM_SETTINGCHANGE(SPI_SETHIGHCONTRAST)`, while `WM_THEMECHANGED`
+    // alone already rebuilds `ThemeCache` to `Theme::HighContrast` and
+    // invalidates the window; a high-contrast toggle raises both messages,
+    // and if `WM_THEMECHANGED` lands first this repaint runs with the cache
+    // already in high contrast but the `Cell` not yet caught up. Gating on
+    // `cache.theme()` removes that divergence instead of narrowing it.
+    let hc = cache.theme() == Theme::HighContrast;
     for (r, code) in button_rects(bar.right, bar.top, dpi) {
         let is_hot = hot == Some(code as i32);
         if is_hot {
             let fill = if code == HTCLOSE {
-                if high_contrast() {
+                if hc {
                     cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT)
                 } else {
                     // Windows' own close-button red, exact regardless of the
@@ -254,7 +291,21 @@ pub(super) fn paint(
             let fill_brush = cache.brush(fill);
             unsafe { FillRect(hdc, &r, fill_brush) };
         }
-        let ink = if is_hot && code == HTCLOSE {
+        // Close's hot fill is always either the red literal or, under high
+        // contrast, `COLOR_HIGHLIGHT` -- so its ink is always the matching
+        // "on highlight" colour, white in Light/Dark and the system
+        // `COLOR_HIGHLIGHTTEXT` pair under high contrast, either way. Minimize's
+        // hot fill is `accent_soft`, a near-white TINT in Light (0xE8F0FF) --
+        // `accent_on` (always 0xFFFFFF) would be white-on-near-white there
+        // (measured contrast ~1.1:1), so it is used for minimize ONLY under
+        // high contrast, where the fill switches to `COLOR_HIGHLIGHT` and
+        // needs the same system pair. Outside high contrast, minimize keeps
+        // `p.text`/`COLOR_BTNTEXT`, which is what it always used. Under high
+        // contrast, `p.text`/`COLOR_BTNTEXT` paired against a
+        // `COLOR_HIGHLIGHT` fill is the unreadable combination this branch
+        // exists to avoid: black-on-#37006E in HC White, white-on-#1AEBFF in
+        // HC Black.
+        let ink = if is_hot && (code == HTCLOSE || hc) {
             cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
         } else {
             cache.col(|p| p.text, COLOR_BTNTEXT)

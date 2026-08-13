@@ -418,6 +418,11 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // 550 -- `notes_height`'s real body costs 4 px more than the stub these
     // figures were first taken against). That is the ordinary minimum drag
     // size, not a sub-floor `WM_DPICHANGED` edge case.
+    //
+    // **Predates Task 7's client-drawn title bar, which raised the floor to
+    // 560** (`mod.rs`'s `MIN_HEIGHT` comment). Not re-simulated against the
+    // new floor here -- the 16/62 px overlap figures above are for the
+    // superseded 550 floor.
     y = y.min(kb_y);
 
     // -- Band 4: the editor group. TWO lines inside a titled BS_GROUPBOX,
