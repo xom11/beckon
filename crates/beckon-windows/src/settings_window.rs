@@ -2948,11 +2948,11 @@ unsafe fn draw_keycaps(
             let e = shade(armed_face, 4, 5);
             (e, e)
         }
-        // A disabled chip keeps its shape and loses its weight: the design's
-        // `.wtog.dis` fades the borders to near the surface rather than
-        // removing the box, so a greyed key still reads as a key.
+        // A disabled chip keeps its shape and its depth and loses only its
+        // ink -- see the face table below for why it does not also keep the
+        // light face.
         CapStyle::Toggle { disabled: true, .. } => {
-            let c = COLORREF(GetSysColor(COLOR_BTNFACE));
+            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
             (c, c)
         }
         _ => {
@@ -2971,15 +2971,22 @@ unsafe fn draw_keycaps(
     // key is LIGHTER than what it sits on, which is how a physical keycap
     // catches light.
     //
-    // **Greyed outranks armed.** A disabled chip keeps the light face and
-    // the box and loses only its ink, so what it stops saying is which way
-    // it is set. That is a real loss on the three `Hold` chips, which are
-    // greyed whenever Caps is off while still describing what Caps would do.
-    // No accent-on-grey pairing exists in the system palette to settle it;
-    // it wants eyes rather than another argument here.
+    // **Greyed outranks armed, and a disabled chip keeps `COLOR_BTNFACE`.**
+    // The light face is what makes an OPERABLE key stand off the surface, so
+    // giving it to a disabled one inverts the whole point -- measured on a14:
+    // with `keyboard.caps` off, three white `Hold` keys read as the most
+    // prominent thing in the band. `.wtog.dis` puts `#f7f7f7` on a `#f3f3f3`
+    // window, i.e. it deliberately sinks BACK into the surface. Only the ink
+    // and the face change; the box and its edge stay, so the shape survives.
+    //
+    // What a disabled chip stops saying is which way it is set. That is a
+    // real loss on the three `Hold` chips, which are greyed whenever Caps is
+    // off while still describing what Caps would do. No accent-on-grey
+    // pairing exists in the system palette to settle it; it wants eyes
+    // rather than another argument here.
     let (face, text_colour) = match style {
         CapStyle::Chord => (None, COLOR_BTNTEXT),
-        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_WINDOW), COLOR_GRAYTEXT),
+        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_BTNFACE), COLOR_GRAYTEXT),
         CapStyle::Toggle { armed: true, .. } => (Some(COLOR_HIGHLIGHT), COLOR_HIGHLIGHTTEXT),
         CapStyle::Toggle { .. } => (Some(COLOR_WINDOW), COLOR_BTNTEXT),
     };
