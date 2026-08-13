@@ -333,6 +333,19 @@ const IDC_RESET: i32 = 1033;
 /// no mnemonic and no entry in `mod cap`'s collision table.
 const IDC_GRP_EDITOR: i32 = 1034;
 
+/// The count beside the `Shortcuts` heading -- `· 18 bindings`.
+///
+/// **A second STATIC rather than a longer caption**, because the two are
+/// different type: B draws the heading at Subtitle and the count small and
+/// grey, and one STATIC has one font. It is also the only control in the
+/// window with a colour of its own, which `WM_CTLCOLORSTATIC` supplies by
+/// id -- see that arm.
+///
+/// It counts what the LIST is showing, so under a filter it says how many
+/// rows are on screen rather than how many the file holds. That is the
+/// honest reading of a number sitting on top of the list it describes.
+const IDC_LBL_COUNT: i32 = 1035;
+
 /// The watchdog that bounds an armed capture (spec F.2/F.4).
 ///
 /// It is not belt-and-braces. `caps_hook::is_installed()` CAN LIE: past
@@ -821,10 +834,13 @@ fn role_of(id: i32) -> Role {
         // The one band heading. Subtitle exists so the list reads as a
         // section of the window rather than as the whole of it.
         IDC_LBL_SECTION => Role::Subtitle,
-        // Secondary prose, and the only thing at Caption size. The banner
-        // is deliberately NOT here: it announces that the file moved under
-        // us, which is the least appropriate text in the window to shrink.
-        IDC_NOTES => Role::Caption,
+        // Secondary prose, at Caption size. The banner is deliberately NOT
+        // here: it announces that the file moved under us, which is the
+        // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
+        // joins because B draws the count small and grey beside a Subtitle
+        // heading -- one STATIC has one font, which is the whole reason it
+        // is a second control.
+        IDC_NOTES | IDC_LBL_COUNT => Role::Caption,
         // Everything the user reads or operates: the ListView, the filter
         // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
         // (push, check, and the group box), the banner -- and anything added
@@ -2182,6 +2198,17 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LBL_SECTION,
         &fonts,
     );
+    // `SS_NOPREFIX` because the text is a COUNT, not a caption: `&` cannot
+    // appear in it today, but a static that would silently eat one is a
+    // trap, and this one carries no mnemonic by design.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_LBL_COUNT,
+        &fonts,
+    );
     let filter = child(
         hwnd,
         w!("EDIT"),
@@ -3394,7 +3421,25 @@ unsafe fn layout(hwnd: HWND) {
         ctl,
     );
     place_h(ui.filter, filter_x, y + edit_dy, filter_w, edit_h);
-    place(IDC_LBL_SECTION, cx, y, clamp(filter_x - gap - cx), ctl);
+    // **The heading is measured now**, where it never used to be: it shares
+    // its line with the count, so it has to end somewhere definite rather
+    // than taking everything up to the filter. Measured in SUBTITLE -- the
+    // only string in `layout` that is not Body, and `tw` would under-measure
+    // it by a third and put the count on top of it.
+    //
+    // The count keeps the leftover, so the heading is still the last thing to
+    // run out and a narrow window clips the count first -- which is the right
+    // order: `Shortcuts` names the band, `· 18 bindings` decorates it.
+    let head_w = text_size(hwnd, ui.fonts.get(Role::Subtitle), dpi, "Shortcuts").0 + s(4);
+    let head_w = head_w.min(clamp(filter_x - gap - cx));
+    place(IDC_LBL_SECTION, cx, y, head_w, ctl);
+    place(
+        IDC_LBL_COUNT,
+        cx + head_w + lblgap,
+        y,
+        clamp(filter_x - gap - (cx + head_w + lblgap)),
+        ctl,
+    );
     // A control gap, not a band gap: the head labels the list directly
     // below it, so the two read as one group.
     y += ctl + gap;
@@ -3973,6 +4018,28 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             Some(d) => format!("Editing \"{}\"", d.app.trim().replace('&', "&&")),
         };
         set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
+
+        // The count beside the heading. A TEXT write like the caption above,
+        // and safe for the same reason: `layout` measures `IDC_LBL_SECTION`
+        // from the constant `"Shortcuts"` and gives this control the leftover,
+        // so its own text is never a layout input and can never reach
+        // `SetWindowPos` on the App combo.
+        //
+        // Counts what the LIST shows -- `st.items` is already filtered -- so
+        // under a filter it describes the rows on screen rather than the
+        // file. Empty rather than `· 0 bindings` when there is nothing:
+        // the list says that better than a number does, and B's mock-up puts
+        // a count next to a populated list.
+        let count = st.items.len();
+        set_text_if_changed(
+            hwnd,
+            IDC_LBL_COUNT,
+            &match count {
+                0 => String::new(),
+                1 => "\u{b7} 1 binding".to_string(),
+                n => format!("\u{b7} {n} bindings"),
+            },
+        );
 
         // The editor strip's two commands. `Record` stays live while a
         // capture is armed even if the row went away underneath it: it reads
@@ -4628,6 +4695,125 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
     );
     let n = n.0.max(0) as usize;
     String::from_utf16_lossy(&buf[..n.min(buf.len())])
+}
+
+/// Paint `Save` as the accent-filled primary action.
+///
+/// **The accent marks the primary action; the default ring marks where Enter
+/// goes, and they are not the same thing.** `set_default_id` moves the ring
+/// onto whichever push button has focus, so tabbing to `Close` takes the ring
+/// away from Save -- correctly, because Enter then closes. Save stays filled
+/// throughout, because it is still the action the window is for. Nothing here
+/// touches the ring.
+///
+/// **Disabled is the common state**, not an edge case: Save is greyed until
+/// there is something to save. It takes `COLOR_BTNFACE` and `COLOR_GRAYTEXT`,
+/// so a window with no edits does not show a bright blue button that does
+/// nothing.
+///
+/// High contrast keeps `COLOR_HIGHLIGHT` -- it is a real colour there, and it
+/// is the one the theme uses for exactly this -- but drops the rounded
+/// corners, on `draw_keycaps`' rule.
+unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as isize;
+    }
+    let btn = cd.hdr.hwndFrom;
+    let hdc = cd.hdc;
+    let rc = cd.rcItem;
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let hc = high_contrast();
+    let disabled = cd.uItemState.0 & CDIS_DISABLED.0 != 0;
+    let pressed = cd.uItemState.0 & CDIS_SELECTED.0 != 0;
+    let hot = cd.uItemState.0 & CDIS_HOT.0 != 0;
+
+    // The parent's surface first: a rounded button leaves its corners
+    // showing, and whatever was there last frame would stay in them.
+    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+
+    let accent = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    let (fill, ink) = if disabled {
+        (
+            COLORREF(GetSysColor(COLOR_BTNFACE)),
+            COLORREF(GetSysColor(COLOR_GRAYTEXT)),
+        )
+    } else if pressed {
+        (
+            shade(accent, 4, 5),
+            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+        )
+    } else if hot {
+        (
+            shade(accent, 9, 10),
+            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+        )
+    } else {
+        (accent, COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)))
+    };
+    // A disabled button needs an outline or it is a hole in the window;
+    // a filled one is its own shape.
+    let border = if disabled {
+        COLORREF(GetSysColor(COLOR_BTNSHADOW))
+    } else {
+        fill
+    };
+    let brush = CreateSolidBrush(fill);
+    let pen = CreatePen(PS_SOLID, 1, border);
+    let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+    let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+    if hc {
+        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    } else {
+        let r = scale(5, dpi) * 2;
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    }
+    if !pp.is_invalid() {
+        SelectObject(hdc, pp);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    if !pb.is_invalid() {
+        SelectObject(hdc, pb);
+    }
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+
+    let font = HFONT(
+        SendMessageW(btn, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut core::ffi::c_void,
+    );
+    let prev = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    // `&Save`'s mnemonic, on the window's own UI state -- the same read the
+    // chips make, and for the same reason.
+    let ui_state = SendMessageW(btn, WM_QUERYUISTATE, Some(WPARAM(0)), Some(LPARAM(0))).0 as u32;
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if ui_state & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let caption = text_of(btn);
+    let mut t = wide(&caption);
+    let n = t.len() - 1;
+    let mut tr = rc;
+    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
+    if !prev.is_invalid() {
+        SelectObject(hdc, prev);
+    }
+
+    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
+        let d = scale(3, dpi);
+        let f = RECT {
+            left: rc.left + d,
+            top: rc.top + d,
+            right: rc.right - d,
+            bottom: rc.bottom - d,
+        };
+        let _ = DrawFocusRect(hdc, &f);
+    }
+    CDRF_SKIPDEFAULT as isize
 }
 
 /// The pill colours for a flag: `(fill, ink)`.
@@ -5468,6 +5654,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
                 }
+                // Save is the primary action, so B fills it with the accent.
+                //
+                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `BS_OWNERDRAW`
+                // replaces the button's TYPE, and Save's type is
+                // `BS_DEFPUSHBUTTON` -- the ring `set_default_id` moves around
+                // with a `BM_SETSTYLE` read-modify-write through
+                // `BS_TYPEMASK_BITS`. Owner-draw would take that machinery
+                // with it, and Enter-on-`Reload`-saves is a defect this window
+                // has already had once. Custom draw leaves the type, the
+                // notifications and the ring exactly as they are and only
+                // replaces the pixels.
+                if nm.idFrom == IDC_APPLY as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(save_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
                 if suppressed() {
                     return LRESULT(0);
                 }
@@ -5516,6 +5716,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     }
                 }
                 LRESULT(0)
+            }
+            WM_CTLCOLORSTATIC => {
+                // **One control, by id.** Every other STATIC in this window --
+                // the banner, the notes, the four labels -- keeps the default
+                // treatment; answering for all of them would silently grey the
+                // banner, which is the one piece of text here that must not be
+                // played down.
+                //
+                // `GetSysColorBrush` returns a SYSTEM brush, so it is not
+                // deleted and can be returned safely. `SetBkMode(TRANSPARENT)`
+                // rather than a matching background: the group boxes and the
+                // window share `COLOR_BTNFACE`, and letting the parent's paint
+                // show through is what keeps this correct if that ever stops
+                // being true.
+                let ctl = HWND(lp.0 as *mut core::ffi::c_void);
+                if GetDlgCtrlID(ctl) == IDC_LBL_COUNT {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
+                    SetBkMode(hdc, TRANSPARENT);
+                    return LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
             }
             WM_DRAWITEM => {
                 // The first owner-draw surface in this window, and the seven
