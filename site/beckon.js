@@ -305,6 +305,14 @@
 
     n.appendChild(bar);
     n.appendChild(el('div', 'win-body'));
+
+    /* The resize corner exists only here, never in the shipped markup, and that
+       is the page's rule rather than an oversight: without this file nothing can
+       drag it, and a grip that does not grip is a control that silently does
+       nothing. Same reason the press rows and the OS strip ship `hidden`. */
+    var grip = el('span', 'win-grip');
+    grip.setAttribute('aria-hidden', 'true');
+    n.appendChild(grip);
     return n;
   }
 
@@ -317,46 +325,241 @@
     if (!host._pool) host._pool = {};
     var pool = host._pool;
 
-    var live = desk.wins.filter(function (w) { return !w.min; });
-
-    /* sway does not stack, so its order on screen is CREATION order — a window
-       keeps its place in the tree when it takes focus. Everywhere else the
-       order is MRU and index 0 is the front. */
-    var order = desk.os === 'linux'
-      ? live.slice().sort(function (a, b) { return a.id - b.id; })
-      : live;
+    /* MRU order, index 0 in front — on all three machines. The Linux desk used
+       to be sorted by id and laid out edge to edge instead, because it drew
+       sway: a tiling compositor does not stack, so focusing a window there does
+       not move it. It draws a stacking desktop now — GNOME and KDE, which is
+       what most Linux readers are looking at — and a stacking desktop raises,
+       so there is one code path again. beckon still supports both; the picture
+       just stopped being of the one where the picture is hardest to read. */
+    var order = desk.wins.filter(function (w) { return !w.min; });
 
     order.forEach(function (w, i) {
       var n = pool[w.id];
-      if (!n) { n = makeWin(w); pool[w.id] = n; }
+      if (!n) { n = makeWin(w); pool[w.id] = n; n.setAttribute('data-id', String(w.id)); }
       if (n.parentNode !== wins) wins.appendChild(n);
       /* POSITION FROM THE WINDOW, STACKING FROM THE ORDER. The window's own
          slot never changes, so a raise leaves it exactly where it was and only
          brings it in front — which is what raising a window looks like.
          Wrapped at four because a fifth step of the cascade would put the
-         window's right edge off the desk. */
-      n.style.setProperty('--slot', String(w.slot % 4));
+         window's right edge off the desk.
+         A window the reader has DRAGGED owns its position outright, and this
+         must not take it back: `_placed` is set by the drag, and from then on
+         the cascade has nothing to say about where that window sits. */
+      if (!n._placed) n.style.setProperty('--slot', String(w.slot % 4));
       n.style.zIndex = String(order.length - i);
       n.classList.toggle('is-focused', w.id === desk.focused);
+      n.classList.toggle('is-max', !!w.max);
     });
-
-    /* Tiling is laid out by DOM order, so it has to be corrected explicitly. */
-    if (desk.os === 'linux') {
-      order.forEach(function (w) { wins.appendChild(pool[w.id]); });
-    }
 
     /* A minimised window leaves the desk but stays lit in the dock, because it
        is still running — which is exactly the difference between step 5c and
-       quitting. */
+       quitting. Its NODE is kept: it carries wherever the reader dragged it to,
+       and a restore that forgot that would teleport the window. A CLOSED window
+       is gone from the model, so its node goes too — and if the app is launched
+       again it gets a new id, a new node and the next free slot, which is what
+       launching looks like. */
     Object.keys(pool).forEach(function (id) {
-      var keep = order.some(function (w) { return String(w.id) === id; });
-      if (!keep && pool[id].parentNode) pool[id].parentNode.removeChild(pool[id]);
+      var shown = order.some(function (w) { return String(w.id) === id; });
+      var known = desk.wins.some(function (w) { return String(w.id) === id; });
+      if (!shown && pool[id].parentNode) pool[id].parentNode.removeChild(pool[id]);
+      if (!known) delete pool[id];
     });
 
     [].forEach.call(host.querySelectorAll('.dock-app'), function (d) {
       var up = desk.wins.some(function (w) { return w.app === d.getAttribute('data-app'); });
       d.classList.toggle('is-up', up);
     });
+  }
+
+  /* --- the desk as a desk: drag, resize, and the three title-bar buttons ----
+   *
+   * NONE OF THIS IS BECKON. beckon focuses and launches; it never minimises,
+   * never maximises, never closes and never moves a window — CLAUDE.md's *Out
+   * of scope* says so outright. It is here because the demo claims to be the
+   * machine the reader is sitting at, and a desktop whose title bar does
+   * nothing is a screenshot with a caption. Every mouse gesture answers with a
+   * sentence that points back at the key; `deskSayWindow` in desk.js is where
+   * those sentences live, and two of them say plainly that beckon does not do
+   * what the reader just did.
+   *
+   * EVERY LISTENER IS DELEGATED FROM THE DESK, never bound per window.
+   * `renderDesk` pools window nodes and drops them on close, so per-node
+   * listeners would leak one set per launch.
+   *
+   * GEOMETRY LIVES ON THE NODE AND NEVER IN THE MODEL. desk.js knows slots and
+   * nothing else, which is what lets a press re-render the desk underneath a
+   * window the reader has dragged without moving it a pixel.
+   */
+
+  /* .win's own base rule in beckon.css, in fractions of the desk. A drag has to
+     turn that percentage layout into pixels before it can add a delta to it, so
+     the two files agree on these four numbers by hand. Change one, change both;
+     `place` below is the only reader. */
+  var WIN_X = .08, WIN_Y = .14;
+  var MIN_W = .22, MIN_H = .24;    /* no shrinking a window into a sliver */
+
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+  function pxOf(node, prop) {
+    var v = parseFloat(getComputedStyle(node).getPropertyValue(prop));
+    return isNaN(v) ? 0 : v;
+  }
+
+  /* Turn a cascaded window into a placed one, once. Until the reader touches
+     it, a window sits where `--slot` puts it — an offset in percent OF ITS OWN
+     WIDTH, so resizing it would also move it. From the first drag onward it is
+     pixels from the desk's origin and only the drag writes them. */
+  function place(node, box) {
+    if (node._placed) return;
+    var r = node.getBoundingClientRect();
+    node._placed = true;
+    node.style.setProperty('--slot', '0');
+    node.style.setProperty('--dx', (r.left - box.left - box.width * WIN_X) + 'px');
+    node.style.setProperty('--dy', (r.top - box.top - box.height * WIN_Y) + 'px');
+    node.style.setProperty('--win-w', r.width + 'px');
+    node.style.setProperty('--win-h', r.height + 'px');
+  }
+
+  /* Which of the three buttons was hit. macOS puts close / minimise / maximise
+     on the left as traffic lights; Windows and the Linux desktops put minimise
+     / maximise / close on the right. Read off the DOM rather than off
+     `data-os`, because the two orders are two different elements and the
+     element already knows which it is. */
+  function buttonAt(target) {
+    if (!target || !target.closest) return null;
+    var lights = target.closest('.win-lights');
+    var group = lights || target.closest('.win-ctl');
+    if (!group) return null;
+    var i = [].indexOf.call(group.children, target.closest('i'));
+    if (i < 0) return null;
+    return (lights ? ['close', 'min', 'max'] : ['min', 'max', 'close'])[i] || null;
+  }
+
+  /* `api` is { get, act, press }: read the desk, replace it with a sentence to
+     go with it, or make the same request a key would. Both demos pass their own
+     three, so this function never learns which section it is in — the same rule
+     the desk component itself follows. */
+  function wireDesk(host, api) {
+    var wins = host.querySelector('.desk-wins');
+    if (!wins) return;
+    var drag = null;
+
+    function idOf(n) { return Number(n.getAttribute('data-id')); }
+    function maxOf(d, id) {
+      var w = d.wins.filter(function (x) { return x.id === id; })[0];
+      return !!(w && w.max);
+    }
+
+    host.addEventListener('click', function (e) {
+      /* The dock is the mouse's way of doing what a key does — including
+         bringing back a window that was minimised, which is otherwise
+         unreachable without the keyboard. `true` because a pointer has no Caps
+         Lock, and the gate teaches a keyboard gesture rather than policing the
+         mouse. */
+      var dock = e.target.closest ? e.target.closest('.dock-app') : null;
+      if (dock) {
+        var a = APPS.filter(function (x) { return x.name === dock.getAttribute('data-app'); })[0];
+        if (a) api.press(a.key, true);
+        return;
+      }
+
+      var kind = buttonAt(e.target);
+      var win = kind && e.target.closest('.win');
+      var d = win && api.get();
+      if (!d) return;
+      var id = idOf(win), name = win.getAttribute('data-app');
+      if (kind === 'min') return api.act(deskMinimize(d, id), 'min', name);
+      if (kind === 'close') return api.act(deskClose(d, id), 'close', name);
+      api.act(deskToggleMax(d, id), maxOf(d, id) ? 'unmax' : 'max', name);
+    });
+
+    /* Double-clicking the title bar maximises, on all three of these desktops. */
+    wins.addEventListener('dblclick', function (e) {
+      if (buttonAt(e.target)) return;
+      var bar = e.target.closest ? e.target.closest('.win-bar') : null;
+      var d = bar && api.get();
+      if (!d) return;
+      var win = bar.closest('.win'), id = idOf(win);
+      api.act(deskToggleMax(d, id), maxOf(d, id) ? 'unmax' : 'max', win.getAttribute('data-app'));
+    });
+
+    wins.addEventListener('pointerdown', function (e) {
+      if (e.button) return;
+      var win = e.target.closest ? e.target.closest('.win') : null;
+      if (!win) return;
+      var d = api.get();
+      if (!d) return;
+      var id = idOf(win), name = win.getAttribute('data-app');
+
+      /* Touching a window anywhere raises it, which is the one thing a mouse
+         and beckon genuinely agree about. */
+      if (d.focused !== id) {
+        api.act(deskFocus(d, id), 'focus', name);
+        d = api.get();
+      }
+
+      if (buttonAt(e.target)) return;                 /* those are clicks */
+      var grip = e.target.closest('.win-grip');
+      if (!grip && !e.target.closest('.win-bar')) return;
+      if (maxOf(d, id)) return;                       /* maximised: nowhere to go */
+
+      var box = host.getBoundingClientRect();
+      place(win, box);
+      drag = {
+        node: win, name: name, mode: grip ? 'size' : 'move', box: box,
+        px: e.clientX, py: e.clientY,
+        x: pxOf(win, '--dx'), y: pxOf(win, '--dy'),
+        w: pxOf(win, '--win-w'), h: pxOf(win, '--win-h'),
+        far: false
+      };
+      win.classList.add('is-grabbed');
+      /* Capture keeps the move events coming when the pointer outruns the
+         window, which at 6px of travel per frame it does immediately. It is
+         guarded because `setPointerCapture` throws on a pointer id the browser
+         did not mint — a synthetic event in a test harness, say — and a throw
+         here would abandon the drag with the window still marked `is-grabbed`.
+         Without capture the drag still works while the pointer is over the
+         desk, which is the whole area it can move within anyway. */
+      try { win.setPointerCapture(e.pointerId); } catch (err) {}
+      /* A drag off a title bar is not a text selection, and on a touch screen
+         it is not a scroll either. */
+      e.preventDefault();
+    });
+
+    wins.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      var mx = e.clientX - drag.px, my = e.clientY - drag.py;
+      if (!drag.far && (Math.abs(mx) > 3 || Math.abs(my) > 3)) drag.far = true;
+      var b = drag.box, ox = b.width * WIN_X, oy = b.height * WIN_Y;
+      /* Clamped to the desk on both axes. A window dragged off the edge of a
+         picture of a desktop does not read as a window behind a bezel; it reads
+         as the demo losing one. */
+      if (drag.mode === 'move') {
+        drag.node.style.setProperty('--dx',
+          clamp(drag.x + mx, -ox, b.width - ox - drag.w) + 'px');
+        drag.node.style.setProperty('--dy',
+          clamp(drag.y + my, -oy, b.height - oy - drag.h) + 'px');
+      } else {
+        drag.node.style.setProperty('--win-w',
+          clamp(drag.w + mx, b.width * MIN_W, b.width - ox - drag.x) + 'px');
+        drag.node.style.setProperty('--win-h',
+          clamp(drag.h + my, b.height * MIN_H, b.height - oy - drag.y) + 'px');
+      }
+    });
+
+    function drop() {
+      if (!drag) return;
+      var d = drag;
+      drag = null;
+      d.node.classList.remove('is-grabbed');
+      /* A press that never travelled is a click on a title bar, and that is a
+         raise — which already happened on pointerdown. Only a real move earns a
+         sentence, or every stray click would overwrite the transcript. */
+      if (d.far) api.act(api.get(), d.mode, d.name);
+    }
+    wins.addEventListener('pointerup', drop);
+    wins.addEventListener('pointercancel', drop);
   }
 
   /* CAPS LOCK IS STANDING IN FOR THE READER'S MODIFIER, and the hint names
@@ -471,7 +674,12 @@
   function buildOsSeg(host) {
     if (!host) return;
     var btns = {};
-    [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux · sway']]
+    /* "Linux", not "Linux · sway". The desk draws a stacking desktop now —
+       GNOME and KDE are what a Linux reader is most likely to be looking at —
+       and naming one compositor on the button made the other seven supported
+       ones look absent. The tile list in #setups is where they are enumerated;
+       this is a switch between three machines. */
+    [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']]
       .forEach(function (n) {
         var b = el('button', null, n[1]);
         b.type = 'button';
@@ -501,9 +709,9 @@
     var ui = null;
 
     /* A new OS is a new machine, not the same desk repainted: the chrome, the
-       window arrangement and the chord all change together. Keeping the
-       reader's window stack across the switch would leave sway showing a
-       cascade it cannot produce. */
+       window arrangement and the chord all change together — and anything the
+       reader dragged, resized or maximised goes with the old machine, because
+       the node carrying it is discarded here. */
     function reset(os) {
       desk = deskMake(os, DESK_SCENES.hero);
       host.setAttribute('data-os', os);
@@ -531,8 +739,17 @@
       return true;
     }
 
+    /* The mouse's own transcript replaces the keyboard's, because both describe
+       the same desk and only one of them can be true at a time. */
+    function act(next, kind, name) {
+      desk = next;
+      renderDesk(host, desk);
+      if (steps) steps.textContent = deskSayWindow(kind, name);
+    }
+
     ui = buildPress(document.getElementById('hero-press'), press);
     buildOsSeg(document.getElementById('hero-os'));
+    wireDesk(host, { get: function () { return desk; }, act: act, press: press });
     demo.classList.add('is-live');
     /* The static windows in the markup are the JS-off picture. reset() clears
        them rather than adopting them: renderDesk pools by window id, so leaving
@@ -605,7 +822,19 @@
       th.replaceChildren(b);
     });
 
+    /* A mouse gesture lights no row, because none of the five rows is about the
+       mouse: unmarking is the honest thing for the table to do while the
+       readout explains what just happened instead. */
+    function act(next, kind, name) {
+      desk = next;
+      renderDesk(host, desk);
+      mark('is-on', null);
+      mark('is-hit', null);
+      readout(out, 'Mouse', deskSayWindow(kind, name));
+    }
+
     ui = buildPress(document.getElementById('how-press'), press);
+    wireDesk(host, { get: function () { return desk; }, act: act, press: press });
     demo.classList.add('is-live');
 
     /* The shipped transcript describes the LOOP, which is what a JS-off reader

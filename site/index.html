@@ -122,10 +122,24 @@
        JS, `.is-live` cancels the loop, the strip appears, and CSS keeps only
        the reader's own chord row.
 
-       On Linux the desk is drawn TILED, with no title bars and no overlap,
-       because sway does not stack windows. That is why the transcript says
-       Claude "takes focus" rather than "comes to the front": there is no front
-       on a tiling compositor. -->
+       THE LINUX DESK STACKS, like the other two. It used to be drawn tiled —
+       no title bars, no overlap — because that is sway, which is the compositor
+       beckon was built on first. It is a GNOME / KDE desktop now: those are
+       what a Linux reader is most likely to be sitting at, and a tiled row
+       cannot show the one thing the demo exists to show, since a window that
+       never moves cannot visibly come forward. beckon supports sway, i3 and
+       Hyprland exactly as it did; #setups still names all of them. The
+       transcripts still say "takes focus" rather than "comes to the front",
+       because they have to stay true on the compositors this desk stopped
+       drawing.
+
+       WITH JS THE WINDOWS ARE REAL WINDOWS: drag them by the title bar, resize
+       from the bottom-right corner, and the three title-bar buttons minimise,
+       maximise and close. None of that is beckon — it focuses and launches, and
+       never touches geometry — which is why the transcript says so the moment a
+       window is moved. It is here because the hero claims to be the reader's
+       own machine, and a desktop that does not answer the mouse is a
+       screenshot. -->
 
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
@@ -192,20 +206,43 @@
              CSS keeps only the reader's own once `data-os` is resolved — so a
              reader with JS off, who has no OS strip to press, still gets the
              cross-platform claim in full. Same component as #setups; the
-             "yours" chip is generated content keyed on :root[data-os]. -->
+             "yours" chip is generated content keyed on :root[data-os].
+
+             CAPS LOCK LEADS ON ALL THREE ROWS, and the real chord follows it
+             behind an `=`. The rows used to print the chord alone — Ctrl Win Alt
+             C — while the demo above them, the HUD and every hint asked for
+             "Caps Lock and a letter", so the page taught two different gestures
+             and never said they were the same one. Printing only Caps Lock
+             would have been the other kind of wrong: `"ctrl+super+alt+t"` is
+             what actually goes in apps.toml, and a reader has to be able to
+             copy it.
+
+             The three notes are load-bearing, not decoration. beckon maps Caps
+             itself on Windows only; on macOS and Linux that is a remapper the
+             reader already runs, and saying so is the difference between a
+             feature and a claim we cannot keep. The FAQ carries the long
+             version. -->
         <ul class="mods hero-chords">
           <li class="os-row" data-os="macos">
             <span class="mod-os">macOS</span>
-            <span class="chord"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
-            <span class="mod-note">Hyper</span>
+            <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="chord-is">=</span>
+            <span class="chord is-alias"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="mod-note">Hyper, via Karabiner</span>
           </li>
           <li class="os-row" data-os="windows">
             <span class="mod-os">Windows</span>
-            <span class="chord"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="chord-is">=</span>
+            <span class="chord is-alias"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="mod-note">built into beckon</span>
           </li>
           <li class="os-row" data-os="linux">
-            <span class="mod-os">Linux &middot; sway</span>
-            <span class="chord"><kbd class="key">Super</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="mod-os">Linux</span>
+            <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="chord-is">=</span>
+            <span class="chord is-alias"><kbd class="key">Super</kbd><kbd class="key is-letter">C</kbd></span>
+            <span class="mod-note">via kanata or xkb</span>
           </li>
         </ul>
 
@@ -410,18 +447,31 @@ beckon doctor</code></pre>
           <ul class="mods">
             <li class="os-row" data-os="linux">
               <span class="mod-os">Linux</span>
-              <span class="chord"><kbd class="key">Super</kbd></span>
+              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
+              <span class="chord-is">=</span>
+              <span class="chord is-alias"><kbd class="key">Super</kbd></span>
+              <span class="mod-note">via kanata or xkb</span>
             </li>
             <li class="os-row" data-os="macos">
               <span class="mod-os">macOS</span>
-              <span class="chord"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd></span>
-              <span class="mod-note">Hyper</span>
+              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
+              <span class="chord-is">=</span>
+              <span class="chord is-alias"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd></span>
+              <span class="mod-note">Hyper, via Karabiner</span>
             </li>
             <li class="os-row" data-os="windows">
               <span class="mod-os">Windows</span>
-              <span class="chord"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd></span>
+              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
+              <span class="chord-is">=</span>
+              <span class="chord is-alias"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd></span>
+              <span class="mod-note">built into beckon</span>
             </li>
           </ul>
+
+          <p class="note">The chord on the right is what goes in a binding, and it works
+            whether or not Caps Lock is involved. Caps Lock is the shorter way to send it:
+            beckon does that itself on Windows, and on macOS and Linux it is one line in the
+            remapper you already run.</p>
 
           <p class="note">Drop-in configs for every setup live in
             <a href="https://github.com/xom11/beckon/tree/main/examples"><code>examples/</code></a>.</p>
@@ -663,6 +713,15 @@ scoop install xom11/beckon</code></pre>
           AutoHotkey script — wins, so use one or the other and not both; and it installs a
           low-level keyboard hook, the same mechanism every remapper uses and the one antivirus
           software associates with keyloggers.</p>
+          <p>Windows is the only place beckon does this itself, and the rows under the hero
+          still print Caps Lock on all three machines because the outcome is the same
+          everywhere — it just comes from somewhere else. On macOS that somewhere is
+          Karabiner-Elements mapping Caps to Hyper, which is where
+          <code>cmd+ctrl+alt</code> comes from in the first place; on Linux it is kanata, an
+          xkb option or your compositor mapping Caps to Super. beckon cannot tell the
+          difference and does not need to: what reaches it is the chord your binding already
+          names, so the same <code>apps.toml</code> and the same sway config keep working
+          whether or not Caps is involved.</p>
         </details>
 
       </div>

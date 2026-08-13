@@ -11,8 +11,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { DESK_APPS, DESK_SCENES, deskMake, deskPress, deskAppOf, deskSay } =
-  require('./desk.js');
+const {
+  DESK_APPS, DESK_SCENES, deskMake, deskPress, deskAppOf, deskSay,
+  deskFocus, deskMinimize, deskClose, deskToggleMax, deskSayWindow
+} = require('./desk.js');
 
 const scene = (name, os = 'macos') => deskMake(os, DESK_SCENES[name]);
 const front = d => (d.focused === null ? null : d.wins.find(w => w.id === d.focused));
@@ -190,6 +192,101 @@ test('every step that fires has a sentence to show for it', () => {
     assert.equal(r.step, name);
     assert.match(deskSay(r), /\S/, `step ${name} has no readout text`);
   }
+});
+
+/* --- what the mouse does, and what it must not disturb -------------------- */
+
+test('the title-bar buttons never mutate the desk they were given', () => {
+  /* Same guarantee as `press never mutates`, and it matters more here: the
+     renderer calls these from a pointer handler that still holds the previous
+     desk while it draws the next one. */
+  const before = scene('hero');
+  const snapshot = JSON.stringify(before);
+  const id = before.wins[1].id;
+  deskFocus(before, id);
+  deskMinimize(before, id);
+  deskToggleMax(before, id);
+  deskClose(before, id);
+  assert.equal(JSON.stringify(before), snapshot);
+});
+
+test('minimising the front window hands focus to the one behind it', () => {
+  const d = scene('hero');                       // Brave in front, then Claude
+  const after = deskMinimize(d, d.focused);
+  assert.equal(front(after).app, 'Claude', 'not left with nothing focused');
+  assert.ok(after.wins.find(w => w.app === 'Brave').min, 'Brave is minimised');
+});
+
+test('minimising the last window leaves nothing focused, like step 5c', () => {
+  const d = scene('5c');                          // one Claude window, alone
+  const after = deskMinimize(d, d.focused);
+  assert.equal(after.focused, null);
+});
+
+test('a minimised window is still running, so its key brings it back', () => {
+  /* The whole difference between minimising and closing, and the reason the
+     dock stays lit for one and goes dark for the other. */
+  const d = deskMinimize(scene('5b'), scene('5b').focused);   // Claude minimised
+  const r = deskPress(d, 'C');
+  assert.equal(r.step, '5', 'found it running rather than launching a second copy');
+  assert.equal(front(r.desk).app, 'Claude');
+  assert.equal(front(r.desk).min, false, 'raising un-minimises, as every backend does');
+});
+
+test('closing the last window of an app makes the next press a launch', () => {
+  const d = scene('5b');                                       // Claude + Brave
+  const claude = d.wins.find(w => w.app === 'Claude');
+  const after = deskClose(d, claude.id);
+  assert.equal(after.wins.some(w => w.app === 'Claude'), false);
+  assert.equal(deskPress(after, 'C').step, '4', 'step 4 — it is not running now');
+});
+
+test('closing every window leaves an empty desk that still answers a key', () => {
+  let d = scene('hero');
+  while (d.wins.length) d = deskClose(d, d.wins[0].id);
+  assert.equal(d.focused, null);
+  const r = deskPress(d, 'C');
+  assert.equal(r.step, '4');
+  assert.equal(front(r.desk).app, 'Claude');
+});
+
+test('maximising raises the window and toggles back', () => {
+  const d = scene('5b');
+  const claude = d.wins.find(w => w.app === 'Claude');
+  const up = deskToggleMax(d, claude.id);
+  assert.equal(up.focused, claude.id, 'maximising raises, like every window manager');
+  assert.equal(up.wins.find(w => w.id === claude.id).max, true);
+  assert.equal(deskToggleMax(up, claude.id).wins.find(w => w.id === claude.id).max, false);
+});
+
+test('the algorithm never reads or writes `max`', () => {
+  /* `max` is the renderer's business. If a press ever starts un-maximising
+     things, the picture stops matching what beckon actually does — beckon does
+     not touch window geometry at all. */
+  let d = scene('5a');
+  d = deskToggleMax(d, d.wins[0].id);
+  const before = d.wins.map(w => [w.id, w.max]);
+  for (const k of ['C', 'C', 'B', 'T', 'C']) d = deskPress(d, k).desk;
+  const after = new Map(d.wins.map(w => [w.id, w.max]));
+  for (const [id, max] of before) {
+    if (after.has(id)) assert.equal(after.get(id), max, `window ${id} had its max flag rewritten`);
+  }
+});
+
+test('a launched window is never born maximised', () => {
+  const r = deskPress(scene('4'), 'E');
+  assert.equal(r.desk.wins.find(w => w.app === 'Cursor').max, false);
+});
+
+test('every mouse gesture has a sentence, and each names beckon or a key', () => {
+  /* The mouse is on the desk to make it feel like a desk; every one of these
+     sentences has to point back at the thing the page is actually selling. */
+  for (const kind of ['focus', 'min', 'max', 'unmax', 'close', 'move', 'size']) {
+    const said = deskSayWindow(kind, 'Claude');
+    assert.match(said, /\S/, `${kind} has no sentence`);
+    assert.match(said, /beckon|key|press/i, `${kind} never gets back to the point: ${said}`);
+  }
+  assert.equal(deskSayWindow('nonsense', 'Claude'), '');
 });
 
 test('no readout says "front", which is meaningless on a tiling compositor', () => {

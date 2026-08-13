@@ -43,7 +43,7 @@ function deskAppOf(letter) {
 
 /* A desk is:
  *
- *   { os, wins: [ { id, app, min, slot } ], focused }
+ *   { os, wins: [ { id, app, min, max, slot } ], focused }
  *
  * `wins` is MRU order, most recent first — the same thing every backend reads
  * out of the compositor (sway's tree walk, Hyprland's focusHistoryID, X11's
@@ -65,10 +65,18 @@ function deskAppOf(letter) {
  *
  * `focused` is an id or null. Null is a real state, not an error: it is what
  * step 5c leaves behind.
+ *
+ * `max` is the window's own maximised state and NOTHING IN THE ALGORITHM READS
+ * IT — `deskPress` never tests it and never sets it. It lives here rather than
+ * on the DOM node for one reason: the renderer pools nodes by id but rebuilds
+ * them whenever the scene or the OS changes, so a fact that has to survive a
+ * press has to survive in the model. Drag offsets and drag sizes do NOT have to
+ * survive one, which is exactly why they are not here — they stay CSS custom
+ * properties on the node, and this file keeps its promise to know no geometry.
  */
 function deskMake(os, spec) {
   var wins = spec.map(function (w, i) {
-    return { id: i + 1, app: w.app, min: !!w.min, slot: i };
+    return { id: i + 1, app: w.app, min: !!w.min, max: false, slot: i };
   });
   var first = wins.filter(function (w) { return !w.min; })[0];
   return {
@@ -84,7 +92,7 @@ function deskClone(d) {
   return {
     os: d.os,
     wins: d.wins.map(function (w) {
-      return { id: w.id, app: w.app, min: w.min, slot: w.slot };
+      return { id: w.id, app: w.app, min: w.min, max: w.max, slot: w.slot };
     }),
     focused: d.focused,
     next: d.next,
@@ -127,7 +135,7 @@ function deskPress(desk, letter) {
   /* Step 4 — nothing of this app is running, so launch it. A new window takes
      the next free place on the desk; it does not take someone else's. */
   if (mine.length === 0) {
-    var born = { id: d.next++, app: app.name, min: false, slot: d.nextSlot++ };
+    var born = { id: d.next++, app: app.name, min: false, max: false, slot: d.nextSlot++ };
     d.wins = [born].concat(d.wins);
     d.focused = born.id;
     return { desk: d, step: '4', app: app };
@@ -171,9 +179,74 @@ function deskPress(desk, letter) {
   return { desk: d, step: '5c', app: app };
 }
 
+/* --- what the MOUSE does ---------------------------------------------------
+ *
+ * NONE OF THIS IS BECKON, and that is the point of saying so here. beckon
+ * focuses and launches; it never minimises, never maximises, never closes and
+ * never moves a window — CLAUDE.md's *Out of scope* is explicit about the last
+ * one. These four exist because the demo is a picture of the reader's own
+ * desktop, and a desktop whose title-bar buttons do nothing is a screenshot.
+ *
+ * They live in this file rather than in the renderer for the same reason
+ * `deskPress` does: they are decisions about the model, they are pure, and
+ * site/desk.test.mjs walks them. The renderer owns pixels and nothing else.
+ *
+ * Each one takes the desk it was given and returns a new one, so a caller can
+ * never half-apply a change.
+ */
+
+/* Click a window and it comes forward. The same thing the key does — which is
+   why this is `deskRaise` and not a second implementation of it. */
+function deskFocus(desk, id) {
+  var d = deskClone(desk);
+  return deskWin(d, id) ? deskRaise(d, id) : d;
+}
+
+/* Focus does NOT go to null here the way it does in step 5c: minimising the
+   front window on a real desktop hands focus to whatever was behind it, and
+   only an empty desk leaves nothing focused. The minimised window keeps its
+   place in the MRU list, so the next press finds it exactly where the algorithm
+   expects — un-minimising is already part of `deskRaise`. */
+function deskMinimize(desk, id) {
+  var d = deskClone(desk);
+  var w = deskWin(d, id);
+  if (!w || w.min) return d;
+  w.min = true;
+  if (d.focused === id) {
+    var next = d.wins.filter(function (x) { return !x.min; })[0];
+    d.focused = next ? next.id : null;
+  }
+  return d;
+}
+
+/* Closing is the one gesture that can empty the desk, and that is useful rather
+   than a hazard: the dock stays, the key still works, and the next press is
+   step 4 — a launch — which is the branch a demo can otherwise only reach by
+   being told about it. */
+function deskClose(desk, id) {
+  var d = deskClone(desk);
+  if (!deskWin(d, id)) return d;
+  d.wins = d.wins.filter(function (x) { return x.id !== id; });
+  if (d.focused === id) {
+    var next = d.wins.filter(function (x) { return !x.min; })[0];
+    d.focused = next ? next.id : null;
+  }
+  return d;
+}
+
+/* Maximising raises, on every window manager there is. */
+function deskToggleMax(desk, id) {
+  var d = deskClone(desk);
+  var w = deskWin(d, id);
+  if (!w) return d;
+  w.max = !w.max;
+  return deskRaise(d, id);
+}
+
 /* What the readout says. One sentence per step, written so it is true on a
    tiling compositor as well as a stacking one — hence "takes focus" rather than
-   "comes to the front", which has no meaning on sway. */
+   "comes to the front". The desks draw stacking desktops, but beckon's Linux
+   support is mostly tiling compositors and the sentence has to hold there. */
 function deskSay(res) {
   var n = res.app ? res.app.name : '';
   switch (res.step) {
@@ -183,6 +256,40 @@ function deskSay(res) {
     case '5b': return n + ' already had focus, so the press goes back to where you came from.';
     case '5c': return n + ' was the only thing open, so the press hides it.';
     default:   return '';
+  }
+}
+
+/* The transcript for a mouse gesture. Every one of these sentences ends by
+   pointing back at the keyboard, because the demo is not selling a window
+   manager: the mouse is here to make the desk feel like a desk, and the claim
+   being made is that you never need it. `move` and `size` say outright that
+   beckon does not do what the reader just did, which is the honest reading of
+   a demo that lets them do it. */
+function deskSayWindow(kind, name) {
+  switch (kind) {
+    case 'focus':
+      return name + ' took focus because you clicked it. One key does the same thing, ' +
+             'with your hand where it already was.';
+    case 'min':
+      return name + ' is minimised — still running, still lit in the dock. Press its key and ' +
+             'it comes straight back.';
+    case 'max':
+      return name + ' is maximised. Double-click the title bar to put it back — its key does ' +
+             'the same thing either way.';
+    case 'unmax':
+      return name + ' is a window again. Drag the title bar to move it, or pull the ' +
+             'bottom-right corner to resize it; beckon leaves both to you.';
+    case 'close':
+      return name + ' is closed, and its key still works: the next press launches it. That is ' +
+             'step 4.';
+    case 'move':
+      return 'You moved ' + name + '. beckon never does — it focuses and launches, and leaves ' +
+             'every window exactly where you put it.';
+    case 'size':
+      return 'You resized ' + name + '. beckon never does that either. The desk is yours to ' +
+             'arrange; beckon only decides which window has focus.';
+    default:
+      return '';
   }
 }
 
@@ -213,6 +320,11 @@ if (typeof module !== 'undefined' && module.exports) {
     deskAppOf: deskAppOf,
     deskMake: deskMake,
     deskPress: deskPress,
-    deskSay: deskSay
+    deskSay: deskSay,
+    deskFocus: deskFocus,
+    deskMinimize: deskMinimize,
+    deskClose: deskClose,
+    deskToggleMax: deskToggleMax,
+    deskSayWindow: deskSayWindow
   };
 }
