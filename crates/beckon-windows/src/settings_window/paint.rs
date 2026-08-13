@@ -37,7 +37,13 @@ pub(super) unsafe fn card(hdc: HDC, rc: RECT, dpi: u32) {
     let fill = theme_col(|p| p.card, COLOR_WINDOW);
     let edge = theme_col(|p| p.card_border, COLOR_BTNSHADOW);
     let br = theme_brush(fill);
-    let pen = CreatePen(PS_SOLID, 1, edge);
+    // Scaled like `r` on the line above, not a bare `1`. This border is the
+    // ONLY thing separating a card from the window ground it sits on
+    // (`card_border`/`bg` clears the 1.2 non-text floor by a hairline
+    // itself), so at 200% a fixed 1-device-pixel pen renders as a fraction
+    // of a logical pixel -- effectively invisible -- while the rest of the
+    // card scales up around it.
+    let pen = CreatePen(PS_SOLID, scale(1, dpi).max(1), edge);
     let old_br = SelectObject(hdc, HGDIOBJ(br.0));
     let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
     // RoundRect strokes with the pen AND fills with the brush in one call,
@@ -226,10 +232,20 @@ unsafe fn draw_keycaps(
     // `bg`.** The light face is what makes an OPERABLE key stand off the
     // surface, so giving it to a disabled one inverts the whole point --
     // measured on a14: with `keyboard.caps` off, three white `Hold` keys
-    // read as the most prominent thing in the band. `.wtog.dis` puts
-    // `#f7f7f7` on a `#f3f3f3` window, i.e. it deliberately sinks BACK into
-    // the surface. Only the ink and the face change; the box and its edge
-    // stay, so the shape survives.
+    // read as the most prominent thing in the band.
+    //
+    // **CORRECTED: the CSS reference does not describe what this now
+    // paints.** This used to cite `.wtog.dis`'s `#f7f7f7` on a `#f3f3f3`
+    // window as the model -- a face four hex steps LIGHTER than its own
+    // ground, "sinking back" only barely. Task 8 moved the ground these
+    // chips sit on from `bg` to `card`, and `p.bg` is measurably DARKER
+    // than `p.card` in both themes (Dark: `#15171C` vs `#1D2027`; Light:
+    // `#F2F4F8` vs `#FFFFFF`), not a near-miss lighter shade of it. A
+    // disabled chip now visibly drops below the card ground rather than
+    // barely blending into it -- the CSS analogy no longer applies, and
+    // should not be re-added without re-deriving it against `card`. Only
+    // the ink and the face change; the box and its edge stay, so the shape
+    // survives.
     //
     // What a disabled chip stops saying is which way it is set. That is a
     // real loss on the three `Hold` chips, which are greyed whenever Caps is
@@ -983,9 +999,23 @@ pub(super) enum BtnTier {
     Danger,
 }
 
-/// `(fill, border, ink)` for one tier in its current state. `fill` is
-/// `None` for a resting `Outline`/`Danger` button -- nothing is drawn under
-/// the caption, and the card underneath shows through.
+/// `(fill, border, ink)` for one tier in its current state.
+///
+/// **CORRECTED: `fill` is `None` for a resting `Outline`/`Danger` button,
+/// and that does NOT mean the card underneath shows through.** This
+/// comment used to claim that; it is false, and `button` (the sole caller,
+/// below) disproves it in its own first line: it fills the WHOLE control
+/// rect with `p.bg` before this function is even called, unconditionally,
+/// every tier, every state. So a resting `Record`/`Reset` is a solid `bg`
+/// box on the `card` ground six of the nine push buttons (and all seven
+/// chips) sit on -- dark `#15171C` on `#1D2027` -- and every OTHER tier
+/// leaks that same `bg` at its four rounded corners, since `RoundRect`'s
+/// fill only covers the rounded interior of a rect `FillRect` already
+/// painted square a moment before. Only the command bar's three buttons
+/// sit on `bg` to begin with, so there alone the leak is invisible, by
+/// coincidence rather than by design. Fixing the code (passing the real
+/// surrounding surface in) is a change to `button`'s own painting, not
+/// tracked here; this fixes the comment to stop asserting the wrong thing.
 ///
 /// **Disabled overrides every tier the same way**: a neutral `field`
 /// surface, its own `field_border` edge, and `text_faint` ink -- the row
