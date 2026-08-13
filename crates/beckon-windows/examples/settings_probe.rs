@@ -981,7 +981,7 @@ mod win {
         // deliberately UNCHANGED since before this redesign: it stays a
         // real `BS_AUTOCHECKBOX`, painted through `NM_CUSTOMDRAW`, so it
         // keeps both the check-box state machine and the UIA checkbox role
-        // that `BS_OWNERDRAW` would drop. Eight OTHER controls in this
+        // that `BS_OWNERDRAW` would drop. Seven OTHER controls in this
         // window traded that role away on purpose (the four modifier chips,
         // the three `Hold` chips, and neither `IDC_COMBO` nor `IDC_TAP`
         // count here since a `CBS_DROPDOWNLIST` was never a check box to
