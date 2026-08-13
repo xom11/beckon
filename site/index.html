@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>beckon — one key per app, on every OS</title>
+<title>beckon — one key per app, on every machine</title>
 
-<meta name="description" content="beckon is a cross-platform focus-or-launch app switcher. The same line, beckon Chrome, works on macOS, Windows and Linux — ids resolve against the OS's own metadata, so there is nothing to keep in sync between machines.">
+<meta name="description" content="beckon is a focus-or-launch app switcher for macOS, Windows and Linux. One line, beckon Chrome, works on all three: a CLI, a settings window, and one watched config file.">
 
-<meta property="og:title" content="beckon — one key per app, on every OS">
-<meta property="og:description" content="A cross-platform focus-or-launch app switcher. The same line, beckon Chrome, works on macOS, Windows and Linux.">
+<meta property="og:title" content="beckon — one key per app, on every machine">
+<meta property="og:description" content="A focus-or-launch app switcher for macOS, Windows and Linux. The same line, beckon Chrome, on all three.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://xom11.github.io/beckon/">
 <meta property="og:image" content="https://xom11.github.io/beckon/icon-512.png">
@@ -19,24 +19,27 @@
 <link rel="stylesheet" href="beckon.css">
 
 <!-- The page's two personalisation axes — theme and OS — resolved BEFORE first
-     paint, and nothing else. Both scripts below are `defer`, so they run after
-     the document is parsed and can run after the first paint: a reader whose
-     stored theme differs from their OS preference got a full paint of the dark
-     canvas and then a flip to the light one, the highest-delta flash this
-     palette can produce. `data-os` has the same problem in a smaller form — the
-     "yours" marker in #setups and the desk in #how would both draw for the
-     wrong machine and then jump.
+     paint, and nothing else. Both scripts at the end of <body> are `defer`, so
+     they run after the document is parsed and can run after the first paint: a
+     reader whose stored theme differs from their OS preference got a full paint
+     of the dark canvas and then a flip to the light one, the highest-delta flash
+     this palette can produce.
+
+     `data-os` NOW DRESSES THE WHOLE DOCUMENT, not just the desk — corners,
+     materials, accent, the title bar's window controls, and what a control does
+     when you push it. So a late resolution is no longer a small jump in one
+     component; it is the entire page changing clothes after paint. That is what
+     makes this script load-bearing rather than a nicety.
 
      UNRECOGNISED PLATFORM -> linux, deliberately. The two positive tests are
      broad (macOS and iOS carry "Macintosh" / "like Mac OS X", Windows carries
      "Windows NT"), so the residue is close to "demonstrably neither" — which is
-     what the Linux column already means here: a bucket for every EWMH X11
-     desktop and every Wayland compositor rather than a named product. And linux
-     is the cheapest place to be wrong: the other two each preselect an
-     installer that cannot exist on a machine that is not one of them. Nothing
-     is unreachable either way — all four install panels are one click apart,
-     all three modifier lines stay on screen, and the nav corrects it in one
-     keystroke.
+     what the Linux column already means here: a bucket for every desktop rather
+     than a named product. And linux is the cheapest place to be wrong: the other
+     two each preselect an installer that cannot exist on a machine that is not
+     one of them. Nothing is unreachable either way — all four install panels are
+     one click apart, all three modifier lines stay on screen, and the switch in
+     the title bar corrects it in one keystroke.
 
      iOS and iPadOS get the macOS column. beckon ships no iOS build, so there is
      no correct answer; the useful one for an Apple reader is the Apple column.
@@ -63,29 +66,46 @@
 </head>
 <body id="top">
 
-<header class="nav">
+<!-- THE TITLE BAR — the page's first sentence, and it has no words in it.
+     ================================================================
+     It is drawn as the title bar of the machine the reader is on: three dots on
+     the left with the title centred (macOS), a hard-right `─ ▢ ✕` glyph row with
+     the title left (Windows), or one circular pill on the right with the title
+     centred (Linux). By the time anyone reads "One key per app. Every machine you
+     own." the page has already made that claim in a shape they recognise.
+
+     THE WINDOW CONTROLS ARE INERT AND aria-hidden. They are a picture of a
+     control, not a control, so they take no focus, show no hover state and carry
+     no accessible name — the page's rule is that a control on screen never
+     silently does nothing, and the cheapest way to keep it here is to not be a
+     control at all. The desks in §4 keep REAL traffic-light colour, because there
+     they depict an actual window; the page is not a window and does not pretend
+     to be one, which is why these dots are ink at 20% rather than red/amber/green.
+
+     Both controls on the right ship `hidden`; beckon.js removes it. Neither does
+     anything without JS, and everything they change is already fully on screen
+     without them. A <select> rather than a cycling <button>: there are three
+     machines, so a button could only ever offer the next one and its accessible
+     name would name a state the reader is not in. -->
+<header class="bar">
   <div class="wrap">
+    <span class="bar-ctl" aria-hidden="true"><i></i><i></i><i></i></span>
     <a class="brand" href="#top">
-      <img src="favicon.png" alt="" width="22" height="22">
+      <img src="favicon.png" alt="" width="20" height="20">
       beckon
     </a>
-    <nav class="nav-links">
-      <a href="#how">How it works</a>
+    <!-- TWO LINKS, NOT FOUR. `How` and `Config` were in-page anchors on a page
+         that is now five short sections — scrolling reaches them faster than
+         reading a menu does. Cutting them is also what buys the centred title
+         its room: with four links the bar had no gap wide enough to centre
+         anything in, and a title centred in the leftover space landed hard left
+         and read as a bug. -->
+    <nav class="bar-links">
       <a href="#install">Install</a>
-      <a href="https://github.com/xom11/beckon/blob/main/README.md">Docs</a>
       <a href="https://github.com/xom11/beckon">GitHub</a>
     </nav>
-    <!-- Both controls ship `hidden`; beckon.js removes it. Neither does
-         anything at all without JS, and the page's rule is that there is never
-         a control on screen that silently does nothing. This inversion is only
-         legal because everything these two change is already fully on screen
-         without them.
-
-         A <select> rather than a cycling <button>: there are three OSes, so a
-         button could only ever offer the next one and its accessible name would
-         name a state the reader is not in. -->
     <span class="os-switch" id="os-switch" hidden>
-      <label for="os-select">OS</label>
+      <label for="os-select">Machine</label>
       <select id="os-select">
         <option value="macos">macOS</option>
         <option value="windows">Windows</option>
@@ -100,56 +120,44 @@
 
   <!-- HERO — one machine, the reader's, at full size.
        ================================================================
-       This was three desks side by side and is now one. Three made the
-       cross-platform claim by drawing it, but each machine came out 340px wide
-       — too small to read as a desktop, which is the one thing the hero has to
-       do. One desk at full width is a machine; three are a diagram of three
-       machines, which is what the redesign set out to stop drawing.
+       THE LAYOUT DID NOT CHANGE IN THIS REDESIGN, and that is deliberate. The
+       desk's width is `min(1000px, max(680px, (100vh - 528px) * 1.7778))` and the
+       528 in it was MEASURED — nav, headline, one-line lead, buttons, press row
+       and OS strip put the desk's top edge at 527px at 1440 wide. Every clamp
+       above the desk feeds that number. Rearranging the hero into two columns
+       would have invalidated all of it for a picture that is already the widest
+       thing on the page. What changed here is the word count and the chrome.
 
-       THE CLAIM DID NOT MOVE TO THE COPY, IT MOVED TO A CONTROL. The OS strip
-       above the desk redraws it in another machine's chrome with the gesture
-       unchanged, so "the same key on every OS" is something the reader does
-       rather than reads — and the three chords under the desk name what that
-       key really is on each one.
+       THE CLAIM IS A CONTROL, NOT A SENTENCE. The OS strip on the desk's top
+       edge redraws the desk in another machine's chrome with the gesture
+       unchanged — and now redraws the page around it too — so "the same key on
+       every machine" is something the reader does rather than reads. The three
+       chords under the desk name what that key really is on each one.
 
-       THE DESK IS aria-hidden AND .demo-steps IS THE TRANSCRIPT. That
-       paragraph is not sr-only; it is the sentence a reader gets whether or not
-       any of this paints.
+       THE DESK IS aria-hidden AND .demo-steps IS THE TRANSCRIPT. That paragraph
+       is not sr-only; it is the sentence a reader gets whether or not any of this
+       paints.
 
-       WITHOUT JS the desk runs a 6s loop, the OS strip stays hidden (it is
-       inert without JS) and ALL THREE chord rows stay on screen — which is the
-       cross-platform claim surviving in the one mode that cannot switch. With
-       JS, `.is-live` cancels the loop, the strip appears, and CSS keeps only
-       the reader's own chord row.
-
-       THE LINUX DESK STACKS, like the other two. It used to be drawn tiled —
-       no title bars, no overlap — because that is sway, which is the compositor
-       beckon was built on first. It is a GNOME / KDE desktop now: those are
-       what a Linux reader is most likely to be sitting at, and a tiled row
-       cannot show the one thing the demo exists to show, since a window that
-       never moves cannot visibly come forward. beckon supports sway, i3 and
-       Hyprland exactly as it did; #setups still names all of them. The
-       transcripts still say "takes focus" rather than "comes to the front",
-       because they have to stay true on the compositors this desk stopped
-       drawing.
+       WITHOUT JS the desk runs a 6s loop, the OS strip stays hidden (it is inert
+       without JS) and ALL THREE chord rows stay on screen — which is the
+       cross-platform claim surviving in the one mode that cannot switch. With JS,
+       `.is-live` cancels the loop, the strip appears, and CSS keeps only the
+       reader's own chord row.
 
        WITH JS THE WINDOWS ARE REAL WINDOWS: drag them by the title bar, resize
        from the bottom-right corner, and the three title-bar buttons minimise,
        maximise and close. None of that is beckon — it focuses and launches, and
        never touches geometry — which is why the transcript says so the moment a
-       window is moved. It is here because the hero claims to be the reader's
-       own machine, and a desktop that does not answer the mouse is a
-       screenshot. -->
+       window is moved. -->
 
   <section id="hero" class="hero" aria-labelledby="hero-h">
     <div class="wrap">
 
-      <h1 id="hero-h">One key per app.<br>Every OS you use.</h1>
+      <h1 id="hero-h">One key per app.<br>Every machine you own.</h1>
 
-      <!-- One line, kept to one line. The demo is the argument and every
-           sentence above it pushes the desk further past the fold; the
-           resolution detail this used to carry is in #names and in the FAQ. -->
-      <p class="lead"><code>beckon Chrome</code> is the same line on every machine you own.</p>
+      <!-- One line, kept to one line. The demo is the argument and every sentence
+           above it pushes the desk further past the fold. -->
+      <p class="lead"><code>beckon Chrome</code> is the same line on macOS, Windows and Linux.</p>
 
       <div class="hero-cta">
         <a class="btn btn-solid" href="#install">Install</a>
@@ -158,34 +166,42 @@
 
       <div class="demo hero-demo" id="hero-demo">
 
-        <!-- Above the desk, not below it. The instruction is what a reader
-             needs first, and a 940px desk pushes anything under it past the
-             fold on a 900px screen. Ships hidden because it is inert without
-             JS; the chord rows under the desk are what a JS-off reader gets,
-             and they carry more (the real chord on all three machines). -->
+        <!-- Above the desk, not below it. The instruction is what a reader needs
+             first, and a 1000px desk pushes anything under it past the fold on a
+             900px screen. Ships hidden because it is inert without JS; the chord
+             rows under the desk are what a JS-off reader gets, and they carry
+             more (the real chord on all three machines). -->
         <div class="press" id="hero-press" hidden></div>
 
         <div class="desks" aria-hidden="true">
 
-          <!-- The OS strip. Ships hidden — it is inert without JS — and
-               beckon.js fills it with three buttons that write the same
-               `data-os` the nav switcher writes, so the two stay in step. It
-               sits ON the desk's top edge rather than beside a label, because
-               it is a control over the picture below it, not a caption. -->
+          <!-- The OS strip. Ships hidden — it is inert without JS — and beckon.js
+               fills it with three buttons that write the same `data-os` the title
+               bar's switch writes, so the two stay in step. It sits ON the desk's
+               top edge rather than beside a label, because it is a control over
+               the picture below it, not a caption. -->
           <div class="os-seg" id="hero-os" hidden></div>
 
           <div class="desk-slot is-wide">
             <div class="desk" data-os="macos" data-scene="hero" id="hero-desk">
               <div class="desk-sky"></div>
-              <!-- `data-key` is the letter that beckons this app, printed on
-                   the icon: the dock is the only place on the page where the
-                   key and the thing it reaches are the same object. It ships in
-                   the markup rather than being written by JS so a reader with
-                   JS off gets it too, and tools/check-site.sh pins every pair
-                   against README's own table, so a rebinding cannot leave the
+              <!-- `data-key` is the letter that beckons this app, printed on the
+                   icon: the dock is the only place on the page where the key and
+                   the thing it reaches are the same object. It ships in the markup
+                   rather than being written by JS so a reader with JS off gets it
+                   too, and tools/check-site.sh pins every pair against README's own
+                   table — twice, once per dock — so a rebinding cannot leave the
                    dock teaching the old letter.
-                   `is-focused` marks the one app that currently has focus —
-                   here VS Code, which is what the windows above show. -->
+
+                   `data-app` + `data-key` IS A RESERVED PAIR and appears on these
+                   two docks and nowhere else on the page. The check counts
+                   occurrences and requires exactly 2; any other element that wanted
+                   to name a binding would push the count to 3 and fail CI for a
+                   reason nobody would find. Everything else that names a binding
+                   uses `data-bind`.
+
+                   `is-focused` marks the one app that currently has focus — here
+                   VS Code, which is what the windows above show. -->
               <div class="desk-bar">
                 <span class="dock-app is-up" data-app="Terminal" data-key="T"></span>
                 <span class="dock-app is-up" data-app="Chrome" data-key="C"></span>
@@ -211,26 +227,28 @@
           </div>
         </div>
 
-        <!-- What that key really is, on each machine. ALL THREE ROWS SHIP, and
-             CSS keeps only the reader's own once `data-os` is resolved — so a
-             reader with JS off, who has no OS strip to press, still gets the
-             cross-platform claim in full. Same component as #setups; the
-             "yours" chip is generated content keyed on :root[data-os].
+        <!-- What that key really is, on each machine. ALL THREE ROWS SHIP, and CSS
+             keeps only the reader's own once `data-os` is resolved — so a reader
+             with JS off, who has no OS strip to press, still gets the
+             cross-platform claim in full. The "yours" chip is generated content
+             keyed on :root[data-os].
 
              CAPS LOCK LEADS ON ALL THREE ROWS, and the real chord follows it
-             behind an `=`. The rows used to print the chord alone — Ctrl Win Alt
-             C — while the demo above them, the HUD and every hint asked for
-             "Caps Lock and a letter", so the page taught two different gestures
-             and never said they were the same one. Printing only Caps Lock
-             would have been the other kind of wrong: `"ctrl+super+alt+t"` is
-             what actually goes in apps.toml, and a reader has to be able to
-             copy it.
+             behind an `=`. A draft of this redesign cut Caps Lock from here as
+             three rows of clutter, which was wrong for a reason only visible
+             from the running page: the demo's own gate REQUIRES Caps Lock — see
+             the 90-line argument in beckon.js under "the Caps Lock gate" — and
+             the press row it writes says so. Cutting it here left the page
+             teaching one gesture and the thing under it asking for another.
 
-             The three notes are load-bearing, not decoration. beckon maps Caps
+             Printing only Caps Lock would be the other kind of wrong:
+             `"ctrl+super+alt+t"` is what actually goes in apps.toml, and a
+             reader has to be able to copy it.
+
+             THE THREE NOTES ARE LOAD-BEARING, NOT DECORATION. beckon maps Caps
              itself on Windows only; on macOS and Linux that is a remapper the
              reader already runs, and saying so is the difference between a
-             feature and a claim we cannot keep. The FAQ carries the long
-             version. -->
+             feature and a claim we cannot keep. -->
         <ul class="mods hero-chords">
           <li class="os-row" data-os="macos">
             <span class="mod-os">macOS</span>
@@ -255,105 +273,74 @@
           </li>
         </ul>
 
-        <p class="demo-steps">One line — <code>beckon Chrome</code> — bound to each machine's own
-        modifier. Chrome was running behind VS Code; one press and it takes focus.</p>
+        <p class="demo-steps">Chrome was behind VS Code. One press brings it forward.</p>
       </div>
 
-      <p class="hero-meta">MIT OR Apache-2.0 &middot; v0.9.3 &middot; Rust, no runtime</p>
+      <p class="hero-meta">v0.9.3 &middot; MIT or Apache-2.0 &middot; Rust, no runtime</p>
 
     </div>
   </section>
 
   <!-- HOW — the table is the control.
        ================================================================
-       The old page carried this five-row table AND, with JS on, a separate
-       four-scenario playground below it: two controls telling one story,
-       stacked. They are one thing now.
-
-       Why a reset control is needed at all, and why it cannot be avoided by a
-       cleverer demo: a single desk cannot walk all five branches from
-       keypresses alone. With three Chrome windows open the ring never exits 5a,
-       so 5b and 5c are unreachable until the app is down to one window. That is
-       the algorithm, verified live on sway, not a limitation of the mock — and
-       site/desk.test.mjs pins it ("with several windows open the ring never
-       exits 5a"). Something has to set the precondition, so the rows do.
-
        WITHOUT JS this is a table and one looping desk: the loop shows the ring
-       case, which is the row the table's own caption points at. WITH JS
-       beckon.js turns each row header into a <button> that rebuilds the desk,
-       makes the desk pressable, and lights the row whose step just fired.
+       case, which is the row the section's lead points at. WITH JS beckon.js turns
+       each row header into a <button> that rebuilds the desk, makes the desk
+       pressable, and lights the row whose step just fired.
 
-       The row headers ship as plain text, not as disabled buttons: a button
-       that does nothing is the failure this ordering exists to prevent. -->
+       The row headers ship as plain text, not as disabled buttons: a button that
+       does nothing is the failure this ordering exists to prevent.
+
+       THE TWO GROUP HEADINGS ARE GONE. They said "You are somewhere else" and
+       "You are already in it", which was eight words spent restating what the
+       first column already says once the conditions are written as conditions.
+       The five rows carry it now.
+
+       THE STEP NUMBERS ARE GONE and stay gone. They were CLAUDE.md's own — 4, 5,
+       5a-5c — carried here as a citation, but a reader does not have that document
+       open, and the numbering begins at 4 because steps 1-3 are read-the-id /
+       resolve-the-name / scan-the-windows, none of which is visible from outside.
+       `data-step` stays on each row as the internal id JS uses to set a scene; it
+       is never shown, and CI forbids the class that used to show it.
+
+       That last sentence USED to name the forbidden class, and check-site.sh
+       failed on this comment — `grep` cannot tell markup from a comment, which
+       is the same mechanism that let a commented-out example of the letter table
+       satisfy the letter-table check on its own for as long as it existed. Do
+       not quote a pinned string anywhere in this file, including here. -->
   <section id="how" aria-labelledby="how-h">
     <div class="wrap">
-      <h2 id="how-h">Focus is only the first press.</h2>
-      <p class="lead">Most launchers stop at focusing the window. beckon keeps going: press
-      the same key again and it does the next useful thing — decided by what is already on
-      screen, not by a flag you set.</p>
+      <h2 id="how-h">Press it again.</h2>
+      <p class="lead">beckon reads down this list and stops at the first line that matches.
+      Nothing to configure — it decides from what is already on screen.</p>
 
       <div class="how-grid">
 
-        <!-- TWO GROUPS, AND THEY ARE THE HEADLINE. The five branches split
-             cleanly into the first press (you are elsewhere) and every press
-             after it (you are already there), which is exactly what "focus is
-             only the first press" claims. Flat, the table said "Focused, …"
-             three times in a row and buried that split in a repeated word.
-
-             THE CONDITIONS ARE CUMULATIVE and the caption says so: beckon stops
-             at the first line that matches, so each row silently carries "and
-             nothing above was true". Spelling that out per row is what made the
-             old first column so long.
-
-             THE STEP NUMBERS ARE GONE. They were CLAUDE.md's own — 4, 5, 5a-5c
-             — carried here as a citation, but a reader does not have that
-             document open, and the numbering begins at 4 because steps 1-3 are
-             read-the-id / resolve-the-name / scan-the-windows, none of which is
-             visible from outside. So the column announced three missing steps,
-             explained none of them, and `5b` told nobody what it does. The
-             names do. `data-step` stays on each row as the internal id JS uses
-             to set a scene; it is no longer shown. -->
         <table class="how-table" id="how-table">
-          <!-- "the third row" rather than "the desk below": the desk sits
-               beside this table above 1040px and under it below, so a caption
-               naming a direction is wrong on one of the two. -->
-          <!-- "starts on Cycle" rather than "on the third row": the rows are
-               grouped now, so counting them is ambiguous, and the name is the
-               thing the readout under the desk will print anyway. -->
-          <caption class="how-cap">beckon works down this list and stops at the first line
-          that matches — so every row also means "and nothing above it was true". The desk
-          starts on Cycle.</caption>
           <thead>
             <tr>
-              <th scope="col">When you press the key</th>
+              <th scope="col">When you press it</th>
               <th scope="col">beckon</th>
             </tr>
           </thead>
           <tbody>
-            <tr class="how-when"><th colspan="2" scope="rowgroup">You are somewhere else</th></tr>
-            <tr data-step="4"><th scope="row">the app is not running</th>
-              <td><span class="how-do">Launch</span> — starts it</td></tr>
-            <tr data-step="5"><th scope="row">the app is running</th>
-              <td><span class="how-do">Focus</span> — brings it to you</td></tr>
-          </tbody>
-          <tbody>
-            <tr class="how-when"><th colspan="2" scope="rowgroup">You are already in it</th></tr>
-            <tr data-step="5a"><th scope="row">it has another window</th>
-              <!-- The only cell that wrapped, and a wrapped row broke the one
-                   thing this table is for: five branches you take in at a
-                   glance, one line each.
-
-                   Measured rather than eyeballed, at the widest layout where
-                   the column is narrowest in proportion: 280px available, and
-                   this needs 261px. The obvious shorter rewrites sat at 276px
-                   and 283px — 4px of headroom is not headroom when the face is
-                   Segoe UI on one machine and the system font on another. The
-                   longest of the other four cells needs 238px. -->
-              <td><span class="how-do">Cycle</span> — next window, round again</td></tr>
-            <tr data-step="5b"><th scope="row">one window, others open</th>
-              <td><span class="how-do">Back</span> — the app you came from</td></tr>
-            <tr data-step="5c"><th scope="row">one window, nothing else</th>
-              <td><span class="how-do">Hide</span> — gets it out of the way</td></tr>
+            <tr data-step="4"><th scope="row">not running</th>
+              <td><span class="how-do">Launch</span> &mdash; starts it</td></tr>
+            <tr data-step="5"><th scope="row">running, not focused</th>
+              <td><span class="how-do">Focus</span> &mdash; brings it to you</td></tr>
+            <!-- The only cell that ever wrapped, and a wrapped row broke the one
+                 thing this table is for: five branches you take in at a glance, one
+                 line each. Measured at the widest layout, where this column is
+                 narrowest in proportion: 280px available, this needs 261px, and the
+                 obvious shorter rewrites sat at 276px and 283px. 4px of headroom is
+                 not headroom when the face is Segoe UI on one machine and Cantarell
+                 on another. -->
+            <tr data-step="5a"><th scope="row">focused, more windows</th>
+              <td><span class="how-do">Cycle</span> &mdash; its next window</td></tr>
+            <tr data-step="5b"><th scope="row">focused, last window</th>
+              <td><span class="how-do">Back</span> &mdash; the app you came from</td></tr>
+            <tr data-step="5c"><th scope="row">nothing to go back to</th>
+              <td><span class="how-do">Hide</span> &mdash; out of the way</td></tr>
           </tbody>
         </table>
 
@@ -390,216 +377,157 @@
           <div class="press" id="how-press" hidden></div>
           <div class="readout" id="how-readout" hidden></div>
 
-          <p class="demo-steps">Three presses with two Chrome windows and a terminal open: the
-          ring walks from one Chrome window to the other and back, and never reaches the
-          terminal until Chrome is down to a single window.</p>
+          <p class="demo-steps">Two Chrome windows and a terminal. Three presses: focus, next
+          window, back.</p>
         </div>
 
       </div>
     </div>
   </section>
 
-  <!-- NAMES. The strike-through lives on .compare-label and must never reach
-       .compare-code — the code stays selectable, full contrast and copyable,
-       including the one nobody should type. -->
-  <section id="names" aria-labelledby="names-h">
+  <!-- CONFIG — three doors, one binding.
+       ================================================================
+       This section replaces three of the old page's: #names (96 words arguing for
+       display names), #serve (104 words introducing resident mode) and #setups
+       (170 words of compatibility tiles). It replaces them with three pictures
+       that carry the same information by being what they describe.
+
+       EACH DOOR IS DRAWN IN A FIXED DESIGN LANGUAGE, not in the reader's. That is
+       the point: three grammars in one glance is the argument, and a shelf that
+       re-skinned all three together would be one grammar repeated. `data-os` here
+       is a drawing instruction on the figure, unrelated to :root[data-os].
+
+       THE CAPTIONS ARE DOOR-FIRST AND STATE AVAILABILITY, and the asymmetry
+       between the three availability lines IS the section's second argument — the
+       CLI spans all three machines, the settings window is Windows only, the file
+       is macOS and Windows. That is the whole "which parts work where" story,
+       stated as a matrix, with no compositor named anywhere on this page.
+
+       NOTHING IN A DOOR IS A CONTROL. The `C` row is marked `is-on` in all three,
+       permanently, so "the same binding, seen three ways" is a picture rather than
+       a click. An earlier draft lit the rows across doors on selection; that needs
+       JS this page's script does not have, and a row that looks selectable and is
+       not is the exact failure the rest of the page is built to avoid.
+
+       NO <pre> IN HERE, deliberately: beckon.js attaches a copy button to every
+       <pre> on the page, and "Copy" on a shell transcript would copy the prompt
+       and the output with it. The real, copyable commands are in #install. -->
+  <section id="config" aria-labelledby="config-h">
     <div class="wrap">
-      <h2 id="names-h">Type the name, not the id.</h2>
+      <h2 id="config-h">Three doors. One binding.</h2>
+      <p class="lead">Type it, click it, or edit it. Same binding underneath.</p>
 
-      <div class="compare">
-        <div class="compare-row is-good">
-<pre class="compare-code"><code>beckon Chrome</code></pre>
-          <p class="compare-label">works on every machine you own</p>
-        </div>
-        <div class="compare-row is-bad">
-<pre class="compare-code"><code>beckon brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default</code></pre>
-          <p class="compare-label">works on exactly one</p>
-        </div>
-      </div>
+      <ul class="doors">
 
-      <p class="prose">Chrome and Brave mint that hash locally when you install a site as an
-      app, so copying your dotfile to a second laptop silently stops working — the display
-      name does not drift. Names differ per OS more often than you would think — your file
-      manager is <code>Finder</code>, <code>File Explorer</code> or <code>Files</code>
-      depending on the machine — and <code>beckon search</code> is how you find yours.</p>
+        <li class="door" data-os="linux">
+          <div class="door-win">
+            <div class="door-bar"><span class="door-title">beckon</span><span class="door-ctl"><i></i></span></div>
+            <div class="door-body">
+              <div class="term" aria-hidden="true">
+                <span class="term-line"><span class="term-ps">$</span> beckon Chrome</span>
+                <span class="term-line is-out">focused</span>
+                <span class="term-line"><span class="term-ps">$</span> beckon resolve Chrome</span>
+                <span class="term-line is-out">Google Chrome &middot; running</span>
+              </div>
+            </div>
+          </div>
+          <p class="door-cap"><b>CLI</b> <span class="door-on">macOS, Windows, Linux</span></p>
+          <p class="door-note">The app&rsquo;s name, not an id.</p>
+        </li>
 
-<pre><code>beckon installed | grep -i chrome
-beckon resolve "Google Chrome"
-beckon doctor</code></pre>
-    </div>
-  </section>
+        <li class="door" data-os="windows">
+          <div class="door-win">
+            <div class="door-bar"><span class="door-title">beckon</span><span class="door-ctl"><i></i><i></i><i></i></span></div>
+            <div class="door-body">
+              <div class="rows" aria-hidden="true">
+                <span class="row row-head"><span>App</span><span>Shortcut</span></span>
+                <span class="row is-on" data-bind="C"><span>Chrome</span><span class="mini">Ctrl Win Alt C</span></span>
+                <span class="row" data-bind="T"><span>Terminal</span><span class="mini">Ctrl Win Alt T</span></span>
+              </div>
+              <div class="door-actions" aria-hidden="true"><span class="door-btn">Save</span></div>
+            </div>
+          </div>
+          <p class="door-cap"><b>Settings window</b> <span class="door-on">Windows</span></p>
+          <p class="door-note">A tray app holds the keys.</p>
+        </li>
 
-  <!-- SETUPS. Every tile note is sourced from the dispatch table in CLAUDE.md
-       and the status table in README.md; the letter table is README's own, and
-       tools/check-site.sh greps for the exact string
-       `<kbd class="key">C</kbd></th><td>Chrome</td>` — so that markup is a
-       contract, not a formatting choice. Do not reflow those five rows.
+        <li class="door" data-os="macos">
+          <div class="door-win">
+            <div class="door-bar"><span class="door-ctl"><i></i><i></i><i></i></span><span class="door-title">apps.toml</span></div>
+            <div class="door-body">
+              <div class="toml" aria-hidden="true">
+                <span class="toml-line is-on" data-bind="C"><span class="t-k">"ctrl+super+alt+c"</span> <span class="t-o">=</span> <span class="t-v">"Chrome"</span></span>
+                <span class="toml-line" data-bind="T"><span class="t-k">"ctrl+super+alt+t"</span> <span class="t-o">=</span> <span class="t-v">"Terminal"</span></span>
+                <span class="toml-line" data-bind="V"><span class="t-k">"ctrl+super+alt+v"</span> <span class="t-o">=</span> <span class="t-v">"VS Code"</span></span>
+              </div>
+            </div>
+          </div>
+          <p class="door-cap"><b>apps.toml</b> <span class="door-on">macOS, Windows</span></p>
+          <p class="door-note">One file, watched. Edit it anywhere.</p>
+        </li>
 
-       All three modifier defaults stay on screen at every setting of `data-os`,
-       because "the same letter on all three" is the claim this list exists to
-       make and hiding two of them would delete it. The reader's own row is
-       MARKED with CSS generated content keyed on :root[data-os] — a shipped
-       chip would have to read "yours" on all three rows with JS off. -->
-  <section id="setups" aria-labelledby="setups-h">
-    <div class="wrap">
-      <h2 id="setups-h">Works with your setup.</h2>
-
-      <ul class="tiles">
-        <li class="tile">
-          <span class="tile-name">macOS</span>
-          <span class="tile-note">needs Accessibility permission</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">Windows</span>
-          <span class="tile-note">Start menu and MSIX/AppX resolution</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">sway</span>
-          <span class="tile-note">native i3-IPC</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">i3</span>
-          <span class="tile-note">same backend as sway</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">Hyprland</span>
-          <span class="tile-note">native socket IPC</span>
-        </li>
-        <li class="tile tile-marked">
-          <span class="tile-name">GNOME (Wayland)</span>
-          <span class="tile-flag">Setup required</span>
-          <span class="tile-note">needs the bundled shell extension</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">KDE (Wayland)</span>
-          <span class="tile-note">nothing to install &mdash; rides KWin scripting</span>
-        </li>
-        <li class="tile">
-          <span class="tile-name">XFCE &middot; openbox &middot; awesome &middot; fluxbox</span>
-          <span class="tile-note">any EWMH X11 desktop</span>
-        </li>
       </ul>
 
-      <div class="keys">
-        <table class="keytable">
-          <caption>The examples wire the same five keys everywhere, so you remember the letter
-          and not the modifier.</caption>
-          <thead>
-            <tr><th scope="col">Key</th><th scope="col">App</th></tr>
-          </thead>
-          <tbody>
-            <tr><th scope="row"><kbd class="key">T</kbd></th><td>Terminal</td></tr>
-            <tr><th scope="row"><kbd class="key">C</kbd></th><td>Chrome</td></tr>
-            <tr><th scope="row"><kbd class="key">V</kbd></th><td>VS Code</td></tr>
-            <tr><th scope="row"><kbd class="key">F</kbd></th><td>Files</td></tr>
-            <tr><th scope="row"><kbd class="key">S</kbd></th><td>Spotify</td></tr>
-          </tbody>
-        </table>
+      <!-- The canonical letter table. tools/check-site.sh reads README's own table
+           and greps for these five rows with ZERO whitespace between </kbd>, </th>
+           and <td> — so that markup is a contract, not a formatting choice. Do not
+           reflow these five rows.
 
-        <div class="keys-notes">
-          <ul class="mods">
-            <li class="os-row" data-os="linux">
-              <span class="mod-os">Linux</span>
-              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
-              <span class="chord-is">=</span>
-              <span class="chord is-alias"><kbd class="key">Super</kbd></span>
-              <span class="mod-note">via kanata or xkb</span>
-            </li>
-            <li class="os-row" data-os="macos">
-              <span class="mod-os">macOS</span>
-              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
-              <span class="chord-is">=</span>
-              <span class="chord is-alias"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd></span>
-              <span class="mod-note">Hyper, via Karabiner</span>
-            </li>
-            <li class="os-row" data-os="windows">
-              <span class="mod-os">Windows</span>
-              <span class="chord"><kbd class="key is-caps">Caps Lock</kbd></span>
-              <span class="chord-is">=</span>
-              <span class="chord is-alias"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd></span>
-              <span class="mod-note">built into beckon</span>
-            </li>
-          </ul>
+           There used to be a comment above this table that quoted the Chrome row
+           verbatim as an example. It has been deleted, and this is why: `grep -F`
+           cannot tell a comment from markup, so that one comment satisfied the C
+           row of the check ON ITS OWN. A redesign that dropped the real <tr> and
+           kept the comment would have passed CI with the table gone. Never quote a
+           pinned string in a comment in this file. -->
+      <table class="keytable">
+        <caption>Five keys, five apps &mdash; the same five in every example.</caption>
+        <thead>
+          <tr><th scope="col">Key</th><th scope="col">App</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row"><kbd class="key">T</kbd></th><td>Terminal</td></tr>
+          <tr><th scope="row"><kbd class="key">C</kbd></th><td>Chrome</td></tr>
+          <tr><th scope="row"><kbd class="key">V</kbd></th><td>VS Code</td></tr>
+          <tr><th scope="row"><kbd class="key">F</kbd></th><td>Files</td></tr>
+          <tr><th scope="row"><kbd class="key">S</kbd></th><td>Spotify</td></tr>
+        </tbody>
+      </table>
 
-          <p class="note">The chord on the right is what goes in a binding, and it works
-            whether or not Caps Lock is involved. Caps Lock is the shorter way to send it:
-            beckon does that itself on Windows, and on macOS and Linux it is one line in the
-            remapper you already run.</p>
-
-          <p class="note">Drop-in configs for every setup live in
-            <a href="https://github.com/xom11/beckon/tree/main/examples"><code>examples/</code></a>.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- SERVE. The three cards are three different answers, not three copies of
-       one, and the Linux one is a "no" — so all three stay visible at every
-       setting of `data-os` and only the reader's own is marked. Marking the
-       Linux card is the point rather than an awkwardness: a Linux reader should
-       be told which of these three paragraphs is about them, and it is the one
-       saying beckon does not do this.
-
-       The Caps Lock paragraph that used to sit here duplicated the FAQ entry
-       below it almost word for word. The duplicate is gone; the FAQ entry, which
-       is the fuller of the two, stays. -->
-  <section id="serve" aria-labelledby="serve-h">
-    <div class="wrap">
-      <h2 id="serve-h">Or let beckon hold the keys.</h2>
-
-      <p class="lead">On macOS and Windows nothing binds hotkeys for you, so
-      <code>beckon serve</code> does it itself — a flat TOML, watched for edits, reporting how
-      many of its lines actually registered.</p>
-
-      <figure class="toml-fig">
-        <figcaption>apps.toml</figcaption>
-<pre><code>"ctrl+super+alt+t" = "Terminal"
-"ctrl+super+alt+shift+t" = "Telegram Web"</code></pre>
-      </figure>
-
-      <ul class="cards">
-        <li class="card" data-os="macos">
-          <h3 class="os-row" data-os="macos">macOS</h3>
-          <p><code>brew services start beckon</code> is the whole install; the formula ships
-          the LaunchAgent.</p>
-        </li>
-        <li class="card" data-os="windows">
-          <h3 class="os-row" data-os="windows">Windows</h3>
-          <p><code>beckon-serve.exe</code> is a tray app with no console window at any point —
-          reload, pause, open the log or open Settings from the tray.</p>
-        </li>
-        <li class="card card-linux" data-os="linux">
-          <h3 class="os-row" data-os="linux">Linux</h3>
-          <p>Deliberately not served here. Your compositor already binds keys better than
-          beckon could, so <code>bindsym $mod+c exec beckon Chrome</code> is the integration.</p>
-        </li>
-      </ul>
+      <p class="note">Drop-in configs for every setup live in
+        <a href="https://github.com/xom11/beckon/tree/main/examples"><code>examples/</code></a>.</p>
     </div>
   </section>
 
   <!-- INSTALL.
        JS-OFF FIRST, and this is a correctness requirement rather than a
        preference. All four panels ship VISIBLE and the tablist ships with the
-       `hidden` attribute; beckon.js removes `hidden` from the tablist and adds
-       it to three panels. Written the other way round a reader with JS off gets
-       three empty gaps and no way to install on their own OS.
+       `hidden` attribute; beckon.js removes `hidden` from the tablist and adds it
+       to three panels. Written the other way round a reader with JS off gets three
+       empty gaps and no way to install on their own machine.
 
        `[hidden] { display: none !important }` in beckon.css is what makes the
        tablist's own `hidden` survive `.tabs { display: flex }`; without it the
        class rule wins on source order and the strip ships visible and inert.
 
+       EACH PANEL'S CLASS ATTRIBUTE IS EXACTLY THE ONE WORD. CI's hidden-guard is
+       a regex anchored on that exact attribute, so adding a second class to a
+       panel — a state class, a modifier — makes the guard unable to match and it
+       then reports green whatever the markup does. A companion check counts the
+       four bare attributes to catch that, and it is the check that caught this
+       very comment when it quoted the attribute verbatim: `grep` sees a comment
+       as markup, so the quote counted as a fifth and sixth panel.
+
        The panels carry NO role="tabpanel" here — beckon.js sets it, with
-       tabindex="0", at the moment it reveals the tablist. Shipped in the markup
-       it left the JS-off page announcing four tab panels for a tab widget that
-       is display:none.
+       tabindex="0", at the moment it reveals the tablist. Shipped in the markup it
+       left the JS-off page announcing four tab panels for a tab widget that is
+       display:none.
 
        The command text is FIXED: tools/check-site.sh asserts these five lines
        byte-match README.md. Restyle freely; do not re-author them. -->
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
       <h2 id="install-h">Install.</h2>
-      <p class="lead">No runtime, and no config file for <code>beckon &lt;id&gt;</code> — ids
-      resolve against the OS on every call. Take whichever channel your machine already has.</p>
+      <p class="lead">One binary, no runtime, no config file for <code>beckon &lt;id&gt;</code>.</p>
 
       <div class="tabs" role="tablist" aria-label="Install method" hidden>
         <button class="tab" type="button" role="tab" id="tab-brew"  aria-controls="panel-brew"  aria-selected="true">Homebrew</button>
@@ -613,9 +541,7 @@ beckon doctor</code></pre>
         <section class="panel" id="panel-brew" aria-labelledby="panel-brew-h">
           <h3 id="panel-brew-h">Homebrew <span class="panel-os">macOS &middot; Linux</span></h3>
 <pre><code>brew install xom11/tap/beckon</code></pre>
-          <p class="note">On macOS the formula also ships the LaunchAgent, so resident mode is
-          one more line. Write <code>~/.config/beckon/apps.toml</code> and
-          <code>beckon check</code> it first.</p>
+          <p class="note">Resident mode is one more line. macOS asks for Accessibility once.</p>
 <pre><code>brew services start beckon</code></pre>
         </section>
 
@@ -623,43 +549,46 @@ beckon doctor</code></pre>
           <h3 id="panel-scoop-h">Scoop <span class="panel-os">Windows</span></h3>
 <pre><code>scoop bucket add xom11 https://github.com/xom11/scoop-bucket
 scoop install xom11/beckon</code></pre>
-          <p class="note">That also puts <strong>beckon serve</strong> in your Start menu. First
-          launch with no config writes a starter <code>apps.toml</code> and opens it in your
-          editor.</p>
+          <p class="note">Puts the tray app in your Start menu. First launch writes a starter
+          <code>apps.toml</code>.</p>
         </section>
 
         <section class="panel" id="panel-cargo" aria-labelledby="panel-cargo-h">
           <h3 id="panel-cargo-h">Cargo <span class="panel-os">from git</span></h3>
 <pre><code>cargo install --git https://github.com/xom11/beckon</code></pre>
-          <p class="note">Needs Rust 1.75+ and a system C / MSVC toolchain. The binary lands in
-          <code>~/.cargo/bin/beckon</code>; add <code>--force</code> to update in place.</p>
+          <p class="note">Needs Rust 1.75+ and a system C / MSVC toolchain.</p>
         </section>
 
         <section class="panel" id="panel-nix" aria-labelledby="panel-nix-h">
           <h3 id="panel-nix-h">Nix <span class="panel-os">flake</span></h3>
 <pre><code>nix run github:xom11/beckon -- list</code></pre>
-          <p class="note">To pull beckon into your own flake, add
-          <code>inputs.beckon.url = "github:xom11/beckon"</code> and
-          <code>beckon.overlays.default</code> to your overlays; <code>pkgs.beckon</code> then
-          resolves.</p>
+          <p class="note">Or add <code>beckon.overlays.default</code> to your own flake.</p>
         </section>
 
       </div>
 
-      <p class="note">Every release also attaches prebuilt binaries for six targets — x86_64 and
-      aarch64, for Linux, macOS and Windows:
-      <a href="https://github.com/xom11/beckon/releases">github.com/xom11/beckon/releases</a>.</p>
+      <p class="note">Or a prebuilt binary for six targets, from
+      <a href="https://github.com/xom11/beckon/releases">Releases</a>.</p>
     </div>
   </section>
 
-  <!-- FAQ. Native <details>/<summary>, so every answer is reachable with JS
+  <!-- QUESTIONS. Native <details>/<summary>, so every answer is reachable with JS
        off; beckon.js only closes the siblings when one opens.
 
-       This section is where the copy cut from #hero, #names and #serve landed,
-       verbatim rather than paraphrased — the whole point of shortening those
-       sections was to move the qualifications, not to lose them. Every figure
-       carries the machine it was measured on; a bare "57 ms" is not allowed to
-       appear. -->
+       FOUR ENTRIES, DOWN FROM NINE. The nine were 951 words — 54% of the old
+       page's visible text — and the four that survive are the ones a reader hits
+       before they can succeed: what the config file is for, why an app is named
+       rather than identified, the permission macOS will ask for, and whether it is
+       fast. They are collapsed, so they cost nothing on screen and everything is
+       one click away.
+
+       The five that went: why the demo asks for a bare letter (it is now obvious
+       from the demo), Linux hotkey registration and GNOME Wayland (both name
+       compositors, which this page no longer does), the Windows settings window
+       (it is a picture in #config now), and Caps Lock. Caps Lock is a Windows-only
+       opt-in that installs a low-level keyboard hook and has three real failure
+       modes; it cannot be carried honestly in under 200 words, and carrying it
+       dishonestly is worse than linking the README. -->
   <section id="faq" aria-labelledby="faq-h">
     <div class="wrap">
       <h2 id="faq-h">Questions.</h2>
@@ -668,63 +597,25 @@ scoop install xom11/beckon</code></pre>
 
         <details>
           <summary>Do I need a config file?</summary>
-          <p>Not for <code>beckon &lt;id&gt;</code>. Ids resolve against the OS's own metadata on
-          every call, so there is nothing to generate, no cache to rebuild and no alias file to
-          keep in sync between machines. Only <code>serve</code> reads a file, and that file is a
-          hotkey table — <code>"ctrl+super+alt+t" = "Terminal"</code> — not a place to rename apps.</p>
+          <p>Not for <code>beckon &lt;id&gt;</code>. Ids resolve against the machine&rsquo;s own
+          metadata on every call, so there is nothing to generate and nothing to keep in sync.
+          Only the resident mode reads a file, and that file is a hotkey table.</p>
         </details>
 
         <details>
-          <summary>Why names instead of bundle ids?</summary>
-          <p>Because canonical ids drift and names do not. Brave and Chrome mint a hash into a
-          PWA's id when you install it, so
-          <code>brave-fmpnliohjhemenmnlpbfagaolkdacoja-Default</code> is a different string on
-          your second laptop and the dotfile you copied there silently stops working. The display
-          name is the same on all of them. beckon resolves it against <code>.desktop</code> files
-          on Linux, LaunchServices on macOS and the Start menu on Windows, on every invocation. A
-          canonical id is still accepted, and is the right answer when two apps share a display
-          name.</p>
-        </details>
-
-        <details>
-          <summary>Why does the demo want a bare letter, and not beckon's real chord?</summary>
-          <p>Because a web page cannot see beckon's real chord on two platforms out of three.
-          <code>Super</code> is taken by the compositor before the browser hears it,
-          <code>Win</code> opens the Start menu, and Caps Lock exposes only its lock state to a
-          page, never a press — which is why the previous version of this page had a readout that
-          said <em>Caps Lock: unknown</em>. Only macOS Hyper (<code>cmd+ctrl+alt</code>) is
-          genuinely observable. Rather than work on one machine and apologise on the other two,
-          the demos ask for the letter alone and print the real chord beside each desk.</p>
-        </details>
-
-        <details>
-          <summary>Does beckon register the hotkey on Linux?</summary>
-          <p>No — your compositor does, and that is a choice rather than a gap. Every Linux
-          desktop already ships a place to bind a key to a command, and there is no single API
-          that would cover all of them: X11 has <code>XGrabKey</code>, KDE has KWin scripting,
-          Hyprland has the GlobalShortcuts portal, GNOME would need its extension, and sway has no
-          route at all. Four implementations for one feature, on the platform that needs it least.
-          The survey is in <a href="https://github.com/xom11/beckon/blob/main/CLAUDE.md">CLAUDE.md</a>
-          under <em>Wayland hotkey</em>.</p>
+          <summary>Why the app&rsquo;s name and not its id?</summary>
+          <p>Because ids drift and names do not. Chrome and Brave mint a hash into a web app&rsquo;s
+          id when you install it, so the dotfile you copied to a second laptop silently stops
+          working. The display name is the same on all of them. A canonical id still works, and is
+          the right answer when two apps share a name.</p>
         </details>
 
         <details>
           <summary>Why does macOS ask for Accessibility?</summary>
-          <p>Raising another application's window goes through the Accessibility API, and macOS
-          gates it behind an explicit grant. The grant is bound to the binary's code signature, so
-          building beckon yourself and rebuilding it can invalidate it and ask again.
-          <code>beckon doctor</code> reports whether the process it is running in is trusted.</p>
-        </details>
-
-        <details>
-          <summary>What does GNOME Wayland need?</summary>
-          <p>The bundled shell extension from
-          <a href="https://github.com/xom11/beckon/tree/main/extensions">extensions/</a>, plus a
-          log out and back in — Wayland cannot reload the shell live. Mutter gives an external
-          process no way to focus a window at all, so the extension runs inside gnome-shell and
-          beckon talks to it over the session bus. KDE Wayland is the opposite case and needs
-          nothing installed: KWin ships its own scripting engine, so beckon loads a script, reads
-          the answer back and unloads it.</p>
+          <p>Raising another application&rsquo;s window goes through the Accessibility API, and macOS
+          gates it behind an explicit grant. The grant is bound to the binary&rsquo;s code signature,
+          so rebuilding beckon yourself can invalidate it. <code>beckon doctor</code> reports
+          whether the process it is running in is trusted.</p>
         </details>
 
         <details>
@@ -732,49 +623,7 @@ scoop install xom11/beckon</code></pre>
           <p>The whole focus-or-launch path measured about <strong>57 ms</strong> on the ARM64
           Windows 11 laptop beckon is developed against, and about <strong>95&ndash;105 ms</strong>
           on the macOS laptop it is developed against. Each figure is one machine and one run
-          series, not a benchmark suite. The macOS figure is mostly the OS rather than beckon:
-          <code>open -b &lt;bundle_id&gt;</code> alone accounts for 55&ndash;75 ms of it, and no
-          API avoids that round trip. The Windows figure has no such breakdown — it started at
-          about 443 ms and came down by changing beckon, not the OS.</p>
-        </details>
-
-        <details>
-          <summary>What is in the Windows settings window?</summary>
-          <p>Every binding, with whether it actually registered — so a chord another application
-          already owns is visible rather than silently dead. It writes back the same
-          <code>apps.toml</code> you would edit by hand: comments and key order survive, because
-          it edits the document rather than re-serialising it. Ready-to-use setups, including the
-          launchd agent and the Scheduled Task definition, are in
-          <a href="https://github.com/xom11/beckon/tree/main/examples/macos/serve">examples/macos/serve/</a>
-          and
-          <a href="https://github.com/xom11/beckon/tree/main/examples/windows/serve">examples/windows/serve/</a>.</p>
-        </details>
-
-        <details>
-          <summary>Can I use Caps Lock as the modifier?</summary>
-          <p class="caps">On Windows, and it is off by default. Tick the Caps Lock box in Settings
-          and holding Caps stands in for <code>ctrl+super+alt</code>, so
-          <span class="chord"><kbd class="key">Caps</kbd><kbd class="key">T</kbd></span>
-          does what <code>ctrl+super+alt+T</code> does — your bindings do not change, and the same
-          file still works on a machine where the box is not ticked. The hook swallows the Caps
-          key itself and sends the chord on as one burst, so the lock does not flip while you use
-          it; tapping Caps on its own still toggles Caps Lock, because beckon puts that keystroke
-          back. <code>keyboard.caps_tap = "escape"</code> makes the tap Esc instead, and
-          <code>"none"</code> makes it do nothing. Three caveats, all real: it does nothing while
-          an elevated window has focus, though typing the chord by hand still works there; any
-          other remapper that already claims Caps — kanata, PowerToys Keyboard Manager, an
-          AutoHotkey script — wins, so use one or the other and not both; and it installs a
-          low-level keyboard hook, the same mechanism every remapper uses and the one antivirus
-          software associates with keyloggers.</p>
-          <p>Windows is the only place beckon does this itself, and the rows under the hero
-          still print Caps Lock on all three machines because the outcome is the same
-          everywhere — it just comes from somewhere else. On macOS that somewhere is
-          Karabiner-Elements mapping Caps to Hyper, which is where
-          <code>cmd+ctrl+alt</code> comes from in the first place; on Linux it is kanata, an
-          xkb option or your compositor mapping Caps to Super. beckon cannot tell the
-          difference and does not need to: what reaches it is the chord your binding already
-          names, so the same <code>apps.toml</code> and the same sway config keep working
-          whether or not Caps is involved.</p>
+          series, not a benchmark suite &mdash; and the macOS one is mostly the OS, not beckon.</p>
         </details>
 
       </div>
@@ -785,23 +634,23 @@ scoop install xom11/beckon</code></pre>
 
 <footer>
   <div class="wrap">
-    <span>MIT OR Apache-2.0</span>
-    <span>v0.9.3</span>
-    <a href="https://github.com/xom11/beckon">Repository</a>
-    <a href="https://github.com/xom11/beckon/releases">Releases</a>
+    <span>beckon v0.9.3</span>
+    <span>MIT or Apache-2.0</span>
     <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a>
-    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-MIT">LICENSE-MIT</a>
-    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-APACHE">LICENSE-APACHE</a>
+    <a href="https://github.com/xom11/beckon/tree/main/examples">Examples</a>
+    <a href="https://github.com/xom11/beckon">GitHub</a>
+    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-MIT">MIT</a>
+    <a href="https://github.com/xom11/beckon/blob/main/LICENSE-APACHE">Apache-2.0</a>
   </div>
 </footer>
 
-<!-- The cheat sheet, pinned for the whole scroll. It is a real labelled group
-     of real buttons — NOT aria-hidden, because a focusable control inside an
+<!-- The cheat sheet, pinned for the whole scroll. It is a real labelled group of
+     real buttons — NOT aria-hidden, because a focusable control inside an
      aria-hidden subtree is a defect, and because these buttons are how a reader
      with no keyboard presses a key at all.
 
      Ships `hidden` (it does nothing without JS) and beckon.js fills it. The
-     canonical letter table stays in #setups, where it is content; this is the
+     canonical letter table stays in #config, where it is content; this is the
      control. -->
 <div class="hud" id="hud" role="group" aria-label="Demo keys" hidden></div>
 

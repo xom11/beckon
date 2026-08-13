@@ -1,14 +1,31 @@
 /* beckon — landing page. No build step: this file is served as written.
 
    Order, and it is load-bearing:
-     1. tokens                 (one bare :root, then the two dark restatements)
-     2. shell                  (reset, container, nav, footer)
+     1. tokens                 (one bare :root, the dark restatements, the skins)
+     2. shell                  (reset, container, title bar, footer)
      3. system                 (rhythm, headings, prose, code, keycap, buttons)
      4. the desk               (ONE component; the hero and #how both use it)
-     5. one block per section  (hero, how, names, setups, serve, install, faq)
+     5. one block per section  (hero, how, config, install, faq)
      6. the HUD
      7. responsive             (three breakpoints, for the whole page)
      8. prefers-reduced-motion (LAST, so it wins)
+
+   THE PAGE WEARS THE READER'S MACHINE. `:root[data-os]` is resolved before
+   first paint by the inline script in <head>, and it changes the document's
+   corners, materials, accent, control padding, easing curve, the window
+   controls in the title bar, and — the part that is actually the signature —
+   WHAT A CONTROL DOES WHEN YOU PUSH IT. Underneath, nothing moves: same grid,
+   same type scale, same body face, same five app hues, same words. beckon's
+   claim is "one line, three machines", and a page that performs that claim is
+   stronger than a page that spends 170 words asserting it. §5d is where the
+   deleted words used to be.
+
+   §4 IS NOT PART OF THAT REDESIGN and was left byte-identical. The desk's
+   animation and its model are settled; the tokens it reads — `--radius`,
+   `--radius-sm`, `--shadow`, `--shadow-soft`, every `--win-*`, `--term-*` and
+   `--app-*` — therefore keep their values here and are marked. The shell reads
+   `--r-*` and `--elev-*` instead. `--accent` is the one token deliberately
+   shared: an OS strip in Windows blue on a Windows desk is the point.
 
    EVERY CUSTOM PROPERTY READ WITH var() ANYWHERE IN THIS FILE IS DEFINED IN
    THE BARE :root BLOCK BELOW — including the ones a rule later sets locally,
@@ -19,9 +36,12 @@
    not. (That check reads this file with grep, so a comment naming a property
    that does not exist fails it too — which is why none of them do.)
 
-   The palette is deliberately almost colourless. Every saturated colour on the
-   page comes from the desks in §4 — three real window chromes and five app
-   tints — which is what "every OS you use" is supposed to look like. */
+   THAT AUDIT PROVES A NAME EXISTS. IT CANNOT SEE A FORGOTTEN OVERRIDE. A form
+   token that is never restated for Windows and Linux silently serves them the
+   macOS value, and the page's whole thesis is then refuted by the page itself
+   — with CI green. So every token between the `@os-parity` markers carries a
+   trailing comment naming all three values, and check-site.sh requires each of
+   them to appear in all three skin blocks. */
 
 
 /* --- 1. tokens ------------------------------------------------------------ */
@@ -32,34 +52,108 @@
      has to win over the OS preference. */
   color-scheme: light dark;
 
-  --bg:          #FAFAF8;   /* warm, not #FFF: pure white plus a blue accent is
-                               the exact look this redesign is getting rid of */
-  --bg-raised:   #F1F1ED;
+  /* ---- the ground, and the ink on it. Theme axis; the skins tint --bg only.
+          Warm, never pure #FFF: a white canvas plus a blue accent is the exact
+          stock look this page is not. ---- */
+  --bg:          #F4F3F0;
+  --bg-raised:   #EAE9E4;
+  --surface:     #FFFFFF;   /* a card, a door body, a popover */
+  --surface-2:   #F8F7F5;   /* a toolbar or headerbar sitting on a card */
   --fg:          #16161A;
   --fg-dim:      #5C5C66;
-  --rule:        #E4E4DE;
-  --accent:      #2563EB;   /* measured from assets/beckon.ico. Demoted: the
-                               brand mark, focus rings and the readout rail. It
-                               is not a button fill and not a link colour. */
+  --rule:        rgba(18, 18, 24, .12);
+  --rule-hard:   rgba(18, 18, 24, .22);
+  --hit:         rgba(18, 18, 24, .05);   /* the table row whose step just fired */
+  --rim:         rgba(255, 255, 255, .70);/* the specular top edge of a material */
+
+  /* ---- accent. OS × theme, and it is spent on exactly four things: the
+          primary button, the active segment, the focus ring, and the readout
+          rail under a desk. Adwaita's own guidance warns against accent on
+          large surfaces and Fluent rations it just as hard, so obeying the
+          strictest of the three everywhere keeps all three honest. ---- */
+  --accent:      #007AFF;   /* mac #007AFF · win #0078D4 · lin #3584E4 */
   --accent-fg:   #FFFFFF;
-  --hit:         #EFEFE8;   /* the table row whose step just fired */
+  --accent-soft: rgba(0, 122, 255, .13);
 
-  --shadow:      0 24px 60px -26px rgba(12, 12, 20, .55);
-  --shadow-soft: 0 10px 26px -16px rgba(12, 12, 20, .40);
+  --shadow:      0 24px 60px -26px rgba(12, 12, 20, .55);   /* §4 desk — do not retune */
+  --shadow-soft: 0 10px 26px -16px rgba(12, 12, 20, .40);   /* §4 desk — do not retune */
 
-  --radius:      12px;
-  --radius-sm:   7px;
+  --radius:      12px;      /* §4 desk — do not retune; the shell uses --r-* */
+  --radius-sm:   7px;       /* §4 desk — do not retune */
   --pad:         20px;
   --maxw:        1120px;
   --measure:     66ch;
   --measure-lead: 58ch;
-  --nav-h:       60px;
+  --nav-h:       56px;
   --section-y:   104px;
 
-  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          "Helvetica Neue", Arial, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Mono", Menlo,
-          Consolas, "Liberation Mono", monospace;
+  /* THE HOST FACE IS NEVER SWAPPED BY THE SKIN, and that is a decision rather
+     than an omission. Segoe UI Variable does not exist off Windows and Adwaita
+     Sans / Cantarell do not exist off Linux, so a whole-page typeface swap
+     serves its most convincing costume to the two thirds of readers who cannot
+     render it, and its least to the reader who pressed the switch. `system-ui`
+     leading this stack already puts the page in the reader's own OS face before
+     the title bar says a word about operating systems. The skin carries type
+     only inside chrome, through --ui-sans, where a miss degrades to the same
+     `system-ui` and nothing looks broken.
+     Never name "SF Pro" or "SF Mono": they are not installed on stock macOS,
+     so naming them is a no-op — and on a developer's Mac that did download
+     them it is worse, pinning a static optical cut instead of variable SFNS. */
+  --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+          "Segoe UI", "Adwaita Sans", Cantarell, Roboto, "Helvetica Neue", Arial,
+          sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas,
+          "Adwaita Mono", "Liberation Mono", monospace;
+
+  /* ================= @os-parity begin =================================
+     Every token below is restated in ALL THREE skin blocks in §1c, and
+     tools/check-site.sh enforces that. The trailing comment is the spec.
+     ==================================================================== */
+
+  --r-window:    26px;      /* mac 26 · win 8 · lin 12 */
+  --r-card:      16px;      /* mac 16 · win 8 · lin 12 */
+  --r-ctl:        8px;      /* mac 8  · win 4 · lin 6  */
+  --r-pill:      999px;     /* mac pill · win 4 (Fluent has no pill) · lin pill */
+  --stroke:      0.5px;     /* mac hairline, the rim carries the edge · win 1 · lin 1 */
+  --btn-pad:     9px 18px;  /* mac 9/18 · win 6/14 · lin 7px 16px */
+
+  /* THE SIGNATURE. Same gesture, three beliefs about depth: glass descends and
+     its blur tightens so what is behind it sharpens; a Fluent control barely
+     moves and re-shades, dropping the darker bottom stroke that is its edge;
+     an Adwaita chip does not move at all and only deepens. This is what carries
+     the costume once type is off the table — and unlike type it renders on
+     every machine. */
+  --press-travel:  4px;     /* mac 4 · win 1 · lin 0 */
+  --mat-blur:      saturate(180%) blur(20px);  /* mac only · win none · lin none */
+  --mat-blur-press: saturate(180%) blur(14px); /* mac only · win none · lin none */
+  --mat-fill:      color-mix(in srgb, var(--surface) 64%, transparent);
+                            /* mac 64% glass · win 100% opaque layer · lin 100% flat */
+  --mat-fill-press: color-mix(in srgb, var(--surface) 82%, transparent);
+                            /* mac 82% · win the subtle-pressed wash · lin chip 15% */
+  --mat-rim:       inset 0 1px 0 var(--rim), inset 0 0 0 .5px var(--rim);
+                            /* mac specular rim · win inset 0 -1px 0 bottom stroke · lin none */
+  --mat-rim-press: inset 0 1px 0 var(--rim);
+                            /* mac rim only · win NONE, the stroke is removed · lin none */
+  --elev-1:  0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px -8px rgba(0, 0, 0, .18);
+                            /* mac soft+wide · win 0 1px 2px .10 · lin none, Adwaita is flat */
+  --elev-2:  0 24px 60px -22px rgba(0, 0, 0, .38);
+                            /* mac · win 0 4px 8px .14 · lin 0 8px 24px .18 */
+  --ease:    cubic-bezier(.32, .72, 0, 1);  /* mac · win cubic-bezier(0,0,0,1) · lin cubic-bezier(.25,.46,.45,.94) */
+  --dur:     320ms;         /* mac 320 · win 250 · lin 200 */
+
+  /* Chrome type. On the reader's OWN machine this resolves to the real face,
+     which is what makes a title bar read as a title bar; on a switched skin it
+     falls through to system-ui and nothing looks wrong. Windows needs the
+     Display cut named separately — "Segoe UI Variable" alone resolves in no
+     browser and the opsz axis does not work on Win11, so the cut is switched by
+     FAMILY per size band, not by font-optical-sizing. */
+  --ui-sans: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue",
+             Arial, sans-serif;
+  --ui-mono: ui-monospace, Menlo, monospace;
+  --ui-scale: 1;            /* mac 1 · win .96 · lin .98 — density, on skinned
+                               objects only, never on <html> */
+
+  /* ================= @os-parity end ==================================== */
 
   /* The five apps of README.md's table. Approximations, not brand marks — the
      page draws no logos, both because check 1 forbids fetching one and because
@@ -108,17 +202,25 @@
   --hud-bg:      rgba(250, 250, 248, .86);
 }
 
-/* Only the tokens that differ are restated. Twice: once for the system
-   preference, once for the explicit toggle, so the toggle wins both ways. */
+/* --- 1b. dark. THEME AXIS ONLY — no form token appears below, so the two
+       axes cannot fight over specificity. `:root[data-theme="dark"]` and
+       `:root[data-os="linux"]` both score (0,2,0), and if either block set a
+       token the other also set, source order alone would decide it. Keeping the
+       palette here and the form in §1c makes that collision unrepresentable.
+
+       Written twice: once for the system preference, once for the explicit
+       toggle, so the toggle wins both ways. Only what differs is restated. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #0D0D0F; --bg-raised: #17171B; --fg: #EDEDEA;
-    --fg-dim: #9A9AA4; --rule: #26262B; --hit: #1E1E24;
-    --accent: #6E9BFF;   /* #2563EB is 3.8:1 on this canvas and fails AA */
-    --accent-fg: #0D0D0F;
+    --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+    --fg: #EDEDEA; --fg-dim: #9A9AA4;
+    --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
+    --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
     --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
     --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+    --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+    --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
     --win-paper: #1B1B20; --win-ink: #D8D8DC;
     --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
     --win-line: rgba(255, 255, 255, .10);
@@ -127,17 +229,155 @@
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0D0D0F; --bg-raised: #17171B; --fg: #EDEDEA;
-  --fg-dim: #9A9AA4; --rule: #26262B; --hit: #1E1E24;
-  --accent: #6E9BFF; --accent-fg: #0D0D0F;
+  --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+  --fg: #EDEDEA; --fg-dim: #9A9AA4;
+  --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
+  --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
   --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
   --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+  --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
   --win-paper: #1B1B20; --win-ink: #D8D8DC;
   --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
   --win-line: rgba(255, 255, 255, .10);
   --hud-bg: rgba(20, 20, 24, .86);
 }
 :root[data-theme="light"] { color-scheme: light; }
+
+
+/* --- 1c. the three skins -------------------------------------------------
+   FORM AXIS ONLY. Each block restates every token between the @os-parity
+   markers in §1a; check-site.sh counts them, because a missing override
+   silently serves the macOS value and no other check can see it.
+
+   EACH SELECTOR IS A PAIR, and the second half is what makes §5d work. The
+   doors in #config are drawn in a FIXED language each — a GNOME terminal, a
+   Fluent settings window, a Liquid Glass file — regardless of what the reader
+   is running, because three grammars in one glance is that section's whole
+   argument and a shelf that re-skinned all three together would be one grammar
+   printed three times. Custom properties inherit, so `.door[data-os="windows"]`
+   re-declares the skin for its own subtree and everything inside it draws
+   Windows on a macOS page for free. Nothing else on the page may use
+   `[data-os]` this way: `.desk[data-os]` is §4's and is a different vocabulary.
+
+   Colour is deliberately NOT restated here. Chrome fills are built out of the
+   theme-aware --surface / --rule / --rim, so one definition serves light and
+   dark; only --accent is genuinely per-machine AND per-theme, which is what
+   §1d is for and all §1d contains. */
+
+:root[data-os="macos"], .door[data-os="macos"] {
+  --r-window: 26px; --r-card: 16px; --r-ctl: 8px; --r-pill: 999px;
+  --stroke: 0.5px; --btn-pad: 9px 18px;
+  --press-travel: 4px;
+  --mat-blur: saturate(180%) blur(20px);
+  --mat-blur-press: saturate(180%) blur(14px);
+  --mat-fill: color-mix(in srgb, var(--surface) 64%, transparent);
+  --mat-fill-press: color-mix(in srgb, var(--surface) 82%, transparent);
+  --mat-rim: inset 0 1px 0 var(--rim), inset 0 0 0 .5px var(--rim);
+  --mat-rim-press: inset 0 1px 0 var(--rim);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .06), 0 8px 24px -8px rgba(0, 0, 0, .18);
+  --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .38);
+  --ease: cubic-bezier(.32, .72, 0, 1); --dur: 320ms;
+  --ui-sans: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", Arial, sans-serif;
+  --ui-mono: ui-monospace, Menlo, monospace;
+  --ui-scale: 1;
+  --accent: #007AFF; --accent-fg: #FFFFFF; --accent-soft: rgba(0, 122, 255, .13);
+}
+
+/* Fluent gets hierarchy from stacked OPAQUE layers and 1px strokes, not from
+   blur and not from shadow — so --mat-blur is `none` here on purpose. Mica is a
+   wallpaper tint, not a blur of what is behind the window, and a web page has
+   no wallpaper to tint; faking it with a backdrop-filter would be the one wrong
+   note in the whole skin. The bottom stroke is the control's edge, and REMOVING
+   it on :active is what a Fluent press looks like. */
+:root[data-os="windows"], .door[data-os="windows"] {
+  --r-window: 8px; --r-card: 8px; --r-ctl: 4px; --r-pill: 4px;
+  --stroke: 1px; --btn-pad: 6px 14px;
+  --press-travel: 1px;
+  --mat-blur: none;
+  --mat-blur-press: none;
+  --mat-fill: var(--surface);
+  --mat-fill-press: color-mix(in srgb, var(--fg) 6%, var(--surface));
+  --mat-rim: inset 0 -1px 0 var(--rule-hard);
+  --mat-rim-press: none;
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .10);
+  --elev-2: 0 4px 8px rgba(0, 0, 0, .14);
+  --ease: cubic-bezier(0, 0, 0, 1); --dur: 250ms;
+  --ui-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, Roboto, Arial, sans-serif;
+  --ui-mono: Consolas, "Cascadia Mono", ui-monospace, monospace;
+  --ui-scale: .96;
+  --accent: #0078D4; --accent-fg: #FFFFFF; --accent-soft: rgba(0, 120, 212, .10);
+}
+
+/* Adwaita is deliberately flat: there is almost no elevation INSIDE a window,
+   only 1px hairlines and a one-step background change, and real shadow is
+   reserved for dialogs and popovers. So --elev-1 is `none` and a press does not
+   move anything — the surface goes from an 8% chip of the ink colour to 15%.
+   Getting this wrong in the generous direction is what makes a web imitation of
+   GNOME look like Material. */
+:root[data-os="linux"], .door[data-os="linux"] {
+  --r-window: 12px; --r-card: 12px; --r-ctl: 6px; --r-pill: 999px;
+  --stroke: 1px; --btn-pad: 7px 16px;
+  --press-travel: 0px;
+  --mat-blur: none;
+  --mat-blur-press: none;
+  --mat-fill: var(--surface-2);
+  --mat-fill-press: color-mix(in srgb, var(--fg) 15%, transparent);
+  --mat-rim: none;
+  --mat-rim-press: none;
+  --elev-1: none;
+  --elev-2: 0 8px 24px rgba(0, 0, 0, .18);
+  --ease: cubic-bezier(.25, .46, .45, .94); --dur: 200ms;
+  --ui-sans: "Adwaita Sans", Cantarell, Inter, "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --ui-mono: "Adwaita Mono", "Source Code Pro", ui-monospace, "DejaVu Sans Mono", monospace;
+  --ui-scale: .98;
+  --accent: #3584E4; --accent-fg: #FFFFFF; --accent-soft: rgba(53, 132, 228, .15);
+}
+
+
+/* --- 1d. accent, the one token that is genuinely OS × theme ---------------
+   Fluent LIGHTENS its accent in dark rather than reusing #0078D4, and Adwaita
+   does the same; #007AFF, #0078D4 and #3584E4 all fail AA against a dark
+   canvas. Written at (0,3,0) so it beats both §1b and §1c whichever way source
+   order runs, and written twice for the same reason §1b is. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"])[data-os="macos"],
+  :root:not([data-theme="light"]) .door[data-os="macos"] {
+    --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+  }
+  :root:not([data-theme="light"])[data-os="windows"],
+  :root:not([data-theme="light"]) .door[data-os="windows"] {
+    --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+  }
+  :root:not([data-theme="light"])[data-os="linux"],
+  :root:not([data-theme="light"]) .door[data-os="linux"] {
+    --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+  }
+}
+:root[data-theme="dark"][data-os="macos"],
+:root[data-theme="dark"] .door[data-os="macos"] {
+  --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+}
+:root[data-theme="dark"][data-os="windows"],
+:root[data-theme="dark"] .door[data-os="windows"] {
+  --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+}
+:root[data-theme="dark"][data-os="linux"],
+:root[data-theme="dark"] .door[data-os="linux"] {
+  --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+}
+
+
+/* --- 1e. the fallback that is not optional -------------------------------
+   Without backdrop-filter, glass at 64% is body text over whatever is behind
+   it. macOS is the default skin for roughly a third of readers, so this is not
+   an edge case — it is one of the three front doors. Opaque instead. */
+@supports not (backdrop-filter: blur(1px)) {
+  :root[data-os="macos"], .door[data-os="macos"] {
+    --mat-fill: var(--surface);
+    --mat-fill-press: color-mix(in srgb, var(--fg) 6%, var(--surface));
+  }
+}
 
 
 /* --- 2. shell ------------------------------------------------------------- */
@@ -190,51 +430,145 @@ a {
 a:hover { text-decoration-color: currentColor; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
 
-.nav {
+/* THE TITLE BAR IS THE PAGE'S FIRST SENTENCE, and it has no words in it.
+   Drawn as the title bar of the machine the reader is on, so the claim
+   "every machine you own" is made in a shape they recognise before the
+   headline says it in English.
+
+   It is the ONLY blurred element that stays on screen during scroll — the
+   glass in a door or on a desk scrolls away — which is why the fallback in
+   §1e is load-bearing rather than tidy. */
+.bar {
   position: sticky; top: 0; z-index: 30;
-  background: var(--bg);
-  background: color-mix(in srgb, var(--bg) 84%, transparent);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--rule);
+  background: var(--mat-fill);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+  border-bottom: var(--stroke) solid var(--rule);
+  font-family: var(--ui-sans);
+  transition: background-color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
 }
-.nav .wrap {
-  display: flex; align-items: center; gap: 20px;
+.bar .wrap {
+  display: flex; align-items: center; gap: 18px;
   height: var(--nav-h);
 }
+
+/* THE WINDOW CONTROLS ARE A PICTURE, NOT A CONTROL. No focus, no hover, no
+   accessible name, `aria-hidden` in the markup — the page's rule is that a
+   control on screen never silently does nothing, and the cheapest way to keep
+   it is to not be a control. `order` is what moves the group from the left
+   (macOS) to the right (Windows, Linux) without a second element.
+
+   THE DOTS ARE INK AT 20%, NOT RED/AMBER/GREEN. Traffic-light colour is the
+   single most quoted macOS gesture on the web and it invites someone to click
+   the red one. The desks in §4 keep real colour, because there they depict an
+   actual window; the page is not a window and does not pretend to be. */
+.bar-ctl { display: flex; align-items: center; gap: 8px; order: -1; }
+.bar-ctl i {
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--fg-dim); opacity: .2;
+}
+:root[data-os="windows"] .bar-ctl,
+:root[data-os="linux"]   .bar-ctl { order: 9; margin-left: 4px; }
+/* Windows draws glyphs, not dots: a 46x32 hit area each, hard right. */
+:root[data-os="windows"] .bar-ctl { gap: 0; }
+:root[data-os="windows"] .bar-ctl i {
+  width: 34px; height: 30px; border-radius: 0;
+  background: none; opacity: .75;
+  display: grid; place-items: center;
+  font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
+}
+:root[data-os="windows"] .bar-ctl i:nth-child(1)::before { content: "\2014"; }
+:root[data-os="windows"] .bar-ctl i:nth-child(2)::before { content: "\25A1"; }
+:root[data-os="windows"] .bar-ctl i:nth-child(3)::before { content: "\2715"; }
+/* GNOME ships ONE control on a headerbar, a circular close button. */
+:root[data-os="linux"] .bar-ctl i:nth-child(1),
+:root[data-os="linux"] .bar-ctl i:nth-child(2) { display: none; }
+:root[data-os="linux"] .bar-ctl i {
+  width: 24px; height: 24px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent); opacity: 1;
+  display: grid; place-items: center;
+}
+:root[data-os="linux"] .bar-ctl i::before {
+  content: "\2715"; font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
+}
+
 .brand {
   display: inline-flex; align-items: center; gap: 9px;
-  font-weight: 650; letter-spacing: -.01em; font-size: 17px;
+  font-weight: 650; letter-spacing: -.01em; font-size: 16px;
   text-decoration: none;
-  margin-right: auto;
 }
 .brand img { border-radius: 5px; display: block; }
-.nav-links { display: flex; gap: 20px; align-items: center; }
-.nav a { font-size: 15px; color: var(--fg-dim); text-decoration: none; }
-.nav a:hover { color: var(--fg); }
 
-/* WCAG 2.2 SC 2.5.8: a target is at least 24x24 CSS px. The nav rows are the
+/* macOS and GNOME centre the title; Windows leaves it hard left. The brand IS
+   the title, so it moves rather than being duplicated.
+
+   TRUE CENTRE, AND IT IS GATED ON WIDTH. `position: absolute; left: 50%` is
+   what actually centres a title, and the first cut of this redesign printed it
+   straight through the word "How" — with four nav links the middle third of the
+   bar was occupied. The fix was to cut the links to two rather than to give up
+   on centring: measured at 1440, the right-hand group now starts at 900px while
+   a centred `beckon` spans 675-765, so there is 135px of clearance.
+
+   Flex centring (`flex: 1; justify-content: center`) was tried and rejected. It
+   centres the title in the space LEFT OVER, and because the right group is
+   ~380px wide against ~60px of window controls, that put the title at x=570 on
+   a 1440px bar — 150px left of centre, which reads as a bug rather than as a
+   design. Measured, both numbers.
+
+   Below 1100px the clearance is gone, so the title goes back to flowing after
+   the controls. Nothing is lost: the tell that actually carries the skin there
+   is the controls, the corners and the press. */
+:root[data-os="macos"] .bar .wrap,
+:root[data-os="linux"] .bar .wrap { position: relative; }
+@media (min-width: 1100px) {
+  :root[data-os="macos"] .brand,
+  :root[data-os="linux"] .brand {
+    position: absolute; left: 50%; transform: translateX(-50%);
+  }
+}
+:root[data-os="macos"] .bar-links,
+:root[data-os="linux"] .bar-links { margin-left: auto; }
+:root[data-os="windows"] .brand { margin-right: auto; }
+
+.bar-links { display: flex; gap: 18px; align-items: center; }
+:root[data-os="windows"] .bar-links { margin-left: auto; }
+.bar a { font-size: 14px; color: var(--fg-dim); text-decoration: none; }
+.bar a:hover { color: var(--fg); }
+
+/* WCAG 2.2 SC 2.5.8: a target is at least 24x24 CSS px. These rows are the
    page's tightest, so the padding is here rather than trusted to line-height. */
-.nav-links a { padding: 6px 0; }
+.bar-links a { padding: 6px 0; }
 
 .os-switch { display: inline-flex; align-items: center; gap: 7px; }
-.os-switch label { font-size: 13px; color: var(--fg-dim); }
+.os-switch label { font-size: 12px; color: var(--fg-dim); }
 .os-switch select {
-  font: inherit; font-size: 14px;
-  color: var(--fg); background: var(--bg);
-  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  font: inherit; font-size: 13px; font-family: var(--ui-sans);
+  color: var(--fg); background: var(--mat-fill);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
   padding: 5px 8px; min-height: 30px;
 }
 .ghost {
-  font: inherit; font-size: 14px; cursor: pointer;
-  color: var(--fg); background: var(--bg);
-  border: 1px solid var(--rule); border-radius: var(--radius-sm);
-  padding: 6px 12px; min-height: 30px;
+  font: inherit; font-size: 13px; font-family: var(--ui-sans); cursor: pointer;
+  color: var(--fg); background: var(--mat-fill);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
+  padding: 5px 12px; min-height: 30px;
+  box-shadow: var(--mat-rim);
+  transition: transform var(--dur) var(--ease),
+              background-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
 }
 .ghost:hover { background: var(--bg-raised); }
+.ghost:active {
+  transform: translateY(var(--press-travel));
+  background: var(--mat-fill-press);
+  box-shadow: var(--mat-rim-press);
+}
 
 footer {
   border-top: 1px solid var(--rule);
-  padding-block: 34px 44px;
+  padding-block: 30px 40px;
   color: var(--fg-dim); font-size: 14px;
 }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 22px; }
@@ -249,21 +583,29 @@ main > section { padding-block: var(--section-y); }
 main > section + section { border-top: 1px solid var(--rule); }
 .panels section { padding-block: 0; }
 
+/* THE POSITIVE TRACKING ON THE DISPLAY SIZE IS DELIBERATE and looks like a
+   typo to anyone who has only ever tightened a big heading. Apple's published
+   SF tracking table is tightest at 17-20px and crosses back to POSITIVE above
+   24px (+.014em at 28px, +.008em at 48px). Since --sans opens with system-ui,
+   SF is the face most likely to render this line, so the SF-correct value is
+   the one to use — and Segoe UI Variable Display and Adwaita Sans both want 0,
+   which +.006em is within noise of. The web reflex of stamping -.02em on a
+   72px heading is wrong for all three. */
 h1 {
-  margin: 0 0 22px;
-  font-size: clamp(42px, 7.4vw, 92px);
-  line-height: .93;
-  letter-spacing: -.038em;
-  font-weight: 680;
+  margin: 0 0 20px;
+  font-size: clamp(38px, 7vw, 84px);
+  line-height: .95;
+  letter-spacing: .006em;
+  font-weight: 640;
 }
 h2 {
-  margin: 0 0 18px;
-  font-size: clamp(30px, 4.2vw, 50px);
-  line-height: 1.02;
-  letter-spacing: -.028em;
-  font-weight: 660;
+  margin: 0 0 16px;
+  font-size: clamp(29px, 4vw, 46px);
+  line-height: 1.05;
+  letter-spacing: .004em;
+  font-weight: 640;
 }
-h3 { margin: 0 0 10px; font-size: 18px; letter-spacing: -.01em; font-weight: 640; }
+h3 { margin: 0 0 10px; font-size: 17px; letter-spacing: -.006em; font-weight: 620; }
 
 /* Three prose roles, and only three: the sentence under a heading, body copy,
    and a footnote. Anything that wants a fourth is a sign the section is too
@@ -286,20 +628,22 @@ code {
 }
 :not(pre) > code {
   background: var(--bg-raised);
-  border: 1px solid var(--rule);
+  border: var(--stroke) solid var(--rule);
   border-radius: 5px;
   padding: .12em .38em;
 }
 
-/* Every command block on the page is this one panel. Capped at a measure
-   rather than run to the container's full width: the longest line anywhere on
-   the page is 62 characters, so a full-bleed <pre> is mostly empty panel. */
+/* Every command block on the page is this one panel, and after the redesign the
+   ONLY <pre>s left are the five real install commands — which is why beckon.js
+   may keep attaching a copy button to every one of them without asking. The
+   transcripts in #config are deliberately not <pre>: "Copy" on a shell session
+   would hand you the prompt and the output along with the command. */
 pre {
   margin: 16px 0 0;
   max-width: 72ch;
   background: var(--bg-raised);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+  border: var(--stroke) solid var(--rule);
+  border-radius: var(--r-card);
   padding: 15px 17px;
   overflow-x: auto;
   font-size: 14px;
@@ -310,25 +654,27 @@ pre code { font-size: 14px; }
 
 .copy {
   position: absolute; top: 9px; right: 9px;
-  font: 500 12px/1 var(--sans);
-  color: var(--fg-dim); background: var(--bg);
-  border: 1px solid var(--rule); border-radius: 6px;
+  font: 500 12px/1 var(--ui-sans);
+  color: var(--fg-dim); background: var(--surface);
+  border: var(--stroke) solid var(--rule-hard); border-radius: var(--r-ctl);
   padding: 5px 9px; cursor: pointer; min-height: 24px;
   opacity: 0; transition: opacity .15s;
 }
 pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
-/* Shared: the keycap. Used by the chords under each desk, the letter table,
-   the modifier list, the press rows and the HUD — one component, never forked.
-   The heavier bottom border is the whole trick: it reads as a key with a side
-   without costing a shadow. */
+/* Shared: the keycap. Used by the chords under the hero desk, the letter table,
+   the press rows and the HUD — one component, never forked. The heavier bottom
+   border is the whole trick: it reads as a key with a side without costing a
+   shadow. It keeps --radius-sm rather than --r-ctl because the press rows and
+   the HUD are §4's and §6's, and a keycap is a picture of a physical key rather
+   than a piece of any operating system's chrome. */
 .key {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 27px; height: 27px; padding: 0 8px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-hard);
   border-bottom-width: 2px;
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: var(--surface);
   font: 500 12.5px/1 var(--mono);
   color: var(--fg);
   white-space: nowrap;
@@ -337,10 +683,18 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    signs were three extra marks per chord saying what adjacency already says. */
 .chord { display: inline-flex; align-items: center; gap: 5px; }
 
-/* The one `=` on the page, and it is not a fourth plus sign: it separates two
-   whole chords rather than two keys, and what it claims is that they are the
-   same gesture. Left readable rather than aria-hidden — "Caps Lock C equals
-   Ctrl Win Alt C" is exactly the sentence a screen reader should get. */
+/* The modifier rows. One per machine; CSS keeps only the reader's own once
+   `data-os` resolves, and all three stay on screen with JS off — which is the
+   cross-platform claim surviving in the one mode that cannot switch. */
+.mods { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; justify-items: center; }
+.mods li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mod-os { font-size: 14px; min-width: 68px; text-align: right; color: var(--fg-dim); }
+.mod-note { font-size: 13px; color: var(--fg-dim); }
+
+/* The one `=` on the page, and it is not a plus sign: it separates two whole
+   chords rather than two keys, and what it claims is that they are the same
+   gesture. Left readable rather than aria-hidden — "Caps Lock C equals Ctrl Win
+   Alt C" is exactly the sentence a screen reader should get. */
 .chord-is { color: var(--fg-dim); font-size: 14px; }
 
 /* Caps Lock leads; the chord it stands in for follows, quieter. The right-hand
@@ -349,19 +703,51 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .key.is-caps { font-weight: 640; }
 .chord.is-alias .key { color: var(--fg-dim); border-bottom-width: 1px; }
 
+/* THE PRESS IS THE SIGNATURE, and it is one rule set reading four tokens the
+   skin swaps. Glass descends 4px and its blur tightens from 20px to 14px, so
+   what is behind it SHARPENS as it goes down; a Fluent control moves 1px, dims,
+   and loses the darker bottom stroke that was its edge; an Adwaita chip does
+   not move at all and only deepens. Three material philosophies, one component.
+
+   This is what carries the costume now that a whole-page typeface swap is off
+   the table — and unlike a typeface it renders on every machine, so the reader
+   who presses the switch gets the most convincing version rather than the
+   least. */
+.btn, .tab, .door-btn {
+  transition: transform var(--dur) var(--ease),
+              background-color var(--dur) var(--ease),
+              backdrop-filter var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease),
+              border-color var(--dur) var(--ease),
+              color var(--dur) var(--ease);
+}
+.btn:active, .tab:active {
+  transform: translateY(var(--press-travel));
+  backdrop-filter: var(--mat-blur-press);
+  box-shadow: var(--mat-rim-press);
+}
+
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
-  min-height: 44px; padding: 0 22px;
-  border-radius: 9px;
+  min-height: 44px; padding: var(--btn-pad);
+  border-radius: var(--r-pill);
+  font-family: var(--ui-sans);
   font-weight: 560; font-size: 15px;
   text-decoration: none;
-  border: 1px solid transparent;
+  border: var(--stroke) solid transparent;
 }
-/* An ink button, not a blue one. */
-.btn-solid { background: var(--fg); color: var(--bg); }
-.btn-solid:hover { opacity: .88; }
-.btn-line { border-color: var(--rule); color: var(--fg); }
+/* The accent's first of four placements. It is the machine's own blue, so the
+   one saturated thing above the fold is the reader's own system colour. */
+.btn-solid { background: var(--accent); color: var(--accent-fg); box-shadow: var(--mat-rim); }
+.btn-solid:hover { filter: brightness(1.08); }
+.btn-solid:active { background: color-mix(in srgb, var(--fg) 12%, var(--accent)); }
+.btn-line {
+  border-color: var(--rule-hard); color: var(--fg);
+  background: var(--mat-fill); backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+}
 .btn-line:hover { background: var(--bg-raised); }
+.btn-line:active { background: var(--mat-fill-press); }
 
 
 /* --- 4. the desk ---------------------------------------------------------- */
@@ -1245,20 +1631,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .how-table tbody th { color: var(--fg-dim); width: 42%; }
 .how-table tbody td { font-weight: 400; }
 
-/* The two group headings — "you are somewhere else" and "you are already in
-   it" — which are what the section's own headline is about. They are `th`s
-   inside `tbody`, so both rules above would otherwise dim them and squeeze
-   them into the 46% first column. */
-.how-when th {
-  width: auto;
-  padding: 26px 14px 6px;
-  border-bottom: 0;
-  font: 500 12px/1 var(--sans);
-  letter-spacing: .07em; text-transform: uppercase;
-  color: var(--fg-dim);
-}
-.how-table tbody:first-of-type .how-when th { padding-top: 2px; }
-/* The name of the branch. It carries the meaning the step number never did, so
+/* THE TWO GROUP HEADINGS ARE GONE. They read "You are somewhere else" and "You
+   are already in it" — eight words restating what the first column says once
+   the conditions are written as conditions rather than as sentences. The five
+   rows carry the split on their own now.
+
+   The name of the branch. It carries the meaning the step number never did, so
    it is the one thing in the row set in full ink. */
 .how-do { font-weight: 640; color: var(--fg); }
 
@@ -1266,7 +1644,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    Two different things, so two different marks: a fill for "this just
    happened", a caret for "this is what is on screen". */
 .how-table tbody tr.is-hit { background: var(--hit); }
-.how-table tbody tr.is-hit .how-step { color: var(--accent); font-weight: 600; }
+.how-table tbody tr.is-hit .how-do { color: var(--accent); }
 .how-table tbody tr.is-on th { color: var(--fg); font-weight: 500; }
 
 /* WHILE THE TOUR IS DRIVING, `is-on` gets the fill too, so exactly one row is
@@ -1312,62 +1690,173 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 
 
-/* --- 5c. section: names --------------------------------------------------- */
+/* --- 5c. section: config — three doors, one binding ----------------------- */
 
-.compare { display: grid; gap: 14px; margin-bottom: 30px; max-width: 76ch; }
-.compare-row { display: grid; gap: 8px; }
-.compare-code { margin: 0; overflow-x: auto; }
-.compare-label { margin: 0; font-size: 15px; color: var(--fg-dim); }
-/* The strike lives on the label and must NEVER reach the code: the command
-   stays selectable, full contrast and copyable, including the one nobody
-   should type. */
-.is-bad .compare-label { text-decoration: line-through; }
-.is-good .compare-code { border-left: 2px solid var(--fg); }
-.is-bad  .compare-code { border-left: 2px solid var(--rule); }
+/* This section replaced three: #names (96 words arguing for display names),
+   #serve (104 introducing resident mode) and #setups (170 of compatibility
+   tiles). It replaces them with three pictures that carry the same information
+   by BEING what they describe — which is the only way a page gets shorter
+   without getting vaguer.
 
+   EACH DOOR IS DRAWN IN A FIXED LANGUAGE, not in the reader's. `.door[data-os]`
+   re-declares the §1c skin for its own subtree, so a Fluent settings window
+   renders correctly on a macOS page and a GNOME terminal renders correctly on a
+   Windows one. Three grammars in one glance is the argument; a shelf that
+   re-skinned all three together would be one grammar printed three times.
 
-/* --- 5d. section: setups -------------------------------------------------- */
+   NOTHING IN A DOOR IS A CONTROL. The `C` row is marked `is-on` in all three,
+   permanently, so "the same binding, seen three ways" is a picture rather than
+   a click. An earlier draft lit the rows across doors on selection — that needs
+   JS this page's script does not have, and a row that looks selectable and is
+   not is the exact failure the rest of the page is built to avoid. */
 
-.tiles {
-  list-style: none; margin: 0 0 42px; padding: 0;
-  display: grid; gap: 1px;
-  grid-template-columns: repeat(4, 1fr);
-  background: var(--rule);
-  border: 1px solid var(--rule);
-  border-radius: var(--radius);
+.doors {
+  list-style: none; margin: 0 0 46px; padding: 0;
+  display: grid; gap: 26px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+}
+.door { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+
+/* ONE HEIGHT FOR ALL THREE, and it is a fixed number rather than a stretch.
+   Left to their content the three windows measured 154 / 212 / 154, which put
+   the three captions on three different baselines — and the captions are where
+   the availability matrix is read, so a reader comparing "macOS, Windows,
+   Linux" against "Windows" had to hunt for the second one. The Fluent door is
+   the tall one (three rows plus a command bar); 212 is its natural height, so
+   that is the height, and the other two get the slack inside their body rather
+   than under their caption. */
+.door-win {
+  display: flex; flex-direction: column;
+  height: 212px;
+  border-radius: var(--r-window);
+  border: var(--stroke) solid var(--rule-hard);
+  box-shadow: var(--elev-2);
   overflow: hidden;
+  font-family: var(--ui-sans);
+  font-size: calc(13px * var(--ui-scale));
+  background: var(--surface);
+  margin-bottom: 14px;
 }
-/* A hairline grid, not eight floating cards. The rules between the tiles are
-   the container's own background showing through a 1px gap, so there is one
-   line between neighbours rather than two borders meeting. */
-.tile {
-  background: var(--bg);
-  padding: 17px 18px;
-  display: flex; flex-direction: column; gap: 5px;
+.door-bar {
+  display: flex; align-items: center; gap: 10px;
+  flex: 0 0 34px; padding: 0 10px;
+  background: var(--mat-fill);
+  backdrop-filter: var(--mat-blur);
+  box-shadow: var(--mat-rim);
+  border-bottom: var(--stroke) solid var(--rule);
 }
-.tile-name { font-weight: 560; font-size: 15px; }
-.tile-note { font-size: 13.5px; color: var(--fg-dim); }
-.tile-flag {
-  align-self: flex-start;
+.door-title { font-size: calc(12px * var(--ui-scale)); font-weight: 600; color: var(--fg-dim); }
+.door-ctl { display: flex; align-items: center; gap: 7px; }
+.door-body { flex: 1; padding: 12px; background: var(--surface); display: flex; flex-direction: column; }
+.door-actions { margin-top: auto; }
+
+/* The three title bars, drawn the way each system draws one. This is the
+   clearest place on the page to read the difference, because here they sit side
+   by side in the same light. */
+.door[data-os="macos"] .door-ctl { order: -1; }
+.door[data-os="macos"] .door-title { margin-inline: auto; padding-right: 42px; }
+.door[data-os="macos"] .door-ctl i { width: 11px; height: 11px; border-radius: 50%; }
+/* Real traffic-light colour HERE and not in the page's own title bar: a door is
+   depicting an actual window, so the dots are the window's. The page is not a
+   window and does not pretend to be one. */
+.door[data-os="macos"] .door-ctl i:nth-child(1) { background: #FF5F57; }
+.door[data-os="macos"] .door-ctl i:nth-child(2) { background: #FEBC2E; }
+.door[data-os="macos"] .door-ctl i:nth-child(3) { background: #28C840; }
+
+.door[data-os="windows"] .door-title { margin-right: auto; }
+.door[data-os="windows"] .door-ctl { gap: 0; margin-right: -10px; }
+.door[data-os="windows"] .door-ctl i {
+  width: 32px; height: 34px;
+  display: grid; place-items: center;
+  font: 400 9px/1 var(--ui-sans); color: var(--fg-dim);
+}
+.door[data-os="windows"] .door-ctl i:nth-child(1)::before { content: "\2014"; }
+.door[data-os="windows"] .door-ctl i:nth-child(2)::before { content: "\25A1"; }
+.door[data-os="windows"] .door-ctl i:nth-child(3)::before { content: "\2715"; }
+
+.door[data-os="linux"] .door-title { margin-inline: auto; padding-left: 24px; }
+.door[data-os="linux"] .door-ctl i {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  display: grid; place-items: center;
+}
+.door[data-os="linux"] .door-ctl i::before {
+  content: "\2715"; font: 400 9px/1 var(--ui-sans); color: var(--fg-dim);
+}
+
+/* Door 1 — the shell. Follows the theme rather than being unconditionally
+   black, because GNOME Console does. */
+.term { display: grid; gap: 3px; font: 400 12.5px/1.6 var(--ui-mono); }
+.term-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-ps { color: var(--accent); font-weight: 600; margin-right: 6px; }
+.term-line.is-out { color: var(--fg-dim); padding-left: 16px; }
+
+/* Door 2 — the settings list. Fluent separates rows with a hairline and marks
+   the selected one with a fill plus a short accent bar, never with a border. */
+.rows { display: grid; }
+.row {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+  padding: 8px 10px;
+  border-bottom: var(--stroke) solid var(--rule);
+  border-radius: var(--r-ctl);
+  position: relative;
+}
+.row-head {
+  font-size: calc(11px * var(--ui-scale)); font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.row .mini { font: 400 11.5px/1 var(--ui-mono); color: var(--fg-dim); white-space: nowrap; }
+.door-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
+.door-btn {
+  padding: var(--btn-pad); border-radius: var(--r-ctl);
+  background: var(--accent); color: var(--accent-fg);
+  font-size: calc(12.5px * var(--ui-scale)); font-weight: 600;
+  box-shadow: var(--mat-rim);
+}
+
+/* Door 3 — the file. Three colours and no more: the key is the accent, the `=`
+   is dim, the value is ink. A six-colour syntax theme here would out-shout the
+   two doors beside it, which is not what this shelf is comparing. */
+.toml { display: grid; gap: 4px; font: 400 12.5px/1.7 var(--ui-mono); }
+.toml-line {
+  padding: 3px 8px; border-radius: var(--r-ctl);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.t-k { color: var(--accent); }
+.t-o { color: var(--fg-dim); }
+.t-v { color: var(--fg); }
+
+/* The same binding, marked identically in three languages. */
+.row.is-on, .toml-line.is-on { background: var(--accent-soft); }
+.row.is-on::before {
+  content: ""; position: absolute; left: 0; top: 20%; bottom: 20%;
+  width: 3px; border-radius: 2px; background: var(--accent);
+}
+
+.door-cap { margin: 0 0 3px; font-size: 15px; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.door-cap b { font-weight: 620; }
+/* The availability line, and the asymmetry between the three IS the section's
+   second argument: the CLI spans all three machines, the settings window is
+   Windows only, the file is macOS and Windows. That is the whole "which parts
+   work where" story stated as a matrix — with no compositor named anywhere on
+   this page, which is the other thing this redesign set out to stop doing. */
+.door-on {
   font: 500 11px/1 var(--sans);
   letter-spacing: .04em; text-transform: uppercase;
   color: var(--fg-dim);
-  border: 1px solid var(--rule); border-radius: 4px;
+  border: 1px solid var(--rule-hard); border-radius: 4px;
   padding: 3px 6px;
 }
+.door-note { margin: 0; font-size: 14px; color: var(--fg-dim); }
 
-/* The letter table and the modifier list are one thought — "remember the
-   letter, not the modifier" — so they sit side by side and are read as a pair.
-   The table is capped at its own content width; left to fill the container it
-   put half a screen of nothing between `C` and `Chrome`. */
-.keys {
-  display: grid; gap: 34px 52px; align-items: start;
-  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
-}
-.keytable { border-collapse: collapse; width: 100%; }
+/* The canonical letter table. Capped at its own content width; left to fill the
+   container it put half a screen of nothing between `C` and `Chrome`. */
+.keytable { border-collapse: collapse; max-width: 320px; width: 100%; }
 .keytable caption {
   caption-side: top; text-align: left;
-  max-width: 42ch; margin-bottom: 14px;
+  max-width: 46ch; margin-bottom: 14px;
   font-size: 15px; color: var(--fg-dim);
 }
 .keytable th, .keytable td {
@@ -1381,65 +1870,67 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   color: var(--fg-dim);
 }
 
-.mods { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 11px; }
-.mods li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.mod-os { font-size: 15px; min-width: 74px; color: var(--fg-dim); }
-.mod-note { font-size: 13px; color: var(--fg-dim); }
-
-/* Shared: the OS marker. Generated content keyed on :root[data-os], not a
-   <span> in the markup — a shipped chip would have to read "yours" on all three
-   rows with JS off, which is nonsense, or ship `hidden` and wait for JS, which
-   is the defect this page refuses everywhere else. With JS off `data-os` is
-   absent, nothing matches, and every list reads as it did before. */
-:root[data-os="macos"]   .os-row[data-os="macos"]::after,
-:root[data-os="windows"] .os-row[data-os="windows"]::after,
-:root[data-os="linux"]   .os-row[data-os="linux"]::after {
-  content: "yours";
-  font: 500 11px/1 var(--sans);
-  letter-spacing: .04em; text-transform: uppercase;
-  color: var(--accent);
-  border: 1px solid currentColor; border-radius: 4px;
-  padding: 3px 6px;
-  margin-left: 2px;
-}
-
-
-/* --- 5e. section: serve --------------------------------------------------- */
-
-.toml-fig { margin: 0 0 32px; }
-.toml-fig figcaption {
-  font: 500 12px/1 var(--mono);
-  color: var(--fg-dim);
-  margin-bottom: 8px;
-}
-.toml-fig pre { margin-top: 0; }
-
-.cards {
-  list-style: none; margin: 0; padding: 0;
-  display: grid; gap: 26px;
-  grid-template-columns: repeat(3, 1fr);
-}
-.card { border-top: 2px solid var(--rule); padding-top: 15px; }
-.card h3 { display: flex; align-items: center; gap: 9px; }
-.card p { margin: 0; font-size: 15px; color: var(--fg-dim); max-width: 42ch; }
-.card-linux { border-top-color: var(--fg-dim); }
+/* THE "yours" CHIP IS GONE, and it went with the section it was for. It marked
+   the reader's own row in a list of three, and the only such list left is
+   `.hero-chords` — which §5a already filters down to that one row. A chip
+   reading "yours" on the single row on screen is a label for a distinction that
+   is no longer being drawn. */
 
 
 /* --- 5f. section: install ------------------------------------------------- */
 
-.tabs { display: flex; gap: 6px; margin-bottom: 26px; flex-wrap: wrap; }
+/* The tab strip is the third place the skin shows, and each machine has a real
+   answer for it: macOS a segmented control sunk into a track, Windows a Fluent
+   pivot marked by a short underline rather than a fill, GNOME a view switcher
+   of pill chips. All three are the same markup and the same two states. */
+.tabs {
+  display: flex; gap: 4px; margin-bottom: 26px; flex-wrap: wrap;
+  align-self: flex-start; width: max-content; max-width: 100%;
+  padding: 3px; border-radius: var(--r-ctl);
+  background: var(--bg-raised);
+  font-family: var(--ui-sans);
+}
 .tab {
-  font: inherit; font-size: 15px; cursor: pointer;
+  font: inherit; font-size: calc(14px * var(--ui-scale)); cursor: pointer;
   color: var(--fg-dim); background: none;
-  border: 1px solid transparent; border-radius: 8px;
-  padding: 8px 15px; min-height: 38px;
+  border: var(--stroke) solid transparent; border-radius: var(--r-ctl);
+  padding: 7px 15px; min-height: 38px;
 }
 .tab:hover { color: var(--fg); }
 .tab[aria-selected="true"] {
-  color: var(--fg); background: var(--bg-raised); border-color: var(--rule);
+  color: var(--fg); background: var(--surface);
+  border-color: var(--rule); box-shadow: var(--elev-1);
   font-weight: 560;
 }
-.panels { display: grid; gap: 42px; }
+/* Fluent does NOT fill the selected pivot — it underlines it with a short
+   accent rule and leaves the ground alone. Faking it with a fill is the single
+   most common way a web imitation of Windows reads as not-Windows. */
+:root[data-os="windows"] .tabs { background: none; padding: 0; gap: 2px; }
+:root[data-os="windows"] .tab[aria-selected="true"] {
+  background: none; border-color: transparent; box-shadow: none;
+  position: relative;
+}
+:root[data-os="windows"] .tab[aria-selected="true"]::after {
+  content: ""; position: absolute; left: 15px; right: 15px; bottom: 2px;
+  height: 3px; border-radius: 2px; background: var(--accent);
+}
+/* Adwaita's view switcher is a chip of the ink colour, not a raised card. */
+:root[data-os="linux"] .tabs { background: none; padding: 0; gap: 6px; }
+:root[data-os="linux"] .tab { border-radius: var(--r-pill); }
+:root[data-os="linux"] .tab[aria-selected="true"] {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  border-color: transparent; box-shadow: none;
+}
+
+/* `minmax(0, 1fr)`, not `1fr`, and it is load-bearing on a phone. A grid item's
+   default `min-width: auto` refuses to shrink below its content, and the widest
+   content here is `scoop bucket add xom11 https://github.com/xom11/scoop-bucket`
+   — 62 characters that cannot wrap. So the panel grew to 562px inside a 390px
+   viewport and took the whole document with it: measured, the page scrolled
+   horizontally on every phone. The `overflow-x: auto` on `pre` was already
+   correct and could not help, because nothing was ever narrower than the thing
+   it was supposed to clip. */
+.panels { display: grid; grid-template-columns: minmax(0, 1fr); gap: 40px; }
 .panel h3 { display: flex; align-items: baseline; gap: 10px; }
 .panel-os { font: 500 12px/1 var(--sans); letter-spacing: .04em; text-transform: uppercase; color: var(--fg-dim); }
 
@@ -1516,51 +2007,54 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 
 @media (max-width: 1040px) {
-  .tiles { grid-template-columns: repeat(2, 1fr); }
-  .cards { grid-template-columns: 1fr; gap: 22px; }
-  .keys { grid-template-columns: 1fr; gap: 30px; }
   /* Stacked under the table, the desk has the whole column and no reason to
      stay at the width it had beside one. Its title-bar buttons are clickable
      now, and at 620px they were 8px across. */
   .how-demo .desk-slot { max-width: 820px; }
 }
 
+/* The three doors go 1-up rather than into a scroll-snap rail. One door at a
+   time destroys "three grammars in one glance", which is the only reason the
+   section exists; stacked keeps all three on the same scroll and in the same
+   light, which is what makes them comparable. */
 @media (max-width: 900px) {
   :root { --section-y: 76px; }
   .hud { display: none; }          /* it would cover the content it explains */
-  .nav-links { gap: 14px; }
-  .nav .wrap { gap: 12px; }
+  .doors { grid-template-columns: 1fr; gap: 22px; }
+  .door-win { max-width: 520px; }
+  .bar-links { gap: 14px; }
+  .bar .wrap { gap: 12px; }
 }
 
 @media (max-width: 760px) {
   .wrap { padding-inline: 20px; }
-  /* The three hero desks stack. The simultaneity claim moves entirely onto the
-     transcript here, which is why that paragraph says it in words. */
-  .hero-demo .desks { grid-template-columns: 1fr; }
   .hero { padding-top: 34px; }
   .hero-demo { margin-top: 26px; }
-  .tiles { grid-template-columns: 1fr; }
   .how-table tbody th { width: auto; }
   .how-table th, .how-table td { padding: 11px 8px 11px 0; }
 
-  /* The nav loses its links rather than wrapping or scrolling: every one of
-     them is reachable from the footer, and the two controls that are NOT
-     duplicated anywhere — the OS switch and the theme toggle — are the ones
-     that have to survive. Before this the Theme button was clipped off the
-     right edge of a 390px screen. */
-  .nav-links { display: none; }
+  /* The title bar loses its links rather than wrapping or scrolling: every one
+     of them is reachable from the footer, and the two controls that are NOT
+     duplicated anywhere — the machine switch and the theme toggle — are the
+     ones that have to survive. Before this the Theme button was clipped off the
+     right edge of a 390px screen.
+
+     The window-control picture goes too, and it is the first thing to go: it is
+     the one element on the page that is decoration by construction, and a
+     390px-wide title bar has no room for a costume. */
+  .bar-links, .bar-ctl { display: none; }
+  :root[data-os="macos"] .brand,
+  :root[data-os="linux"] .brand { position: static; left: auto; transform: none; margin-right: auto; }
   .os-switch label { display: none; }
   .os-switch select, .ghost { padding: 5px 8px; font-size: 13px; }
 
-  /* The chord rows carry two whole chords and an `=` now, and at full keycap
-     size that is ~350px of content on a 350px line: measured at 390px wide, the
-     row broke after the `=`, which left the sign hanging at the end of a line
-     with the thing it equates on the next one. Smaller caps bring the pair back
-     onto one line without dropping the note or the "yours" chip, neither of
-     which this page hides on a phone. */
+  /* One chord row is on screen at a time, and at full keycap size a four-key
+     macOS chord plus its label is ~330px of content on a 350px line. Smaller
+     caps keep it on one line without dropping the "yours" chip, which this page
+     does not hide on a phone. */
   .mods .key { height: 24px; min-width: 22px; padding: 0 6px; font-size: 11px; }
   .mods li { justify-content: center; gap: 5px 9px; }
-  .mods .mod-os { min-width: 0; }
+  .mods .mod-os { min-width: 0; text-align: left; }
 }
 
 

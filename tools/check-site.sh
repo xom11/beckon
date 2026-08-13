@@ -235,6 +235,45 @@ else
   ok "all four install panels ship visible"
 fi
 
+# The guard above is a regex over `class="panel"`, so it stops being able to
+# match the moment a panel's class list grows — `class="panel is-active"` makes
+# it vacuous and it reports green whatever the markup does. Counting the bare
+# form is what keeps the check honest.
+n=$(grep -c 'class="panel"' "$H" || true)
+if [ "$n" -eq 4 ]; then
+  ok "all four panels are still bare class=\"panel\" (check 8 can see them)"
+else
+  bad "expected 4 bare class=\"panel\" attributes, found $n — check 8's guard is now vacuous"
+fi
+
+# --- 9. the skins are actually three skins ---------------------------------
+# The token audit in check 2 proves a NAME exists on bare :root. It cannot see a
+# forgotten override — and a form token that is never restated for Windows and
+# Linux silently serves them the macOS value, so the page's whole "it wears your
+# machine" thesis is refuted by the page itself with every other check green.
+#
+# beckon.css marks the OS-varying tokens with @os-parity begin/end. Every one of
+# them has to appear in all three :root[data-os="…"] blocks in §1c.
+parity=$(awk '/@os-parity begin/,/@os-parity end/' "$C" | grep -oE '^\s+--[a-zA-Z0-9-]+' | tr -d ' ')
+if [ -z "$parity" ]; then
+  bad "no @os-parity block in beckon.css — the skin tokens are unguarded"
+else
+  parity_fail=0
+  for os in macos windows linux; do
+    block=$(awk -v pat=":root\\[data-os=\"$os\"\\], .door\\[data-os=\"$os\"\\] \\{" \
+              'index($0, "@os-parity") { next }
+               $0 ~ /^:root\[data-os=/ && index($0, "\"'"$os"'\"") { f=1 }
+               f { print }
+               f && /^\}/ { exit }' "$C")
+    for t in $parity; do
+      printf '%s\n' "$block" | grep -q -- "$t:" \
+        || { bad "$t is not overridden for $os — that skin silently gets the macOS value"; parity_fail=1; }
+    done
+  done
+  [ "$parity_fail" -eq 0 ] \
+    && ok "every @os-parity token is overridden in all three skins ($(printf '%s\n' "$parity" | wc -l | tr -d ' ') tokens)"
+fi
+
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf 'all checks passed\n'; else printf 'checks FAILED\n'; fi
 exit "$fail"

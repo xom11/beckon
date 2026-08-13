@@ -690,8 +690,12 @@
     /* "Linux", not "Linux · sway". The desk draws a stacking desktop now —
        GNOME and KDE are what a Linux reader is most likely to be looking at —
        and naming one compositor on the button made the other seven supported
-       ones look absent. The tile list in #setups is where they are enumerated;
-       this is a switch between three machines. */
+       ones look absent.
+       This comment used to end "the tile list in #setups is where they are
+       enumerated". That section is gone: the 2026-08 redesign deleted the
+       compatibility grid, and the page now names no compositor anywhere — the
+       three machines are the whole vocabulary, and the enumeration lives in the
+       README. This is a switch between three machines, and that is all it is. */
     [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']]
       .forEach(function (n) {
         var b = el('button', null, n[1]);
