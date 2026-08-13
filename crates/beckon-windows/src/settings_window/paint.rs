@@ -617,7 +617,7 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
         SetTextColor(
             hdc,
             if sel {
-                theme_col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
+                theme_col(|p| p.text, COLOR_HIGHLIGHTTEXT)
             } else {
                 theme_col(|p| p.text, COLOR_WINDOWTEXT)
             },
