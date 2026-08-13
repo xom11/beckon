@@ -30,8 +30,8 @@ local function beckon(name)
     end, { name }):start()
 end
 
-hs.hotkey.bind(hyper, "t", function() beckon("kitty") end)
-hs.hotkey.bind(hyper, "c",     function() beckon("Claude") end)
-hs.hotkey.bind(hyper, "b",     function() beckon("Brave Browser") end)
-hs.hotkey.bind(hyper, "e",     function() beckon("Cursor") end)
-hs.hotkey.bind(hyper, "d",     function() beckon("Discord") end)
+hs.hotkey.bind(hyper, "t", function() beckon("Terminal") end)
+hs.hotkey.bind(hyper, "c", function() beckon("Google Chrome") end)
+hs.hotkey.bind(hyper, "v", function() beckon("Visual Studio Code") end)
+hs.hotkey.bind(hyper, "f", function() beckon("Finder") end)
+hs.hotkey.bind(hyper, "s", function() beckon("Spotify") end)

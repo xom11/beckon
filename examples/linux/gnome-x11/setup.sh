@@ -20,10 +20,10 @@ fi
 # Each entry: name|binding|app
 ENTRIES=(
     "beckon-terminal|<Super>t|kitty"
-    "beckon-claude|<Super>c|Claude"
-    "beckon-brave|<Super>b|Brave"
-    "beckon-cursor|<Super>e|Cursor"
-    "beckon-discord|<Super>d|Discord"
+    "beckon-chrome|<Super>c|Google Chrome"
+    "beckon-code|<Super>v|Visual Studio Code"
+    "beckon-files|<Super>f|Files"
+    "beckon-spotify|<Super>s|Spotify"
 )
 
 # Build the path list gsettings expects. Each binding lives at

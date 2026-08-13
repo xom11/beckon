@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>beckon — one key per app, on every OS</title>
 
-<meta name="description" content="beckon is a cross-platform focus-or-launch app switcher. The same line, beckon Claude, works on macOS, Windows and Linux — ids resolve against the OS's own metadata, so there is nothing to keep in sync between machines.">
+<meta name="description" content="beckon is a cross-platform focus-or-launch app switcher. The same line, beckon Chrome, works on macOS, Windows and Linux — ids resolve against the OS's own metadata, so there is nothing to keep in sync between machines.">
 
 <meta property="og:title" content="beckon — one key per app, on every OS">
-<meta property="og:description" content="A cross-platform focus-or-launch app switcher. The same line, beckon Claude, works on macOS, Windows and Linux.">
+<meta property="og:description" content="A cross-platform focus-or-launch app switcher. The same line, beckon Chrome, works on macOS, Windows and Linux.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://xom11.github.io/beckon/">
 <meta property="og:image" content="https://xom11.github.io/beckon/icon-512.png">
@@ -149,7 +149,7 @@
       <!-- One line, kept to one line. The demo is the argument and every
            sentence above it pushes the desk further past the fold; the
            resolution detail this used to carry is in #names and in the FAQ. -->
-      <p class="lead"><code>beckon Claude</code> is the same line on every machine you own.</p>
+      <p class="lead"><code>beckon Chrome</code> is the same line on every machine you own.</p>
 
       <div class="hero-cta">
         <a class="btn btn-solid" href="#install">Install</a>
@@ -185,25 +185,25 @@
                    against README's own table, so a rebinding cannot leave the
                    dock teaching the old letter.
                    `is-focused` marks the one app that currently has focus —
-                   here Brave, which is what the windows above show. -->
+                   here VS Code, which is what the windows above show. -->
               <div class="desk-bar">
-                <span class="dock-app is-up" data-app="terminal" data-key="T"></span>
-                <span class="dock-app is-up" data-app="Claude" data-key="C"></span>
-                <span class="dock-app is-up is-focused" data-app="Brave" data-key="B"></span>
-                <span class="dock-app" data-app="Cursor" data-key="E"></span>
-                <span class="dock-app" data-app="Discord" data-key="D"></span>
+                <span class="dock-app is-up" data-app="Terminal" data-key="T"></span>
+                <span class="dock-app is-up" data-app="Chrome" data-key="C"></span>
+                <span class="dock-app is-up is-focused" data-app="VS Code" data-key="V"></span>
+                <span class="dock-app" data-app="Files" data-key="F"></span>
+                <span class="dock-app" data-app="Spotify" data-key="S"></span>
               </div>
               <div class="desk-wins">
-                <div class="win is-focused" data-app="Brave" style="--slot:0; z-index:3">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Brave</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                <div class="win is-focused" data-app="VS Code" style="--slot:0; z-index:3">
+                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">VS Code</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                   <div class="win-body"></div>
                 </div>
-                <div class="win" data-app="Claude" style="--slot:1; z-index:2">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Claude</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                <div class="win" data-app="Chrome" style="--slot:1; z-index:2">
+                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Chrome</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                   <div class="win-body"></div>
                 </div>
-                <div class="win" data-app="terminal" style="--slot:2; z-index:1">
-                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">terminal</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                <div class="win" data-app="Terminal" style="--slot:2; z-index:1">
+                  <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Terminal</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                   <div class="win-body"></div>
                 </div>
               </div>
@@ -255,8 +255,8 @@
           </li>
         </ul>
 
-        <p class="demo-steps">One line — <code>beckon Claude</code> — bound to each machine's own
-        modifier. Claude was running behind Brave; one press and it takes focus.</p>
+        <p class="demo-steps">One line — <code>beckon Chrome</code> — bound to each machine's own
+        modifier. Chrome was running behind VS Code; one press and it takes focus.</p>
       </div>
 
       <p class="hero-meta">MIT OR Apache-2.0 &middot; v0.9.3 &middot; Rust, no runtime</p>
@@ -272,7 +272,7 @@
 
        Why a reset control is needed at all, and why it cannot be avoided by a
        cleverer demo: a single desk cannot walk all five branches from
-       keypresses alone. With three Claude windows open the ring never exits 5a,
+       keypresses alone. With three Chrome windows open the ring never exits 5a,
        so 5b and 5c are unreachable until the app is down to one window. That is
        the algorithm, verified live on sway, not a limitation of the mock — and
        site/desk.test.mjs pins it ("with several windows open the ring never
@@ -321,25 +321,25 @@
               <div class="desk" data-os="macos" data-scene="5a" id="how-desk">
                 <div class="desk-sky"></div>
                 <div class="desk-wins">
-                  <div class="win is-focused" data-app="Claude" style="--slot:0; z-index:3">
-                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Claude</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                  <div class="win is-focused" data-app="Chrome" style="--slot:0; z-index:3">
+                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Chrome</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                     <div class="win-body"></div>
                   </div>
-                  <div class="win" data-app="Claude" style="--slot:1; z-index:2">
-                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Claude</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                  <div class="win" data-app="Chrome" style="--slot:1; z-index:2">
+                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Chrome</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                     <div class="win-body"></div>
                   </div>
-                  <div class="win" data-app="Brave" style="--slot:2; z-index:1">
-                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Brave</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
+                  <div class="win" data-app="Terminal" style="--slot:2; z-index:1">
+                    <div class="win-bar"><span class="win-lights"><i></i><i></i><i></i></span><span class="win-name">Terminal</span><span class="win-ctl"><i></i><i></i><i></i></span></div>
                     <div class="win-body"></div>
                   </div>
                 </div>
                 <div class="desk-bar">
-                  <span class="dock-app" data-app="terminal" data-key="T"></span>
-                  <span class="dock-app is-up is-focused" data-app="Claude" data-key="C"></span>
-                  <span class="dock-app is-up" data-app="Brave" data-key="B"></span>
-                  <span class="dock-app" data-app="Cursor" data-key="E"></span>
-                  <span class="dock-app" data-app="Discord" data-key="D"></span>
+                  <span class="dock-app is-up" data-app="Terminal" data-key="T"></span>
+                  <span class="dock-app is-up is-focused" data-app="Chrome" data-key="C"></span>
+                  <span class="dock-app" data-app="VS Code" data-key="V"></span>
+                  <span class="dock-app" data-app="Files" data-key="F"></span>
+                  <span class="dock-app" data-app="Spotify" data-key="S"></span>
                 </div>
               </div>
             </div>
@@ -348,9 +348,9 @@
           <div class="press" id="how-press" hidden></div>
           <div class="readout" id="how-readout" hidden></div>
 
-          <p class="demo-steps">Three presses with two Claude windows and Brave open: the ring
-          walks from one Claude window to the other and back, and never reaches Brave until
-          Claude is down to a single window.</p>
+          <p class="demo-steps">Three presses with two Chrome windows and a terminal open: the
+          ring walks from one Chrome window to the other and back, and never reaches the
+          terminal until Chrome is down to a single window.</p>
         </div>
 
       </div>
@@ -366,7 +366,7 @@
 
       <div class="compare">
         <div class="compare-row is-good">
-<pre class="compare-code"><code>beckon Claude</code></pre>
+<pre class="compare-code"><code>beckon Chrome</code></pre>
           <p class="compare-label">works on every machine you own</p>
         </div>
         <div class="compare-row is-bad">
@@ -375,12 +375,14 @@
         </div>
       </div>
 
-      <p class="prose">Brave and Chrome mint that hash locally when you install a PWA, so
-      copying your dotfile to a second laptop silently stops working — the display name does
-      not drift.</p>
+      <p class="prose">Chrome and Brave mint that hash locally when you install a site as an
+      app, so copying your dotfile to a second laptop silently stops working — the display
+      name does not drift. Names differ per OS more often than you would think — your file
+      manager is <code>Finder</code>, <code>File Explorer</code> or <code>Files</code>
+      depending on the machine — and <code>beckon search</code> is how you find yours.</p>
 
-<pre><code>beckon installed | grep -i claude
-beckon resolve Claude
+<pre><code>beckon installed | grep -i chrome
+beckon resolve "Google Chrome"
 beckon doctor</code></pre>
     </div>
   </section>
@@ -388,7 +390,7 @@ beckon doctor</code></pre>
   <!-- SETUPS. Every tile note is sourced from the dispatch table in CLAUDE.md
        and the status table in README.md; the letter table is README's own, and
        tools/check-site.sh greps for the exact string
-       `<kbd class="key">C</kbd></th><td>Claude</td>` — so that markup is a
+       `<kbd class="key">C</kbd></th><td>Chrome</td>` — so that markup is a
        contract, not a formatting choice. Do not reflow those five rows.
 
        All three modifier defaults stay on screen at every setting of `data-os`,
@@ -444,11 +446,11 @@ beckon doctor</code></pre>
             <tr><th scope="col">Key</th><th scope="col">App</th></tr>
           </thead>
           <tbody>
-            <tr><th scope="row"><kbd class="key">T</kbd></th><td>terminal</td></tr>
-            <tr><th scope="row"><kbd class="key">C</kbd></th><td>Claude</td></tr>
-            <tr><th scope="row"><kbd class="key">B</kbd></th><td>Brave</td></tr>
-            <tr><th scope="row"><kbd class="key">E</kbd></th><td>Cursor</td></tr>
-            <tr><th scope="row"><kbd class="key">D</kbd></th><td>Discord</td></tr>
+            <tr><th scope="row"><kbd class="key">T</kbd></th><td>Terminal</td></tr>
+            <tr><th scope="row"><kbd class="key">C</kbd></th><td>Chrome</td></tr>
+            <tr><th scope="row"><kbd class="key">V</kbd></th><td>VS Code</td></tr>
+            <tr><th scope="row"><kbd class="key">F</kbd></th><td>Files</td></tr>
+            <tr><th scope="row"><kbd class="key">S</kbd></th><td>Spotify</td></tr>
           </tbody>
         </table>
 
@@ -509,7 +511,7 @@ beckon doctor</code></pre>
 
       <figure class="toml-fig">
         <figcaption>apps.toml</figcaption>
-<pre><code>"ctrl+super+alt+t" = "kitty"
+<pre><code>"ctrl+super+alt+t" = "Terminal"
 "ctrl+super+alt+shift+t" = "Telegram Web"</code></pre>
       </figure>
 
@@ -527,7 +529,7 @@ beckon doctor</code></pre>
         <li class="card card-linux" data-os="linux">
           <h3 class="os-row" data-os="linux">Linux</h3>
           <p>Deliberately not served here. Your compositor already binds keys better than
-          beckon could, so <code>bindsym $mod+c exec beckon Claude</code> is the integration.</p>
+          beckon could, so <code>bindsym $mod+c exec beckon Chrome</code> is the integration.</p>
         </li>
       </ul>
     </div>
@@ -627,7 +629,7 @@ scoop install xom11/beckon</code></pre>
           <p>Not for <code>beckon &lt;id&gt;</code>. Ids resolve against the OS's own metadata on
           every call, so there is nothing to generate, no cache to rebuild and no alias file to
           keep in sync between machines. Only <code>serve</code> reads a file, and that file is a
-          hotkey table — <code>"ctrl+super+alt+t" = "kitty"</code> — not a place to rename apps.</p>
+          hotkey table — <code>"ctrl+super+alt+t" = "Terminal"</code> — not a place to rename apps.</p>
         </details>
 
         <details>

@@ -34,8 +34,8 @@ the per-path `reset` if you have other custom shortcuts to preserve.)
 
 1. **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → +**
 2. Fill in:
-   - **Name**: `beckon Claude`
-   - **Command**: `beckon Claude` (or the absolute path printed by `which beckon`)
+   - **Name**: `beckon Chrome`
+   - **Command**: `beckon "Google Chrome"` (or the absolute path printed by `which beckon`)
    - **Shortcut**: press `Super+C`
 3. Repeat for each app you want a hotkey for.
 
@@ -46,7 +46,7 @@ Names must match what `beckon installed` reports. Run that first.
 ```sh
 beckon doctor             # check DISPLAY + EWMH support
 beckon list               # list windows beckon can see
-beckon resolve Claude     # validate that "Claude" resolves
+beckon resolve Files      # validate that your file manager resolves
 ```
 
 If the hotkey works but focus doesn't change, `xprop _NET_SUPPORTED -root`

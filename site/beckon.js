@@ -853,7 +853,7 @@
     /* The shipped transcript describes the LOOP, which is what a JS-off reader
        watches. Once the reader has the wheel it is describing something that is
        no longer on screen — after one click on the 5c row it was still talking
-       about two Claude windows — so it is replaced with what is true now.
+       about two Chrome windows — so it is replaced with what is true now.
        Rewriting it is only legal because the shipped sentence stands on its own
        for everyone who never gets here. */
     var steps = demo.querySelector('.demo-steps');

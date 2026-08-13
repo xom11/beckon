@@ -19,7 +19,7 @@
 # `beckon installed` — `File Explorer`, not `Explorer`.
 
 "ctrl+super+alt+t"     = "Terminal"
-"ctrl+super+alt+c"     = "Claude"
-"ctrl+super+alt+b"     = "Brave"
-"ctrl+super+alt+e"     = "Cursor"
-"ctrl+super+alt+d"     = "Discord"
+"ctrl+super+alt+c"     = "Google Chrome"
+"ctrl+super+alt+v"     = "Visual Studio Code"
+"ctrl+super+alt+f"     = "File Explorer"
+"ctrl+super+alt+s"     = "Spotify"

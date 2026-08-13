@@ -26,11 +26,11 @@
 /* `label` is what a keycap shows — the key's own name, the same way the keycap
    component spells out "Cmd" and "Super". */
 var DESK_APPS = [
-  { key: 'T', name: 'terminal', label: 'T' },
-  { key: 'C', name: 'Claude', label: 'C' },
-  { key: 'B', name: 'Brave', label: 'B' },
-  { key: 'E', name: 'Cursor', label: 'E' },
-  { key: 'D', name: 'Discord', label: 'D' }
+  { key: 'T', name: 'Terminal', label: 'T' },
+  { key: 'C', name: 'Chrome', label: 'C' },
+  { key: 'V', name: 'VS Code', label: 'V' },
+  { key: 'F', name: 'Files', label: 'F' },
+  { key: 'S', name: 'Spotify', label: 'S' }
 ];
 
 function deskAppOf(letter) {
@@ -58,10 +58,10 @@ function deskAppOf(letter) {
  * and what a reader expects to see.
  *
  * The renderer used to derive the position from MRU order instead, so focusing
- * Claude slid it into the place Brave had been occupying while Brave slid out.
- * With two windows of similar size that does not read as "Claude came
- * forward"; it reads as "the Brave window was renamed to Claude", which is the
- * opposite of the thing the demo exists to show.
+ * Chrome slid it into the place the terminal had been occupying while the
+ * terminal slid out. With two windows of similar size that does not read as
+ * "Chrome came forward"; it reads as "the terminal window was renamed to
+ * Chrome", which is the opposite of the thing the demo exists to show.
  *
  * `focused` is an id or null. Null is a real state, not an error: it is what
  * step 5c leaves behind.
@@ -297,20 +297,25 @@ function deskSayWindow(kind, name) {
    are the preconditions the page makes claims about, and the tests assert on
    them directly. */
 var DESK_SCENES = {
-  /* Hero: three apps up, Brave in front, Cursor and Discord not installed yet.
-     So C focuses Claude (step 5), Space focuses the terminal (5), E and D
-     launch (4) — the obvious outcome for four of the five letters, and the
-     fifth, B, is the interesting one the section below is about. */
-  hero: [{ app: 'Brave' }, { app: 'Claude' }, { app: 'terminal' }],
+  /* Hero: three apps up, VS Code in front, Files and Spotify not running yet.
+     So C focuses Chrome (step 5), T focuses the terminal (5), F and S launch
+     (4) — the obvious outcome for four of the five letters, and the fifth, V,
+     is the interesting one the section below is about.
+     VS CODE IS IN FRONT AND CHROME IS BEHIND IT, not the other way round: the
+     chord rows print `C` until a press rewrites them, so the letter on screen
+     has to be one whose outcome is worth watching. Pressing the app already in
+     front is step 5b, which is a fine thing to demonstrate but a strange thing
+     to open with. */
+  hero: [{ app: 'VS Code' }, { app: 'Chrome' }, { app: 'Terminal' }],
 
   /* One per row of the algorithm table in #how. Pressing C in each of these is
      what makes that row's step fire; every other letter still runs the real
      algorithm and lights whichever row it lands on. */
-  '4':  [{ app: 'Brave' }],
-  '5':  [{ app: 'Brave' }, { app: 'Claude' }],
-  '5a': [{ app: 'Claude' }, { app: 'Claude' }, { app: 'Brave' }],
-  '5b': [{ app: 'Claude' }, { app: 'Brave' }],
-  '5c': [{ app: 'Claude' }]
+  '4':  [{ app: 'Terminal' }],
+  '5':  [{ app: 'Terminal' }, { app: 'Chrome' }],
+  '5a': [{ app: 'Chrome' }, { app: 'Chrome' }, { app: 'Terminal' }],
+  '5b': [{ app: 'Chrome' }, { app: 'Terminal' }],
+  '5c': [{ app: 'Chrome' }]
 };
 
 if (typeof module !== 'undefined' && module.exports) {

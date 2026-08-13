@@ -16,8 +16,8 @@
 ; Discover ids on your machine:
 ;   beckon installed       list installed desktop and MSIX/AppX apps
 ;   beckon list            list currently running apps
-;   beckon search claude   fuzzy search
-;   beckon resolve Claude  validate an id
+;   beckon search files    fuzzy search
+;   beckon resolve Spotify validate an id
 
 #Requires AutoHotkey v2.0
 
@@ -27,8 +27,10 @@ Beckon(name) {
     try Run('"' BeckonExe '" "' name '"', , "Hide")
 }
 
+; `File Explorer` is the exact friendly name; a shortened `Explorer` can
+; collide with shortcuts that launch through explorer.exe.
 ^#!t::     Beckon("Terminal")
-^#!c::     Beckon("Claude")
-^#!b::     Beckon("Brave")
-^#!e::     Beckon("Cursor")
-^#!d::     Beckon("Discord")
+^#!c::     Beckon("Google Chrome")
+^#!v::     Beckon("Visual Studio Code")
+^#!f::     Beckon("File Explorer")
+^#!s::     Beckon("Spotify")

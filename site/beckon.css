@@ -76,10 +76,10 @@
   --app:          #3B3F48;   /* the default a .win falls back to */
   --ink:          #EDEFF4;   /* the letter on a dock icon; set per app in §4 */
   --app-terminal: #3B3F48;
-  --app-claude:   #C96442;
-  --app-brave:    #C9993F;
-  --app-cursor:   #3B8A85;
-  --app-discord:  #5A67D8;
+  --app-chrome:   #C2564A;
+  --app-code:     #3E79BF;
+  --app-files:    #C9993F;
+  --app-spotify:  #3E9B62;
 
   /* An app's own interior does not follow the site's theme by accident — it
      follows it because a glaring white rectangle inside a dark page is worse
@@ -439,14 +439,14 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
      the offsets are percentages of the window, so slot 3 lands at
      8% + 3x15%x62% = 35.9% with 62% of width to go — 97.9%, just inside. At
      20%/17% it was 107% wide and 105% tall, and the fourth window was visibly
-     clipped on the right the moment a reader launched Cursor or Discord. */
+     clipped on the right the moment a reader launched Files or Spotify. */
   transform: translate(calc(var(--slot) * 15% + var(--dx)),
                        calc(var(--slot) * 13% + var(--dy)));
   transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
               border-color .3s ease, width .3s ease, height .3s ease;
   box-shadow: var(--shadow-soft);
   /* A background window is dimmed, not erased. It has to stay readable —
-     seeing "Brave" still sitting there behind Claude is the whole evidence
+     seeing "Chrome" still sitting there behind VS Code is the whole evidence
      that the press raised a window rather than renamed one — and at .78 over a
      dark wallpaper its title bar disappeared entirely. */
   opacity: .84;
@@ -555,7 +555,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  *
  * Every window used to be the same drawing — a sidebar in the app's hue and
  * three lines — so five windows differed only by colour, and a reader who
- * cannot separate the hues could not tell Discord from a terminal. Each app now
+ * cannot separate the hues could not tell Spotify from a terminal. Each app now
  * gets the SHAPE of its own kind of program: a shell prompt, a browser's tab
  * strip and address bar, a chat with a composer, an editor's indented code, a
  * server rail beside a channel list.
@@ -563,7 +563,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * NO LOGOS, and that is the same rule the palette note above states: this page
  * fetches nothing (check 1 in tools/check-site.sh forbids it) and a trademark
  * is not ours to redraw. What is drawn is the genre, not the brand — an
- * address bar is not Brave's, a prompt is not any one shell's.
+ * address bar is not Chrome's, a prompt is not any one shell's.
  *
  * DRAWN ENTIRELY IN BACKGROUND LAYERS, no extra markup. The window nodes are
  * built in two places — the shipped HTML for readers with JS off, and `makeWin`
@@ -578,8 +578,8 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * TOP. So every list below reads detail-first, panel-last, and the flat colour
  * closes it. Written the other way round — panels first, as they would be in a
  * drawing — each panel covers the very lines it is a backdrop for, and the
- * first version of this had exactly that: Brave's tab strip hid its own tab,
- * Claude's and Cursor's sidebars hid their file lists, Discord's rail hid all
+ * first version of this had exactly that: the browser's tab strip hid its own tab,
+ * the editor's and file manager's sidebars hid their own lists, and a server rail hid all
  * three of its server dots.
  */
 .win-body {
@@ -593,25 +593,25 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* terminal — a prompt, some output, a block cursor. No sidebar: a terminal
    does not have one, and the absence is most of what makes it recognisable. */
-.win[data-app="terminal"] .win-body {
+.win[data-app="Terminal"] .win-body {
   background:
-    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 2.6cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 2.6cqw / 1.1cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 2.6cqw / 13cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 5cqw   / 28cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 7.4cqw / 20cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 9.8cqw / 32cqw .6cqw no-repeat,
-    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 13cqw  / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 13cqw  / 1.1cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 13cqw / 9cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 15.4cqw / 24cqw .6cqw no-repeat,
     linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 17.8cqw / 15cqw .6cqw no-repeat,
-    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 21cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--app-spotify), var(--app-spotify)) left 2.4cqw top 21cqw / 1.1cqw .6cqw no-repeat,
     linear-gradient(#E7ECF5, #E7ECF5)                     left 4.4cqw top 20.4cqw / 1.3cqw 1.5cqw no-repeat,
     var(--term-bg);
 }
 
-/* Brave — tab strip, one active tab, an address pill, then a page: a picture
+/* Chrome — tab strip, one active tab, an address pill, then a page: a picture
    on the left and a column of text on the right. */
-.win[data-app="Brave"] .win-body {
+.win[data-app="Chrome"] .win-body {
   background:
     linear-gradient(var(--win-paper), var(--win-paper))   left 1.6cqw top .7cqw / 11cqw 2.3cqw no-repeat,
     linear-gradient(var(--win-line), var(--win-line))     left 1.6cqw top 4cqw / 60% 1.7cqw no-repeat,
@@ -625,26 +625,37 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
     var(--win-paper);
 }
 
-/* Claude — a conversation: your message to the right in the app's own colour,
-   the reply to the left, and a composer waiting at the bottom. */
-.win[data-app="Claude"] .win-body {
+/* Files — a places sidebar, a breadcrumb, and a grid of folders with their
+   names under them. The grid is what says "file manager": nothing else on this
+   desk arranges its content in rows of identical tiles. */
+.win[data-app="Files"] .win-body {
   background:
-    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 4.6cqw .6cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 3.4cqw .6cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 4.2cqw .6cqw no-repeat,
-    linear-gradient(var(--app), var(--app))           left 22cqw top 2.6cqw / 18cqw 3.2cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 8.4cqw / 26cqw .7cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 10.5cqw / 29cqw .7cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 12.6cqw / 23cqw .7cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 15.6cqw / 16cqw .7cqw no-repeat,
-    linear-gradient(var(--tint), var(--tint))         left 9.5cqw top 19.6cqw / 32cqw 2.8cqw no-repeat,
-    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 7cqw 100% no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 4.2cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 8.4cqw / 3.6cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 11.5cqw top 1.8cqw / 14cqw .7cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 11.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 19.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 27.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 35.5cqw top 4.4cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12cqw top 9.6cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 20cqw top 9.6cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 28cqw top 9.6cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 36cqw top 9.6cqw / 3.6cqw .6cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 11.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 19.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 27.5cqw top 12.6cqw / 6cqw 4.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12cqw top 17.8cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 20cqw top 17.8cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 28cqw top 17.8cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 9.5cqw 100% no-repeat,
     var(--win-paper);
 }
 
-/* Cursor — a file list, a gutter, and code that is indented differently on
+/* VS Code — a file list, a gutter, and code that is indented differently on
    every line, which is the one thing that reads as code from across a room. */
-.win[data-app="Cursor"] .win-body {
+.win[data-app="VS Code"] .win-body {
   background:
     linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.2cqw / 5.4cqw .6cqw no-repeat,
     linear-gradient(var(--win-line), var(--win-line)) left 2.2cqw top 4cqw / 4.4cqw .6cqw no-repeat,
@@ -662,32 +673,40 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
     var(--win-paper);
 }
 
-/* Discord — the server rail nobody else has, a channel list, and messages that
-   each start with a round avatar. */
-.win[data-app="Discord"] .win-body {
+/* Spotify — a library sidebar, a track list where every row starts with its own
+   square of album art, and the now-playing bar pinned across the bottom. That
+   bar is the giveaway: it is the one piece of chrome no other app here has, and
+   it is positioned from the BOTTOM so it stays there when a window is
+   resized. */
+.win[data-app="Spotify"] .win-body {
   background:
-    radial-gradient(circle, var(--app) 0 46%, transparent 46%) left .9cqw top 1.4cqw / 2.6cqw 2.6cqw no-repeat,
-    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left .9cqw top 4.8cqw / 2.6cqw 2.6cqw no-repeat,
-    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left .9cqw top 8.2cqw / 2.6cqw 2.6cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 2.4cqw / 6.4cqw .6cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 4.4cqw / 5cqw .6cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 6.4cqw / 6cqw .6cqw no-repeat,
-    radial-gradient(circle, var(--app) 0 46%, transparent 46%) left 16cqw top 2.6cqw / 2.4cqw 2.4cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 2.6cqw / 9cqw .7cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 4.6cqw / 20cqw .7cqw no-repeat,
-    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left 16cqw top 8.4cqw / 2.4cqw 2.4cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 8.4cqw / 7cqw .7cqw no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 10.4cqw / 16cqw .7cqw no-repeat,
-    linear-gradient(var(--tint), var(--tint))          left 4.4cqw top 0 / 10cqw 100% no-repeat,
-    linear-gradient(var(--win-line), var(--win-line))  left 0 top 0 / 4.4cqw 100% no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 6cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 8.4cqw / 4cqw .6cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 12.5cqw top 2.2cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 3.2cqw / 18cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 5.6cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 6.6cqw / 22cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 9cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 10cqw / 15cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 12.5cqw top 12.4cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 13.4cqw / 20cqw .7cqw no-repeat,
+    /* the now-playing bar, from the bottom up */
+    linear-gradient(var(--app), var(--app))           left 1.6cqw bottom 1cqw / 2.4cqw 2.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 5cqw bottom 2.6cqw / 7cqw .6cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 16cqw bottom 2cqw / 14cqw .5cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 30cqw bottom 2cqw / 10cqw .5cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 bottom 0 / 100% 4.4cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 10.5cqw 100% no-repeat,
     var(--win-paper);
 }
 
-.win[data-app="terminal"] { --app: var(--app-terminal); }
-.win[data-app="Claude"]   { --app: var(--app-claude); }
-.win[data-app="Brave"]    { --app: var(--app-brave); }
-.win[data-app="Cursor"]   { --app: var(--app-cursor); }
-.win[data-app="Discord"]  { --app: var(--app-discord); }
+.win[data-app="Terminal"] { --app: var(--app-terminal); }
+.win[data-app="Chrome"]   { --app: var(--app-chrome); }
+.win[data-app="VS Code"]  { --app: var(--app-code); }
+.win[data-app="Files"]    { --app: var(--app-files); }
+.win[data-app="Spotify"]  { --app: var(--app-spotify); }
 
 /* macOS: traffic lights, centred title, no min/max/close glyphs.
  *
@@ -794,7 +813,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    separate those hues — and hard for everyone else at 13px.
    THE LETTER IS THE POINT: the dock is the only place on the page where the key
    and the thing it reaches are the same object, so `T` sits on the terminal and
-   `C` on Claude. It comes from `data-key` in the markup, which check-site.sh
+   `C` on Chrome. It comes from `data-key` in the markup, which check-site.sh
    pins against README's own table.
    The outline stays because the letter alone would need reading: at a glance
    the shape says what kind of program it is, and the letter says which key. */
@@ -837,28 +856,29 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 /* The hue, the outline, and the ink the letter is set in.
  *
  * `--ink` IS PER APP AND NOT ONE COLOUR, because no single one works: white on
- * Brave's yellow is about 2.4:1, and near-black on the terminal's graphite is
+ * Chrome's red is about 3.9:1, and near-black on the terminal's graphite is
  * worse. Each is picked against its own background — dark ink on the three
  * light-ish hues, light ink on the two dark ones — and none of them follow the
  * page theme, because the icon's background does not either. */
-.dock-app[data-app="terminal"] {
+.dock-app[data-app="Terminal"] {
   --app: var(--app-terminal); --ink: #E8EAF0;
   border-radius: clamp(2px, .3cqw, 4px);      /* a boxy shell */
 }
-.dock-app[data-app="Claude"] {
-  --app: var(--app-claude); --ink: #2A1710;
-  border-radius: 46% 46% 46% 15%;             /* a speech bubble */
-}
-.dock-app[data-app="Brave"] {
-  --app: var(--app-brave); --ink: #2A1D08;
+.dock-app[data-app="Chrome"] {
+  --app: var(--app-chrome); --ink: #2C0F0A;
   border-radius: 50%;                         /* a browser */
 }
-.dock-app[data-app="Cursor"] {
-  --app: var(--app-cursor); --ink: #06201E;
+.dock-app[data-app="VS Code"] {
+  --app: var(--app-code); --ink: #04182D;
   border-radius: 50% 16% 50% 16%;             /* a caret */
 }
-.dock-app[data-app="Discord"] {
-  --app: var(--app-discord); --ink: #EDEFFA;
+.dock-app[data-app="Files"] {
+  --app: var(--app-files); --ink: #2A1D08;
+  /* square top-left corner, rounded elsewhere: a folder's tab */
+  border-radius: 6% 30% 30% 30%;
+}
+.dock-app[data-app="Spotify"] {
+  --app: var(--app-spotify); --ink: #04200F;
   border-radius: 34%;                         /* a squircle */
 }
 
@@ -1151,8 +1171,8 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    grey-out, so one pair covers all three dots. */
 @keyframes lightsOn  { 0%, 42% { filter: grayscale(1) opacity(.7); } 50%, 100% { filter: none; } }
 @keyframes lightsOff { 0%, 42% { filter: none; } 50%, 100% { filter: grayscale(1) opacity(.7); } }
-/* The dock follows the window. Without these the JS-off loop raises Claude
-   while the dock keeps Brave lit — the two halves of the same picture
+/* The dock follows the window. Without these the JS-off loop raises Chrome
+   while the dock keeps VS Code lit — the two halves of the same picture
    disagreeing about which app has focus. `box-shadow` and `opacity` are both
    animatable, which is why the focus ring is drawn with one. */
 @keyframes dockLight {
@@ -1180,14 +1200,14 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 /* One pair of keyframes for all three machines, now that the Linux desk stacks
    like the other two. It used to need its own, because a tiling compositor
    cannot raise anything and the loop had to animate a border colour instead. */
-.hero-demo:not(.is-live) .win[data-app="Claude"] { animation: deskRaise 6s infinite; }
-.hero-demo:not(.is-live) .win[data-app="Brave"]  { animation: deskLower 6s infinite; }
-.hero-demo:not(.is-live) .dock-app[data-app="Claude"] { animation: dockLight 6s infinite; }
-.hero-demo:not(.is-live) .dock-app[data-app="Brave"]  { animation: dockDim 6s infinite; }
-.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Claude"] .win-lights {
+.hero-demo:not(.is-live) .win[data-app="Chrome"] { animation: deskRaise 6s infinite; }
+.hero-demo:not(.is-live) .win[data-app="VS Code"]  { animation: deskLower 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="Chrome"] { animation: dockLight 6s infinite; }
+.hero-demo:not(.is-live) .dock-app[data-app="VS Code"]  { animation: dockDim 6s infinite; }
+.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"] .win-lights {
   animation: lightsOn 6s infinite;
 }
-.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Brave"] .win-lights {
+.hero-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="VS Code"] .win-lights {
   animation: lightsOff 6s infinite;
 }
 .hero-demo:not(.is-live) .hero-chords .key.is-letter {
@@ -1248,16 +1268,16 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* The one looping demo a JS-off reader gets here: the ring, which is the row
    the table's caption points at. */
-.how-demo:not(.is-live) .win[data-app="Claude"]:first-child {
+.how-demo:not(.is-live) .win[data-app="Chrome"]:first-child {
   animation: deskLower 6s infinite;
 }
-.how-demo:not(.is-live) .win[data-app="Claude"]:nth-child(2) {
+.how-demo:not(.is-live) .win[data-app="Chrome"]:nth-child(2) {
   animation: deskRaise 6s infinite;
 }
-.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Claude"]:first-child .win-lights {
+.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"]:first-child .win-lights {
   animation: lightsOff 6s infinite;
 }
-.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Claude"]:nth-child(2) .win-lights {
+.how-demo:not(.is-live) .desk[data-os="macos"] .win[data-app="Chrome"]:nth-child(2) .win-lights {
   animation: lightsOn 6s infinite;
 }
 
@@ -1309,7 +1329,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 /* The letter table and the modifier list are one thought — "remember the
    letter, not the modifier" — so they sit side by side and are read as a pair.
    The table is capped at its own content width; left to fill the container it
-   put half a screen of nothing between `C` and `Claude`. */
+   put half a screen of nothing between `C` and `Chrome`. */
 .keys {
   display: grid; gap: 34px 52px; align-items: start;
   grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
@@ -1522,11 +1542,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * `animation-fill-mode: forwards` IS THE HALF THAT MAKES THAT TRUE, and it was
  * missing. Measured with Chrome's reduced-motion emulation: duration 1ms and
  * iteration-count 1 run the animation and then hand the element back to its
- * BASE style, which here is the cascade offset the markup ships — Brave
- * focused, Claude behind it. So a reader who asks for no motion got the
+ * BASE style, which here is the cascade offset the markup ships — VS Code
+ * focused, Chrome behind it. So a reader who asks for no motion got the
  * opening frame frozen: the one picture on the page that contradicts the
  * sentence under it. With `forwards` the element holds the 100% keyframe,
- * which is Claude focused on all three desks — the same picture the loop
+ * which is Chrome focused on all three desks — the same picture the loop
  * spends six seconds arriving at.
  *
  * The transitions in §4 are zeroed for the same reason: with JS on, a press
