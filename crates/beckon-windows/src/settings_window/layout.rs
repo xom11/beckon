@@ -315,6 +315,16 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// own comment on why, and on `editor_min`/`room`/`y.min(kb_y)` — that
 /// arithmetic lives there now, not here; this function only reads
 /// `card1`'s already-resolved height back out.
+///
+/// **The keyboard line is the width-critical one, and `MIN_WIDTH` (753) has
+/// never been checked against it by arithmetic.** It moved 720→753
+/// "proportionally" when Task 8 introduced cards, and Task 11 then grew the
+/// line itself by 26 px at 96 DPI on top of that; a hand review at 753
+/// found the line consumes ≈547 px of a 705 px card interior, leaving
+/// `IDC_TAP` ≈150 px against its 200 px ceiling — it fits, but by luck
+/// rather than by anyone's re-derivation, and `"Use Caps Lock as a shortcut
+/// key"` is the widest measured string in the window. Re-check this line
+/// specifically before ever moving `MIN_WIDTH` again.
 pub(super) unsafe fn layout(hwnd: HWND) {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {

@@ -513,23 +513,36 @@ painting) rather than a new class of bug, but the review flagged the
 flicker as likely to be far more noticeable now that the whole client is a
 painted layer with a bottom-anchored card.
 
+**CORRECTED 2026-08-13, whole-branch review.** `WS_CLIPCHILDREN` stays off
+— out of scope for the fix wave, see the review's followups — and with it
+off, the mechanism above GUARANTEES visible repaint artefacts: the parent
+now paints four `RoundRect` fills over roughly twenty unclipped children on
+every full invalidate. **Flicker is therefore an EXPECTED result of a
+decision already made, not an open question.** A "does it occur" gate
+would either fail this shipped decision every run or get rubber-stamped
+into meaninglessness; the useful question left is severity, so this gate
+now asks that instead.
+
 **What to run.** Resize the window (see gate 02), scroll the list (see gate
 03), and toggle the banner (trigger an external-change condition while the
-window is open) while watching for visible flicker/tearing rather than a
-clean repaint.
+window is open) while watching HOW BAD the flicker/tearing is, not whether
+it appears at all.
 
 **The control.** Compare the SAME interactions on an unrelated, ordinary
 Win32 window (e.g. Notepad) resized the same way, side by side or in quick
 succession — the control is having a reference for "this is what a
-non-flickering resize/scroll looks like on this exact hardware and refresh
-rate" before judging the settings window against it.
+CLIPPED window's repaint looks like on this exact hardware and refresh
+rate" so the severity judgment below has a calibrated low end, not so the
+settings window can be marked FAIL for being visibly different from it.
 
-**PASS** looks like: repaint during resize/scroll/banner-toggle that is not
-visibly worse than the Notepad control.
-
-**FAIL** looks like: visible tearing, a flash of the old card position before
-the new one draws, or any child control visibly redrawing independently of
-its parent in a way the control window does not show.
+**Record**, rather than PASS/FAIL: a severity call — mild (a barely visible
+flash, comparable to a busy dialog with several children), moderate (an
+obvious flash of the old card position before the new one draws, but the
+window is still usable), or bad (visible tearing, a child control
+independently lagging its parent, or anything that reads as a rendering
+fault rather than "an unclipped repaint"). Bad is the threshold at which
+`WS_CLIPCHILDREN` should be revisited rather than left as a documented,
+accepted trade-off.
 
 **Result: NOT YET RUN.**
 
@@ -567,3 +580,45 @@ MORE prominent / more clearly outlined than an adjacent enabled keycap, to
 the point of being misleading about which controls are operable.
 
 **Result: NOT YET RUN.**
+
+---
+
+## Followups from the 2026-08-13 whole-branch review, out of this wave's scope
+
+The review that produced the Must-Fix/Should-Fix wave landed on this file
+(see `final-fix-report.md` in the same session's `.superpowers/sdd/`
+directory for the full list) also raised three things it explicitly scoped
+OUT of that wave. Recorded here rather than fixed, so they are not lost:
+
+1. **Dropping `BS_GROUPBOX` for the two card captions lost
+   `ROLE_SYSTEM_GROUPING` / UIA `ControlType.Group`.** The fix itself was
+   right — two visual frames around one logical control set reads as two
+   groups, not one — but this branch is otherwise careful about UIA roles:
+   `IDC_CAPS` kept `BS_AUTOCHECKBOX` explicitly for its checkbox role (see
+   `paint::toggle`'s own doc comment) and `settings_probe.rs` pins that
+   style bit on hardware for exactly that reason. Silently dropping two
+   grouping containers is inconsistent with that standard elsewhere in the
+   same branch. No replacement UIA grouping semantics have been proposed;
+   this needs a design decision, not a mechanical fix.
+
+2. **`site/favicon.png` was not regenerated** and is now inconsistent with
+   `assets/beckon.ico` (redrawn full-bleed with a 24 px frame, per this
+   session's own commit `eabfe12`). `tools/check-site.sh` does not check
+   icons, so nothing in CI will catch this drifting further.
+
+3. **The horizontal budget was never re-derived.** `MIN_WIDTH` moved
+   720→753 "proportionally" in Task 8 without simulation; Task 11 then grew
+   the keyboard line by 26 px at 96 DPI on top of that. The review checked
+   it by hand: at 753 the line consumes ≈547 px of a 705 px card interior,
+   leaving `IDC_TAP` ≈150 px against its 200 px ceiling. **It fits, but by
+   luck rather than by anyone's arithmetic**, and `"Use Caps Lock as a
+   shortcut key"` is the widest measured string in the window. A sentence
+   naming the keyboard line as the width-critical one has been added to
+   `layout`'s own doc comment (`settings_window/layout.rs`) so the next
+   person who moves `MIN_WIDTH` knows which line to re-check by hand; the
+   re-derivation itself (simulating the line at a range of widths/DPIs, or
+   deciding a real floor for it) is still open.
+
+None of the three change behaviour and none are blocking; they are
+recorded so a future session does not have to re-discover them from
+scratch.
