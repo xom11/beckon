@@ -602,6 +602,14 @@ mod tok {
     /// With App on a line of its own there is nothing left to starve, so the
     /// key list is back under this ceiling and the arithmetic is retired.
     pub const SHORTCUT_COL: i32 = 200;
+    /// A modifier chip is never narrower than this, nor than its own caption
+    /// plus `glyph` -- direction B's `.wtog { min-width:46px }`.
+    ///
+    /// It exists because `Alt` is three characters and `Shift` is five, and
+    /// a row of keys whose widths follow the length of their letters does not
+    /// read as a keyboard. Only `Alt` is actually short enough to hit the
+    /// floor at 96 DPI; the other six size themselves.
+    pub const CHIP_MIN: i32 = 46;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
     /// Widest a tooltip may draw before it wraps. Comfortably narrower than
@@ -877,6 +885,22 @@ impl Fonts {
 /// same thing inline, for a value it already has in scope.
 fn scale(v: i32, dpi: u32) -> i32 {
     v * dpi as i32 / 96
+}
+
+/// The same colour at `num/den` of its own brightness, per channel.
+///
+/// **Used for exactly one thing: the bottom edge of an ARMED keycap**, which
+/// direction B draws as a darker shade of the fill (`#2563eb` face over a
+/// `#1d4fc4` edge -- about four fifths, which is where the ratio comes from).
+///
+/// **Derived, never a literal.** The face is `COLOR_HIGHLIGHT`, i.e. whatever
+/// accent the user picked, so the edge has to be computed from it: a fixed
+/// dark blue under a green or magenta accent is not a shadow, it is a
+/// mistake. `COLORREF` is `0x00BBGGRR`, so the channels come out in that
+/// order.
+fn shade(c: COLORREF, num: u32, den: u32) -> COLORREF {
+    let ch = |sh: u32| ((c.0 >> sh) & 0xFF) * num / den;
+    COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
 }
 
 /// Everything the window reports back. The caller owns all policy: what an
@@ -2821,13 +2845,27 @@ unsafe fn draw_keycaps(
         return false;
     }
     let toggle = matches!(style, CapStyle::Toggle { .. });
-    let pad = scale(5, dpi);
+    // **Two sets of metrics, from direction B's own two rules.** The board
+    // gives the column cap (`.wcap`) `height:19px; padding:0 5px` and the
+    // toggle chip (`.wtog`) `height:28px; padding:0 10px; min-width:46px` --
+    // a chip is a key you press, a column cap is a key you read, and sizing
+    // both from the column's numbers is what made the shipped chips look
+    // like small grey buttons. A chip therefore takes its control's whole
+    // height rather than the column's 19 px ceiling.
+    let pad = scale(if toggle { 10 } else { 5 }, dpi);
     let gap = scale(3, dpi);
-    let inset = scale(4, dpi);
+    let inset = scale(if toggle { 2 } else { 4 }, dpi);
     let row_h = cell.bottom - cell.top;
-    let cap_h = (row_h - scale(6, dpi))
-        .min(scale(19, dpi))
-        .max(scale(12, dpi));
+    let cap_h = if toggle {
+        (row_h - inset * 2).max(scale(16, dpi))
+    } else {
+        (row_h - scale(6, dpi))
+            .min(scale(19, dpi))
+            .max(scale(12, dpi))
+    };
+    // The bottom edge, and the whole reason a box reads as a key. `.wcap` and
+    // `.wtog` both carry `border-bottom:2px` against a 1 px everywhere else.
+    let edge_h = scale(2, dpi).max(1);
 
     let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
 
@@ -2855,11 +2893,28 @@ unsafe fn draw_keycaps(
         total += w;
         widths.push(w);
     }
-    if total > cell.right - cell.left - inset * 2 {
+    let room = cell.right - cell.left - inset * 2;
+    if total > room {
         if !prev_font.is_invalid() {
             SelectObject(hdc, prev_font);
         }
         return false;
+    }
+    // **A chip is one cap and it owns its control, so it takes the whole
+    // width** instead of shrinking to its caption. `min-width:46px` on
+    // `.wtog` says the same thing in CSS: a row of keys whose sizes follow
+    // the length of their letters does not read as a keyboard. `layout`
+    // already floors each chip's control at `tok::CHIP_MIN`, so this is
+    // where that floor becomes visible.
+    //
+    // Sized independently of the text, which is also what keeps a chip from
+    // resizing when it is toggled -- the measurement above is now only the
+    // fit test.
+    if toggle {
+        total = room;
+        if let Some(w) = widths.first_mut() {
+            *w = room;
+        }
     }
 
     // **A pressed key goes DOWN**: one pixel, and no bottom edge. That is the
@@ -2878,33 +2933,55 @@ unsafe fn draw_keycaps(
         CapStyle::Chord => cell.left + inset,
         CapStyle::Toggle { .. } => cell.left + ((cell.right - cell.left) - total) / 2,
     };
-    let line = COLORREF(GetSysColor(if hc {
-        COLOR_WINDOWTEXT
-    } else {
-        COLOR_BTNSHADOW
-    }));
-    let pen = CreatePen(PS_SOLID, 1, line);
+    // **Every colour is `GetSysColor`, or derived from one.** An armed chip's
+    // face is `COLOR_HIGHLIGHT` -- the user's own accent, matching the row
+    // highlight four pixels away and already correct in high contrast -- and
+    // its edge is that same colour through `shade`. Direction B's `#2563eb` /
+    // `#1d4fc4` pair is what the ratio was read off, not a colour to hard-code.
+    let armed_face = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    let (edge_col, border_col) = match style {
+        _ if hc => {
+            let c = COLORREF(GetSysColor(COLOR_WINDOWTEXT));
+            (c, c)
+        }
+        CapStyle::Toggle { armed: true, .. } => {
+            let e = shade(armed_face, 4, 5);
+            (e, e)
+        }
+        // A disabled chip keeps its shape and loses its weight: the design's
+        // `.wtog.dis` fades the borders to near the surface rather than
+        // removing the box, so a greyed key still reads as a key.
+        CapStyle::Toggle { disabled: true, .. } => {
+            let c = COLORREF(GetSysColor(COLOR_BTNFACE));
+            (c, c)
+        }
+        _ => {
+            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
+            (c, c)
+        }
+    };
+    let pen = CreatePen(PS_SOLID, 1, border_col);
     let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
     SetBkMode(hdc, TRANSPARENT);
-    // **Every colour is `GetSysColor`, and the armed pair is the row
-    // highlight's own.** `COLOR_HIGHLIGHT` is the user's accent, it matches
-    // the selected row four pixels away, and it is already correct under a
-    // high-contrast theme. The design mock-up's `#2563eb` is not a colour
-    // specification.
+    // **A chip's resting face is `COLOR_WINDOW`, not `COLOR_BTNFACE`**, and
+    // that one substitution is most of why the shipped chips disappeared:
+    // `COLOR_BTNFACE` IS the window's own background, so an unarmed chip was
+    // a grey box on a grey surface with only a hairline to prove it existed.
+    // Direction B puts `--w-cap:#fafafa` on a `--w-bg:#f3f3f3` window -- the
+    // key is LIGHTER than what it sits on, which is how a physical keycap
+    // catches light.
     //
-    // **Greyed outranks armed**, and a disabled chip takes no fill at all.
-    // The shape stays, so it still reads as a key; what it stops saying is
-    // which way it is set. That is a real loss on the three `Hold` chips,
-    // which are greyed whenever Caps is off while still describing what Caps
-    // would do -- a greyed check box keeps showing its tick. It is the one
-    // decision in this painter that wants eyes on hardware rather than an
-    // argument here, and there is no accent-on-grey pairing in the system
-    // palette that would settle it.
-    let (fill_armed, text_colour) = match style {
+    // **Greyed outranks armed.** A disabled chip keeps the light face and
+    // the box and loses only its ink, so what it stops saying is which way
+    // it is set. That is a real loss on the three `Hold` chips, which are
+    // greyed whenever Caps is off while still describing what Caps would do.
+    // No accent-on-grey pairing exists in the system palette to settle it;
+    // it wants eyes rather than another argument here.
+    let (face, text_colour) = match style {
         CapStyle::Chord => (None, COLOR_BTNTEXT),
-        CapStyle::Toggle { disabled: true, .. } => (None, COLOR_GRAYTEXT),
+        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_WINDOW), COLOR_GRAYTEXT),
         CapStyle::Toggle { armed: true, .. } => (Some(COLOR_HIGHLIGHT), COLOR_HIGHLIGHTTEXT),
-        CapStyle::Toggle { .. } => (None, COLOR_BTNTEXT),
+        CapStyle::Toggle { .. } => (Some(COLOR_WINDOW), COLOR_BTNTEXT),
     };
     SetTextColor(hdc, COLORREF(GetSysColor(text_colour)));
     // A cell's text is data and its `&` is a character; a chip's caption
@@ -2930,37 +3007,58 @@ unsafe fn draw_keycaps(
         // three-modifier prefix, so the key is the only part worth finding at
         // a glance. A chip is one cap and has no such last, which is why the
         // armed fill is decided above and simply wins here.
-        let fill = match fill_armed {
+        let fill = match face {
             Some(f) => f,
-            None if !toggle && i + 1 == caps.len() => COLOR_WINDOW,
+            None if i + 1 == caps.len() => COLOR_WINDOW,
             None => COLOR_BTNFACE,
         };
-        let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
-        let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
         if hc {
+            // Flat, hard and no depth: a high-contrast theme is built on
+            // solid fills and hard borders, and a soft edge under one reads
+            // as a rendering artefact rather than as a key.
+            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
             let _ = Rectangle(hdc, x, top, x + w, top + cap_h);
-        } else {
-            let r = scale(4, dpi) * 2;
-            let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
-            // The one decorative line in this window, and what makes a box
-            // read as a key rather than as a badge. Gone while the key is
-            // held down -- a key at the bottom of its travel has no edge
-            // left to show.
-            if press == 0 {
-                let _ = MoveToEx(hdc, x + scale(2, dpi), top + cap_h - 1, None);
-                let _ = LineTo(hdc, x + w - scale(2, dpi), top + cap_h - 1);
+            if !prev_brush.is_invalid() {
+                SelectObject(hdc, prev_brush);
             }
+            let _ = DeleteObject(HGDIOBJ(brush.0));
+        } else {
+            // **Two rounded rects, not a rect plus a line.** The edge is a
+            // 2 px BORDER in CSS, so it follows the corner radius; the old
+            // inset hairline sat inside the box and read as an underline
+            // rather than as the side of a key. Painting the taller shape in
+            // the edge colour first and the face over it, `edge_h` shorter,
+            // leaves exactly that border showing along the bottom.
+            //
+            // A pressed key skips it and drops a pixel: at the bottom of its
+            // travel there is no side left to see.
+            let r = scale(5, dpi) * 2;
+            if press == 0 {
+                let eb = CreateSolidBrush(edge_col);
+                let pb = SelectObject(hdc, HGDIOBJ(eb.0));
+                let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
+                if !pb.is_invalid() {
+                    SelectObject(hdc, pb);
+                }
+                let _ = DeleteObject(HGDIOBJ(eb.0));
+            }
+            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+            let _ = RoundRect(hdc, x, top, x + w, top + cap_h - edge_h, r, r);
+            if !prev_brush.is_invalid() {
+                SelectObject(hdc, prev_brush);
+            }
+            let _ = DeleteObject(HGDIOBJ(brush.0));
         }
-        if !prev_brush.is_invalid() {
-            SelectObject(hdc, prev_brush);
-        }
-        let _ = DeleteObject(HGDIOBJ(brush.0));
 
+        // Centred in the FACE, not in the whole cap: the bottom edge is the
+        // side of the key, and text centred over it sits low.
         let mut tr = RECT {
             left: x,
             top,
             right: x + w,
-            bottom: top + cap_h,
+            bottom: top + cap_h - if hc || press > 0 { 0 } else { edge_h },
         };
         // The RAW caption, `&` intact: `text_flags` decides whether it marks
         // a mnemonic or is drawn. Only the MEASUREMENT above strips it.
@@ -3232,19 +3330,19 @@ unsafe fn layout(hwnd: HWND) {
         Some(ah) => (ah, clamp(ctl - ah) / 2),
         None => (field_h, clamp(ctl - field_h) / 2),
     };
-    // What a chip costs beyond its caption. Computed here rather than in a
-    // band because BOTH chip rows need it -- band 4's four modifiers and
-    // band 6's three `Hold` chips -- and two copies of this number are two
-    // places for it to stop agreeing.
-    //
-    // **It used to be the check box's own square plus the gap before its
-    // caption, and the number is deliberately unchanged now that the seven
-    // are keycaps.** `draw_keycaps` makes a cap `text + 2 * scale(5)` wide
-    // and `draw_chip` centres it, so this leaves ~14 px of slack around
-    // every key -- air between adjacent caps, on top of `gap`, which is what
-    // stops a row of them reading as one bar. Keeping the figure also keeps
-    // the line-2 arithmetic below true to the pixel.
+    // What a caption costs beyond its own width. Two readings, one number,
+    // which is why it is computed here rather than in a band: `IDC_CAPS` is
+    // a real `BS_AUTOCHECKBOX` and this is its square plus the gap before
+    // its text, while for the seven keycap chips it is the padding around
+    // the letters -- `.wtog { padding:0 10px }` plus a hair, since
+    // `draw_keycaps` fills whatever width the chip control is given.
     let glyph = s(24);
+    // One chip's width: its caption plus that slack, never below
+    // `tok::CHIP_MIN`. Both chip rows go through this, so the four modifier
+    // chips and the three `Hold` chips cannot drift apart -- and `draw_chip`
+    // fills whatever width it is given, so this closure alone decides how
+    // big a key is.
+    let chip = |c: &str| (tw(c) + glyph).max(s(tok::CHIP_MIN));
 
     // -- Band 1: the banner. Contributes NO height when hidden.
     if ui.external_change {
@@ -3460,13 +3558,13 @@ unsafe fn layout(hwnd: HWND) {
     let bw_reset = btn(cap::RESET);
     let res_x = ins_x + clamp(ins_w - bw_reset);
     let rec_x = ins_x + clamp(ins_w - bw_reset - gap - bw_record);
-    // Each chip is its caption plus `glyph`, exactly as band 6's `Hold`
-    // chips are sized -- same constant, one rule. See `glyph` for why that
-    // constant survived the four becoming keycaps unchanged.
-    let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
-    let w_mod_win = tw(cap::MOD_WIN) + glyph;
-    let w_mod_alt = tw(cap::MOD_ALT) + glyph;
-    let w_mod_shift = tw(cap::MOD_SHIFT) + glyph;
+    // Each chip is its caption plus `glyph`, floored at `tok::CHIP_MIN` --
+    // exactly as band 6's `Hold` chips are sized, same two constants, one
+    // rule. `chip` is declared above band 4 so both rows read from it.
+    let w_mod_ctrl = chip(cap::MOD_CTRL);
+    let w_mod_win = chip(cap::MOD_WIN);
+    let w_mod_alt = chip(cap::MOD_ALT);
+    let w_mod_shift = chip(cap::MOD_SHIFT);
     // Chips and key list share the fields' midline (`edit_dy`) and their
     // height, so App, the key list and the filter are ONE box repeated
     // rather than three boxes that happen to be concentric. Measured at
@@ -3494,32 +3592,34 @@ unsafe fn layout(hwnd: HWND) {
     // (88 px; neither caption needs more, which is what makes `tok::BTN_SM`
     // redundant), the fixed part of the line is
     //
-    //   lw_lbl(~54) + lblgap(12) + four chips(~181) + 6*gap(48)
-    //     + bw_record(88) + bw_reset(88)   =   ~471 px of `ins_w`
+    //   lw_lbl(~54) + lblgap(12) + four chips(~190) + 6*gap(48)
+    //     + bw_record(88) + bw_reset(88)   =   ~480 px of `ins_w`
     //
     // -- SIX gaps, not five: three between the chips, one after `Shift`, one
     // between the key list and `Record`, one between the two commands. The
-    // chip figure is `4 * glyph` (96 px) plus the four measured captions;
-    // `lw_lbl` is `tw("Shortcut") + 4`, the wider of the two labels.
+    // chip figure is the four `chip()` widths, i.e. `4 * glyph` (96 px) plus
+    // the four measured captions, except that `Alt` is short enough to take
+    // `tok::CHIP_MIN` instead; `lw_lbl` is `tw("Shortcut") + 4`, the wider of
+    // the two labels.
     //
     // `ins_w` is `cw - 2*gap` and `cw` is `w - 2*pad`, so below its ceiling
-    // this whole expression collapses to `key_w = min(200, w - 519)` -- the
-    // key list clamps to zero at a raw client `w` of ~519, and above that it
+    // this whole expression collapses to `key_w = min(200, w - 528)` -- the
+    // key list clamps to zero at a raw client `w` of ~528, and above that it
     // IS the margin over that zero point. One number, read two ways.
     //
     // `MIN_WIDTH` is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
     // `ptMinTrackSize.x`, which bounds the whole window including the OS's
     // own frame, so its 720 does not translate into an exact `cw` this file
     // computes. Compare like for like -- client against client -- and a
-    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~185 px clear of
+    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~176 px clear of
     // the zero point, which is why a drag cannot reach it. **That margin is a
     // ceiling, not a floor**: a wider OS frame leaves a narrower client, so
     // the figure only ever falls from 185. (Do not compare the 720 against
     // the 519 directly for a "~200 px" margin -- that is the window-against-
     // client mistake this paragraph exists to avoid.)
     //
-    // Concretely at `MIN_WIDTH`, then: the key list is 185 px of its 200 px
-    // ceiling -- the same 185, necessarily, by the collapse above -- and the
+    // Concretely at `MIN_WIDTH`, then: the key list is 176 px of its 200 px
+    // ceiling -- the same 176, necessarily, by the collapse above -- and the
     // App combo on line 1 has ~590 px, where the old one-line strip left it
     // 59. Every subtraction here is clamped regardless, because
     // `WM_DPICHANGED` can suggest a rect below that floor without asking
@@ -3571,9 +3671,9 @@ unsafe fn layout(hwnd: HWND) {
     // wraps.
     let w_caps = tw(cap::CAPS) + glyph;
     let w_hold = tw(cap::HOLD) + s(4);
-    let w_ctrl = tw(cap::HOLD_CTRL) + glyph;
-    let w_win = tw(cap::HOLD_WIN) + glyph;
-    let w_alt = tw(cap::HOLD_ALT) + glyph;
+    let w_ctrl = chip(cap::HOLD_CTRL);
+    let w_win = chip(cap::HOLD_WIN);
+    let w_alt = chip(cap::HOLD_ALT);
     let w_tap = tw(cap::TAP) + s(4);
     // `gap * 2` between the three sections of the line, `lblgap` between a
     // word and what it names, `gap` between chips -- so the grouping is
