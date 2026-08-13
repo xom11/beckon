@@ -817,7 +817,10 @@
       if (ui) ui.flash(app.key);
       mark('is-on', null);
       mark('is-hit', r.step);
-      readout(out, 'Step ' + r.step, deskSay(r));
+      /* The branch's NAME, the same word the row that just lit up prints. It
+         used to read "Step 5a", which named nothing a reader could match to
+         anything on screen. */
+      readout(out, deskStepName(r.step), deskSay(r));
       return true;
     }
 
@@ -858,8 +861,8 @@
        for everyone who never gets here. */
     var steps = demo.querySelector('.demo-steps');
     if (steps) {
-      steps.textContent = 'Pick a row above to set the desk up, then press Caps Lock and a ' +
-        'letter. The readout names the step that fired, and the row it came from lights up.';
+      steps.textContent = 'Pick a row to set the desk up, then press Caps Lock and a letter. ' +
+        'The readout names what beckon did, and the row it came from lights up.';
     }
 
     onOs(function () { scene(desk ? currentStep() : '5a'); });

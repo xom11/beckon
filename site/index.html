@@ -288,30 +288,62 @@
   <section id="how" aria-labelledby="how-h">
     <div class="wrap">
       <h2 id="how-h">Focus is only the first press.</h2>
-      <p class="lead">Most launchers stop at focusing the window. beckon keeps going — and
-      which of the five things happens is decided for you, with no flag to set.</p>
+      <p class="lead">Most launchers stop at focusing the window. beckon keeps going: press
+      the same key again and it does the next useful thing — decided by what is already on
+      screen, not by a flag you set.</p>
 
       <div class="how-grid">
 
+        <!-- TWO GROUPS, AND THEY ARE THE HEADLINE. The five branches split
+             cleanly into the first press (you are elsewhere) and every press
+             after it (you are already there), which is exactly what "focus is
+             only the first press" claims. Flat, the table said "Focused, …"
+             three times in a row and buried that split in a repeated word.
+
+             THE CONDITIONS ARE CUMULATIVE and the caption says so: beckon stops
+             at the first line that matches, so each row silently carries "and
+             nothing above was true". Spelling that out per row is what made the
+             old first column so long.
+
+             THE STEP NUMBERS ARE GONE. They were CLAUDE.md's own — 4, 5, 5a-5c
+             — carried here as a citation, but a reader does not have that
+             document open, and the numbering begins at 4 because steps 1-3 are
+             read-the-id / resolve-the-name / scan-the-windows, none of which is
+             visible from outside. So the column announced three missing steps,
+             explained none of them, and `5b` told nobody what it does. The
+             names do. `data-step` stays on each row as the internal id JS uses
+             to set a scene; it is no longer shown. -->
         <table class="how-table" id="how-table">
           <!-- "the third row" rather than "the desk below": the desk sits
                beside this table above 1040px and under it below, so a caption
                naming a direction is wrong on one of the two. -->
-          <caption class="how-cap">The order beckon tests them in, with the step numbers the
-          algorithm itself uses. The desk starts on the third row.</caption>
+          <!-- "starts on Cycle" rather than "on the third row": the rows are
+               grouped now, so counting them is ambiguous, and the name is the
+               thing the readout under the desk will print anyway. -->
+          <caption class="how-cap">beckon works down this list and stops at the first line
+          that matches — so every row also means "and nothing above it was true". The desk
+          starts on Cycle.</caption>
           <thead>
             <tr>
-              <th scope="col">Situation</th>
-              <th scope="col">What happens</th>
-              <th scope="col">Step</th>
+              <th scope="col">When you press the key</th>
+              <th scope="col">beckon</th>
             </tr>
           </thead>
           <tbody>
-            <tr data-step="4"><th scope="row">App is not running</th><td>launch it</td><td class="how-step">4</td></tr>
-            <tr data-step="5"><th scope="row">Running, not focused</th><td>focus it</td><td class="how-step">5</td></tr>
-            <tr data-step="5a"><th scope="row">Focused, app has another window</th><td>focus the next one, wrapping round</td><td class="how-step">5a</td></tr>
-            <tr data-step="5b"><th scope="row">Focused, one window, another app open</th><td>switch back to the app you came from</td><td class="how-step">5b</td></tr>
-            <tr data-step="5c"><th scope="row">Focused, one window, nothing else open</th><td>hide it</td><td class="how-step">5c</td></tr>
+            <tr class="how-when"><th colspan="2" scope="rowgroup">You are somewhere else</th></tr>
+            <tr data-step="4"><th scope="row">the app is not running</th>
+              <td><span class="how-do">Launch</span> — starts it</td></tr>
+            <tr data-step="5"><th scope="row">the app is running</th>
+              <td><span class="how-do">Focus</span> — brings it to you</td></tr>
+          </tbody>
+          <tbody>
+            <tr class="how-when"><th colspan="2" scope="rowgroup">You are already in it</th></tr>
+            <tr data-step="5a"><th scope="row">it has another window</th>
+              <td><span class="how-do">Cycle</span> — its next window, wrapping round at the end</td></tr>
+            <tr data-step="5b"><th scope="row">one window, others open</th>
+              <td><span class="how-do">Back</span> — the app you came from</td></tr>
+            <tr data-step="5c"><th scope="row">one window, nothing else</th>
+              <td><span class="how-do">Hide</span> — gets it out of the way</td></tr>
           </tbody>
         </table>
 

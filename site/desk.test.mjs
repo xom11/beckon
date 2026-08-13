@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  DESK_APPS, DESK_SCENES, deskMake, deskPress, deskAppOf, deskSay,
+  DESK_APPS, DESK_SCENES, deskMake, deskPress, deskAppOf, deskSay, deskStepName,
   deskFocus, deskMinimize, deskClose, deskToggleMax, deskSayWindow
 } = require('./desk.js');
 
@@ -287,6 +287,31 @@ test('every mouse gesture has a sentence, and each names beckon or a key', () =>
     assert.match(said, /beckon|key|press/i, `${kind} never gets back to the point: ${said}`);
   }
   assert.equal(deskSayWindow('nonsense', 'Chrome'), '');
+});
+
+/* --- the five branches have names, not numbers ---------------------------- */
+
+test('every branch has a name, and no two share one', () => {
+  /* The page shows these instead of 4 / 5 / 5a / 5b / 5c. Two branches sharing
+     a name would make the readout point at the wrong row of the table. */
+  const names = ['4', '5', '5a', '5b', '5c'].map(deskStepName);
+  for (const [i, n] of names.entries()) {
+    assert.match(n, /^[A-Z][a-z]+$/, `branch ${i} has no usable name: ${n}`);
+  }
+  assert.equal(new Set(names).size, names.length, `names collide: ${names}`);
+});
+
+test('the name is one word, because it is a label and not a sentence', () => {
+  /* `deskSay` is where the explanation goes; this is what the readout prints
+     in its heading slot and what the table prints in its second column. */
+  for (const step of ['4', '5', '5a', '5b', '5c']) {
+    assert.doesNotMatch(deskStepName(step), /\s/, `${step}: ${deskStepName(step)}`);
+  }
+});
+
+test('an unknown step names nothing rather than inventing a label', () => {
+  assert.equal(deskStepName('7'), '');
+  assert.equal(deskStepName(null), '');
 });
 
 test('no readout says "front", which is meaningless on a tiling compositor', () => {

@@ -150,6 +150,26 @@ elif [ "$key_fail" -eq 0 ]; then
   ok "letter->app table matches README ($keys rows)"
 fi
 
+# The five branch names. They replaced the step numbers (4, 5, 5a-5c) that the
+# table used to print, and they now exist in two places that must agree: the
+# table in #how, and DESK_STEP_NAMES in desk.js, which is what the readout under
+# the desk prints when that branch fires. A reader who presses a key sees the
+# readout name and looks for the row with the same word; if these drift, that
+# stops working and nothing else would notice.
+name_fail=0
+for n in Launch Focus Cycle Back Hide; do
+  grep -q "class=\"how-do\">$n<" "$H" \
+    || { bad "the #how table does not name the '$n' branch"; name_fail=1; }
+  grep -q "'$n'" "$M" \
+    || { bad "desk.js has no '$n' in DESK_STEP_NAMES"; name_fail=1; }
+done
+# And the numbers must not come back as a visible column.
+if grep -q 'class="how-step"' "$H"; then
+  bad "the #how table is printing step numbers again"
+  name_fail=1
+fi
+[ "$name_fail" -eq 0 ] && ok "the five branches are named, in the table and in desk.js"
+
 # --- 6. the algorithm the page draws is the algorithm it describes ----------
 # site/desk.js is the page's only copy of beckon's focus algorithm, and it is
 # pure precisely so this can run. Before it existed, "press it again and it

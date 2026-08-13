@@ -1230,7 +1230,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   text-align: left; padding: 12px 14px;
   border-bottom: 1px solid var(--rule);
   font-weight: 400;
-  vertical-align: baseline;
+  /* `top`, not `baseline`: the condition in the first column wraps to two lines
+     on a narrow table while the branch beside it stays on one, and a baseline
+     alignment then hangs the branch off the SECOND line — so "Back" sat level
+     with the tail of the condition instead of its start. */
+  vertical-align: top;
 }
 .how-table thead th {
   font: 500 12px/1 var(--sans);
@@ -1239,8 +1243,24 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   padding-bottom: 9px;
 }
 .how-table tbody th { color: var(--fg-dim); width: 42%; }
-.how-table tbody td { font-weight: 500; }
-.how-step { font-family: var(--mono); font-size: 13px; color: var(--fg-dim); width: 1%; white-space: nowrap; }
+.how-table tbody td { font-weight: 400; }
+
+/* The two group headings — "you are somewhere else" and "you are already in
+   it" — which are what the section's own headline is about. They are `th`s
+   inside `tbody`, so both rules above would otherwise dim them and squeeze
+   them into the 46% first column. */
+.how-when th {
+  width: auto;
+  padding: 26px 14px 6px;
+  border-bottom: 0;
+  font: 500 12px/1 var(--sans);
+  letter-spacing: .07em; text-transform: uppercase;
+  color: var(--fg-dim);
+}
+.how-table tbody:first-of-type .how-when th { padding-top: 2px; }
+/* The name of the branch. It carries the meaning the step number never did, so
+   it is the one thing in the row set in full ink. */
+.how-do { font-weight: 640; color: var(--fg); }
 
 /* The row whose step just fired, and the row the desk is currently set up for.
    Two different things, so two different marks: a fill for "this just

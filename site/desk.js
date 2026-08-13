@@ -243,6 +243,31 @@ function deskToggleMax(desk, id) {
   return deskRaise(d, id);
 }
 
+/* The name each branch goes by, and THESE REPLACED THE STEP NUMBERS ON THE PAGE.
+ *
+ * The table in #how used to print `4`, `5`, `5a`, `5b`, `5c` — CLAUDE.md's own
+ * numbering, carried over as a citation. It cited nothing a reader could reach:
+ * they do not have that document open, and the numbering starts at 4 because
+ * steps 1-3 are read-the-id, resolve-the-name and scan-the-windows, none of
+ * which is visible from outside. So the column announced three missing steps
+ * and explained none of them, and `5b` said nothing at all about what happens.
+ *
+ * A name does. The keys of this map stay the step numbers because that is what
+ * `deskPress` returns and what `data-step` in the markup uses to set a scene —
+ * they are an internal id now, not something the page shows.
+ */
+var DESK_STEP_NAMES = {
+  '4':  'Launch',
+  '5':  'Focus',
+  '5a': 'Cycle',
+  '5b': 'Back',
+  '5c': 'Hide'
+};
+
+function deskStepName(step) {
+  return DESK_STEP_NAMES[step] || '';
+}
+
 /* What the readout says. One sentence per step, written so it is true on a
    tiling compositor as well as a stacking one — hence "takes focus" rather than
    "comes to the front". The desks draw stacking desktops, but beckon's Linux
@@ -326,6 +351,7 @@ if (typeof module !== 'undefined' && module.exports) {
     deskMake: deskMake,
     deskPress: deskPress,
     deskSay: deskSay,
+    deskStepName: deskStepName,
     deskFocus: deskFocus,
     deskMinimize: deskMinimize,
     deskClose: deskClose,
