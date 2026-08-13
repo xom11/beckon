@@ -24,8 +24,49 @@
 - **`crates/beckon-macos/src/settings_window.rs` is not touched by any task.**
 - **Never call `layout` from a colour or theme change.** Nothing about a repaint moves a control.
 - **Font faces must be spelled exactly** as given in Task 6 — `lfFaceName` holds 32 wchar and the truncation is not uniform. `"Segoe UI Variable Text Semib"` silently returns Arial.
-- **CI gate for every task:** `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`, and for any task touching `beckon-windows`, `cargo check --target aarch64-pc-windows-msvc --all-targets`. That last flag is required — `--examples` does not build `[[bin]]` targets.
-- **This host cannot run Windows.** No task may be reported as verified on the strength of a `cargo check`. Tasks 7–14 carry hardware gates settled in Task 15.
+- **The gate for every task, in this exact shape:**
+
+  ```bash
+  cargo fmt --all -- --check
+  cargo clippy --workspace --exclude beckon-linux --exclude beckon-windows \
+        --all-targets -- -D warnings
+  cargo test -p beckon-core          # and -p beckon-cli if the task touches it
+  cargo check --target aarch64-pc-windows-msvc --all-targets
+  ```
+
+  **CORRECTED 2026-08-13, mid-execution.** This plan originally specified a
+  bare `cargo clippy --all-targets` and a bare `cargo test`, workspace-wide.
+  Both are wrong for this repo, and the first cannot pass at all:
+
+  - `crates/beckon-windows/src/lib.rs` leaves `pub mod shell;` **un-gated**
+    while the `windows` crate is a `cfg(target_os = "windows")` dependency, so
+    a bare workspace build on a macOS host fails with *"use of unresolved
+    module or unlinked crate `windows`"* at `shell.rs:26`. CI never sees this
+    because every CI job excludes the two crates that are not its host's —
+    `ci.yml` uses `--exclude beckon-macos --exclude beckon-windows` on ubuntu,
+    `--exclude beckon-linux --exclude beckon-windows` on macos, and
+    `--exclude beckon-linux --exclude beckon-macos` on windows. The local
+    command must have the same shape as the CI job for the host it runs on.
+  - Workspace-wide `cargo test` is unreliable on this machine — see the
+    SIGKILL note below.
+
+  `--all-targets` on the cross-check is required: `--examples` does not build
+  `[[bin]]` targets, and testing a stale `beckon-serve.exe` is a documented
+  trap.
+
+- **`signal: 9` / SIGKILL with no test failure is environmental, not your
+  bug.** On this host, freshly-linked build scripts are killed on a cold
+  cache; the victim rotates (`windows_aarch64_msvc`, `libc`, `beckon-cli`,
+  `beckon-cli`'s own test binaries have all been observed). **Re-run the same
+  command** — each run caches the scripts that did succeed, so it converges,
+  and the Windows cross-check above needed five attempts from cold before
+  finishing clean. Once warm it completes in seconds. Do not report BLOCKED
+  for a SIGKILL until you have re-run the command at least three times and it
+  stopped making progress. CI is the authority either way.
+
+- **This host cannot run Windows.** No task may be reported as verified on the
+  strength of a `cargo check`. Tasks 7–14 carry hardware gates settled in
+  Task 15.
 
 ---
 
