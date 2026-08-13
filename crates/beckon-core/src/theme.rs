@@ -376,4 +376,20 @@ mod tests {
         };
         assert_eq!(backdrop(i), Backdrop::Opaque);
     }
+
+    /// COLORREF is 0x00BBGGRR. The window converts at its boundary, but the
+    /// swap is easy to write the wrong way round and produces a plausible
+    /// wrong colour rather than an obvious one -- beckon's blue #2563EB comes
+    /// back as a muddy teal.
+    #[test]
+    fn the_bgr_swap_is_documented_by_a_case() {
+        fn to_colorref(rgb: u32) -> u32 {
+            ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+        }
+        assert_eq!(to_colorref(0x2563EB), 0x00EB6325);
+        assert_eq!(to_colorref(0xFFFFFF), 0x00FFFFFF);
+        assert_eq!(to_colorref(0x000000), 0x00000000);
+        // Not a palindrome, so a no-op implementation fails.
+        assert_ne!(to_colorref(LIGHT.accent), LIGHT.accent);
+    }
 }

@@ -1109,6 +1109,10 @@ struct Ui {
     /// typed controls underneath a live capture. Two writers on one value is
     /// exactly what spec C.4 forbids.
     capture: Option<Capture>,
+    /// The OS's current light/dark/high-contrast answer, and the brushes it
+    /// implies. Resolved once at creation and re-resolved on
+    /// `WM_SETTINGCHANGE`/`WM_THEMECHANGED`; see `on_theme_changed` below.
+    theme: theme::ThemeCache,
 }
 
 /// What a live capture has to say, rebuilt on every `WM_CAPTURE`.
@@ -1759,6 +1763,19 @@ unsafe fn create() -> Result<(), String> {
         None,
     )
     .map_err(|e| format!("CreateWindowExW: {e}"))?;
+
+    // The OS's theme answer, resolved once up front. `build_children` (run
+    // synchronously inside `WM_CREATE`, above) has already stored a fresh
+    // `Ui` with a default (unresolved) `ThemeCache`, so this is the first
+    // real answer it gets. The borrow is taken and dropped on this one
+    // statement; `apply_dwm_dark` below holds none.
+    let t = beckon_core::theme::resolve(theme::read_inputs());
+    UI.with(|u| {
+        if let Some(ui) = u.borrow_mut().as_mut() {
+            ui.theme.rebuild(t);
+        }
+    });
+    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
 
     // Position was CW_USEDEFAULT, so Windows -- not the cursor position
     // used above -- decided which monitor the window actually landed on.
@@ -2575,6 +2592,7 @@ unsafe fn build_children(hwnd: HWND) {
             app_epoch: 0,
             shown_combo: None,
             capture: None,
+            theme: theme::ThemeCache::default(),
         })
     });
 }
@@ -3945,6 +3963,52 @@ unsafe fn broadcast_theme_change(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) {
     layout(hwnd);
 }
 
+/// Does `WM_SETTINGCHANGE`'s `lParam` name the immersive colour set?
+///
+/// `WM_SETTINGCHANGE` fires for dozens of settings that are not the palette
+/// (mouse speed, wallpaper, ...); the light/dark toggle in
+/// Settings > Personalization > Colors is reported by a `lParam` string
+/// naming `"ImmersiveColorSet"`, and is the only reliable signal for it --
+/// unlike the `SPI_SETHIGHCONTRAST` case a few lines below, this change sets
+/// no `wParam` action code at all.
+fn is_immersive_colour_set(lp: LPARAM) -> bool {
+    if lp.0 == 0 {
+        return false;
+    }
+    let p = PCWSTR(lp.0 as *const u16);
+    unsafe {
+        p.to_string()
+            .map(|s| s == "ImmersiveColorSet")
+            .unwrap_or(false)
+    }
+}
+
+/// Re-resolve the theme, rebuild `ThemeCache` if it changed, and repaint.
+///
+/// **Never calls `layout`.** No colour change moves a control, and `layout`
+/// means `SetWindowPos` on the populated App combo -- the measured data-loss
+/// path documented at `Ui::shown_external`.
+///
+/// **The `UI` borrow is taken and dropped on one expression.**
+/// `InvalidateRect` re-enters this wndproc, and a second `RefCell` borrow
+/// across an `extern "system"` boundary aborts the process instead of
+/// unwinding -- the same rule `WM_DPICHANGED` and `WM_DESTROY` already
+/// follow.
+unsafe fn on_theme_changed(hwnd: HWND) {
+    let t = beckon_core::theme::resolve(theme::read_inputs());
+    let changed = UI.with(|u| {
+        u.borrow_mut()
+            .as_mut()
+            .map(|ui| ui.theme.rebuild(t))
+            .unwrap_or(false)
+    });
+    if !changed {
+        return;
+    }
+    theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe {
         match msg {
@@ -4104,6 +4168,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // told otherwise; WM_THEMECHANGED is that notice, and it
                 // only reaches top-level windows, hence the forward.
                 broadcast_theme_change(hwnd, msg, wp, lp);
+                // High contrast on/off arrives here too (Windows treats it
+                // as a visual-style switch), so this is also a live signal
+                // for the light/dark/high-contrast `ThemeCache`, not just
+                // the keycap-shape flag `HIGH_CONTRAST` above.
+                on_theme_changed(hwnd);
                 LRESULT(0)
             }
             WM_SETTINGCHANGE => {
@@ -4111,8 +4180,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // actions (wallpaper, mouse trails, ...) -- wParam carries
                 // the SPI_ action code when SystemParametersInfo was called
                 // with SPIF_SENDCHANGE, which is how Windows reports a
-                // high-contrast toggle. Only that one is this window's
-                // concern; everything else must fall through to
+                // high-contrast toggle. Only that one is the keycap shape's
+                // concern.
+                //
+                // The light/dark palette additionally watches lParam for
+                // `"ImmersiveColorSet"` (`is_immersive_colour_set`), which is
+                // how Windows reports the Settings > Personalization > Colors
+                // toggle -- a change that sets neither `SPI_SETHIGHCONTRAST`
+                // nor `WM_THEMECHANGED`. Everything else must fall through to
                 // DefWindowProcW untouched rather than relayout on every
                 // unrelated settings change.
                 if wp.0 == SPI_SETHIGHCONTRAST.0 as usize {
@@ -4120,7 +4195,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     // it triggers already see the new answer.
                     refresh_high_contrast();
                     broadcast_theme_change(hwnd, msg, wp, lp);
+                    on_theme_changed(hwnd);
                     LRESULT(0)
+                } else if is_immersive_colour_set(lp) {
+                    on_theme_changed(hwnd);
+                    DefWindowProcW(hwnd, msg, wp, lp)
                 } else {
                     DefWindowProcW(hwnd, msg, wp, lp)
                 }
