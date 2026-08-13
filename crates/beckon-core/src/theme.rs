@@ -164,13 +164,21 @@ pub const MICA_MIN_BUILD: u32 = 22621;
 
 /// The alpha for tier 2.
 ///
-/// **Was 245 (96 %), and that was chosen without ever seeing it.** With Mica
-/// demoted after Gate 01, this is no longer a fallback nobody looks at — it is
-/// the only transparency the window has, and at 96 % it is indistinguishable
-/// from opaque. 232/255 (91 %) is the value that reads as glass while keeping
-/// text solid: every string in this window sits on an opaque card, so only the
-/// window's own ground and the card fills carry the blend.
-pub const TIER2_ALPHA: u8 = 232;
+/// **250 (98 %), and the two attempts before it are the argument.** 245 was
+/// picked without seeing it, back when tier 2 was a fallback nobody expected
+/// to reach. After Gate 01 demoted Mica it became the only transparency the
+/// window has, so it went to 232 (91 %) to be visible — and that was tried on
+/// a real desktop and rejected: *"trong suốt quá đà, và không có làm mờ nên
+/// rất khó nhìn do xuyên qua."*
+///
+/// The finding under that: **a uniform alpha is not glass.** Mica and Acrylic
+/// blur what is behind them, which is what stops the window underneath from
+/// competing with the text on top. `SetLayeredWindowAttributes` cannot blur —
+/// it only dims — so every step of visible transparency is a step of legible
+/// clutter, with nothing gained. Tier 2 is therefore a hint of depth at the
+/// window's edges and nothing more, until a backdrop that actually blurs is
+/// reachable from a GDI client.
+pub const TIER2_ALPHA: u8 = 250;
 
 #[derive(Clone, Copy, Debug)]
 pub struct BackdropInputs {

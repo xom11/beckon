@@ -41,18 +41,18 @@ pub(super) mod tok {
     /// Surface padding — the margin between the client rect and the first
     /// card, and the last card and the client rect. Also the command bar's
     /// own margin, since it is not a card.
-    pub const PAD: i32 = 16;
+    pub const PAD: i32 = 10;
     /// Between the banner and card 1, and between two cards. Was `BAND`
     /// (14) before Task 8; see this module's own doc comment for why a
     /// smaller number is right once every band carries `CARD_PAD` of its
     /// own.
-    pub const GAP_CARD: i32 = 12;
+    pub const GAP_CARD: i32 = 8;
     /// Between two controls inside one band.
-    pub const GAP: i32 = 8;
+    pub const GAP: i32 = 6;
     /// A label and the control it names.
-    pub const LABEL: i32 = 12;
+    pub const LABEL: i32 = 10;
     /// Height of one band line, and of every button on it.
-    pub const CTL: i32 = 32;
+    pub const CTL: i32 = 26;
     /// A button is never narrower than this, nor than its own caption.
     pub const BTN: i32 = 88;
     /// The right-aligned `Shortcut` column, the editor field under it, and
@@ -68,7 +68,7 @@ pub(super) mod tok {
     /// `MIN_WIDTH`, so the balloon never overhangs the window that owns it.
     pub const TOOLTIP_MAX: i32 = 420;
     /// Inner padding inside every card, on all four sides.
-    pub const CARD_PAD: i32 = 16;
+    pub const CARD_PAD: i32 = 11;
     /// `RoundRect`'s corner radius, halved (the API wants the full ellipse
     /// width/height, i.e. `2 * CARD_RADIUS`).
     pub const CARD_RADIUS: i32 = 10;
@@ -78,7 +78,7 @@ pub(super) mod tok {
     /// token exists for. Left as a token from Task 8 rather than invented
     /// later because Task 8 is what sizes the list's card around
     /// `tok::ROWS`, and the two numbers belong beside each other.
-    pub const ROW_H: i32 = 26;
+    pub const ROW_H: i32 = 22;
 }
 
 /// Everything `layout` needs out of `Ui`, copied in ONE borrow that is

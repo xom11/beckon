@@ -696,8 +696,8 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // new slack at roughly `15 * 1.5 ≈ 22` px -- an estimate, not a fresh trace,
 // for the same reason the original one was: `notes_height` is a live font
 // measurement, not a value that scales exactly by 1.5 between two DPIs.
-const WINDOW_WIDTH: i32 = 900;
-const WINDOW_HEIGHT: i32 = 740;
+const WINDOW_WIDTH: i32 = 760;
+const WINDOW_HEIGHT: i32 = 600;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
@@ -818,8 +818,8 @@ const WINDOW_HEIGHT: i32 = 740;
 /// re-check it by the same hand trace rather than assuming it survives.
 /// Simulated, not seen: nothing on the machine this was written on can
 /// display the window.
-const MIN_WIDTH: i32 = 753;
-const MIN_HEIGHT: i32 = 702;
+const MIN_WIDTH: i32 = 660;
+const MIN_HEIGHT: i32 = 560;
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,

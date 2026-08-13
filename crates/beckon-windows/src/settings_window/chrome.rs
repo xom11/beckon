@@ -1,4 +1,4 @@
-//! The client-drawn title bar: a 40 px band carrying the app icon, `beckon`,
+//! The client-drawn title bar: a 34 px band carrying the app icon, `beckon`,
 //! the version, and two caption buttons (minimize, close).
 //!
 //! **No `use super::*;`.** This file names exactly the handful of items it
@@ -60,7 +60,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// The bar's height, at 96 DPI. `layout` offsets every band's starting `y`
 /// by `scale(TITLEBAR_H, dpi)` so the body draws below it rather than under
 /// it -- see the comment on `layout`'s `y` in `layout.rs`.
-pub(super) const TITLEBAR_H: i32 = 40;
+pub(super) const TITLEBAR_H: i32 = 34;
 
 /// One caption button's width, at 96 DPI. Two of them, right-aligned flush
 /// against the client's own right edge -- the same edge a real system
