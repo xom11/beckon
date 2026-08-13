@@ -763,10 +763,11 @@ const WINDOW_HEIGHT: i32 = 640;
 const MIN_WIDTH: i32 = 720;
 const MIN_HEIGHT: i32 = 550;
 
-/// §B.3's type roles. `Keycap` is not among them: it belongs to keycap
-/// rendering, which reads its font from `cap_font()` (a `Role::Caption`
-/// build) rather than from this ramp, so a seventh variant with no
-/// consumer anywhere would sit dead forever rather than for one task.
+/// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
+/// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
+/// Caption/Keycap, Chrome), with Title and Chrome having no consumer until
+/// Task 7 builds the title bar, and Keycap serving keycap rendering in the
+/// editor strip and shortcut list.
 #[derive(Clone, Copy)]
 enum Role {
     /// The title-bar app name.
@@ -781,6 +782,10 @@ enum Role {
     BodyStrong,
     Body,
     Caption,
+    /// Keycap rendering in the editor strip (modifier chips, Tap combo) and
+    /// the shortcut list column. 11 px semibold, matching keycap design
+    /// guidelines.
+    Keycap,
     /// The two caption-button glyphs.
     ///
     /// No consumer until Task 7 builds the title bar. `#[allow(dead_code)]`
@@ -829,7 +834,7 @@ fn role_of(id: i32) -> Role {
     }
 }
 
-/// The six live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
+/// The seven live `HFONT`s. `Copy`, so `LayoutHandles` stays `Copy` and the
 /// abort-class rule below keeps holding.
 #[derive(Clone, Copy)]
 struct Fonts {
@@ -838,6 +843,7 @@ struct Fonts {
     body_strong: HFONT,
     body: HFONT,
     caption: HFONT,
+    keycap: HFONT,
     chrome: HFONT,
 }
 
@@ -849,6 +855,7 @@ impl Fonts {
             Role::BodyStrong => self.body_strong,
             Role::Body => self.body,
             Role::Caption => self.caption,
+            Role::Keycap => self.keycap,
             Role::Chrome => self.chrome,
         }
     }
@@ -857,13 +864,13 @@ impl Fonts {
         self.get(role_of(id))
     }
 
-    /// Release all six.
+    /// Release all seven.
     ///
     /// Only ever called AFTER the controls have been told about their
     /// replacements -- deleting a font that is still selected into a DC is
     /// undefined. Landing 1 established this discipline for one font
-    /// because one `HFONT` was leaking per window open; six roles means
-    /// six leaks if only one of them is freed.
+    /// because one `HFONT` was leaking per window open; seven roles means
+    /// seven leaks if only one of them is freed.
     ///
     /// Deduplicated because the total-failure path hands every role the
     /// same stock handle. `DeleteObject` on a stock object is documented
@@ -875,6 +882,7 @@ impl Fonts {
             self.body_strong,
             self.body,
             self.caption,
+            self.keycap,
             self.chrome,
         ];
         for (i, f) in all.iter().enumerate() {
@@ -2098,6 +2106,14 @@ unsafe fn build_fonts(hwnd: HWND, dpi: u32) -> Fonts {
             FW_NORMAL.0 as i32,
             dpi,
         ),
+        keycap: make_font(
+            hwnd,
+            &base,
+            "Segoe UI Variable Small Semibol",
+            11,
+            FW_SEMIBOLD.0 as i32,
+            dpi,
+        ),
         chrome: make_font(
             hwnd,
             &base,
@@ -2162,7 +2178,7 @@ unsafe fn child(
 unsafe fn build_children(hwnd: HWND) {
     let dpi = GetDpiForWindow(hwnd).max(96);
     let fonts = build_fonts(hwnd, dpi);
-    set_cap_font(fonts.get(Role::Caption));
+    set_cap_font(fonts.get(Role::Keycap));
 
     // -- Band 1: the external-change banner. Hidden until `apply_state`
     // says the file moved; `layout` gives it no height at all while it is
@@ -4233,7 +4249,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // second message arrives to correct it.
                 let dpi = ((wp.0 >> 16) & 0xFFFF) as u32;
                 let fonts = build_fonts(hwnd, dpi);
-                set_cap_font(fonts.get(Role::Caption));
+                set_cap_font(fonts.get(Role::Keycap));
                 // The borrow is taken and dropped on these lines. Nothing
                 // below may hold one: `WM_SETFONT` re-enters this wndproc,
                 // and a second `RefCell` borrow across an `extern "system"`
