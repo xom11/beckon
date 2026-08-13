@@ -917,7 +917,13 @@ fn colours(
             } else {
                 cache.col(|p| p.accent, COLOR_HIGHLIGHT)
             };
-            let fill = pressed.then(|| cache.col(|p| p.accent_soft, COLOR_HIGHLIGHT));
+            // Under high contrast, `col` ignores the palette closure and returns
+            // GetSysColor(sys). The fill and ink MUST use different sys indices to
+            // avoid a 1:1 contrast collision where caption text vanishes into its own
+            // background. `COLOR_WINDOW` for fill and `COLOR_HIGHLIGHT` for ink form a
+            // valid matched pair — the same pairing this window already uses for
+            // accent-coloured text directly on a plain background elsewhere.
+            let fill = pressed.then(|| cache.col(|p| p.accent_soft, COLOR_WINDOW));
             (fill, ink, ink)
         }
         BtnTier::Danger => {
