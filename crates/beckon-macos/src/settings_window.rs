@@ -77,7 +77,13 @@ const COL_APP: &str = "app";
 const COL_COMBO: &str = "combo";
 const COL_STATUS: &str = "status";
 
-struct Ui {
+/// Every control handle, and nothing else.
+///
+/// Split out from `Ui` and `Clone` (a `Retained` clone is one retain) so
+/// that `controls()` can hand them out with the `RefCell` borrow ALREADY
+/// released. That is not tidiness -- see `controls()`.
+#[derive(Clone)]
+struct Controls {
     window: Retained<NSWindow>,
     table: Retained<NSTableView>,
     filter: Retained<NSTextField>,
@@ -99,6 +105,10 @@ struct Ui {
     save: Retained<NSButton>,
     remove: Retained<NSButton>,
     add: Retained<NSButton>,
+}
+
+struct Ui {
+    c: Controls,
     _target: Retained<Target>,
 
     /// The last state pushed. Callbacks need `items[i].row` to map a view
@@ -134,6 +144,29 @@ fn with_cb(f: impl FnOnce(&mut Callbacks)) {
             *c.borrow_mut() = Some(cb);
         }
     });
+}
+
+/// Every control handle, with the `RefCell` borrow already released.
+///
+/// **This is the fix for a measured panic, not a convenience.** AppKit
+/// re-enters this module *synchronously*: `reloadData` calls the data source
+/// before it returns, and setting the selection raises the delegate the same
+/// way. `apply_state` used to hold a `borrow_mut` across `reloadData`, so
+/// the data source's `borrow()` met an outstanding mutable borrow and the
+/// window died on open with `RefCell already mutably borrowed` — found by
+/// `examples/settings_probe.rs` on macmini, 2026-08-13, on its first run in
+/// an Aqua session.
+///
+/// The module already stated this rule twice — `with_cb` takes the callbacks
+/// OUT of the slot, and `tray.rs`'s `dispatch` does the same — and the
+/// rendering path broke it anyway. Routing every control access through here
+/// makes it structural rather than remembered: there is no way to reach a
+/// control while holding the borrow, because the only way to reach one is a
+/// function that has already dropped it.
+///
+/// Cloning is cheap: a `Retained` clone is one retain.
+fn controls() -> Option<Controls> {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.c.clone()))
 }
 
 /// Is this notification a programmatic push rather than a human edit?
@@ -233,14 +266,18 @@ define_class!(
             if suppressed() {
                 return;
             }
+            // The table is read with no borrow outstanding (see
+            // `controls()`), and only then is the borrow taken to map the
+            // view row to a MODEL row.
+            let Some(c) = controls() else { return };
+            let r = c.table.selectedRow();
+            if r < 0 {
+                return;
+            }
             let sel = UI.with(|u| {
-                let b = u.borrow();
-                let x = b.as_ref()?;
-                let r = x.table.selectedRow();
-                if r < 0 {
-                    return None;
-                }
-                x.items.get(r as usize).map(|i| i.row)
+                u.borrow()
+                    .as_ref()
+                    .and_then(|x| x.items.get(r as usize).map(|i| i.row))
             });
             if let Some(model_row) = sel {
                 with_cb(|cb| (cb.on_select)(model_row));
@@ -254,14 +291,9 @@ define_class!(
             if suppressed() {
                 return;
             }
-            let t = UI.with(|u| {
-                u.borrow()
-                    .as_ref()
-                    .map(|x| x.filter.stringValue().to_string())
-            });
-            if let Some(t) = t {
-                with_cb(|cb| (cb.on_filter)(t));
-            }
+            let Some(c) = controls() else { return };
+            let t = c.filter.stringValue().to_string();
+            with_cb(|cb| (cb.on_filter)(t));
         }
 
         #[unsafe(method(beckonAdd:))]
@@ -329,10 +361,9 @@ define_class!(
             if suppressed() {
                 return;
             }
-            let t = UI.with(|u| u.borrow().as_ref().map(|x| x.app.stringValue().to_string()));
-            if let Some(t) = t {
-                with_cb(|cb| (cb.on_edit_app)(t));
-            }
+            let Some(c) = controls() else { return };
+            let t = c.app.stringValue().to_string();
+            with_cb(|cb| (cb.on_edit_app)(t));
         }
 
         #[unsafe(method(beckonCaps:))]
@@ -340,14 +371,9 @@ define_class!(
             if suppressed() {
                 return;
             }
-            let on = UI.with(|u| {
-                u.borrow()
-                    .as_ref()
-                    .map(|x| x.caps.state() == 1)
-            });
-            if let Some(on) = on {
-                with_cb(|cb| (cb.on_caps)(on));
-            }
+            let Some(c) = controls() else { return };
+            let on = c.caps.state() == 1;
+            with_cb(|cb| (cb.on_caps)(on));
         }
 
         /// All three Hold chips are one value, so they are sent together.
@@ -359,18 +385,13 @@ define_class!(
             if suppressed() {
                 return;
             }
-            let c = UI.with(|u| {
-                let b = u.borrow();
-                let x = b.as_ref()?;
-                Some(Chord {
-                    ctrl: x.hold_ctrl.state() == 1,
-                    super_: x.hold_super.state() == 1,
-                    alt: x.hold_alt.state() == 1,
-                })
-            });
-            if let Some(c) = c {
-                with_cb(|cb| (cb.on_caps_hold)(c));
-            }
+            let Some(c) = controls() else { return };
+            let chord = Chord {
+                ctrl: c.hold_ctrl.state() == 1,
+                super_: c.hold_super.state() == 1,
+                alt: c.hold_alt.state() == 1,
+            };
+            with_cb(|cb| (cb.on_caps_hold)(chord));
         }
 
         /// Read BY INDEX, never by text: even a closed pop-up has
@@ -380,15 +401,11 @@ define_class!(
             if suppressed() {
                 return;
             }
-            let i = UI.with(|u| {
-                u.borrow()
-                    .as_ref()
-                    .map(|x| x.tap.indexOfSelectedItem())
-            });
-            let t = match i {
-                Some(0) => CapsTap::CapsLock,
-                Some(1) => CapsTap::Escape,
-                Some(2) => CapsTap::None,
+            let Some(c) = controls() else { return };
+            let t = match c.tap.indexOfSelectedItem() {
+                0 => CapsTap::CapsLock,
+                1 => CapsTap::Escape,
+                2 => CapsTap::None,
                 _ => return,
             };
             with_cb(|cb| (cb.on_caps_tap)(t));
@@ -406,20 +423,17 @@ fn shortcut_shown() -> Option<String> {
 /// The shortcut controls as a `ComboView`, the same shape `combo_view`
 /// derives from a stored string.
 fn combo_view_of() -> ComboView {
-    UI.with(|u| {
-        let b = u.borrow();
-        let Some(x) = b.as_ref() else {
-            return ComboView::default();
-        };
-        let i = x.key.indexOfSelectedItem();
-        ComboView {
-            ctrl: x.mod_ctrl.state() == 1,
-            super_: x.mod_super.state() == 1,
-            alt: x.mod_alt.state() == 1,
-            shift: x.mod_shift.state() == 1,
-            key: if i < 0 { None } else { Some(i as usize) },
-        }
-    })
+    let Some(c) = controls() else {
+        return ComboView::default();
+    };
+    let i = c.key.indexOfSelectedItem();
+    ComboView {
+        ctrl: c.mod_ctrl.state() == 1,
+        super_: c.mod_super.state() == 1,
+        alt: c.mod_alt.state() == 1,
+        shift: c.mod_shift.state() == 1,
+        key: if i < 0 { None } else { Some(i as usize) },
+    }
 }
 
 /// Push whatever the fields hold into the model, before an action that
@@ -428,14 +442,9 @@ fn combo_view_of() -> ComboView {
 /// Sends nothing when the controls already agree with what is stored,
 /// compared as `ComboView`s rather than as strings — see the module doc.
 fn commit_fields() {
-    let (stored, app_text) = match UI.with(|u| {
-        u.borrow()
-            .as_ref()
-            .map(|x| (x.shown_combo.clone(), x.app.stringValue().to_string()))
-    }) {
-        Some(v) => v,
-        None => return,
-    };
+    let Some(c) = controls() else { return };
+    let stored = UI.with(|u| u.borrow().as_ref().and_then(|x| x.shown_combo.clone()));
+    let app_text = c.app.stringValue().to_string();
     if Some(combo_view_of()) != stored.as_deref().map(combo_view) {
         if let Some(c) = shortcut_shown() {
             with_cb(|cb| (cb.on_edit_combo)(c));
@@ -499,25 +508,26 @@ pub fn open_existing() -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
-    UI.with(|u| {
-        let b = u.borrow();
-        let Some(x) = b.as_ref() else {
-            return false;
-        };
-        x.window.makeKeyAndOrderFront(None);
-        let _ = mtm;
-        true
-    })
+    let _ = mtm;
+    let Some(c) = controls() else {
+        return false;
+    };
+    // Borrow released first: ordering a window front can raise its delegate
+    // before returning, and anything that re-enters here would find the
+    // RefCell held. Same rule as `controls()`.
+    c.window.makeKeyAndOrderFront(None);
+    true
 }
 
 fn close() {
-    UI.with(|u| {
-        if let Some(x) = u.borrow().as_ref() {
-            x.window.close();
-        }
-        *u.borrow_mut() = None;
-    });
+    // Take the state out FIRST, then close. `NSWindow::close` runs the
+    // window delegate synchronously, and anything that re-enters must find
+    // the slot empty rather than borrowed.
+    let ui = UI.with(|u| u.borrow_mut().take());
     CB.with(|c| *c.borrow_mut() = None);
+    if let Some(ui) = ui {
+        ui.c.window.close();
+    }
 }
 
 /// Hand the installed-app catalog to the window.
@@ -823,27 +833,29 @@ pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
 
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
-            window,
-            table,
-            filter,
-            app,
-            key,
-            mod_ctrl,
-            mod_super,
-            mod_alt,
-            mod_shift,
-            notes,
-            banner,
-            banner_reload,
-            banner_keep,
-            caps,
-            hold_ctrl,
-            hold_super,
-            hold_alt,
-            tap,
-            save,
-            remove,
-            add,
+            c: Controls {
+                window,
+                table,
+                filter,
+                app,
+                key,
+                mod_ctrl,
+                mod_super,
+                mod_alt,
+                mod_shift,
+                notes,
+                banner,
+                banner_reload,
+                banner_keep,
+                caps,
+                hold_ctrl,
+                hold_super,
+                hold_alt,
+                tap,
+                save,
+                remove,
+                add,
+            },
             _target: target,
             items: Vec::new(),
             shown_combo: None,
@@ -871,14 +883,30 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     let Some(_mtm) = MainThreadMarker::new() else {
         return;
     };
-    UI.with(|u| {
+    // PHASE 1 -- model-side fields, under a borrow released before any
+    // AppKit call. `items` must be in place BEFORE `reloadData`, because
+    // that call asks the data source for them synchronously.
+    let ok = UI.with(|u| {
         let mut b = u.borrow_mut();
         let Some(x) = b.as_mut() else {
-            return;
+            return false;
         };
         x.pushing = true;
-
         x.items = st.items.clone();
+        x.shown_combo = st.detail.as_ref().map(|d| d.combo.clone());
+        true
+    });
+    if !ok {
+        return;
+    }
+
+    // PHASE 2 -- every AppKit call, with no borrow outstanding. This is the
+    // whole point of the split: `reloadData` re-enters the data source and
+    // the selection call re-enters the delegate, both before returning.
+    let Some(x) = controls() else {
+        return;
+    };
+    {
         x.table.reloadData();
         if let Some(i) = st.selected {
             let set = objc2_foundation::NSIndexSet::indexSetWithIndex(i);
@@ -908,7 +936,6 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 if x.app.stringValue().to_string() != d.app {
                     x.app.setStringValue(&NSString::from_str(&d.app));
                 }
-                x.shown_combo = Some(d.combo.clone());
                 let text = d
                     .notes
                     .iter()
@@ -924,7 +951,6 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 set_check(&x.mod_shift, false);
                 x.key.selectItemAtIndex(-1);
                 x.app.setStringValue(&NSString::from_str(""));
-                x.shown_combo = None;
                 x.notes.setStringValue(&NSString::from_str(""));
             }
         }
@@ -987,8 +1013,15 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         if want != t {
             x.window.setTitle(&NSString::from_str(&want));
         }
+    }
 
-        x.pushing = false;
+    // PHASE 3 -- reopen the gate. Until this runs, every notification the
+    // writes above provoked has been discarded by `suppressed`, which is
+    // what keeps a push from coming back as a user edit.
+    UI.with(|u| {
+        if let Some(x) = u.borrow_mut().as_mut() {
+            x.pushing = false;
+        }
     });
 }
 

@@ -76,10 +76,27 @@ define_class!(
             let Some(mtm) = MainThreadMarker::new() else {
                 return;
             };
-            let entries = TRAY.with(|t| t.borrow().as_ref().map(|t| (t.build)()));
-            if let Some(entries) = entries {
-                populate(menu, &entries, self, mtm);
-            }
+            // The builder is taken OUT of the slot, not borrowed across, for
+            // the reason `dispatch` states and the settings window learned
+            // the hard way (`settings_window::controls`): a callback that
+            // re-enters this module while a borrow is live panics. Today's
+            // builder only reads `ServeState`, so this is insurance rather
+            // than a fix -- but it is the same shape as the bug that
+            // actually happened, and the cost is one take-and-restore.
+            let Some(build) = TRAY.with(|t| {
+                t.borrow_mut()
+                    .as_mut()
+                    .map(|x| std::mem::replace(&mut x.build, Box::new(Vec::new)))
+            }) else {
+                return;
+            };
+            let entries = build();
+            TRAY.with(|t| {
+                if let Some(x) = t.borrow_mut().as_mut() {
+                    x.build = build;
+                }
+            });
+            populate(menu, &entries, self, mtm);
         }
     }
 
@@ -218,13 +235,14 @@ pub fn set_status(text: &str) {
         }
         return;
     };
-    TRAY.with(|t| {
-        if let Some(tray) = t.borrow().as_ref() {
-            if let Some(button) = tray._item.button(mtm) {
-                button.setToolTip(Some(&NSString::from_str(text)));
-            }
+    // Handle out first, borrow released, THEN the AppKit call -- the rule
+    // `settings_window::controls` exists to enforce.
+    let item = TRAY.with(|t| t.borrow().as_ref().map(|x| x._item.clone()));
+    if let Some(item) = item {
+        if let Some(button) = item.button(mtm) {
+            button.setToolTip(Some(&NSString::from_str(text)));
         }
-    });
+    }
 }
 
 /// Leave the run loop. `hotkey::run_forever` never returns, so quitting is
