@@ -18,7 +18,7 @@
 # built-in Windows shortcuts. Prefer exact friendly names from
 # `beckon installed` — `File Explorer`, not `Explorer`.
 
-"ctrl+super+alt+space" = "Terminal"
+"ctrl+super+alt+t"     = "Terminal"
 "ctrl+super+alt+c"     = "Claude"
 "ctrl+super+alt+b"     = "Brave"
 "ctrl+super+alt+e"     = "Cursor"

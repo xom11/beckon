@@ -20,14 +20,24 @@ const front = d => (d.focused === null ? null : d.wins.find(w => w.id === d.focu
 test('the letter map is exactly README.md’s table', () => {
   assert.deepEqual(
     DESK_APPS.map(a => [a.key, a.name]),
-    [['Space', 'terminal'], ['C', 'Claude'], ['B', 'Brave'], ['E', 'Cursor'], ['D', 'Discord']]
+    [['T', 'terminal'], ['C', 'Claude'], ['B', 'Brave'], ['E', 'Cursor'], ['D', 'Discord']]
   );
 });
 
 test('letters resolve case-insensitively, like every beckon resolver', () => {
   assert.equal(deskAppOf('c').name, 'Claude');
   assert.equal(deskAppOf('C').name, 'Claude');
-  assert.equal(deskAppOf('space').name, 'terminal');
+  assert.equal(deskAppOf('t').name, 'terminal');
+});
+
+test('every binding is a plain letter', () => {
+  /* The terminal moved off Space, which is what let the key routing drop its
+     "defer to a focused control" case: Space activates a button, a link and a
+     <summary>, and letters do not. If a binding ever goes back to a named key,
+     that case has to come back with it. */
+  for (const a of DESK_APPS) {
+    assert.match(a.key, /^[A-Za-z]$/, `${a.key} is not a single letter`);
+  }
 });
 
 test('an unbound letter fires no step and says nothing', () => {
@@ -100,7 +110,7 @@ test('a focused window keeps the place it already had', () => {
 test('no press of any letter ever changes a slot', () => {
   let d = scene('hero');
   const before = d.wins.map(w => [w.id, w.slot]);
-  for (const k of ['C', 'B', 'C', 'Space', 'B', 'C', 'C']) d = deskPress(d, k).desk;
+  for (const k of ['C', 'B', 'C', 'T', 'B', 'C', 'C']) d = deskPress(d, k).desk;
   const after = d.wins.filter(w => before.some(b => b[0] === w.id)).map(w => [w.id, w.slot]);
   assert.deepEqual(after.sort(), before.sort());
 });
@@ -148,7 +158,7 @@ test('with several windows open the ring never exits 5a', () => {
 test('four of the five letters do the obvious thing in the hero', () => {
   const h = scene('hero');
   assert.equal(deskPress(h, 'C').step, '5', 'Claude is running, behind Brave');
-  assert.equal(deskPress(h, 'Space').step, '5', 'the terminal is running too');
+  assert.equal(deskPress(h, 'T').step, '5', 'the terminal is running too');
   assert.equal(deskPress(h, 'E').step, '4', 'Cursor is not running');
   assert.equal(deskPress(h, 'D').step, '4', 'Discord is not running');
   assert.equal(deskPress(h, 'B').step, '5b', 'Brave is already in front');

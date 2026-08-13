@@ -14,7 +14,7 @@ Recommended bindings (matching the rest of the examples):
 
 | Trigger | Action |
 |---|---|
-| `Super+space` | `beckon kitty` |
+| `Super+t`     | `beckon kitty` |
 | `Super+c`     | `beckon Claude` |
 | `Super+b`     | `beckon Brave` |
 | `Super+e`     | `beckon Cursor` |
@@ -27,7 +27,7 @@ Faster than clicking through the UI five times:
 ```sh
 BECKON="$(command -v beckon)"
 
-xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Super>space" -t string -s "$BECKON kitty"
+xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Super>t"     -t string -s "$BECKON kitty"
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Super>c"     -t string -s "$BECKON Claude"
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Super>b"     -t string -s "$BECKON Brave"
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Super>e"     -t string -s "$BECKON Cursor"

@@ -68,7 +68,7 @@ the letter, not the modifier:
 
 | Letter | App | Notes |
 |---|---|---|
-| `Space` | terminal | kitty / Alacritty / Windows Terminal — change to your terminal |
+| `T` | terminal | kitty / Alacritty / Windows Terminal — change to your terminal |
 | `C` | Claude | the desktop app or the [Claude.ai](https://claude.ai) PWA |
 | `B` | Brave | swap for Firefox / Chrome / Vivaldi if you don't use Brave |
 | `E` | Cursor | swap for VS Code, Zed, Sublime, etc. |

@@ -27,7 +27,7 @@ Beckon(name) {
     try Run('"' BeckonExe '" "' name '"', , "Hide")
 }
 
-^#!Space:: Beckon("Terminal")
+^#!t::     Beckon("Terminal")
 ^#!c::     Beckon("Claude")
 ^#!b::     Beckon("Brave")
 ^#!e::     Beckon("Cursor")

@@ -244,6 +244,16 @@
   document.addEventListener('keydown', capsArm, true);
   document.addEventListener('keyup', capsArm, true);
 
+  /* EVERY ACCEPTED PRESS RE-ARMS, which is what makes holding Caps down and
+   * typing `c b c b` work. Caps Lock is a toggle, not a modifier: pressing it
+   * fires one keydown and holding it sends nothing more, and on macOS the
+   * matching keyup does not arrive until the lock is switched off again. So
+   * "still holding it" is not a fact this page can read — after ARM_MS the
+   * window closed underneath a reader whose finger had never left the key.
+   * Refreshing on each accepted letter makes a run of them keep itself alive;
+   * only an actual pause of ARM_MS ends it. */
+  function capsKeepAlive() { capsArmed = Date.now(); }
+
   /* SIGNAL 3, AND ON A REMAPPED MACHINE IT IS THE ONLY ONE THAT FIRES: the
    * reader's real chord arrived. If Caps Lock has been remapped to Hyper —
    * Karabiner, kanata, a Hammerspoon binding, which is exactly the setup this
@@ -649,23 +659,27 @@
     if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' ||
               t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
 
-    var name = e.key === ' ' || e.key === 'Spacebar' ? 'Space' : e.key;
+    /* All five bindings are plain letters now — the terminal moved from Space
+       to T so the examples stop contradicting themselves — so nothing here has
+       to defer to a focused control. Space used to, because it activates a
+       button, a link and a <summary>, and tabbing to a table row and pressing
+       it ran the demo instead of choosing the scenario just focused. */
+    var name = e.key;
     if (!deskAppOf(name)) return;
-
-    /* Space is the one bound key a focused control already owns: it activates a
-       button, a link and a <summary>. Letters are not, so only Space defers.
-       Without this, tabbing to a table row and pressing Space ran the demo
-       instead of choosing the scenario the reader had just focused. */
-    if (name === 'Space' && t && t.closest &&
-        t.closest('button, a, summary, details, select, input, textarea')) return;
 
     var d = active();
     if (!d) return;
+
+    /* Only the Caps path re-arms. A real chord carries its own modifiers on
+       every event, so it needs no window — and re-arming from one would let
+       the NEXT bare letter through, which is the leak this split avoids. */
+    var viaCaps = !chord && capsHeld();
     /* The key is only swallowed when it actually drove a demo. A press the
-       gate turned away must NOT be swallowed: otherwise a reader whose Caps
-       Lock goes nowhere loses Space as a scroll key and gets nothing back
-       for it. */
-    if (d.press(name, chord || capsHeld())) e.preventDefault();
+       gate turned away must NOT be swallowed — a refused key should do
+       whatever the browser would have done with it. */
+    if (!d.press(name, chord || viaCaps)) return;
+    e.preventDefault();
+    if (viaCaps) capsKeepAlive();
   });
 
 

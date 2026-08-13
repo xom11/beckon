@@ -19,7 +19,7 @@ fi
 
 # Each entry: name|binding|app
 ENTRIES=(
-    "beckon-terminal|<Super>space|kitty"
+    "beckon-terminal|<Super>t|kitty"
     "beckon-claude|<Super>c|Claude"
     "beckon-brave|<Super>b|Brave"
     "beckon-cursor|<Super>e|Cursor"

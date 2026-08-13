@@ -23,12 +23,10 @@
 /* Straight out of README.md's table. `tools/check-site.sh` pins the same five
    pairs into index.html, so a rebinding in examples/ cannot leave this map
    teaching the old letter while the page teaches the new one. */
-/* `label` is what a keycap shows. It is the key's own name rather than a glyph
-   for the same reason the keycap component accepts "Cmd" and "Super": U+2423
-   OPEN BOX, the conventional mark for a space bar, renders at x-height in the
-   UI stacks here and reads as a stray tick rather than as a key. */
+/* `label` is what a keycap shows — the key's own name, the same way the keycap
+   component spells out "Cmd" and "Super". */
 var DESK_APPS = [
-  { key: 'Space', name: 'terminal', label: 'Space' },
+  { key: 'T', name: 'terminal', label: 'T' },
   { key: 'C', name: 'Claude', label: 'C' },
   { key: 'B', name: 'Brave', label: 'B' },
   { key: 'E', name: 'Cursor', label: 'E' },

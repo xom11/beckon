@@ -30,7 +30,7 @@ local function beckon(name)
     end, { name }):start()
 end
 
-hs.hotkey.bind(hyper, "space", function() beckon("kitty") end)
+hs.hotkey.bind(hyper, "t", function() beckon("kitty") end)
 hs.hotkey.bind(hyper, "c",     function() beckon("Claude") end)
 hs.hotkey.bind(hyper, "b",     function() beckon("Brave Browser") end)
 hs.hotkey.bind(hyper, "e",     function() beckon("Cursor") end)

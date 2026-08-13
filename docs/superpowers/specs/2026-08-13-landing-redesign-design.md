@@ -85,6 +85,14 @@ accepts either:
    synthetic-event test can reach: Chrome does not flip its caps modifier for
    injected keys, measured with the same probe.
 
+   **Every accepted press re-arms**, which is what makes holding Caps down and
+   typing `c b c b` work. Caps Lock is a toggle, not a modifier: pressing it
+   fires one keydown, holding it sends nothing more, and on macOS the matching
+   keyup does not arrive until the lock is switched off again. So "still
+   holding it" is not a fact the page can read, and without the refresh the
+   window closed underneath a reader whose finger had never left the key.
+   Only an actual pause of 1.5s ends a run.
+
 2. **The real chord arrived** — two or more of `ctrlKey` / `altKey` / `metaKey`
    on the letter's own event. **On a machine where Caps Lock is remapped to
    Hyper this is the only signal that fires, and the reader is doing exactly
@@ -320,6 +328,23 @@ The Caps Lock paragraph in `#serve` duplicated the FAQ entry below it almost
 word for word. The duplicate goes; the FAQ entry stays.
 
 Target: 6789px → ~4200px at 1440 wide.
+
+## The terminal moved from `Space` to `T`
+
+README.md's letter table said `Space → terminal` while the `serve` example four
+sections below it read `"ctrl+super+alt+t" = "kitty"`. The docs contradicted
+themselves, and every example config carried the `Space` half: sway, Hyprland,
+GNOME-X11, XFCE, openbox, fluxbox, awesome, KDE, AHK and both `apps.toml`
+files. All of them are on `T` now, and the KDE README's note that `Meta+Space`
+collides with KRunner has become a reason rather than a warning.
+
+It also let the key routing drop a case. Space is the one bound key a focused
+control already owns — it activates a button, a link and a `<summary>` — so
+tabbing to a table row in `#how` and pressing it ran the demo instead of
+choosing the scenario just focused, and the router carried a `closest()` check
+to defer. Five plain letters need none of that. `every binding is a plain
+letter` is now a test, so putting a named key back will fail loudly rather than
+quietly reintroducing the bug.
 
 ## Out of scope
 

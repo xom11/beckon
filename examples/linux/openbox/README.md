@@ -23,7 +23,7 @@ openbox --reconfigure
 Bindings live in your Lua config (`~/.config/awesome/rc.lua`). Add:
 
 ```lua
-awful.key({ "Mod4" }, "space", function () awful.spawn("beckon kitty") end),
+awful.key({ "Mod4" }, "t",     function () awful.spawn("beckon kitty") end),
 awful.key({ "Mod4" }, "c",     function () awful.spawn("beckon Claude") end),
 awful.key({ "Mod4" }, "b",     function () awful.spawn("beckon Brave") end),
 awful.key({ "Mod4" }, "e",     function () awful.spawn("beckon Cursor") end),
@@ -37,7 +37,7 @@ Plug those into your `globalkeys` table. Reload with `Mod4+Ctrl+r`.
 Add to `~/.fluxbox/keys`:
 
 ```
-Mod4 space :Exec beckon kitty
+Mod4 t     :Exec beckon kitty
 Mod4 c     :Exec beckon Claude
 Mod4 b     :Exec beckon Brave
 Mod4 e     :Exec beckon Cursor

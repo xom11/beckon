@@ -209,7 +209,7 @@ remember the letter, not the modifier:
 
 | Letter | App |
 |---|---|
-| `Space` | terminal |
+| `T` | terminal |
 | `C` | Claude |
 | `B` | Brave |
 | `E` | Cursor |
