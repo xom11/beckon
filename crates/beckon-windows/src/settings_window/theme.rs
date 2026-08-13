@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Dwm::{
     DwmExtendFrameIntoClientArea, DwmSetWindowAttribute, DWMWINDOWATTRIBUTE,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, GetSysColor, HBRUSH, HGDIOBJ, SYS_COLOR_INDEX,
+    CreateSolidBrush, DeleteObject, GetSysColor, COLOR_BTNFACE, HBRUSH, HGDIOBJ, SYS_COLOR_INDEX,
 };
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
@@ -107,6 +107,44 @@ pub(super) fn apply_dwm_dark(hwnd: HWND, dark: bool) {
             DWMWA_USE_IMMERSIVE_DARK_MODE,
             &on as *const _ as *const _,
             std::mem::size_of::<BOOL>() as u32,
+        );
+    }
+}
+
+/// Tint the resize frame to match the window's own ground.
+///
+/// **`WM_NCCALCSIZE` reclaims only `.top`, so the left, right and bottom
+/// resize borders stay non-client and DWM paints them — and with no
+/// `WS_CAPTION` it paints them PURE BLACK.** Measured on a14 2026-08-13: a
+/// 10 px band of `(0,0,0)` on three sides of a `#15171C` window, which reads
+/// as the window sitting inside a black box.
+///
+/// Reclaiming the whole frame instead would work, but it moves resize
+/// hit-testing out of `DefWindowProc` and into `nchittest` — eight directions
+/// and four corners to get right, for a border. One attribute is the cheaper
+/// answer, and it keeps `DefWindowProc` owning the resize behaviour that
+/// already works.
+///
+/// Windows 11 22H2+. The call fails harmlessly on anything older, which
+/// leaves the black band — a cosmetic fault on an OS this window already
+/// treats as second class (no Mica, no rounded corners there either).
+pub(super) fn apply_dwm_border(hwnd: HWND, t: Theme) {
+    const DWMWA_BORDER_COLOR: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(34);
+    // Resolved here, not at the call site, so the high-contrast branch cannot
+    // be forgotten -- the same reason `ThemeCache::col` takes both a token and
+    // a `GetSysColor` index. A call site that read `palette()` directly would
+    // get `None` under high contrast and fall back to black, which is the
+    // exact fault this function exists to remove.
+    let c = match t.palette() {
+        Some(p) => colorref(p.bg),
+        None => COLORREF(unsafe { GetSysColor(COLOR_BTNFACE) }),
+    };
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &c as *const _ as *const _,
+            std::mem::size_of::<COLORREF>() as u32,
         );
     }
 }

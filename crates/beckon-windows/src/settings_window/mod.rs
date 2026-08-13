@@ -1980,6 +1980,9 @@ unsafe fn create() -> Result<(), String> {
         c.borrow_mut().rebuild(t);
     });
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    // The resize frame is still non-client on three sides, and DWM paints
+    // it black without a caption. Tint it to the window's own ground.
+    theme::apply_dwm_border(hwnd, t);
     // First backdrop decision. See `apply_current_backdrop`, below, for why
     // this window never calls `theme::read_backdrop_inputs` directly.
     apply_current_backdrop(hwnd);
@@ -4587,6 +4590,9 @@ unsafe fn on_theme_changed(hwnd: HWND) {
         return;
     }
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    // The resize frame is still non-client on three sides, and DWM paints
+    // it black without a caption. Tint it to the window's own ground.
+    theme::apply_dwm_border(hwnd, t);
     theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
     let _ = InvalidateRect(Some(hwnd), None, true);
 }
