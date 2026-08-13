@@ -352,9 +352,21 @@ mod tests {
         );
     }
 
-    /// Opaque wins over Mica, not the other way round. Written as its own test
-    /// because an `if` reordered during a refactor would still pass every test
-    /// above.
+    /// Opaque wins over Mica, not the other way round.
+    ///
+    /// **CORRECTED 2026-08-13.** This used to claim the test was needed
+    /// because "an `if` reordered during a refactor would still pass every
+    /// test above". That is false, and a review disproved it by hand-trace:
+    /// swapping the two `if` blocks in `backdrop` makes
+    /// `three_conditions_force_opaque_even_on_a_capable_build` fail on all
+    /// three of its sub-assertions, because its `bi(26200)` already sets
+    /// `mica_supported: true`. The test above catches the reordering on its
+    /// own.
+    ///
+    /// This test stays as a second net that says in its NAME what the
+    /// ordering is, and it does fail independently under the same reversal.
+    /// It is redundant coverage, deliberately kept — not the only coverage,
+    /// as the old comment claimed.
     #[test]
     fn refusals_are_checked_before_capability() {
         let i = BackdropInputs {
