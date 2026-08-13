@@ -84,9 +84,16 @@ observable signals, and the gate accepts either:
 
 **A remapped Caps Lock satisfies neither**, and kanata / PowerToys / a Hyper
 remap are disproportionately common among the people who would want this tool.
-So **two refused presses open the gate permanently** and the hint says why. A
-demo that cannot be operated is worse than one that teaches its gesture
-loosely.
+A demo that cannot be operated is worse than one that teaches its gesture
+loosely — so there is a way out, and **it is a button, not a counter**.
+
+Two refused presses used to open the gate by themselves. That was worse than
+either alternative: a reader whose Caps works fine reached it by fumbling
+twice, and from the outside the demo simply looked like it had quietly stopped
+asking for Caps. The gate now never opens on its own. After two refusals the
+hint offers *Use letters only*, and only a click opens it — for every demo at
+once, since having answered the question in the hero should not mean answering
+it again in `#how`.
 
 Clicking a key never goes through the gate: requiring a lock key from a pointer
 would be asking for a gesture the device may not have.
@@ -104,9 +111,24 @@ chord is — which the rows under the desk name.
 Pure. No DOM, no globals beyond one export.
 
 ```js
-Desk  = { os, apps: [{ key, name, windows: [id] }], stack: [id], focused }
+Desk  = { os, wins: [{ id, app, min, slot }], focused }
 press(desk, letter) -> { desk, step }   // step ∈ '4' | '5' | '5a' | '5b' | '5c'
 ```
+
+**`slot` is where the window sits, and nothing ever changes it.** Focusing a
+window raises it; it does not move it. The renderer derived position from MRU
+order at first, so focusing Claude slid it into the place Brave had been
+occupying while Brave slid out — and with two windows of similar size that does
+not read as "Claude came forward", it reads as **the Brave window having been
+renamed to Claude**, which is the exact opposite of what the demo exists to
+show. Position comes from the window, stacking comes from the order, and three
+tests pin it (`a focused window keeps the place it already had`, `no press of
+any letter ever changes a slot`, `a launched window takes a new place, not
+somebody else's`).
+
+The same defect had a second home: the JS-off `@keyframes` swapped the two
+windows' cascade offsets. They no longer mention `transform` at all, which is
+what lets the base rule's `translate(var(--slot) …)` stand.
 
 `press` is CLAUDE.md's *Focus algorithm* transcribed, in the order that
 document tests its branches, and it is the same shape as `beckon-linux`'s

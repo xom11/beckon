@@ -100,7 +100,7 @@
     --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
     --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
     --win-paper: #1B1B20; --win-ink: #D8D8DC;
-    --win-bar: #232329; --win-bar-ink: #A2A2AC;
+    --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
     --win-line: rgba(255, 255, 255, .10);
     --hud-bg: rgba(20, 20, 24, .86);
   }
@@ -113,7 +113,7 @@
   --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
   --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
   --win-paper: #1B1B20; --win-ink: #D8D8DC;
-  --win-bar: #232329; --win-bar-ink: #A2A2AC;
+  --win-bar: #2D2D36; --win-bar-ink: #BCBCC6;
   --win-line: rgba(255, 255, 255, .10);
   --hud-bg: rgba(20, 20, 24, .86);
 }
@@ -406,7 +406,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
               border-color .3s ease;
   box-shadow: var(--shadow-soft);
-  opacity: .78;
+  /* A background window is dimmed, not erased. It has to stay readable —
+     seeing "Brave" still sitting there behind Claude is the whole evidence
+     that the press raised a window rather than renamed one — and at .78 over a
+     dark wallpaper its title bar disappeared entirely. */
+  opacity: .84;
 }
 .win.is-focused { opacity: 1; box-shadow: var(--shadow); }
 
@@ -647,9 +651,21 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .press-hint {
   flex-basis: 100%;
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 4px 10px;
   font-size: 14px; color: var(--fg-dim);
   margin: 2px 0 0;
 }
+/* The way out of the Caps gate. It appears only after two refused presses and
+   opens nothing until it is clicked — see the gate's own note in beckon.js for
+   why a counter doing this silently was the wrong shape. */
+.press-out {
+  font: inherit; font-size: 13px;
+  color: var(--fg); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  padding: 4px 10px; min-height: 26px; cursor: pointer;
+}
+.press-out:hover { background: var(--bg-raised); }
 /* The lock's own state, which the page can read from any key or pointer event
    — so it stops saying "unknown" the moment the reader moves the mouse. */
 .caps-state {
@@ -742,13 +758,20 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    at the same instant" structural rather than a claim in the caption: the three
    desks are three copies of one 6s timeline started by the same style
    recalculation. */
-@keyframes deskRise {
-  0%, 42%   { transform: translate(20%, 17%); opacity: .78; z-index: 2; box-shadow: var(--shadow-soft); }
-  50%, 100% { transform: translate(0, 0);     opacity: 1;   z-index: 4; box-shadow: var(--shadow); }
+/* NEITHER OF THESE TOUCHES `transform`, and that is the fix rather than an
+   omission. They used to swap the two windows' cascade offsets, which is the
+   same defect the renderer had: two similar windows trading places does not
+   read as one coming forward, it reads as the front window being renamed. A
+   window keeps its place; raising it changes what is in front of what. Leaving
+   `transform` out of the keyframes is what lets the base rule's
+   `translate(var(--slot) …)` stand. */
+@keyframes deskRaise {
+  0%, 42%   { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
+  50%, 100% { opacity: 1;   z-index: 4; box-shadow: var(--shadow); }
 }
-@keyframes deskSink {
-  0%, 42%   { transform: translate(0, 0);     opacity: 1;   z-index: 3; box-shadow: var(--shadow); }
-  50%, 100% { transform: translate(20%, 17%); opacity: .78; z-index: 2; box-shadow: var(--shadow-soft); }
+@keyframes deskLower {
+  0%, 42%   { opacity: 1;   z-index: 3; box-shadow: var(--shadow); }
+  50%, 100% { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
 }
 /* The traffic lights follow the window they belong to. Two keyframes rather
    than six: the lights are coloured unconditionally and this animates the
@@ -772,11 +795,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 .hero-demo:not(.is-live) .desk[data-os="macos"]   .win[data-app="Claude"],
 .hero-demo:not(.is-live) .desk[data-os="windows"] .win[data-app="Claude"] {
-  animation: deskRise 6s infinite;
+  animation: deskRaise 6s infinite;
 }
 .hero-demo:not(.is-live) .desk[data-os="macos"]   .win[data-app="Brave"],
 .hero-demo:not(.is-live) .desk[data-os="windows"] .win[data-app="Brave"] {
-  animation: deskSink 6s infinite;
+  animation: deskLower 6s infinite;
 }
 .hero-demo:not(.is-live) .desk[data-os="linux"] .win[data-app="Claude"] {
   animation: swayTake 6s infinite;
@@ -850,11 +873,11 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    the table's caption points at. */
 .how-demo:not(.is-live) .desk[data-os="macos"]   .win[data-app="Claude"]:first-child,
 .how-demo:not(.is-live) .desk[data-os="windows"] .win[data-app="Claude"]:first-child {
-  animation: deskSink 6s infinite;
+  animation: deskLower 6s infinite;
 }
 .how-demo:not(.is-live) .desk[data-os="macos"]   .win[data-app="Claude"]:nth-child(2),
 .how-demo:not(.is-live) .desk[data-os="windows"] .win[data-app="Claude"]:nth-child(2) {
-  animation: deskRise 6s infinite;
+  animation: deskRaise 6s infinite;
 }
 .how-demo:not(.is-live) .desk[data-os="linux"] .win[data-app="Claude"]:first-child {
   animation: swayDrop 6s infinite;

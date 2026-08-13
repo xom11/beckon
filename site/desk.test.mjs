@@ -76,6 +76,44 @@ test('step 5c — focused, one window, nothing else, so hide it', () => {
   assert.equal(r.desk.wins[0].min, true);
 });
 
+/* --- focusing raises a window, it does not move it ------------------------ */
+
+test('a focused window keeps the place it already had', () => {
+  /* The defect this pins: the renderer used to take a window's position from
+     its MRU index, so focusing Claude slid it into the spot Brave had been in
+     while Brave slid out of it. Two similar windows swapping places does not
+     read as "Claude came forward" — it reads as the Brave window having been
+     renamed, which is the opposite of what the demo is for. */
+  const before = scene('5');                       // Brave in front, Claude behind
+  const claude = before.wins.find(w => w.app === 'Claude');
+  const brave = before.wins.find(w => w.app === 'Brave');
+
+  const after = deskPress(before, 'C').desk;
+  const claude2 = after.wins.find(w => w.id === claude.id);
+  const brave2 = after.wins.find(w => w.id === brave.id);
+
+  assert.equal(after.focused, claude.id, 'Claude took focus');
+  assert.equal(claude2.slot, claude.slot, 'and did not move');
+  assert.equal(brave2.slot, brave.slot, 'and Brave did not move either');
+});
+
+test('no press of any letter ever changes a slot', () => {
+  let d = scene('hero');
+  const before = d.wins.map(w => [w.id, w.slot]);
+  for (const k of ['C', 'B', 'C', 'Space', 'B', 'C', 'C']) d = deskPress(d, k).desk;
+  const after = d.wins.filter(w => before.some(b => b[0] === w.id)).map(w => [w.id, w.slot]);
+  assert.deepEqual(after.sort(), before.sort());
+});
+
+test('a launched window takes a new place, not somebody else’s', () => {
+  const before = scene('hero');
+  const taken = before.wins.map(w => w.slot);
+  const after = deskPress(before, 'E').desk;      // step 4, Cursor is not running
+  const born = after.wins.find(w => w.app === 'Cursor');
+  assert.ok(born, 'Cursor launched');
+  assert.ok(!taken.includes(born.slot), `slot ${born.slot} was already occupied`);
+});
+
 /* --- the two properties the ring exists to have --------------------------- */
 
 test('the ring visits every window exactly once per lap, and wraps', () => {

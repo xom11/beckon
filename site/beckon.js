@@ -220,16 +220,24 @@
    *
    * AND A REMAPPED CAPS LOCK SATISFIES NEITHER. kanata, PowerToys and a Hyper
    * remap all swallow the key before the browser sees anything — and that is
-   * disproportionately the audience for a keyboard-driven app switcher. So two
-   * misses open the gate permanently and the hint says why. A demo that cannot
-   * be operated is worse than a demo that teaches its gesture loosely. */
+   * disproportionately the audience for a keyboard-driven app switcher.
+   *
+   * THE WAY OUT IS A BUTTON, NOT A COUNTER. Two refused presses used to open
+   * the gate by themselves, which was worse than either alternative: a reader
+   * whose Caps works fine still reached it by fumbling twice, and from the
+   * outside the demo simply looked like it had stopped asking for Caps at all.
+   * The gate now never opens on its own. After two refusals the hint offers a
+   * button, and only the reader's own click opens it — for every demo at once,
+   * because having answered the question here should not mean answering it
+   * again further down the page. */
   var CAPS_ARM_MS = 1500;
   var capsOn = null;         /* null until the first event that can tell us */
   var capsArmed = 0;
-  var capsOpen = false;      /* the escape hatch, once earned */
+  var capsOpen = false;      /* the escape hatch, and only a click opens it */
   var capsMiss = 0;
   var capsSubs = [];
   var capsMoved = 0;
+  var capsRows = [];         /* every press row, so one answer serves them all */
 
   function capsRead(e) {
     if (typeof e.getModifierState !== 'function') return;
@@ -263,6 +271,12 @@
     return capsOpen || capsOn === true || (Date.now() - capsArmed) < CAPS_ARM_MS;
   }
   function onCaps(fn) { capsSubs.push(fn); fn(capsOn); }
+
+  /* The reader's own answer to "is Caps reaching this page?", given once. */
+  function capsGiveUp() {
+    capsOpen = true;
+    capsRows.forEach(function (r) { r.opened(); });
+  }
 
 
   /* --- the desks ---------------------------------------------------------- */
@@ -315,7 +329,12 @@
       var n = pool[w.id];
       if (!n) { n = makeWin(w); pool[w.id] = n; }
       if (n.parentNode !== wins) wins.appendChild(n);
-      n.style.setProperty('--slot', String(i));
+      /* POSITION FROM THE WINDOW, STACKING FROM THE ORDER. The window's own
+         slot never changes, so a raise leaves it exactly where it was and only
+         brings it in front — which is what raising a window looks like.
+         Wrapped at four because a fifth step of the cascade would put the
+         window's right edge off the desk. */
+      n.style.setProperty('--slot', String(w.slot % 4));
       n.style.zIndex = String(order.length - i);
       n.classList.toggle('is-focused', w.id === desk.focused);
     });
@@ -340,9 +359,9 @@
   }
 
   var HINT_ASK = 'Turn Caps Lock on, or tap it — then a letter. Or click a key.';
-  var HINT_NUDGE = 'Caps Lock first, then the letter.';
-  var HINT_OPEN = 'Caps Lock is not reaching this page — some setups remap it. ' +
-                  'The letters work on their own now.';
+  var HINT_NUDGE = 'That one needs Caps Lock first. Turn it on, or tap it, then the letter.';
+  var HINT_STUCK = 'Still nothing? Some setups remap Caps Lock, and this page never sees it.';
+  var HINT_OPEN = 'Caps Lock set aside — the letters work on their own now.';
 
   /* A press row, and the HUD, are how a reader with no keyboard — or on a
      phone, or with Caps remapped — takes part at all. So neither is
@@ -377,8 +396,13 @@
 
     var hint = el('p', 'press-hint');
     var words = document.createTextNode(HINT_ASK + ' ');
+    var out = el('button', 'press-out', 'Use letters only');
+    out.type = 'button';
+    out.hidden = true;
+    out.addEventListener('click', capsGiveUp);
     var state = el('span', 'caps-state');
     hint.appendChild(words);
+    hint.appendChild(out);
     hint.appendChild(state);
     host.appendChild(hint);
     host.hidden = false;
@@ -388,22 +412,27 @@
       state.classList.toggle('is-on', on === true);
     });
 
-    return {
+    var row = {
+      opened: function () {
+        words.nodeValue = HINT_OPEN + ' ';
+        out.hidden = true;
+      },
       flash: function (key) {
         var b = caps[key];
         if (!b) return;
         b.classList.add('is-hit');
         setTimeout(function () { b.classList.remove('is-hit'); }, 160);
-        if (words.nodeValue !== HINT_OPEN + ' ') {
-          words.nodeValue = (capsOpen ? HINT_OPEN : HINT_ASK) + ' ';
-        }
+        if (!capsOpen) { words.nodeValue = HINT_ASK + ' '; out.hidden = true; }
       },
       miss: function () {
         capsMiss++;
-        if (capsMiss >= 2) capsOpen = true;
-        words.nodeValue = (capsOpen ? HINT_OPEN : HINT_NUDGE) + ' ';
+        /* The gate does not open here. It offers. */
+        words.nodeValue = (capsMiss >= 2 ? HINT_STUCK : HINT_NUDGE) + ' ';
+        out.hidden = capsMiss < 2;
       }
     };
+    capsRows.push(row);
+    return row;
   }
 
   function readout(host, step, say) {

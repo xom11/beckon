@@ -45,7 +45,7 @@ function deskAppOf(letter) {
 
 /* A desk is:
  *
- *   { os, wins: [ { id, app, min } ], focused }
+ *   { os, wins: [ { id, app, min, slot } ], focused }
  *
  * `wins` is MRU order, most recent first — the same thing every backend reads
  * out of the compositor (sway's tree walk, Hyprland's focusHistoryID, X11's
@@ -53,28 +53,44 @@ function deskAppOf(letter) {
  * `id` doubles as the window's address: monotonic, assigned at creation, and
  * never reused. Step 5a depends on that — see below.
  *
+ * `slot` IS WHERE THE WINDOW SITS ON THE DESK, and it is fixed for the
+ * window's lifetime. Nothing in this file ever changes it. That is the whole
+ * point: FOCUSING A WINDOW DOES NOT MOVE IT. Raising it changes what is in
+ * front, not what is where — which is what every stacking window manager does
+ * and what a reader expects to see.
+ *
+ * The renderer used to derive the position from MRU order instead, so focusing
+ * Claude slid it into the place Brave had been occupying while Brave slid out.
+ * With two windows of similar size that does not read as "Claude came
+ * forward"; it reads as "the Brave window was renamed to Claude", which is the
+ * opposite of the thing the demo exists to show.
+ *
  * `focused` is an id or null. Null is a real state, not an error: it is what
  * step 5c leaves behind.
  */
 function deskMake(os, spec) {
   var wins = spec.map(function (w, i) {
-    return { id: i + 1, app: w.app, min: !!w.min };
+    return { id: i + 1, app: w.app, min: !!w.min, slot: i };
   });
   var first = wins.filter(function (w) { return !w.min; })[0];
   return {
     os: os,
     wins: wins,
     focused: first ? first.id : null,
-    next: wins.length + 1
+    next: wins.length + 1,
+    nextSlot: wins.length
   };
 }
 
 function deskClone(d) {
   return {
     os: d.os,
-    wins: d.wins.map(function (w) { return { id: w.id, app: w.app, min: w.min }; }),
+    wins: d.wins.map(function (w) {
+      return { id: w.id, app: w.app, min: w.min, slot: w.slot };
+    }),
     focused: d.focused,
-    next: d.next
+    next: d.next,
+    nextSlot: d.nextSlot
   };
 }
 
@@ -110,9 +126,10 @@ function deskPress(desk, letter) {
   var d = deskClone(desk);
   var mine = d.wins.filter(function (w) { return w.app === app.name; });
 
-  /* Step 4 — nothing of this app is running, so launch it. */
+  /* Step 4 — nothing of this app is running, so launch it. A new window takes
+     the next free place on the desk; it does not take someone else's. */
   if (mine.length === 0) {
-    var born = { id: d.next++, app: app.name, min: false };
+    var born = { id: d.next++, app: app.name, min: false, slot: d.nextSlot++ };
     d.wins = [born].concat(d.wins);
     d.focused = born.id;
     return { desk: d, step: '4', app: app };
