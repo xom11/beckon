@@ -1954,6 +1954,9 @@ unsafe fn create() -> Result<(), String> {
         c.borrow_mut().rebuild(t);
     });
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
+    // First backdrop decision. See `apply_current_backdrop`, below, for why
+    // this window never calls `theme::read_backdrop_inputs` directly.
+    apply_current_backdrop(hwnd);
 
     // Position was CW_USEDEFAULT, so Windows -- not the cursor position
     // used above -- decided which monitor the window actually landed on.
@@ -4552,7 +4555,27 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     }
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
     theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
+    // High contrast turning on is a theme change (`Theme::HighContrast`
+    // differs from whatever `Theme` preceded it), so it reaches here and
+    // re-evaluating the backdrop is what forces `Backdrop::Opaque`
+    // immediately rather than leaving Mica or Alpha showing until the next
+    // unrelated repaint trigger happens to call `apply_current_backdrop`.
+    // Leaving high contrast re-evaluates the same way and can bring Mica or
+    // Alpha back.
+    apply_current_backdrop(hwnd);
     let _ = InvalidateRect(Some(hwnd), None, true);
+}
+
+/// Resolve the current backdrop tier and apply it.
+///
+/// The single call site `theme::read_backdrop_inputs` has -- both `create`
+/// (the window's first paint) and `on_theme_changed` (every later
+/// re-evaluation) go through this function rather than calling
+/// `read_backdrop_inputs` themselves, so `theme::MICA_SUPPORTED` is the one
+/// flag Gate 01 has to flip on a hardware failure. See its doc comment.
+fn apply_current_backdrop(hwnd: HWND) {
+    let inputs = theme::read_backdrop_inputs(theme::MICA_SUPPORTED);
+    theme::apply_backdrop(hwnd, beckon_core::theme::backdrop(inputs));
 }
 
 /// Bring the ListView's own background in line with the theme (Task 10).
@@ -4866,6 +4889,30 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     invalidate_titlebar(hwnd);
                 }
                 DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_ERASEBKGND => {
+                // Owned by this window since Task 13, not `DefWindowProcW`
+                // and not the class's own `hbrBackground` (`create`, a plain
+                // system colour with no notion of the light/dark palette or
+                // of a backdrop tier at all).
+                //
+                // Under Mica, painting ANYTHING here -- even the theme's own
+                // background colour -- is the one thing that hides it: DWM
+                // has already composited the backdrop into this exact rect
+                // before `WM_PAINT` runs, and an opaque fill on top of it
+                // covers the material just as completely as an unrelated
+                // colour would. Returning 1 with nothing drawn is what keeps
+                // it visible in the gaps between cards; `WM_PAINT`'s own
+                // card loop still draws the four cards on top either way.
+                if theme::current_tier() == beckon_core::theme::Backdrop::Mica {
+                    LRESULT(1)
+                } else {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.bg, COLOR_BTNFACE)));
+                    LRESULT(1)
+                }
             }
             WM_PAINT => {
                 let mut ps = PAINTSTRUCT::default();
