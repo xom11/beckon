@@ -1903,24 +1903,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .door-note { margin: 0; font-size: 14px; color: var(--fg-dim); }
 
-/* The canonical letter table. Capped at its own content width; left to fill the
-   container it put half a screen of nothing between `C` and `Chrome`. */
-.keytable { border-collapse: collapse; max-width: 320px; width: 100%; }
-.keytable caption {
-  caption-side: top; text-align: left;
-  max-width: 46ch; margin-bottom: 14px;
-  font-size: 15px; color: var(--fg-dim);
-}
-.keytable th, .keytable td {
-  text-align: left; padding: 8px 22px 8px 0;
-  border-bottom: 1px solid var(--rule);
-  font-weight: 400;
-}
-.keytable thead th {
-  font: 500 12px/1 var(--sans);
-  letter-spacing: .06em; text-transform: uppercase;
-  color: var(--fg-dim);
-}
+/* `.keytable` went with the letter table it styled. The five letters are still
+   on the page in the two places that can be pressed — printed on every dock
+   icon, and listed as real buttons in the cheat sheet §6 pins to the hero — and
+   those are what tools/check-site.sh now holds against README. */
 
 /* THE "yours" CHIP IS GONE, and it went with the section it was for. It marked
    the reader's own row in a list of three, and the only such list left is

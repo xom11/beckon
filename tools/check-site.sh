@@ -124,10 +124,17 @@ nix run github:xom11/beckon -- list
 CMDS
 [ "$cmd_fail" -eq 0 ] && ok "install commands match README byte for byte"
 
-# The other half of spec item 5, and it was missing: the letter->app table.
-# Read the rows out of README's own table and require the page to carry the
-# same pairing, so re-binding a letter in examples/ cannot leave the page
-# teaching the old one.
+# The other half of spec item 5: the letter->app pairing. Read the rows out of
+# README's own table and require the page to carry the same pairing, so
+# re-binding a letter in examples/ cannot leave the page teaching the old one.
+#
+# THE PAGE NO LONGER PRINTS A LETTER TABLE, so this no longer looks for one. It
+# used to grep for a <kbd> row in #config, which was a third listing of
+# something the docks and the cheat sheet already showed twice, and it was
+# deleted with the section's other redundancies. The GUARANTEE did not move
+# with it: the pairing still lives in exactly two places, and both are checked
+# below. Do not weaken this to one — the two can drift apart, and if they do the
+# icon a reader presses and the sheet telling them to press it disagree.
 key_fail=0
 keys=0
 while IFS='|' read -r _ letter app _; do
@@ -135,19 +142,23 @@ while IFS='|' read -r _ letter app _; do
   app=$(printf '%s' "$app" | sed 's/^ *//;s/ *$//')
   [ -z "$letter" ] && continue
   keys=$((keys + 1))
-  grep -qF "<kbd class=\"key\">$letter</kbd></th><td>$app</td>" "$H" \
-    || { bad "letter table drifted from README: $letter -> $app"; key_fail=1; }
-  # The dock prints the letter ON the icon, so the same pairing exists a second
-  # time in the markup and can drift on its own. Both desks carry a full dock,
-  # so both have to agree — hence -c and the count, not a bare grep.
+  # 1. The dock prints the letter ON the icon — the one place where the key and
+  #    the thing it reaches are the same object. Both desks carry a full dock,
+  #    so both have to agree: hence -c and the count, not a bare grep.
   n=$(grep -cF "data-app=\"$app\" data-key=\"$letter\"" "$H" || true)
   [ "$n" -eq 2 ] \
     || { bad "dock icon for $app does not print $letter on both desks (found $n of 2)"; key_fail=1; }
+  # 2. DESK_APPS in desk.js, which is what fills the cheat sheet pinned to the
+  #    hero and what deskAppOf() resolves a keypress through. A letter that is
+  #    right in the markup and wrong here is a key that prints one app and
+  #    beckons another.
+  grep -qF "key: '$letter', name: '$app'" "$M" \
+    || { bad "DESK_APPS in desk.js does not map $letter to $app"; key_fail=1; }
 done < <(awk '/^\| Letter \| App \|/{f=1;next} f&&/^\|---/{next} f&&/^\|/{print} f&&!/^\|/{exit}' README.md)
 if [ "$keys" -eq 0 ]; then
   bad "could not find README's letter->app table"
 elif [ "$key_fail" -eq 0 ]; then
-  ok "letter->app table matches README ($keys rows)"
+  ok "letter->app pairing matches README in the docks and desk.js ($keys rows)"
 fi
 
 # The five branch names. They replaced the step numbers (4, 5, 5a-5c) that the

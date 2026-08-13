@@ -508,33 +508,23 @@
 
       </ul>
 
-      <!-- The canonical letter table. tools/check-site.sh reads README's own table
-           and greps for these five rows with ZERO whitespace between </kbd>, </th>
-           and <td> — so that markup is a contract, not a formatting choice. Do not
-           reflow these five rows.
+      <!-- THE LETTER TABLE USED TO BE HERE and it was redundant three times
+           over. Every dock icon on both desks already prints its letter ON the
+           icon — the one place where the key and the thing it reaches are the
+           same object — and the pinned cheat sheet lists all five as real
+           buttons for the whole hero. A third listing taught nothing the reader
+           had not already been shown twice, and it was the only table on the
+           page that could not be pressed.
 
-           There used to be a comment above this table that quoted the Chrome row
-           verbatim as an example. It has been deleted, and this is why: `grep -F`
-           cannot tell a comment from markup, so that one comment satisfied the C
-           row of the check ON ITS OWN. A redesign that dropped the real <tr> and
-           kept the comment would have passed CI with the table gone. Never quote a
-           pinned string in a comment in this file. -->
-      <table class="keytable">
-        <caption>Five keys, five apps &mdash; the same five in every example.</caption>
-        <thead>
-          <tr><th scope="col">Key</th><th scope="col">App</th></tr>
-        </thead>
-        <tbody>
-          <tr><th scope="row"><kbd class="key">T</kbd></th><td>Terminal</td></tr>
-          <tr><th scope="row"><kbd class="key">C</kbd></th><td>Chrome</td></tr>
-          <tr><th scope="row"><kbd class="key">V</kbd></th><td>VS Code</td></tr>
-          <tr><th scope="row"><kbd class="key">F</kbd></th><td>Files</td></tr>
-          <tr><th scope="row"><kbd class="key">S</kbd></th><td>Spotify</td></tr>
-        </tbody>
-      </table>
+           tools/check-site.sh moved WITH the content rather than losing it. It
+           still reads README's own letter table, and it still refuses a
+           rebinding that the page has not followed — but it now checks the two
+           places the pairing actually lives: `data-key` on the docks, and
+           DESK_APPS in desk.js, which is what fills the cheat sheet. The
+           guarantee is the same one; it is asserted where the content is.
 
-      <p class="note">Drop-in configs for every setup live in
-        <a href="https://github.com/xom11/beckon/tree/main/examples"><code>examples/</code></a>.</p>
+           The examples/ link went with it. It is in the footer, which is where
+           a link that is not part of an argument belongs. -->
     </div>
   </section>
 
