@@ -33,9 +33,11 @@ mod win {
     use windows::Win32::System::Threading::{
         OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ, PROCESS_VM_WRITE,
     };
+    // `BST_CHECKED` is deliberately gone: nothing here asks `BM_GETCHECK`
+    // any more. See `chip_armed`.
     use windows::Win32::UI::Controls::{
-        BCM_GETIDEALSIZE, BST_CHECKED, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE,
-        LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
+        BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE, LVM_GETHEADER,
+        LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
     };
     use windows::Win32::UI::HiDpi::{
         GetAwarenessFromDpiAwarenessContext, GetDpiForSystem, GetDpiForWindow,
@@ -289,15 +291,67 @@ mod win {
         }
     }
 
-    /// Is this check box ticked, in the other process?
+    /// `WM_APP + 5` -- `settings_window::WM_CHIP_STATE`. See `chip_armed`.
+    const WM_CHIP_STATE: u32 = WM_APP + 5;
+
+    /// Is this chip armed, in the other process?
     ///
-    /// A control that is missing reads as clear, which is the same answer
-    /// the window's own `is_checked` gives for the same reason -- an
-    /// `Option` here would only be collapsed to a bool by every caller.
+    /// **`BM_GETCHECK` is not the question any more, and asking it would be
+    /// the "measured a proxy" failure again.** The four modifier chips and
+    /// the three `Hold` chips are `BS_OWNERDRAW`, which REPLACES
+    /// `BS_AUTOCHECKBOX` rather than joining it, so those controls have no
+    /// check state: `BM_GETCHECK` answers 0 forever and every chip would
+    /// read as clear. `shortcut_shown` and `shortcut_caps` build a whole
+    /// chord out of this function, so that would not have failed loudly --
+    /// it would have reported a confident wrong shortcut on every run.
+    ///
+    /// The window answers `WM_CHIP_STATE` with its own bit instead: a bare
+    /// integer message, so unlike the comctl32 messages `Remote` exists for
+    /// it needs no marshalling across the process boundary.
+    ///
+    /// **Sent to the WINDOW, not to the chip**, which is the one thing about
+    /// this that does not read like `BM_GETCHECK`. `BM_GETCHECK` asked the
+    /// control because a check box owned its own state; `WM_CHIP_STATE` is
+    /// answered by `wndproc`, and the id travels in `WPARAM`. Addressed to
+    /// the button it reaches comctl32's BUTTON instead, which does not know
+    /// the message and returns 0 -- indistinguishable from an old build.
+    /// Measured on a14: the first run of this function did exactly that and
+    /// reported every chip unreadable while the window was working.
+    ///
+    /// `dlg_item` still runs, and only as an existence check: a chip that is
+    /// not there must read as `None` rather than as whatever the window says
+    /// about an id it has no control for.
+    ///
+    /// **`0` means the window did not answer**, which is what an older
+    /// `beckon-serve` returns through `DefWindowProcW`. Reported rather than
+    /// folded into `false`: a probe that cannot see the chips must say so,
+    /// not print a chord it guessed.
+    fn chip_armed(parent: HWND, id: i32) -> Option<bool> {
+        dlg_item(parent, id)?;
+        match send(parent, WM_CHIP_STATE, id as usize, 0) {
+            2 => Some(true),
+            1 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// The same question, collapsed for the callers that build a string out
+    /// of it. An unanswered chip reads as clear -- `chips_readable` is what
+    /// says the whole reading is worthless, once, rather than every caller
+    /// carrying an `Option` it would only unwrap the same way.
     fn checked(parent: HWND, id: i32) -> bool {
-        dlg_item(parent, id)
-            .map(|c| send(c, BM_GETCHECK, 0, 0) == BST_CHECKED.0 as isize)
-            .unwrap_or(false)
+        chip_armed(parent, id).unwrap_or(false)
+    }
+
+    /// Does this window answer `WM_CHIP_STATE` at all?
+    ///
+    /// Called once per run, before anything reads a chord, so a probe driving
+    /// a `beckon-serve` older than `WM_CHIP_STATE` says so in one line
+    /// instead of printing four unticked chips as if it had looked.
+    fn chips_readable(parent: HWND) -> bool {
+        MODIFIERS
+            .iter()
+            .all(|(id, _, _)| chip_armed(parent, *id).is_some())
     }
 
     /// One item's text out of a combo box in ANOTHER process.
@@ -1170,14 +1224,16 @@ mod win {
         read_only
     }
 
-    /// Click a check box the way a mouse does.
+    /// Click a chip the way a mouse does.
     ///
-    /// `BM_CLICK` reaches the control's OWN wndproc, so `BS_AUTOCHECKBOX`
-    /// toggles itself and then notifies the parent -- which is the order the
-    /// window depends on, because it reads the box rather than the
-    /// notification. Posting `WM_COMMAND` at the parent instead, the way
-    /// `click` does for a push button, would tell the window a box had been
-    /// ticked while the box still said otherwise.
+    /// `BM_CLICK` reaches the control's OWN wndproc, which is what makes the
+    /// whole chain real: the button turns it into `BN_CLICKED`, the window's
+    /// `handle_command` calls `toggle_chip` and only then reads every chip
+    /// back. Posting a `WM_COMMAND` at the parent instead, the way `click`
+    /// does for a push button, would skip the button entirely -- and now
+    /// that these are `BS_OWNERDRAW` that is a bigger lie than it was: the
+    /// window would still toggle, so the difference is no longer visible in
+    /// the result, only in what was actually tested.
     fn tick(parent: HWND, id: i32) {
         let Some(ctl) = dlg_item(parent, id) else {
             println!("    (no control {id})");
@@ -1587,6 +1643,24 @@ mod win {
         });
 
         measure_geometry(h);
+
+        // **Asked before anything reads a chord, and it is a control for the
+        // probe itself.** Every shortcut this run prints is rebuilt from the
+        // four modifier chips, and since they became `BS_OWNERDRAW` the only
+        // way to read one is `WM_CHIP_STATE`. A `beckon-serve` that predates
+        // that message answers 0 to all four, which `checked` collapses to
+        // "clear" -- so without this line the probe would go on printing
+        // chords, all of them wrong, all of them plausible.
+        if chips_readable(h) {
+            println!("  chip state: readable (WM_CHIP_STATE answered)");
+        } else {
+            println!(
+                "  chip state: UNREADABLE -- this beckon-serve does not answer \
+                 WM_CHIP_STATE (WM_APP+5). Every shortcut printed below is \
+                 missing its modifiers. Rebuild and rerun; do not read the \
+                 chords."
+            );
+        }
 
         // A read-only window has nothing to drive, and nothing to save on
         // the way out either -- the close below must NOT produce a prompt.

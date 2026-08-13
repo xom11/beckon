@@ -97,7 +97,9 @@
 use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
-use beckon_core::settings::{default_button, ControlState, DefaultButton, ListItem, Mark};
+use beckon_core::settings::{
+    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark,
+};
 use beckon_core::shortcuts::{
     combo_display, combo_view, key_table, CapsTap, Chord, Combo, ComboView,
 };
@@ -248,6 +250,27 @@ const WM_APP_EDITED: u32 = WM_APP + 3;
 /// posted from outside this file.
 pub const WM_CAPTURE: u32 = WM_APP + 4;
 
+/// `WM_APP + 5`: what a chip's state reads as from ANOTHER process. `WPARAM`
+/// is the control id.
+///
+/// **It exists because `BM_GETCHECK` stopped being an answer.**
+/// `examples/settings_probe.rs` drives this window across a process boundary
+/// and rebuilds the whole shortcut from the four modifier chips; the moment
+/// those became `BS_OWNERDRAW` the message it used began answering 0 forever,
+/// so all four would have read as clear and the probe would have reported a
+/// confident wrong chord -- the exact failure shape the handoff calls
+/// "measuring a proxy". The window's own bit is the only real answer, and
+/// this is the only channel a foreign process has to it: a bare integer
+/// message needs no marshalling, unlike every comctl32 message `Remote`
+/// exists for.
+///
+/// **The reply is deliberately not a bool.** `0` means "this build does not
+/// answer this message", `1` clear, `2` armed. An unhandled `WM_APP + n`
+/// comes back as 0 through `DefWindowProcW`, so a probe run against an older
+/// `beckon-serve` can say it cannot tell instead of reporting four unticked
+/// chips.
+pub const WM_CHIP_STATE: u32 = WM_APP + 5;
+
 const IDC_LIST: i32 = 1001;
 const IDC_COMBO: i32 = 1002;
 const IDC_APP: i32 = 1003;
@@ -312,6 +335,19 @@ const IDC_RESET: i32 = 1033;
 /// no mnemonic and no entry in `mod cap`'s collision table.
 const IDC_GRP_EDITOR: i32 = 1034;
 
+/// The count beside the `Shortcuts` heading -- `· 18 bindings`.
+///
+/// **A second STATIC rather than a longer caption**, because the two are
+/// different type: B draws the heading at Subtitle and the count small and
+/// grey, and one STATIC has one font. It is also the only control in the
+/// window with a colour of its own, which `WM_CTLCOLORSTATIC` supplies by
+/// id -- see that arm.
+///
+/// It counts what the LIST is showing, so under a filter it says how many
+/// rows are on screen rather than how many the file holds. That is the
+/// honest reading of a number sitting on top of the list it describes.
+const IDC_LBL_COUNT: i32 = 1035;
+
 /// The watchdog that bounds an armed capture (spec F.2/F.4).
 ///
 /// It is not belt-and-braces. `caps_hook::is_installed()` CAN LIE: past
@@ -358,9 +394,12 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 ///    parent, and the per-id arms below match `(id, _)` -- ANY code -- so
 ///    without that filter merely tabbing onto Save would press it.
 ///
-/// Every check box in the window is deliberately absent: none carries
-/// `BS_NOTIFY`, none can be the default button, and a default ring on a
-/// check box is not a thing Windows draws.
+/// Every check box in the window is deliberately absent, and so are the
+/// seven owner-draw chips: none carries `BS_NOTIFY`, none can be the default
+/// button, and a default ring on either is not a thing Windows draws. On the
+/// chips that absence does a second job -- without `BS_NOTIFY` an owner-draw
+/// button emits only `BN_CLICKED` and `BN_DOUBLECLICKED`, which is exactly
+/// the pair `is_chip_click` takes.
 const PUSH_BUTTONS: [i32; 9] = [
     IDC_ADD,
     IDC_REMOVE,
@@ -452,6 +491,13 @@ mod cap {
     /// the mnemonic table above, which is the only guard there is against a
     /// collision. `Win` rather than `Super`: the config file spells the key
     /// `super`, but nothing on a Windows keyboard is labelled that.
+    ///
+    /// These four and the three `HOLD_*` above are drawn as KEYCAPS by
+    /// `draw_chip`, not written as text beside a tick. That is why the `&`
+    /// rule matters more here than it looks: `draw_keycaps` measures a chip
+    /// through `shown` and draws the raw caption, so an `&` added to one of
+    /// these four would start rendering as an underline the mnemonic table
+    /// says nothing owns.
     pub const MOD_CTRL: &str = "Ctrl";
     pub const MOD_WIN: &str = "Win";
     pub const MOD_ALT: &str = "Alt";
@@ -571,6 +617,14 @@ mod tok {
     /// With App on a line of its own there is nothing left to starve, so the
     /// key list is back under this ceiling and the arithmetic is retired.
     pub const SHORTCUT_COL: i32 = 200;
+    /// A modifier chip is never narrower than this, nor than its own caption
+    /// plus `glyph` -- direction B's `.wtog { min-width:46px }`.
+    ///
+    /// It exists because `Alt` is three characters and `Shift` is five, and
+    /// a row of keys whose widths follow the length of their letters does not
+    /// read as a keyboard. Only `Alt` is actually short enough to hit the
+    /// floor at 96 DPI; the other six size themselves.
+    pub const CHIP_MIN: i32 = 46;
     /// List rows visible without scrolling.
     pub const ROWS: i32 = 8;
     /// Widest a tooltip may draw before it wraps. Comfortably narrower than
@@ -782,10 +836,13 @@ fn role_of(id: i32) -> Role {
         // The one band heading. Subtitle exists so the list reads as a
         // section of the window rather than as the whole of it.
         IDC_LBL_SECTION => Role::Subtitle,
-        // Secondary prose, and the only thing at Caption size. The banner
-        // is deliberately NOT here: it announces that the file moved under
-        // us, which is the least appropriate text in the window to shrink.
-        IDC_NOTES => Role::Caption,
+        // Secondary prose, at Caption size. The banner is deliberately NOT
+        // here: it announces that the file moved under us, which is the
+        // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
+        // joins because B draws the count small and grey beside a Subtitle
+        // heading -- one STATIC has one font, which is the whole reason it
+        // is a second control.
+        IDC_NOTES | IDC_LBL_COUNT => Role::Caption,
         // Everything the user reads or operates: the ListView, the filter
         // EDIT, the App / key / Tap COMBOBOXes, their labels, every BUTTON
         // (push, check, and the group box), the banner -- and anything added
@@ -846,6 +903,22 @@ impl Fonts {
 /// same thing inline, for a value it already has in scope.
 fn scale(v: i32, dpi: u32) -> i32 {
     v * dpi as i32 / 96
+}
+
+/// The same colour at `num/den` of its own brightness, per channel.
+///
+/// **Used for exactly one thing: the bottom edge of an ARMED keycap**, which
+/// direction B draws as a darker shade of the fill (`#2563eb` face over a
+/// `#1d4fc4` edge -- about four fifths, which is where the ratio comes from).
+///
+/// **Derived, never a literal.** The face is `COLOR_HIGHLIGHT`, i.e. whatever
+/// accent the user picked, so the edge has to be computed from it: a fixed
+/// dark blue under a green or magenta accent is not a shadow, it is a
+/// mistake. `COLORREF` is `0x00BBGGRR`, so the channels come out in that
+/// order.
+fn shade(c: COLORREF, num: u32, den: u32) -> COLORREF {
+    let ch = |sh: u32| ((c.0 >> sh) & 0xFF) * num / den;
+    COLORREF(ch(0) | (ch(8) << 8) | (ch(16) << 16))
 }
 
 /// Everything the window reports back. The caller owns all policy: what an
@@ -1278,15 +1351,96 @@ fn enabled(parent: HWND, id: i32) -> bool {
     }
 }
 
-/// Is this check box ticked? The mirror of `check`, and the only way
-/// `handle_command` learns what a click did: `BS_AUTOCHECKBOX` toggles
-/// itself before the `BN_CLICKED` arrives, so the control -- not the
-/// notification -- is what carries the new state.
+thread_local! {
+    /// Which of the seven toggle chips are armed, one bit each.
+    ///
+    /// **This exists because Windows stopped tracking it.** `BS_OWNERDRAW`
+    /// is an alternative VALUE of a BUTTON's type field, not a flag beside
+    /// `BS_AUTOCHECKBOX`, so the four modifier chips and the three `Hold`
+    /// chips have no check state at all: `BM_SETCHECK` is clamped away and
+    /// `BM_GETCHECK` answers 0 forever. `check` and `is_checked` route here
+    /// instead, which is why every one of their ~14 call sites is unchanged.
+    ///
+    /// **A `Cell`, for `CAP_FONT`'s reason.** `WM_DRAWITEM` arrives inside a
+    /// paint, and a paint reaches this window while `UI` is already borrowed
+    /// -- measured on a14 for the Shortcut column, where every subitem
+    /// notification exited at `try_borrow` and the column silently drew as
+    /// text. A `Cell` cannot be contended. One settings window exists per
+    /// thread, so one word per thread is the whole store.
+    static CHIPS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// This chip's bit in `CHIPS`, or `None` for a control that is a real check
+/// box and keeps its own state.
+///
+/// **`IDC_CAPS` is deliberately absent.** It is a sentence -- *Use Caps Lock
+/// as a shortcut key* -- not a key, so it stays a `BS_AUTOCHECKBOX` and a
+/// keycap would be a lie about what it is.
+fn chip_bit(id: i32) -> Option<u32> {
+    let i = match id {
+        IDC_MOD_CTRL => 0,
+        IDC_MOD_WIN => 1,
+        IDC_MOD_ALT => 2,
+        IDC_MOD_SHIFT => 3,
+        IDC_HOLD_CTRL => 4,
+        IDC_HOLD_WIN => 5,
+        IDC_HOLD_ALT => 6,
+        _ => return None,
+    };
+    Some(1u32 << i)
+}
+
+fn chip_armed(bit: u32) -> bool {
+    CHIPS.with(|c| c.get()) & bit != 0
+}
+
+/// Arm or disarm a chip and repaint it -- but only when the state actually
+/// moves.
+///
+/// **The guard is not an optimisation.** `apply_state` runs on every
+/// keystroke and pushes all seven chips, so an unconditional `InvalidateRect`
+/// is seven repaints per character typed into the App field: flicker on the
+/// row the user is not even looking at. It is the same "guarded by a read"
+/// rule `set_key_sel` and the `Tap` combo already follow.
+///
+/// **`erase: false`, because `draw_chip` fills the whole `rcItem` itself.**
+/// An owner-draw button paints nothing of its own, background included, so
+/// letting Windows erase first would be one extra pass over pixels that are
+/// about to be overwritten.
+///
+/// Safe to call from inside `apply_state`: `InvalidateRect` only marks the
+/// control dirty. The `WM_PAINT` -- and the `WM_DRAWITEM` it sends back here
+/// -- arrives later, from the message loop, not from this call.
+fn set_chip(parent: HWND, id: i32, bit: u32, on: bool) {
+    let cur = CHIPS.with(|c| c.get());
+    let want = if on { cur | bit } else { cur & !bit };
+    if want == cur {
+        return;
+    }
+    CHIPS.with(|c| c.set(want));
+    if let Ok(h) = unsafe { GetDlgItem(Some(parent), id) } {
+        unsafe {
+            let _ = InvalidateRect(Some(h), None, false);
+        }
+    }
+}
+
+/// Is this chip armed, or this check box ticked? The mirror of `check`, and
+/// the only way `handle_command` learns what a click did.
+///
+/// **The state is read back from the WINDOW, never from the notification**,
+/// and both kinds of control honour that: a `BS_AUTOCHECKBOX` toggles itself
+/// before `BN_CLICKED` arrives, and `handle_command` calls `toggle_chip`
+/// before it reads an owner-draw chip. So a caller always sees what the user
+/// now sees. Which control is which is `chip_bit`'s business, not a caller's.
 ///
 /// A control that is missing reads as clear. That is the same answer
 /// `enabled` gives for the same reason: the alternative is an `Option` every
 /// call site would have to collapse to a bool anyway.
 fn is_checked(parent: HWND, id: i32) -> bool {
+    if let Some(bit) = chip_bit(id) {
+        return chip_armed(bit);
+    }
     match unsafe { GetDlgItem(Some(parent), id) } {
         Ok(h) => {
             unsafe { SendMessageW(h, BM_GETCHECK, Some(WPARAM(0)), Some(LPARAM(0))) }.0
@@ -2046,6 +2200,17 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LBL_SECTION,
         &fonts,
     );
+    // `SS_NOPREFIX` because the text is a COUNT, not a caption: `&` cannot
+    // appear in it today, but a static that would silently eat one is a
+    // trap, and this one carries no mnemonic by design.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_LBL_COUNT,
+        &fonts,
+    );
     let filter = child(
         hwnd,
         w!("EDIT"),
@@ -2196,6 +2361,19 @@ unsafe fn build_children(hwnd: HWND) {
     // No `&` on any of the four captions. See `mod cap`'s table -- it is
     // the only guard against a mnemonic collision, and `Hold` already
     // claimed `t`, `w` and `l`.
+    //
+    // **`BS_OWNERDRAW`, which REPLACES `BS_AUTOCHECKBOX` rather than joining
+    // it**: the two are alternative values of a BUTTON's four-bit type
+    // field, not flags that combine. So these four have no check state of
+    // their own -- see `CHIPS`, `check` and `toggle_chip`, which are between
+    // them the whole of what Windows used to do here -- and they are drawn
+    // by `draw_chip`, through the same painter the Shortcut column uses.
+    //
+    // **No `BS_NOTIFY`.** It is what `PUSH_BUTTONS` carry so the default
+    // ring can follow focus onto them, and a ring on a chip is not a thing
+    // Windows draws. Left off, an owner-draw button says exactly two things
+    // -- `BN_CLICKED` and `BN_DOUBLECLICKED` -- and `is_chip_click` takes
+    // both.
     for (caption, id) in [
         (cap::MOD_CTRL, IDC_MOD_CTRL),
         (cap::MOD_WIN, IDC_MOD_WIN),
@@ -2206,7 +2384,7 @@ unsafe fn build_children(hwnd: HWND) {
             hwnd,
             w!("BUTTON"),
             caption,
-            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+            WINDOW_STYLE(BS_OWNERDRAW as u32) | WS_TABSTOP,
             id,
             &fonts,
         );
@@ -2327,11 +2505,22 @@ unsafe fn build_children(hwnd: HWND) {
     // presses, and releasing Shift under the user's fingers makes
     // everything they type next lowercase -- see `Chord`'s own doc. A
     // fourth chip here would have nowhere in the model to land.
+    //
+    // `BS_OWNERDRAW` for the editor chips' reasons, and these three are in
+    // scope WITH those four rather than after them: they name the same three
+    // modifiers eight lines apart, and one window wearing two chip styles is
+    // worse than either style alone.
+    //
+    // **These three keep their mnemonics** (`t`, `w`, `l`), which the four
+    // above deliberately have not got. That costs `draw_keycaps` a rule the
+    // Shortcut column never needed: measure through `shown`, draw the raw
+    // caption, and let the window's UI state say whether the underline is
+    // visible.
     child(
         hwnd,
         w!("BUTTON"),
         cap::HOLD_CTRL,
-        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        WINDOW_STYLE(BS_OWNERDRAW as u32) | WS_TABSTOP,
         IDC_HOLD_CTRL,
         &fonts,
     );
@@ -2339,7 +2528,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::HOLD_WIN,
-        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        WINDOW_STYLE(BS_OWNERDRAW as u32) | WS_TABSTOP,
         IDC_HOLD_WIN,
         &fonts,
     );
@@ -2347,7 +2536,7 @@ unsafe fn build_children(hwnd: HWND) {
         hwnd,
         w!("BUTTON"),
         cap::HOLD_ALT,
-        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        WINDOW_STYLE(BS_OWNERDRAW as u32) | WS_TABSTOP,
         IDC_HOLD_ALT,
         &fonts,
     );
@@ -2621,11 +2810,44 @@ unsafe fn text_size(hwnd: HWND, font: HFONT, dpi: u32, s: &str) -> (i32, i32) {
     }
 }
 
-/// Lay a chord out as keycaps inside `cell`, or report that it does not fit.
+/// How one run of keycaps is drawn.
 ///
-/// This is the Shortcut column, and it is why the config's own spelling never
-/// reaches the screen: the user pressed three physical keys, so the column
-/// draws three keys. `super` is a valid TOML token and a word on no keyboard.
+/// **Two styles, ONE painter.** The Shortcut column and the seven toggle
+/// chips draw the same object -- a key on a keyboard -- and a second painter
+/// for the second surface is how the two quietly stop agreeing about what a
+/// key looks like. Everything that differs between them is a field here
+/// rather than a fork inside `draw_keycaps`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CapStyle {
+    /// A whole chord in a ListView cell: left-aligned so the column lines up
+    /// down its own length, and the last cap -- the key actually pressed --
+    /// brighter than the modifiers holding it down. A cell holds DATA, never
+    /// a caption, so an `&` in it is a character and is drawn.
+    Chord,
+    /// One toggle chip filling its own control rect: centred in it, and
+    /// filled with the user's accent while armed.
+    ///
+    /// Every flag here is something `BS_OWNERDRAW` stops Windows doing on
+    /// its own. An owner-draw button has no disabled rendering, no pressed
+    /// rendering and no mnemonic handling beyond what its parent draws --
+    /// see `draw_chip`, which is the only place these are filled in.
+    Toggle {
+        armed: bool,
+        pressed: bool,
+        disabled: bool,
+        /// The window's UI state says keyboard cues are hidden, i.e. Alt has
+        /// not been pressed yet, so the mnemonic underline stays off.
+        hide_accel: bool,
+    },
+}
+
+/// Lay a run of keycaps out inside `cell`, or report that it does not fit.
+///
+/// Two callers, and `style` says which: the **Shortcut column**, where this
+/// is why the config's own spelling never reaches the screen -- the user
+/// pressed three physical keys, so the column draws three keys, and `super`
+/// is a valid TOML token and a word on no keyboard -- and the **seven toggle
+/// chips**, which pass one cap each.
 ///
 /// **Returns `false` when the caps do not fit, and the caller falls back to
 /// the display string with an ellipsis.** That fallback is structural rather
@@ -2646,17 +2868,33 @@ unsafe fn draw_keycaps(
     font: HFONT,
     dpi: u32,
     hc: bool,
+    style: CapStyle,
 ) -> bool {
     if caps.is_empty() {
         return false;
     }
-    let pad = scale(5, dpi);
+    let toggle = matches!(style, CapStyle::Toggle { .. });
+    // **Two sets of metrics, from direction B's own two rules.** The board
+    // gives the column cap (`.wcap`) `height:19px; padding:0 5px` and the
+    // toggle chip (`.wtog`) `height:28px; padding:0 10px; min-width:46px` --
+    // a chip is a key you press, a column cap is a key you read, and sizing
+    // both from the column's numbers is what made the shipped chips look
+    // like small grey buttons. A chip therefore takes its control's whole
+    // height rather than the column's 19 px ceiling.
+    let pad = scale(if toggle { 10 } else { 5 }, dpi);
     let gap = scale(3, dpi);
-    let inset = scale(4, dpi);
+    let inset = scale(if toggle { 2 } else { 4 }, dpi);
     let row_h = cell.bottom - cell.top;
-    let cap_h = (row_h - scale(6, dpi))
-        .min(scale(19, dpi))
-        .max(scale(12, dpi));
+    let cap_h = if toggle {
+        (row_h - inset * 2).max(scale(16, dpi))
+    } else {
+        (row_h - scale(6, dpi))
+            .min(scale(19, dpi))
+            .max(scale(12, dpi))
+    };
+    // The bottom edge, and the whole reason a box reads as a key. `.wcap` and
+    // `.wtog` both carry `border-bottom:2px` against a 1 px everywhere else.
+    let edge_h = scale(2, dpi).max(1);
 
     let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
 
@@ -2666,79 +2904,203 @@ unsafe fn draw_keycaps(
     let mut widths = Vec::with_capacity(caps.len());
     let mut total = gap * (caps.len() as i32 - 1);
     for c in caps {
-        let t = wide(c);
+        // **Measured through `shown` for a chip and verbatim for a cell**,
+        // which is the same split `layout`'s `tw` already makes. A chip's
+        // caption carries a mnemonic marker -- `C&trl` -- and the `&` is not
+        // drawn, so a cap sized for it is a cap one character too wide. A
+        // cell's text is data and has no mnemonic to strip.
+        let m = if toggle { shown(c) } else { c.clone() };
+        let t = wide(&m);
         let mut sz = SIZE::default();
         // `wide` appends a NUL and this API takes a length, so the NUL would
         // be measured as a character -- same rule as `text_size`.
         let w = if GetTextExtentPoint32W(hdc, &t[..t.len() - 1], &mut sz).as_bool() {
             sz.cx + pad * 2
         } else {
-            scale(8, dpi) * c.chars().count() as i32 + pad * 2
+            scale(8, dpi) * m.chars().count() as i32 + pad * 2
         };
         total += w;
         widths.push(w);
     }
-    if total > cell.right - cell.left - inset * 2 {
+    let room = cell.right - cell.left - inset * 2;
+    if total > room {
         if !prev_font.is_invalid() {
             SelectObject(hdc, prev_font);
         }
         return false;
     }
+    // **A chip is one cap and it owns its control, so it takes the whole
+    // width** instead of shrinking to its caption. `min-width:46px` on
+    // `.wtog` says the same thing in CSS: a row of keys whose sizes follow
+    // the length of their letters does not read as a keyboard. `layout`
+    // already floors each chip's control at `tok::CHIP_MIN`, so this is
+    // where that floor becomes visible.
+    //
+    // Sized independently of the text, which is also what keeps a chip from
+    // resizing when it is toggled -- the measurement above is now only the
+    // fit test.
+    if toggle {
+        total = room;
+        if let Some(w) = widths.first_mut() {
+            *w = room;
+        }
+    }
 
-    let top = cell.top + (row_h - cap_h) / 2;
-    let mut x = cell.left + inset;
-    let line = COLORREF(GetSysColor(if hc {
-        COLOR_WINDOWTEXT
-    } else {
-        COLOR_BTNSHADOW
-    }));
-    let pen = CreatePen(PS_SOLID, 1, line);
+    // **A pressed key goes DOWN**: one pixel, and no bottom edge. That is the
+    // whole effect, and it is the ONLY click feedback these chips have --
+    // Windows draws none of its own for an owner-draw button, so without it a
+    // chip held under the mouse looks identical to one that is not.
+    let press = match style {
+        CapStyle::Toggle { pressed: true, .. } => scale(1, dpi),
+        _ => 0,
+    };
+    let top = cell.top + (row_h - cap_h) / 2 + press;
+    // Where the run starts. A chip owns its whole control rect and centres in
+    // it; a cell is one column of many rows, and those line up down the
+    // column, so a chord starts at a fixed inset instead.
+    let mut x = match style {
+        CapStyle::Chord => cell.left + inset,
+        CapStyle::Toggle { .. } => cell.left + ((cell.right - cell.left) - total) / 2,
+    };
+    // **Every colour is `GetSysColor`, or derived from one.** An armed chip's
+    // face is `COLOR_HIGHLIGHT` -- the user's own accent, matching the row
+    // highlight four pixels away and already correct in high contrast -- and
+    // its edge is that same colour through `shade`. Direction B's `#2563eb` /
+    // `#1d4fc4` pair is what the ratio was read off, not a colour to hard-code.
+    let armed_face = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    let (edge_col, border_col) = match style {
+        _ if hc => {
+            let c = COLORREF(GetSysColor(COLOR_WINDOWTEXT));
+            (c, c)
+        }
+        CapStyle::Toggle { armed: true, .. } => {
+            let e = shade(armed_face, 4, 5);
+            (e, e)
+        }
+        // A disabled chip keeps its shape and its depth and loses only its
+        // ink -- see the face table below for why it does not also keep the
+        // light face.
+        CapStyle::Toggle { disabled: true, .. } => {
+            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
+            (c, c)
+        }
+        _ => {
+            let c = COLORREF(GetSysColor(COLOR_BTNSHADOW));
+            (c, c)
+        }
+    };
+    let pen = CreatePen(PS_SOLID, 1, border_col);
     let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_BTNTEXT)));
+    // **A chip's resting face is `COLOR_WINDOW`, not `COLOR_BTNFACE`**, and
+    // that one substitution is most of why the shipped chips disappeared:
+    // `COLOR_BTNFACE` IS the window's own background, so an unarmed chip was
+    // a grey box on a grey surface with only a hairline to prove it existed.
+    // Direction B puts `--w-cap:#fafafa` on a `--w-bg:#f3f3f3` window -- the
+    // key is LIGHTER than what it sits on, which is how a physical keycap
+    // catches light.
+    //
+    // **Greyed outranks armed, and a disabled chip keeps `COLOR_BTNFACE`.**
+    // The light face is what makes an OPERABLE key stand off the surface, so
+    // giving it to a disabled one inverts the whole point -- measured on a14:
+    // with `keyboard.caps` off, three white `Hold` keys read as the most
+    // prominent thing in the band. `.wtog.dis` puts `#f7f7f7` on a `#f3f3f3`
+    // window, i.e. it deliberately sinks BACK into the surface. Only the ink
+    // and the face change; the box and its edge stay, so the shape survives.
+    //
+    // What a disabled chip stops saying is which way it is set. That is a
+    // real loss on the three `Hold` chips, which are greyed whenever Caps is
+    // off while still describing what Caps would do. No accent-on-grey
+    // pairing exists in the system palette to settle it; it wants eyes
+    // rather than another argument here.
+    let (face, text_colour) = match style {
+        CapStyle::Chord => (None, COLOR_BTNTEXT),
+        CapStyle::Toggle { disabled: true, .. } => (Some(COLOR_BTNFACE), COLOR_GRAYTEXT),
+        CapStyle::Toggle { armed: true, .. } => (Some(COLOR_HIGHLIGHT), COLOR_HIGHLIGHTTEXT),
+        CapStyle::Toggle { .. } => (Some(COLOR_WINDOW), COLOR_BTNTEXT),
+    };
+    SetTextColor(hdc, COLORREF(GetSysColor(text_colour)));
+    // A cell's text is data and its `&` is a character; a chip's caption
+    // carries a mnemonic, and whether the underline SHOWS is the window's UI
+    // state to say, not this function's -- see `draw_chip`.
+    let text_flags = match style {
+        CapStyle::Chord => DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        CapStyle::Toggle { hide_accel, .. } => {
+            let base = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+            if hide_accel {
+                base | DT_HIDEPREFIX
+            } else {
+                base
+            }
+        }
+    };
 
     for (i, c) in caps.iter().enumerate() {
         let w = widths[i];
-        // The main key is last, and it is the one actually pressed: it takes
-        // the window fill so it reads brighter than the modifiers holding it
-        // down. Every row in this column shares the same three-modifier
-        // prefix, so the key is the only part worth finding at a glance.
-        let fill = if i + 1 == caps.len() {
-            COLOR_WINDOW
-        } else {
-            COLOR_BTNFACE
+        // For a chord: the main key is last, and it is the one actually
+        // pressed, so it takes the window fill and reads brighter than the
+        // modifiers holding it down. Every row in this column shares the same
+        // three-modifier prefix, so the key is the only part worth finding at
+        // a glance. A chip is one cap and has no such last, which is why the
+        // armed fill is decided above and simply wins here.
+        let fill = match face {
+            Some(f) => f,
+            None if i + 1 == caps.len() => COLOR_WINDOW,
+            None => COLOR_BTNFACE,
         };
-        let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
-        let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
         if hc {
+            // Flat, hard and no depth: a high-contrast theme is built on
+            // solid fills and hard borders, and a soft edge under one reads
+            // as a rendering artefact rather than as a key.
+            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
             let _ = Rectangle(hdc, x, top, x + w, top + cap_h);
+            if !prev_brush.is_invalid() {
+                SelectObject(hdc, prev_brush);
+            }
+            let _ = DeleteObject(HGDIOBJ(brush.0));
         } else {
-            let r = scale(4, dpi) * 2;
-            let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
-            // The one decorative line in this window, and what makes a box
-            // read as a key rather than as a badge.
-            let _ = MoveToEx(hdc, x + scale(2, dpi), top + cap_h - 1, None);
-            let _ = LineTo(hdc, x + w - scale(2, dpi), top + cap_h - 1);
+            // **Two rounded rects, not a rect plus a line.** The edge is a
+            // 2 px BORDER in CSS, so it follows the corner radius; the old
+            // inset hairline sat inside the box and read as an underline
+            // rather than as the side of a key. Painting the taller shape in
+            // the edge colour first and the face over it, `edge_h` shorter,
+            // leaves exactly that border showing along the bottom.
+            //
+            // A pressed key skips it and drops a pixel: at the bottom of its
+            // travel there is no side left to see.
+            let r = scale(5, dpi) * 2;
+            if press == 0 {
+                let eb = CreateSolidBrush(edge_col);
+                let pb = SelectObject(hdc, HGDIOBJ(eb.0));
+                let _ = RoundRect(hdc, x, top, x + w, top + cap_h, r, r);
+                if !pb.is_invalid() {
+                    SelectObject(hdc, pb);
+                }
+                let _ = DeleteObject(HGDIOBJ(eb.0));
+            }
+            let brush = CreateSolidBrush(COLORREF(GetSysColor(fill)));
+            let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+            let _ = RoundRect(hdc, x, top, x + w, top + cap_h - edge_h, r, r);
+            if !prev_brush.is_invalid() {
+                SelectObject(hdc, prev_brush);
+            }
+            let _ = DeleteObject(HGDIOBJ(brush.0));
         }
-        if !prev_brush.is_invalid() {
-            SelectObject(hdc, prev_brush);
-        }
-        let _ = DeleteObject(HGDIOBJ(brush.0));
 
+        // Centred in the FACE, not in the whole cap: the bottom edge is the
+        // side of the key, and text centred over it sits low.
         let mut tr = RECT {
             left: x,
             top,
             right: x + w,
-            bottom: top + cap_h,
+            bottom: top + cap_h - if hc || press > 0 { 0 } else { edge_h },
         };
+        // The RAW caption, `&` intact: `text_flags` decides whether it marks
+        // a mnemonic or is drawn. Only the MEASUREMENT above strips it.
         let mut t = wide(c);
         let n = t.len() - 1;
-        DrawTextW(
-            hdc,
-            &mut t[..n],
-            &mut tr,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
+        DrawTextW(hdc, &mut t[..n], &mut tr, text_flags);
         x += w + gap;
     }
 
@@ -3004,11 +3366,19 @@ unsafe fn layout(hwnd: HWND) {
         Some(ah) => (ah, clamp(ctl - ah) / 2),
         None => (field_h, clamp(ctl - field_h) / 2),
     };
-    // A check box's own square, plus the gap it leaves before its caption.
-    // Computed here rather than in a band because BOTH check-box rows need
-    // it -- band 4's four modifier chips and band 6's three `Hold` chips --
-    // and two copies of this number are two places for it to stop agreeing.
+    // What a caption costs beyond its own width. Two readings, one number,
+    // which is why it is computed here rather than in a band: `IDC_CAPS` is
+    // a real `BS_AUTOCHECKBOX` and this is its square plus the gap before
+    // its text, while for the seven keycap chips it is the padding around
+    // the letters -- `.wtog { padding:0 10px }` plus a hair, since
+    // `draw_keycaps` fills whatever width the chip control is given.
     let glyph = s(24);
+    // One chip's width: its caption plus that slack, never below
+    // `tok::CHIP_MIN`. Both chip rows go through this, so the four modifier
+    // chips and the three `Hold` chips cannot drift apart -- and `draw_chip`
+    // fills whatever width it is given, so this closure alone decides how
+    // big a key is.
+    let chip = |c: &str| (tw(c) + glyph).max(s(tok::CHIP_MIN));
 
     // -- Band 1: the banner. Contributes NO height when hidden.
     if ui.external_change {
@@ -3053,7 +3423,25 @@ unsafe fn layout(hwnd: HWND) {
         ctl,
     );
     place_h(ui.filter, filter_x, y + edit_dy, filter_w, edit_h);
-    place(IDC_LBL_SECTION, cx, y, clamp(filter_x - gap - cx), ctl);
+    // **The heading is measured now**, where it never used to be: it shares
+    // its line with the count, so it has to end somewhere definite rather
+    // than taking everything up to the filter. Measured in SUBTITLE -- the
+    // only string in `layout` that is not Body, and `tw` would under-measure
+    // it by a third and put the count on top of it.
+    //
+    // The count keeps the leftover, so the heading is still the last thing to
+    // run out and a narrow window clips the count first -- which is the right
+    // order: `Shortcuts` names the band, `· 18 bindings` decorates it.
+    let head_w = text_size(hwnd, ui.fonts.get(Role::Subtitle), dpi, "Shortcuts").0 + s(4);
+    let head_w = head_w.min(clamp(filter_x - gap - cx));
+    place(IDC_LBL_SECTION, cx, y, head_w, ctl);
+    place(
+        IDC_LBL_COUNT,
+        cx + head_w + lblgap,
+        y,
+        clamp(filter_x - gap - (cx + head_w + lblgap)),
+        ctl,
+    );
     // A control gap, not a band gap: the head labels the list directly
     // below it, so the two read as one group.
     y += ctl + gap;
@@ -3224,19 +3612,20 @@ unsafe fn layout(hwnd: HWND) {
     let bw_reset = btn(cap::RESET);
     let res_x = ins_x + clamp(ins_w - bw_reset);
     let rec_x = ins_x + clamp(ins_w - bw_reset - gap - bw_record);
-    // Each chip is its caption plus the check box's own square, exactly as
-    // band 6's `Hold` chips are sized -- same `glyph`, one rule.
-    let w_mod_ctrl = tw(cap::MOD_CTRL) + glyph;
-    let w_mod_win = tw(cap::MOD_WIN) + glyph;
-    let w_mod_alt = tw(cap::MOD_ALT) + glyph;
-    let w_mod_shift = tw(cap::MOD_SHIFT) + glyph;
+    // Each chip is its caption plus `glyph`, floored at `tok::CHIP_MIN` --
+    // exactly as band 6's `Hold` chips are sized, same two constants, one
+    // rule. `chip` is declared above band 4 so both rows read from it.
+    let w_mod_ctrl = chip(cap::MOD_CTRL);
+    let w_mod_win = chip(cap::MOD_WIN);
+    let w_mod_alt = chip(cap::MOD_ALT);
+    let w_mod_shift = chip(cap::MOD_SHIFT);
     // Chips and key list share the fields' midline (`edit_dy`) and their
     // height, so App, the key list and the filter are ONE box repeated
     // rather than three boxes that happen to be concentric. Measured at
     // 144 DPI before the fields were unified: EDIT 43 px against the
     // combo's 36, centres agreeing to within half a pixel -- which reads as
-    // a mistake rather than as a pair. A check box centres its glyph and
-    // caption inside whatever rect it is given, so `edit_h` needs no
+    // a mistake rather than as a pair. `draw_chip` centres its keycap inside
+    // whatever rect the chip is given, both ways, so `edit_h` needs no
     // separate rule for the four of them.
     let mut mx = fld_x;
     place(IDC_MOD_CTRL, mx, ly + edit_dy, w_mod_ctrl, edit_h);
@@ -3257,32 +3646,34 @@ unsafe fn layout(hwnd: HWND) {
     // (88 px; neither caption needs more, which is what makes `tok::BTN_SM`
     // redundant), the fixed part of the line is
     //
-    //   lw_lbl(~54) + lblgap(12) + four chips(~181) + 6*gap(48)
-    //     + bw_record(88) + bw_reset(88)   =   ~471 px of `ins_w`
+    //   lw_lbl(~54) + lblgap(12) + four chips(~190) + 6*gap(48)
+    //     + bw_record(88) + bw_reset(88)   =   ~480 px of `ins_w`
     //
     // -- SIX gaps, not five: three between the chips, one after `Shift`, one
     // between the key list and `Record`, one between the two commands. The
-    // chip figure is `4 * glyph` (96 px) plus the four measured captions;
-    // `lw_lbl` is `tw("Shortcut") + 4`, the wider of the two labels.
+    // chip figure is the four `chip()` widths, i.e. `4 * glyph` (96 px) plus
+    // the four measured captions, except that `Alt` is short enough to take
+    // `tok::CHIP_MIN` instead; `lw_lbl` is `tw("Shortcut") + 4`, the wider of
+    // the two labels.
     //
     // `ins_w` is `cw - 2*gap` and `cw` is `w - 2*pad`, so below its ceiling
-    // this whole expression collapses to `key_w = min(200, w - 519)` -- the
-    // key list clamps to zero at a raw client `w` of ~519, and above that it
+    // this whole expression collapses to `key_w = min(200, w - 528)` -- the
+    // key list clamps to zero at a raw client `w` of ~528, and above that it
     // IS the margin over that zero point. One number, read two ways.
     //
     // `MIN_WIDTH` is a WINDOW floor, not a `cw` one: `WM_GETMINMAXINFO` sets
     // `ptMinTrackSize.x`, which bounds the whole window including the OS's
     // own frame, so its 720 does not translate into an exact `cw` this file
     // computes. Compare like for like -- client against client -- and a
-    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~185 px clear of
+    // 720 px window with a 16 px frame gives `w = 704`, i.e. ~176 px clear of
     // the zero point, which is why a drag cannot reach it. **That margin is a
     // ceiling, not a floor**: a wider OS frame leaves a narrower client, so
     // the figure only ever falls from 185. (Do not compare the 720 against
     // the 519 directly for a "~200 px" margin -- that is the window-against-
     // client mistake this paragraph exists to avoid.)
     //
-    // Concretely at `MIN_WIDTH`, then: the key list is 185 px of its 200 px
-    // ceiling -- the same 185, necessarily, by the collapse above -- and the
+    // Concretely at `MIN_WIDTH`, then: the key list is 176 px of its 200 px
+    // ceiling -- the same 176, necessarily, by the collapse above -- and the
     // App combo on line 1 has ~590 px, where the old one-line strip left it
     // 59. Every subtraction here is clamped regardless, because
     // `WM_DPICHANGED` can suggest a rect below that floor without asking
@@ -3334,9 +3725,9 @@ unsafe fn layout(hwnd: HWND) {
     // wraps.
     let w_caps = tw(cap::CAPS) + glyph;
     let w_hold = tw(cap::HOLD) + s(4);
-    let w_ctrl = tw(cap::HOLD_CTRL) + glyph;
-    let w_win = tw(cap::HOLD_WIN) + glyph;
-    let w_alt = tw(cap::HOLD_ALT) + glyph;
+    let w_ctrl = chip(cap::HOLD_CTRL);
+    let w_win = chip(cap::HOLD_WIN);
+    let w_alt = chip(cap::HOLD_ALT);
     let w_tap = tw(cap::TAP) + s(4);
     // `gap * 2` between the three sections of the line, `lblgap` between a
     // word and what it names, `gap` between chips -- so the grouping is
@@ -3503,10 +3894,13 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 // The shortcut, as the five controls that show it.
                 //
                 // The four `check` calls need no read guard, unlike every
-                // text write in this function: `BM_SETCHECK` sets the state
-                // without raising `BN_CLICKED`, so a push cannot feed itself
-                // back as a user click. `set_key_sel` carries its own guard,
-                // for the reason written on it.
+                // text write in this function: on an owner-draw chip `check`
+                // writes a `Cell` and marks a rectangle dirty, which raises
+                // nothing at all, so a push cannot feed itself back as a
+                // user click. It carries its OWN read guard for a different
+                // reason -- `apply_state` runs per keystroke and an
+                // unconditional repaint would flicker; see `set_chip`.
+                // `set_key_sel` is guarded too, for the reason written on it.
                 //
                 // A string that does not parse arrives here as
                 // `ComboView::default()` -- nothing ticked, nothing selected
@@ -3627,6 +4021,28 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         };
         set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
 
+        // The count beside the heading. A TEXT write like the caption above,
+        // and safe for the same reason: `layout` measures `IDC_LBL_SECTION`
+        // from the constant `"Shortcuts"` and gives this control the leftover,
+        // so its own text is never a layout input and can never reach
+        // `SetWindowPos` on the App combo.
+        //
+        // Counts what the LIST shows -- `st.items` is already filtered -- so
+        // under a filter it describes the rows on screen rather than the
+        // file. Empty rather than `· 0 bindings` when there is nothing:
+        // the list says that better than a number does, and B's mock-up puts
+        // a count next to a populated list.
+        let count = st.items.len();
+        set_text_if_changed(
+            hwnd,
+            IDC_LBL_COUNT,
+            &match count {
+                0 => String::new(),
+                1 => "\u{b7} 1 binding".to_string(),
+                n => format!("\u{b7} {n} bindings"),
+            },
+        );
+
         // The editor strip's two commands. `Record` stays live while a
         // capture is armed even if the row went away underneath it: it reads
         // `Stop` then, and it is the only way to end a recording with the
@@ -3679,8 +4095,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         enable(hwnd, IDC_LIST, st.editable);
         enable(hwnd, IDC_CAPS, st.editable);
         // These four `check` calls need no `suppressed()` guard, unlike every
-        // text write above: `BM_SETCHECK` sets the state without raising
-        // `BN_CLICKED`, so a push cannot feed itself back as a user click.
+        // text write above. `IDC_CAPS` is a real check box and `BM_SETCHECK`
+        // sets its state without raising `BN_CLICKED`; the three `Hold` chips
+        // are owner-draw and `check` writes a `Cell` for them, which raises
+        // nothing whatsoever. Either way a push cannot feed itself back as a
+        // user click.
         //
         // The three chips are written unconditionally FROM THE MODEL, and
         // that is what makes `Model::set_caps_hold` refusing an empty chord
@@ -3815,33 +4234,20 @@ fn combo_cell(it: &ListItem) -> String {
     }
 }
 
-/// The App column's text: the app name, and the row's flag beside it when
-/// it has one.
+/// The App column's text, from `beckon_core::settings::app_cell`.
 ///
-/// **Appended to the cell, not a third column and not `NM_CUSTOMDRAW`.**
-/// B.1 draws the flag inline beside the app name, B.2 names exactly two
-/// columns, and B.5 is explicit that the Fluent glyphs come later "via
-/// `NM_CUSTOMDRAW` as decoration over text that already works". This is
-/// that text. It is produced inside the `cells` funnel so the rebuild path
-/// and the diff path cannot disagree about it.
+/// **The joining rule lives in core, with its inverse.** `list_custom_draw`
+/// has to take this string back apart to colour the flag, and a painter that
+/// split on its own idea of the separator would be a second description of
+/// the same fact -- see `split_app_cell`, which is tested against this on all
+/// three CI jobs rather than on the one that can run a ListView.
 ///
-/// **The flag takes the list's Body font, and cannot take Caption.** B.3
-/// puts flags at Caption size, but this text is part of the App CELL, and a
-/// ListView draws a cell in the control's one font -- there is no
-/// per-run font in a report view. Giving the flag its own would mean
-/// `NM_CUSTOMDRAW`, which B.5 explicitly defers to a later pass. So this is
-/// a deferral, not an oversight: it lands with the Fluent glyphs or not at
-/// all.
-///
-/// ASCII, like `mark_glyph`, and for the same reason: the face here is a
-/// text font, not a symbol one. A healthy row still says nothing at all --
-/// `flag` is `None` and the name stands alone, which is the whole point of
-/// deleting the status column that used to say `OK` on every row.
+/// **The flag no longer takes the list's Body font by necessity.** That was
+/// true while this text was drawn by comctl32, which has no per-run font in a
+/// report view; subitem 0 is custom-drawn now (G3 measured that the tick
+/// survives `CDRF_SKIPDEFAULT`), so the flag gets Caption and a colour.
 fn app_cell(it: &ListItem) -> String {
-    match &it.flag {
-        Some(f) => format!("{}   {}", it.app, f),
-        None => it.app.clone(),
-    }
+    beckon_core::settings::app_cell(&it.app, it.flag.as_deref())
 }
 
 /// Push `st.items` into the ListView, rebuilding only when it has to.
@@ -4064,7 +4470,19 @@ unsafe fn set_key_sel(combo: HWND, key: Option<usize>) {
     }
 }
 
+/// Push a value into a chip or a check box.
+///
+/// Which of the two is `chip_bit`'s business. Both halves raise **nothing**:
+/// `BM_SETCHECK` sets a check box's state without a `BN_CLICKED`, and
+/// `set_chip` writes a `Cell` and marks a rectangle dirty, which is not a
+/// notification at all. That is what lets every `check` call in `apply_state`
+/// and on the capture path skip the `suppressed()` guard every text write
+/// there carries.
 unsafe fn check(parent: HWND, id: i32, on: bool) {
+    if let Some(bit) = chip_bit(id) {
+        set_chip(parent, id, bit, on);
+        return;
+    }
     if let Ok(h) = GetDlgItem(Some(parent), id) {
         SendMessageW(
             h,
@@ -4075,6 +4493,36 @@ unsafe fn check(parent: HWND, id: i32, on: bool) {
             Some(LPARAM(0)),
         );
     }
+}
+
+/// Flip a chip and repaint it, the way `BS_AUTOCHECKBOX` used to flip itself.
+///
+/// **Before the handler runs, never after.** Both chip handlers read all of
+/// their chips back out of `is_checked` rather than out of the notification
+/// -- the `Hold` chord because a setter taking one flag at a time could not
+/// refuse "none ticked" without knowing the other two, the four modifiers
+/// because `push_shortcut` spells the whole combo. That read has to see the
+/// state the user now sees, which is exactly the property `BS_AUTOCHECKBOX`
+/// gave away for free and `BS_OWNERDRAW` does not.
+fn toggle_chip(hwnd: HWND, id: i32) {
+    if let Some(bit) = chip_bit(id) {
+        set_chip(hwnd, id, bit, !chip_armed(bit));
+    }
+}
+
+/// Does this notification code mean the user pressed a chip?
+///
+/// **`BN_DOUBLECLICKED` is not noise here, it is the second click.**
+/// `BS_OWNERDRAW` sends that code automatically -- `BS_NOTIFY` is neither
+/// needed nor set on these seven -- and the button sends it INSTEAD of a
+/// second `BN_CLICKED`, not alongside one. A handler that ignored it would
+/// toggle once for two clicks, where a real check box toggles twice.
+///
+/// Narrow rather than `(id, _)` for the reason the key list's arm is narrow:
+/// a control that says more than one thing must not have all of it read as
+/// an edit.
+fn is_chip_click(code: u32) -> bool {
+    code == BN_CLICKED || code == BN_DOUBLECLICKED
 }
 
 /// Hand the scanned catalog to the window, from the worker thread.
@@ -4197,14 +4645,308 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
     String::from_utf16_lossy(&buf[..n.min(buf.len())])
 }
 
+/// Paint `Save` as the accent-filled primary action.
+///
+/// **The accent marks the primary action; the default ring marks where Enter
+/// goes, and they are not the same thing.** `set_default_id` moves the ring
+/// onto whichever push button has focus, so tabbing to `Close` takes the ring
+/// away from Save -- correctly, because Enter then closes. Save stays filled
+/// throughout, because it is still the action the window is for. Nothing here
+/// touches the ring.
+///
+/// **Disabled is the common state**, not an edge case: Save is greyed until
+/// there is something to save. It takes `COLOR_BTNFACE` and `COLOR_GRAYTEXT`,
+/// so a window with no edits does not show a bright blue button that does
+/// nothing.
+///
+/// High contrast keeps `COLOR_HIGHLIGHT` -- it is a real colour there, and it
+/// is the one the theme uses for exactly this -- but drops the rounded
+/// corners, on `draw_keycaps`' rule.
+unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as isize;
+    }
+    let btn = cd.hdr.hwndFrom;
+    let hdc = cd.hdc;
+    let rc = cd.rc;
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let hc = high_contrast();
+    let disabled = cd.uItemState.0 & CDIS_DISABLED.0 != 0;
+    let pressed = cd.uItemState.0 & CDIS_SELECTED.0 != 0;
+    let hot = cd.uItemState.0 & CDIS_HOT.0 != 0;
+
+    // The parent's surface first: a rounded button leaves its corners
+    // showing, and whatever was there last frame would stay in them.
+    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+
+    let accent = COLORREF(GetSysColor(COLOR_HIGHLIGHT));
+    let (fill, ink) = if disabled {
+        (
+            COLORREF(GetSysColor(COLOR_BTNFACE)),
+            COLORREF(GetSysColor(COLOR_GRAYTEXT)),
+        )
+    } else if pressed {
+        (
+            shade(accent, 4, 5),
+            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+        )
+    } else if hot {
+        (
+            shade(accent, 9, 10),
+            COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)),
+        )
+    } else {
+        (accent, COLORREF(GetSysColor(COLOR_HIGHLIGHTTEXT)))
+    };
+    // A disabled button needs an outline or it is a hole in the window;
+    // a filled one is its own shape.
+    let border = if disabled {
+        COLORREF(GetSysColor(COLOR_BTNSHADOW))
+    } else {
+        fill
+    };
+    let brush = CreateSolidBrush(fill);
+    let pen = CreatePen(PS_SOLID, 1, border);
+    let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+    let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+    if hc {
+        let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    } else {
+        let r = scale(5, dpi) * 2;
+        let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    }
+    if !pp.is_invalid() {
+        SelectObject(hdc, pp);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    if !pb.is_invalid() {
+        SelectObject(hdc, pb);
+    }
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+
+    let font = HFONT(
+        SendMessageW(btn, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut core::ffi::c_void,
+    );
+    let prev = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    // `&Save`'s mnemonic, on the window's own UI state -- the same read the
+    // chips make, and for the same reason.
+    let ui_state = SendMessageW(btn, WM_QUERYUISTATE, Some(WPARAM(0)), Some(LPARAM(0))).0 as u32;
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if ui_state & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    let caption = text_of(btn);
+    let mut t = wide(&caption);
+    let n = t.len() - 1;
+    let mut tr = rc;
+    DrawTextW(hdc, &mut t[..n], &mut tr, flags);
+    if !prev.is_invalid() {
+        SelectObject(hdc, prev);
+    }
+
+    if cd.uItemState.0 & CDIS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
+        let d = scale(3, dpi);
+        let f = RECT {
+            left: rc.left + d,
+            top: rc.top + d,
+            right: rc.right - d,
+            bottom: rc.bottom - d,
+        };
+        let _ = DrawFocusRect(hdc, &f);
+    }
+    CDRF_SKIPDEFAULT as isize
+}
+
+/// The pill colours for a flag: `(fill, ink)`.
+///
+/// **The one place in this window that uses colour literals, and the reason
+/// is that the system palette has no opinion here.** There is no
+/// `COLOR_WARNING`; Windows' own shell draws these states with semantic
+/// colours of its own. The values are direction B's Windows palette --
+/// `--w-warn:#9d5d00` on `--w-warn-bg:#fff4ce`, `--w-crit:#c42b1c` on
+/// `--w-crit-bg:#fdf3f4`, `--w-good:#0f7b0f`.
+///
+/// **`None` means no pill**, and the caller leaves comctl32's own text
+/// showing. That is what `FlagTone::Neutral` gets -- `custom`, which is true
+/// and not a problem -- and it is also what the caller substitutes in high
+/// contrast and on a selected row, where a pale fill would be either a lie
+/// about the theme or unreadable on the accent.
+fn flag_colours(t: FlagTone) -> Option<(COLORREF, COLORREF)> {
+    match t {
+        FlagTone::Bad => Some((COLORREF(0x00F4F3FD), COLORREF(0x001C2BC4))),
+        FlagTone::Warn => Some((COLORREF(0x00CEF4FF), COLORREF(0x00005D9D))),
+        FlagTone::Neutral => None,
+    }
+}
+
+/// Lay a coloured pill over the flag comctl32 has just drawn in the App cell.
+///
+/// **Additive, never a takeover**, and that is the whole design. comctl32 has
+/// already drawn the check box, the selection, the ellipsis and the whole
+/// cell's text by the time this runs; all this does is cover the flag's own
+/// characters with an opaque pill and redraw them in its colour. Nothing here
+/// can cost a tick, which is the delete path -- see `list_custom_draw` for
+/// what taking the cell over actually did on hardware.
+///
+/// **It runs only when it will change something**: a row with no flag, a
+/// selected row, a high-contrast theme and `FlagTone::Neutral` all leave
+/// comctl32's text exactly as it is. So the common case -- a healthy row --
+/// costs one string compare.
+///
+/// **Nothing here reads `UI`**, on `list_custom_draw`'s rule: the text comes
+/// from the control, the tone from the flag word through
+/// `beckon_core::settings::flag_tone`, the Caption font from `CAP_FONT`.
+///
+/// The flag's x is derived by measuring `name + FLAG_SEP` in the LIST's own
+/// font -- the font comctl32 drew it with -- so the pill lands exactly where
+/// those characters are rather than where this function would have put them.
+unsafe fn draw_flag_pill(hwnd: HWND, cd: &NMLVCUSTOMDRAW) -> isize {
+    let list = cd.nmcd.hdr.hwndFrom;
+    let row = cd.nmcd.dwItemSpec;
+    let cell = subitem_text(list, row, 0);
+    if cell.is_empty() {
+        return CDRF_DODEFAULT as isize;
+    }
+    let (name, flag) = beckon_core::settings::split_app_cell(&cell);
+    let Some(flag) = flag else {
+        return CDRF_DODEFAULT as isize;
+    };
+    // A selected row is white-on-accent and a high-contrast theme has no
+    // pale fills; in both, comctl32's own text is the right answer.
+    let sel = SendMessageW(
+        list,
+        LVM_GETITEMSTATE,
+        Some(WPARAM(row)),
+        Some(LPARAM(LVIS_SELECTED.0 as isize)),
+    )
+    .0 != 0;
+    if sel || high_contrast() {
+        return CDRF_DODEFAULT as isize;
+    }
+    let Some((fill, ink)) = flag_colours(beckon_core::settings::flag_tone(flag)) else {
+        return CDRF_DODEFAULT as isize;
+    };
+    let Some(cap) = cap_font() else {
+        return CDRF_DODEFAULT as isize;
+    };
+
+    // `LVIR_LABEL` on the ITEM: in a report view this is column 0's text
+    // area, i.e. past the state image. `LVM_GETSUBITEMRECT` is NOT usable
+    // here -- with a subitem of 0 it answers for the whole ITEM, every
+    // column, which is how an earlier version of this came to erase the
+    // Shortcut keycaps of the row it was drawing.
+    let mut rc = RECT {
+        left: LVIR_LABEL as i32,
+        ..Default::default()
+    };
+    let ok = SendMessageW(
+        list,
+        LVM_GETITEMRECT,
+        Some(WPARAM(row)),
+        Some(LPARAM(&mut rc as *mut RECT as isize)),
+    );
+    if ok.0 == 0 || rc.right <= rc.left {
+        return CDRF_DODEFAULT as isize;
+    }
+
+    let hdc = cd.nmcd.hdc;
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    SetBkMode(hdc, TRANSPARENT);
+
+    // Where the flag's characters START, measured in the list's own font --
+    // taken from the control rather than from `Fonts`, for the reason the
+    // chips do it.
+    let body = HFONT(
+        SendMessageW(list, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let prev = if body.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(body.0))
+    };
+    let lead = format!("{name}{}", beckon_core::settings::FLAG_SEP);
+    let lt = wide(&lead);
+    let mut nw = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &lt[..lt.len() - 1], &mut nw);
+    // What comctl32 drew the flag in, so the pill is guaranteed to cover it
+    // even though the pill's own text is Caption and narrower.
+    let ft_body = wide(flag);
+    let mut body_fw = SIZE::default();
+    let _ = GetTextExtentPoint32W(hdc, &ft_body[..ft_body.len() - 1], &mut body_fw);
+    if !prev.is_invalid() {
+        SelectObject(hdc, prev);
+    }
+
+    let prev_cap = SelectObject(hdc, HGDIOBJ(cap.0));
+    let mut fw = SIZE::default();
+    let ft = wide(flag);
+    let _ = GetTextExtentPoint32W(hdc, &ft[..ft.len() - 1], &mut fw);
+    // The pill is padded from the CAPTION width but must never be narrower
+    // than the Body text underneath it, or the old characters peek out of
+    // both ends.
+    let padx = scale(7, dpi);
+    let pill_w = (fw.cx + padx * 2).max(body_fw.cx + padx);
+    let px = rc.left + nw.cx - padx / 2;
+    let pill_h = (fw.cy + scale(4, dpi)).min(rc.bottom - rc.top);
+    let py = rc.top + (rc.bottom - rc.top - pill_h) / 2;
+    // Nothing is drawn at all if the pill would not fit the column: half a
+    // pill over half a word is worse than the plain text comctl32 drew.
+    if px + pill_w <= rc.right {
+        let brush = CreateSolidBrush(fill);
+        let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+        let pen = CreatePen(PS_SOLID, 1, fill);
+        let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+        // A radius of the pill's own height is what makes the ends round
+        // rather than merely soft -- `.chip { border-radius:10px }` on a
+        // 10 px-tall pill.
+        let r = pill_h;
+        let _ = RoundRect(hdc, px, py, px + pill_w, py + pill_h, r, r);
+        if !pp.is_invalid() {
+            SelectObject(hdc, pp);
+        }
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+        if !pb.is_invalid() {
+            SelectObject(hdc, pb);
+        }
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+
+        SetTextColor(hdc, ink);
+        let mut ftr = RECT {
+            left: px,
+            top: py,
+            right: px + pill_w,
+            bottom: py + pill_h,
+        };
+        let mut fbuf = wide(flag);
+        let f = fbuf.len() - 1;
+        DrawTextW(
+            hdc,
+            &mut fbuf[..f],
+            &mut ftr,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    }
+    if !prev_cap.is_invalid() {
+        SelectObject(hdc, prev_cap);
+    }
+    CDRF_DODEFAULT as isize
+}
+
 /// Paint the Shortcut column as keycaps. Subitem 1, and only subitem 1.
 ///
-/// **Subitem 0 is deliberately left alone.** It carries `LVS_EX_CHECKBOXES`'
-/// state image, the tick that makes `Remove` a multi-delete, and whether
-/// `CDRF_SKIPDEFAULT` there takes the tick with it is an open hardware
-/// question -- `examples/customdraw_probe.rs` exists to answer it. Losing the
-/// tick is losing the delete path, so it is not something to find out by
-/// shipping.
+/// **Both subitems are drawn now.** Subitem 0 carries `LVS_EX_CHECKBOXES`'
+/// state image -- the tick that makes `Remove` a multi-delete -- and whether
+/// `CDRF_SKIPDEFAULT` there takes the tick with it was an open hardware
+/// question until `examples/customdraw_probe.rs` was finally run on a14
+/// (2026-08-13, `VERDICT=TICK_SURVIVES`). See `draw_app_cell`.
 ///
 /// **Nothing here reads `UI`.** Everything it needs comes from the
 /// notification itself or from a `Cell`: the list handle from `hdr.hwndFrom`,
@@ -4222,7 +4964,36 @@ unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
     // `NMCUSTOMDRAW_DRAW_STAGE` has no `BitOr` in `windows` 0.61 -- unlike the
     // flag types it is a bare newtype, not a generated bitmask type. Compare
     // the raw u32s; `examples/customdraw_probe.rs` found this the hard way.
-    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 || cd.iSubItem != 1 {
+    if stage.0 == CDDS_ITEMPOSTPAINT.0 | CDDS_SUBITEM.0 {
+        return if cd.iSubItem == 0 {
+            draw_flag_pill(hwnd, cd)
+        } else {
+            CDRF_DODEFAULT as isize
+        };
+    }
+    if stage.0 != CDDS_ITEMPREPAINT.0 | CDDS_SUBITEM.0 {
+        return CDRF_DODEFAULT as isize;
+    }
+    // **Subitem 0 asks to be called back AFTER comctl32 has drawn it**, and
+    // never takes it over.
+    //
+    // `customdraw_probe` answered `TICK_SURVIVES` for `CDRF_SKIPDEFAULT` on
+    // subitem 0, and **taking that as permission to own the cell was wrong**
+    // -- measured on a14 2026-08-13, in this window rather than in the
+    // probe's own: every row that returned `SKIPDEFAULT` lost its check box,
+    // and the selected row lost its keycaps as well. The probe builds a
+    // ListView of its own with no owner-drawn neighbours, so what it proved
+    // is narrower than what it was read to prove. It is a measurement of the
+    // probe's window, not a licence for this one.
+    //
+    // `CDRF_NOTIFYPOSTPAINT` sidesteps the whole question: comctl32 draws the
+    // tick, the selection, the ellipsis and the text exactly as it always
+    // has, and `draw_flag_pill` only lays a pill over the flag afterwards.
+    // Nothing this window draws can cost a tick, which is the delete path.
+    if cd.iSubItem == 0 {
+        return CDRF_NOTIFYPOSTPAINT as isize;
+    }
+    if cd.iSubItem != 1 {
         return CDRF_DODEFAULT as isize;
     }
     let Some(font) = cap_font() else {
@@ -4281,7 +5052,7 @@ unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
     // second source of truth to keep in step.
     let caps: Vec<String> = shown.split(" + ").map(|s| s.to_string()).collect();
     let dpi = GetDpiForWindow(hwnd).max(96);
-    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast()) {
+    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast(), CapStyle::Chord) {
         let mut tr = RECT {
             left: rc.left + scale(6, dpi),
             ..rc
@@ -4305,6 +5076,123 @@ unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> isize {
         );
     }
     CDRF_SKIPDEFAULT as isize
+}
+
+/// Paint one toggle chip as a keycap. The four modifier chips and the three
+/// `Hold` chips, and nothing else in this window is owner-draw.
+///
+/// **Nothing here reads `UI`**, for `list_custom_draw`'s reason: a paint can
+/// arrive while `UI` is borrowed, and it does. Everything comes out of the
+/// `DRAWITEMSTRUCT` or out of the control itself -- the caption through
+/// `text_of`, the font through `WM_GETFONT`, the armed bit from `CHIPS`,
+/// which is a `Cell` precisely so this path cannot be contended.
+///
+/// **The font is asked of the control, not of `Fonts`.** `child` put the
+/// role's font on it at creation and `WM_DPICHANGED` rebroadcasts a new one,
+/// so `WM_GETFONT` is the live answer and there is no third copy of the
+/// mapping to keep in step. `layout` measures these captions in Body through
+/// `tw`, which is the same font, which is what makes the fit check below a
+/// real one.
+///
+/// **Whether the mnemonic underline shows is the WINDOW's UI state**, read
+/// with `WM_QUERYUISTATE` rather than `SPI_GETKEYBOARDCUES`. The SPI is the
+/// global default; the per-window flags are the live answer, and they are
+/// what Windows itself moves -- through `WM_UPDATEUISTATE` -- the moment the
+/// user presses Alt or navigates by keyboard. Reading the SPI would leave
+/// these three chips underlined while every real control beside them was
+/// not. The same read answers the focus rect, which owner-draw also has to
+/// draw for itself or the keyboard route is silently lost.
+unsafe fn draw_chip(hwnd: HWND, di: &DRAWITEMSTRUCT) -> bool {
+    if di.CtlType != ODT_BUTTON {
+        return false;
+    }
+    let Some(bit) = chip_bit(di.CtlID as i32) else {
+        return false;
+    };
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    // The parent's background, first and over the WHOLE rect. An owner-draw
+    // button draws nothing of itself, its background included, so any pixel
+    // this function leaves alone keeps whatever the last frame put there --
+    // and the cap is deliberately narrower than its control, so there are
+    // plenty of them. `COLOR_BTNFACE` is what the window class registers;
+    // `GetSysColorBrush` returns a system brush and must not be deleted.
+    FillRect(hdc, &rc, GetSysColorBrush(COLOR_BTNFACE));
+
+    // Never zero in practice -- `child` sets a font on every control it
+    // creates -- but a null `HFONT` would make `SelectObject` fail and leave
+    // the cap in the DC's own stock font, which at this size is unreadable
+    // rather than merely wrong.
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let font = if font.is_invalid() {
+        HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+    } else {
+        font
+    };
+    let ui_state = SendMessageW(
+        di.hwndItem,
+        WM_QUERYUISTATE,
+        Some(WPARAM(0)),
+        Some(LPARAM(0)),
+    )
+    .0 as u32;
+    let style = CapStyle::Toggle {
+        armed: chip_armed(bit),
+        pressed: di.itemState.0 & ODS_SELECTED.0 != 0,
+        disabled: di.itemState.0 & ODS_DISABLED.0 != 0,
+        hide_accel: ui_state & UISF_HIDEACCEL != 0,
+    };
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    // Read back from the CONTROL, not from `mod cap`, for `subitem_text`'s
+    // reason: what is drawn and what an accessibility client reads out are
+    // then the same string by construction, rather than by two code paths
+    // agreeing.
+    let caps = [text_of(di.hwndItem)];
+    if !draw_keycaps(hdc, rc, &caps, font, dpi, high_contrast(), style) {
+        // The same fallback the Shortcut column takes, and for the same
+        // reason: a clipped keycap reads as a rendering fault, plain text
+        // reads as a narrow control. `layout` sizes each chip from its own
+        // caption so this should be unreachable -- which is exactly why it
+        // must not be an empty control if it ever is.
+        let prev = SelectObject(hdc, HGDIOBJ(font.0));
+        let mut tr = rc;
+        let mut t = wide(&caps[0]);
+        let n = t.len() - 1;
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(
+            hdc,
+            COLORREF(GetSysColor(if di.itemState.0 & ODS_DISABLED.0 != 0 {
+                COLOR_GRAYTEXT
+            } else {
+                COLOR_BTNTEXT
+            })),
+        );
+        let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+        if ui_state & UISF_HIDEACCEL != 0 {
+            flags |= DT_HIDEPREFIX;
+        }
+        DrawTextW(hdc, &mut t[..n], &mut tr, flags);
+        if !prev.is_invalid() {
+            SelectObject(hdc, prev);
+        }
+    }
+    // XOR-drawn, so it goes on LAST or the fill eats it. Suppressed while the
+    // window says cues are hidden, which is the state a mouse-driven session
+    // stays in -- the same flag word that decides the underline.
+    if di.itemState.0 & ODS_FOCUS.0 != 0 && ui_state & UISF_HIDEFOCUS == 0 {
+        let d = scale(1, dpi);
+        let f = RECT {
+            left: rc.left + d,
+            top: rc.top + d,
+            right: rc.right - d,
+            bottom: rc.bottom - d,
+        };
+        let _ = DrawFocusRect(hdc, &f);
+    }
+    true
 }
 
 unsafe fn refresh_high_contrast() {
@@ -4697,6 +5585,20 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
                 }
+                // Save is the primary action, so B fills it with the accent.
+                //
+                // **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `BS_OWNERDRAW`
+                // replaces the button's TYPE, and Save's type is
+                // `BS_DEFPUSHBUTTON` -- the ring `set_default_id` moves around
+                // with a `BM_SETSTYLE` read-modify-write through
+                // `BS_TYPEMASK_BITS`. Owner-draw would take that machinery
+                // with it, and Enter-on-`Reload`-saves is a defect this window
+                // has already had once. Custom draw leaves the type, the
+                // notifications and the ring exactly as they are and only
+                // replaces the pixels.
+                if nm.idFrom == IDC_APPLY as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(save_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
                 if suppressed() {
                     return LRESULT(0);
                 }
@@ -4746,6 +5648,51 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 LRESULT(0)
             }
+            WM_CTLCOLORSTATIC => {
+                // **One control, by id.** Every other STATIC in this window --
+                // the banner, the notes, the four labels -- keeps the default
+                // treatment; answering for all of them would silently grey the
+                // banner, which is the one piece of text here that must not be
+                // played down.
+                //
+                // `GetSysColorBrush` returns a SYSTEM brush, so it is not
+                // deleted and can be returned safely. `SetBkMode(TRANSPARENT)`
+                // rather than a matching background: the group boxes and the
+                // window share `COLOR_BTNFACE`, and letting the parent's paint
+                // show through is what keeps this correct if that ever stops
+                // being true.
+                let ctl = HWND(lp.0 as *mut core::ffi::c_void);
+                if GetDlgCtrlID(ctl) == IDC_LBL_COUNT {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    SetTextColor(hdc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
+                    SetBkMode(hdc, TRANSPARENT);
+                    return LRESULT(GetSysColorBrush(COLOR_BTNFACE).0 as isize);
+                }
+                DefWindowProcW(hwnd, msg, wp, lp)
+            }
+            WM_DRAWITEM => {
+                // The first owner-draw surface in this window, and the seven
+                // toggle chips are all of it. Answered BEFORE any
+                // `suppressed()` consideration, exactly like the ListView's
+                // custom draw one arm up: it is pure painting, it reaches no
+                // callback and it cannot recurse into `apply_state`.
+                //
+                // `DefWindowProcW` on anything else -- and on a menu, whose
+                // `CtlID` is 0 and which this window has none of today.
+                // Returning 1 for a message we did not draw would leave the
+                // control blank.
+                let di = &*(lp.0 as *const DRAWITEMSTRUCT);
+                if draw_chip(hwnd, di) {
+                    LRESULT(1)
+                } else {
+                    DefWindowProcW(hwnd, msg, wp, lp)
+                }
+            }
+            WM_CHIP_STATE => LRESULT(match chip_bit(wp.0 as i32) {
+                Some(bit) if chip_armed(bit) => 2,
+                Some(_) => 1,
+                None => 0,
+            }),
             WM_COMMAND => {
                 let id = (wp.0 & 0xFFFF) as i32;
                 let code = ((wp.0 >> 16) & 0xFFFF) as u32;
@@ -5235,11 +6182,16 @@ unsafe fn on_capture(hwnd: HWND, code: usize) {
             // with a typed one about which index a key is -- which is the
             // whole of `set_key_sel`'s contract.
             let v = combo_view(&c.canonical());
-            // No `suppressed()` guard and none wanted: `BM_SETCHECK` raises
-            // no `BN_CLICKED` and `CB_SETCURSEL` raises no `CBN_SELCHANGE`,
-            // so these writes cannot come back as user edits -- and
-            // `push_shortcut` below is itself suppression-guarded, so
-            // setting the flag here would silently drop the probe.
+            // No `suppressed()` guard and none wanted. The reasoning that
+            // used to sit here was about `BM_SETCHECK` raising no
+            // `BN_CLICKED`, and it does NOT carry over -- these four are
+            // `BS_OWNERDRAW` now and have no check state for that message to
+            // set. The conclusion survives on stronger ground: `check`
+            // reaches `set_chip`, which writes a `Cell` and marks a rectangle
+            // dirty, and neither is a notification. `CB_SETCURSEL` still
+            // raises no `CBN_SELCHANGE`. And `push_shortcut` below is itself
+            // suppression-guarded, so setting the flag here would silently
+            // drop the probe.
             check(hwnd, IDC_MOD_CTRL, v.ctrl);
             check(hwnd, IDC_MOD_WIN, v.super_);
             check(hwnd, IDC_MOD_ALT, v.alt);
@@ -5364,13 +6316,22 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // would push the same value back through the model every time the
         // list is merely opened or tabbed away from.
         //
-        // `BS_AUTOCHECKBOX` toggles itself BEFORE the notification arrives,
-        // so `push_shortcut` reading all five controls back is reading the
-        // state the user now sees -- the same property the `Hold` chips
-        // rely on.
+        // **`toggle_chip` FIRST, and that ordering is the feature**, not a
+        // detail of this arm. `push_shortcut` reads all five controls back
+        // and spells the whole combo from them, so it has to see the state
+        // the user now sees. A `BS_AUTOCHECKBOX` gave that away for free by
+        // toggling itself before the notification arrived; `BS_OWNERDRAW`
+        // has no state to toggle, so the window does it here. The `Hold`
+        // chips below rely on exactly the same order.
+        //
+        // `is_chip_click` rather than `c == BN_CLICKED`: an owner-draw
+        // button sends `BN_DOUBLECLICKED` for the second click of a
+        // double-click INSTEAD of a second `BN_CLICKED`, so testing only the
+        // one code would toggle once for two clicks.
         (IDC_MOD_CTRL, c) | (IDC_MOD_WIN, c) | (IDC_MOD_ALT, c) | (IDC_MOD_SHIFT, c)
-            if c == BN_CLICKED =>
+            if is_chip_click(c) =>
         {
+            toggle_chip(hwnd, id);
             push_shortcut(hwnd, combo);
         }
         (IDC_COMBO, c) if c == CBN_SELCHANGE => push_shortcut(hwnd, combo),
@@ -5511,18 +6472,24 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             let on = is_checked(hwnd, IDC_CAPS);
             with_cb(|cb| (cb.on_caps)(on));
         }
-        (IDC_HOLD_CTRL, _) | (IDC_HOLD_WIN, _) | (IDC_HOLD_ALT, _) => {
+        // Narrowed from `(id, _)` when these became `BS_OWNERDRAW`, and the
+        // narrowing is load-bearing rather than tidy: an owner-draw button
+        // sends `BN_DOUBLECLICKED` on its own, so a wildcard arm that also
+        // toggles would fire twice for one physical event.
+        (IDC_HOLD_CTRL, c) | (IDC_HOLD_WIN, c) | (IDC_HOLD_ALT, c) if is_chip_click(c) => {
             // All three read together: the chord is one value, and a setter
             // that took one flag at a time could not refuse "none ticked"
-            // without knowing the other two. `BS_AUTOCHECKBOX` toggles
-            // itself before the notification arrives, so reading all three
-            // back is reading the state the user now sees.
-            let c = Chord {
+            // without knowing the other two. `toggle_chip` runs FIRST so
+            // that read sees the state the user now sees -- the property
+            // `BS_AUTOCHECKBOX` used to provide by toggling itself before
+            // the notification arrived.
+            toggle_chip(hwnd, id);
+            let hold = Chord {
                 ctrl: is_checked(hwnd, IDC_HOLD_CTRL),
                 super_: is_checked(hwnd, IDC_HOLD_WIN),
                 alt: is_checked(hwnd, IDC_HOLD_ALT),
             };
-            with_cb(|cb| (cb.on_caps_hold)(c));
+            with_cb(|cb| (cb.on_caps_hold)(hold));
         }
         // Read out of the LIST by index, never from text. The `suppressed()`
         // guard is the same one every other combo notification here carries:
