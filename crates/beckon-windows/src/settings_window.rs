@@ -4721,7 +4721,7 @@ unsafe fn save_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     }
     let btn = cd.hdr.hwndFrom;
     let hdc = cd.hdc;
-    let rc = cd.rcItem;
+    let rc = cd.rc;
     let dpi = GetDpiForWindow(hwnd).max(96);
     let hc = high_contrast();
     let disabled = cd.uItemState.0 & CDIS_DISABLED.0 != 0;
