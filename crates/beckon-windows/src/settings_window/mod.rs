@@ -1159,23 +1159,36 @@ struct Ui {
     /// width, is tolerated rather than guarded -- see `shown_external`.)
     ///
     /// The path runs through `list_row_height`, which cannot measure a row
-    /// that is not there and returns `scale(20, dpi)` when the list is empty
-    /// -- 30 px at a14's 144 DPI, against 29 measured. So a window opened on a
-    /// config with no shortcuts lays out with the fallback, and without this
-    /// field the first Add would keep it: `external_change` does not move, the
-    /// layout is skipped, and the list stays ~8 px taller than the eight rows
-    /// it is sized for.
+    /// that is not there and returns `scale(tok::ROW_H, dpi)` when the list
+    /// is empty -- `scale(26, dpi)`, 39 px at a14's 144 DPI. **CORRECTED**:
+    /// this used to say `scale(20, dpi)` / "30 px ... against 29 measured" /
+    /// "~8 px taller" -- three numbers that were right for the pre-Task-10
+    /// row height (`tok::ROW_H` was 20) and went stale when Task 10 raised
+    /// it to 26 without this block being re-derived. The 39 px figure is
+    /// also not directly comparable to a "measured" figure the way the old
+    /// text implied: since Task 10, `rebuild_state_image_list`'s state
+    /// image list FORCES the live row to be at least `scale(tok::ROW_H,
+    /// dpi)`, but comctl32 is still free to pad further on top of that
+    /// image height (`list_row_height`'s own doc), and no hardware
+    /// measurement of the live, non-empty row exists yet (Gate 05, `NOT YET
+    /// RUN`). So a window opened on a config with no shortcuts lays out
+    /// against a LOWER BOUND that may or may not equal the true row height,
+    /// and without this field the first Add would keep whatever the
+    /// fallback got wrong: `external_change` does not move, the layout is
+    /// skipped, and the list is left at whatever height the fallback
+    /// produced rather than the one the real rows need.
     ///
-    /// **Where those 8 px go changed with Task 9, and the guard is what stops
-    /// mattering more, not less.** They used to be absorbed by the notes
-    /// strip, which flexed into whatever the bands above left; the notes are
-    /// a fixed line inside the editor group now (`notes_height`), so nothing
-    /// absorbs anything. The extra 8 px push `y`, therefore `grp_y`,
-    /// therefore the whole editor group down by 8 -- eating slack above the
-    /// keyboard group, and near `MIN_HEIGHT` running into `y.min(kb_y)`. The
-    /// other reason it is guarded rather than tolerated is unchanged:
-    /// `list_row_height`'s own comment used to justify the fallback by saying
-    /// `apply_state` re-lays-out the instant a row appears, which
+    /// **Where a too-short fallback's slack goes changed with Task 9, and
+    /// the guard is what stops it mattering more, not less.** A shortfall
+    /// used to be absorbed by the notes strip, which flexed into whatever
+    /// the bands above left; the notes are a fixed line inside the editor
+    /// group now (`notes_height`), so nothing absorbs anything -- any gap
+    /// between the fallback and the true row height pushes `y`, therefore
+    /// `grp_y`, therefore the whole editor group, eating slack above the
+    /// keyboard group and, near `MIN_HEIGHT`, running into `y.min(kb_y)`.
+    /// The other reason it is guarded rather than tolerated is unchanged:
+    /// `list_row_height`'s own comment used to justify the fallback by
+    /// saying `apply_state` re-lays-out the instant a row appears, which
     /// `shown_external` made false.
     ///
     /// Empty-vs-not is the whole condition: every non-empty list measures the
@@ -5325,7 +5338,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 );
                 if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-                    let card = theme_col(|p| p.card, COLOR_BTNFACE);
+                    // `COLOR_WINDOW`, matching every other `card` fallback
+                    // in this window (`paint::card`, and the six other
+                    // `theme_col(|p| p.card, ...)` sites) -- `COLOR_BTNFACE`
+                    // here was the one place `card` resolved to a DIFFERENT
+                    // sys index, and its ink two lines down is
+                    // `COLOR_WINDOWTEXT`. Under high contrast that pairs a
+                    // BTNFACE fill with WINDOWTEXT ink -- a cross-family
+                    // pair latent only because the four shipped HC schemes
+                    // happen to make those two indices equal.
+                    let card = theme_col(|p| p.card, COLOR_WINDOW);
                     let text = if id == IDC_LBL_COUNT {
                         theme_col(|p| p.text_faint, COLOR_GRAYTEXT)
                     } else {
