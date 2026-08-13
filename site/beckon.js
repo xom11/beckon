@@ -900,11 +900,15 @@
       var READ = 1500;  /* long enough to read the precondition the row states */
       var WATCH = 2500; /* ...and then the readout that answers it */
 
-      /* Starts mid-cycle, on the scene `onOs` has already built, and its first
-         act is to answer it. Opening with `scene('4')` instead would blank the
-         desk the caption has just promised starts on Cycle, before the reader
-         has looked at it. */
-      var at = 2, armed = true, timer = null, stopped = false, onScreen = false;
+      /* IN THE TABLE'S OWN ORDER, top to bottom, and that is the whole point of
+         the mark: it walks the list the way the reader reads it. It used to
+         start mid-table on the 5a scene `onOs` had already built so its first
+         act could answer what was on screen — which cost the order, because
+         after 5c it jumped back up to row one. The arrival scene is still
+         honoured, just by waiting a beat before the first move rather than by
+         starting there: the observer below opens with WATCH, so a reader sees
+         the Cycle desk the caption promises, then the mark starts at the top. */
+      var at = 0, armed = false, timer = null, stopped = false, onScreen = false;
 
       function clear() { if (timer) { clearTimeout(timer); timer = null; } }
 
@@ -938,7 +942,10 @@
         if (stopped) return;
         stopped = true;
         clear();
+        /* Hand the table's marks back to their reader-driven meaning. */
+        table.classList.remove('is-touring');
       }
+      table.classList.add('is-touring');
       demo.addEventListener('pointerdown', stop, true);
       table.addEventListener('pointerdown', stop, true);
       document.addEventListener('keydown', stop, true);

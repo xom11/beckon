@@ -1269,6 +1269,16 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .how-table tbody tr.is-hit .how-step { color: var(--accent); font-weight: 600; }
 .how-table tbody tr.is-on th { color: var(--fg); font-weight: 500; }
 
+/* WHILE THE TOUR IS DRIVING, `is-on` gets the fill too, so exactly one row is
+   marked at every instant and the mark walks the list. Reader-driven, `is-on`
+   is a caret on a row the reader chose and is still looking at, and the fill
+   is reserved for the answer — but nobody chose these, and a mark that only
+   appears for the half-beat after each press read as the row vanishing and
+   another one lighting up somewhere else. `is-touring` is removed the moment
+   the reader takes over, so their `is-on` is upstream's again. The accent on
+   `.how-do` still separates "this fired" from "this is set up". */
+.how-table.is-touring tbody tr.is-on { background: var(--hit); }
+
 /* JS replaces each row header's text with this button. It ships as plain text,
    because a button that does nothing is exactly the failure the JS-off
    ordering exists to prevent. */

@@ -339,7 +339,17 @@
           <tbody>
             <tr class="how-when"><th colspan="2" scope="rowgroup">You are already in it</th></tr>
             <tr data-step="5a"><th scope="row">it has another window</th>
-              <td><span class="how-do">Cycle</span> — its next window, wrapping round at the end</td></tr>
+              <!-- The only cell that wrapped, and a wrapped row broke the one
+                   thing this table is for: five branches you take in at a
+                   glance, one line each.
+
+                   Measured rather than eyeballed, at the widest layout where
+                   the column is narrowest in proportion: 280px available, and
+                   this needs 261px. The obvious shorter rewrites sat at 276px
+                   and 283px — 4px of headroom is not headroom when the face is
+                   Segoe UI on one machine and the system font on another. The
+                   longest of the other four cells needs 238px. -->
+              <td><span class="how-do">Cycle</span> — next window, round again</td></tr>
             <tr data-step="5b"><th scope="row">one window, others open</th>
               <td><span class="how-do">Back</span> — the app you came from</td></tr>
             <tr data-step="5c"><th scope="row">one window, nothing else</th>
