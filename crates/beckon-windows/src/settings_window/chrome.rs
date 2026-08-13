@@ -53,8 +53,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DrawIconEx, GetClassLongPtrW, GetClientRect, GetWindowRect, DI_NORMAL,
-    GCLP_HICONSM, HICON, HTCAPTION, HTCLOSE, HTMINBUTTON, NCCALCSIZE_PARAMS, SM_CYSIZEFRAME,
-    WM_NCCALCSIZE,
+    GCLP_HICONSM, HICON, HTCAPTION, HTCLOSE, HTMINBUTTON, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER,
+    SM_CYSIZEFRAME, WM_NCCALCSIZE,
 };
 
 /// The bar's height, at 96 DPI. `layout` offsets every band's starting `y`
@@ -157,7 +157,17 @@ pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
     }
     // The resize border wins over the caption along the very top edge,
     // otherwise the window cannot be resized upward at all.
-    let border = unsafe { GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) };
+    //
+    // **Both terms, not just `SM_CYSIZEFRAME`.** That is only half of what
+    // Windows itself uses for the top resize border -- the module header's
+    // own arithmetic for the horizontal metrics already names the pair
+    // (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, ~8 px at 96 DPI); the vertical
+    // one is the same two constants under their Y names. Omitting
+    // `SM_CXPADDEDBORDER` here left the top edge's grabbable strip half the
+    // width of every other window on the machine.
+    let border = unsafe {
+        GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
+    };
     if pt.y < rc.top + border {
         return None;
     }
@@ -238,11 +248,19 @@ pub(super) fn paint(
         );
     }
 
-    // The version, faint, directly after the name.
+    // The version, muted, directly after the name.
+    //
+    // **`text_muted`, not `text_faint`.** `text_faint` is a card-only token
+    // (4.513:1 Light / 4.504:1 Dark against `card` -- 0.013 / 0.004 of
+    // headroom over the 4.5 floor) and this bar fills with `bg`, not `card`;
+    // measured there it drops to 4.10:1 Light, a real WCAG failure.
+    // `text_muted` on `bg` is 5.58:1 / 7.33:1 and is already a CI-enforced
+    // pair (`beckon_core::theme`'s `"muted text on window bg"` test) -- no
+    // new token, no new test row.
     let (title_w, _) = unsafe { text_size(hwnd, fonts.get(Role::Title), dpi, "beckon") };
     let ver_x = title_x + title_w + scale(8, dpi);
     unsafe { SelectObject(hdc, HGDIOBJ(fonts.get(Role::Caption).0)) };
-    let ver_col = cache.col(|p| p.text_faint, COLOR_GRAYTEXT);
+    let ver_col = cache.col(|p| p.text_muted, COLOR_GRAYTEXT);
     unsafe { SetTextColor(hdc, ver_col) };
     let mut ver = wide(env!("CARGO_PKG_VERSION"));
     let ver_n = ver.len() - 1;
