@@ -65,6 +65,14 @@
      page draws no logos, both because check 1 forbids fetching one and because
      a trademark is not ours to redraw. Hue is doing the work: five distinct
      hues, all muted to the same rough chroma so no window shouts. */
+  /* A terminal is dark in both themes, because a terminal is dark in both
+     themes. Everything else inside a window follows --win-paper. */
+  --term-bg:      #15171C;
+  --term-ink:     rgba(214, 223, 238, .52);
+  /* A wash of the app's own hue, set from --app on .win-body. Declared here
+     because every property this file reads with var() has to be. */
+  --tint:         rgba(60, 64, 72, .18);
+
   --app:          #3B3F48;   /* the default a .win falls back to */
   --app-terminal: #3B3F48;
   --app-claude:   #C96442;
@@ -425,11 +433,14 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   background: var(--win-paper);
   color: var(--win-ink);
   /* transform, not left/top: the cascade offset is what animates, and moving a
-     window by its box position relayouts on every frame. The offsets are small
-     enough that the third window in the cascade still has its bottom edge on
-     the desk — at 23% vertical it was clipped by the dock. */
-  transform: translate(calc(var(--slot) * 20% + var(--dx)),
-                       calc(var(--slot) * 17% + var(--dy)));
+     window by its box position relayouts on every frame.
+     15% and 13% are what keep the FOURTH window (slot 3) fully on the desk:
+     the offsets are percentages of the window, so slot 3 lands at
+     8% + 3x15%x62% = 35.9% with 62% of width to go — 97.9%, just inside. At
+     20%/17% it was 107% wide and 105% tall, and the fourth window was visibly
+     clipped on the right the moment a reader launched Cursor or Discord. */
+  transform: translate(calc(var(--slot) * 15% + var(--dx)),
+                       calc(var(--slot) * 13% + var(--dy)));
   transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
               border-color .3s ease, width .3s ease, height .3s ease;
   box-shadow: var(--shadow-soft);
@@ -539,27 +550,136 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .win-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* The window's interior: a sidebar tinted with the app's hue, and three lines
-   of "content". Enough to read as an application without pretending to be one.
-   `--app` is set per data-app below and falls back to the graphite on :root. */
+/* --- the window's interior, one layout per app ----------------------------
+ *
+ * Every window used to be the same drawing — a sidebar in the app's hue and
+ * three lines — so five windows differed only by colour, and a reader who
+ * cannot separate the hues could not tell Discord from a terminal. Each app now
+ * gets the SHAPE of its own kind of program: a shell prompt, a browser's tab
+ * strip and address bar, a chat with a composer, an editor's indented code, a
+ * server rail beside a channel list.
+ *
+ * NO LOGOS, and that is the same rule the palette note above states: this page
+ * fetches nothing (check 1 in tools/check-site.sh forbids it) and a trademark
+ * is not ours to redraw. What is drawn is the genre, not the brand — an
+ * address bar is not Brave's, a prompt is not any one shell's.
+ *
+ * DRAWN ENTIRELY IN BACKGROUND LAYERS, no extra markup. The window nodes are
+ * built in two places — the shipped HTML for readers with JS off, and `makeWin`
+ * in beckon.js — so anything needing child elements would have to be authored
+ * twice and kept in step. A layer list is authored once, here.
+ *
+ * SIZED IN cqw, which is a share of the DESK, not of the window. So the
+ * "text" stays one size while a window the reader drags larger simply shows
+ * more of it — which is what resizing a real window does.
+ *
+ * LAYER ORDER IS PAINT ORDER REVERSED: the FIRST layer in the list is drawn on
+ * TOP. So every list below reads detail-first, panel-last, and the flat colour
+ * closes it. Written the other way round — panels first, as they would be in a
+ * drawing — each panel covers the very lines it is a backdrop for, and the
+ * first version of this had exactly that: Brave's tab strip hid its own tab,
+ * Claude's and Cursor's sidebars hid their file lists, Discord's rail hid all
+ * three of its server dots.
+ */
 .win-body {
   position: relative;
   flex: 1; min-height: 0;
+  /* The app's own hue, weak enough to sit under "text" and strong enough to
+     tell two windows apart at a glance. */
+  --tint: color-mix(in srgb, var(--app) 26%, transparent);
+  background: var(--win-paper);
+}
+
+/* terminal — a prompt, some output, a block cursor. No sidebar: a terminal
+   does not have one, and the absence is most of what makes it recognisable. */
+.win[data-app="terminal"] .win-body {
   background:
-    linear-gradient(var(--app), var(--app)) left / 24% 100% no-repeat,
+    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 2.6cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 2.6cqw / 13cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 5cqw   / 28cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 7.4cqw / 20cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 9.8cqw / 32cqw .6cqw no-repeat,
+    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 13cqw  / 1.1cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 4.4cqw top 13cqw / 9cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 15.4cqw / 24cqw .6cqw no-repeat,
+    linear-gradient(var(--term-ink), var(--term-ink))     left 2.4cqw top 17.8cqw / 15cqw .6cqw no-repeat,
+    linear-gradient(var(--app-cursor), var(--app-cursor)) left 2.4cqw top 21cqw / 1.1cqw .6cqw no-repeat,
+    linear-gradient(#E7ECF5, #E7ECF5)                     left 4.4cqw top 20.4cqw / 1.3cqw 1.5cqw no-repeat,
+    var(--term-bg);
+}
+
+/* Brave — tab strip, one active tab, an address pill, then a page: a picture
+   on the left and a column of text on the right. */
+.win[data-app="Brave"] .win-body {
+  background:
+    linear-gradient(var(--win-paper), var(--win-paper))   left 1.6cqw top .7cqw / 11cqw 2.3cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 1.6cqw top 4cqw / 60% 1.7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 8.2cqw / 20cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 10.3cqw / 17cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 26cqw top 12.4cqw / 19cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 2.4cqw top 18.4cqw / 34cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))     left 2.4cqw top 20.5cqw / 28cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))             left 2.4cqw top 7.6cqw / 22cqw 9cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))             left 0 top 0 / 100% 3cqw no-repeat,
     var(--win-paper);
 }
-.win-body::before {
-  content: "";
-  position: absolute; left: 30%; right: 10%; top: 16%;
-  height: 5px; border-radius: 3px;
-  background: var(--win-line);
-  box-shadow: 0 11px 0 var(--win-line), 0 22px 0 var(--win-line);
+
+/* Claude — a conversation: your message to the right in the app's own colour,
+   the reply to the left, and a composer waiting at the bottom. */
+.win[data-app="Claude"] .win-body {
+  background:
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.4cqw / 4.6cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 4.4cqw / 3.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 6.4cqw / 4.2cqw .6cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 22cqw top 2.6cqw / 18cqw 3.2cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 8.4cqw / 26cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 10.5cqw / 29cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 12.6cqw / 23cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 9.5cqw top 15.6cqw / 16cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 9.5cqw top 19.6cqw / 32cqw 2.8cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 7cqw 100% no-repeat,
+    var(--win-paper);
 }
-.win-body::before {
-  height: clamp(4px, .75cqw, 8px);
-  box-shadow: 0 clamp(9px, 1.7cqw, 18px) 0 var(--win-line),
-              0 clamp(18px, 3.4cqw, 36px) 0 var(--win-line);
+
+/* Cursor — a file list, a gutter, and code that is indented differently on
+   every line, which is the one thing that reads as code from across a room. */
+.win[data-app="Cursor"] .win-body {
+  background:
+    linear-gradient(var(--win-line), var(--win-line)) left 1.2cqw top 2.2cqw / 5.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 2.2cqw top 4cqw / 4.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 2.2cqw top 5.8cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 10.4cqw top 2.2cqw / .5cqw 16cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 12.4cqw top 2.4cqw / 6cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 19.4cqw top 2.4cqw / 9cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 14.4cqw top 4.6cqw / 16cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 16.4cqw top 6.8cqw / 11cqw .7cqw no-repeat,
+    linear-gradient(var(--app), var(--app))           left 16.4cqw top 9cqw / 5cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 22.4cqw top 9cqw / 8cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 14.4cqw top 11.2cqw / 13cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line)) left 12.4cqw top 13.4cqw / 7cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))         left 0 top 0 / 8.5cqw 100% no-repeat,
+    var(--win-paper);
+}
+
+/* Discord — the server rail nobody else has, a channel list, and messages that
+   each start with a round avatar. */
+.win[data-app="Discord"] .win-body {
+  background:
+    radial-gradient(circle, var(--app) 0 46%, transparent 46%) left .9cqw top 1.4cqw / 2.6cqw 2.6cqw no-repeat,
+    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left .9cqw top 4.8cqw / 2.6cqw 2.6cqw no-repeat,
+    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left .9cqw top 8.2cqw / 2.6cqw 2.6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 2.4cqw / 6.4cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 4.4cqw / 5cqw .6cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 5.6cqw top 6.4cqw / 6cqw .6cqw no-repeat,
+    radial-gradient(circle, var(--app) 0 46%, transparent 46%) left 16cqw top 2.6cqw / 2.4cqw 2.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 2.6cqw / 9cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 4.6cqw / 20cqw .7cqw no-repeat,
+    radial-gradient(circle, var(--win-bar-ink) 0 46%, transparent 46%) left 16cqw top 8.4cqw / 2.4cqw 2.4cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 8.4cqw / 7cqw .7cqw no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 19.4cqw top 10.4cqw / 16cqw .7cqw no-repeat,
+    linear-gradient(var(--tint), var(--tint))          left 4.4cqw top 0 / 10cqw 100% no-repeat,
+    linear-gradient(var(--win-line), var(--win-line))  left 0 top 0 / 4.4cqw 100% no-repeat,
+    var(--win-paper);
 }
 
 .win[data-app="terminal"] { --app: var(--app-terminal); }
@@ -668,15 +788,23 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   display: flex; align-items: center; gap: 6px;
 }
 .desk-bar { gap: clamp(4px, .9cqw, 10px); }
+/* FIVE SHAPES, NOT FIVE COLOURS. These were identical rounded squares that
+   differed only in hue, which makes them unreadable to anyone who cannot
+   separate those hues — and hard for everyone else at 13px. Each now carries
+   the outline of its own kind of app, and a mark inside it: a chevron for the
+   shell, a ring for the browser, a bubble for the chat, a caret for the
+   editor, a rail for the one with servers down the side. Genre again, not
+   brand — same rule as the window interiors above. */
 .desk-bar .dock-app {
+  position: relative;
   width: 13px; height: 13px; border-radius: 4px;
   background: var(--app);
   opacity: .28;
   transition: opacity .3s ease, transform .3s ease;
 }
 .desk-bar .dock-app {
-  width: clamp(11px, 1.9cqw, 22px);
-  height: clamp(11px, 1.9cqw, 22px);
+  width: clamp(13px, 2.2cqw, 26px);
+  height: clamp(13px, 2.2cqw, 26px);
   border-radius: clamp(3px, .55cqw, 6px);
 }
 .desk-bar .dock-app.is-up { opacity: 1; }
@@ -685,6 +813,59 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .dock-app[data-app="Brave"]    { --app: var(--app-brave); }
 .dock-app[data-app="Cursor"]   { --app: var(--app-cursor); }
 .dock-app[data-app="Discord"]  { --app: var(--app-discord); }
+
+/* The outlines. */
+.dock-app[data-app="terminal"] { border-radius: clamp(2px, .3cqw, 4px); }  /* a boxy shell */
+.dock-app[data-app="Brave"]    { border-radius: 50%; }                     /* a browser */
+.dock-app[data-app="Claude"]   { border-radius: 46% 46% 46% 15%; }         /* a speech bubble */
+.dock-app[data-app="Cursor"]   { border-radius: 50% 16% 50% 16%; }         /* a caret */
+.dock-app[data-app="Discord"]  { border-radius: 34%; }                     /* a squircle */
+
+/* The marks inside them. Drawn with the icon's own background as the "ink",
+   which is what keeps them legible on both a light and a dark bar without a
+   second token: they are holes in the shape, not paint on top of it. */
+.dock-app::after {
+  content: "";
+  position: absolute; inset: 0;
+  background-repeat: no-repeat;
+}
+/* a cursor underscore, low and left. Two bars stacked read as "≡" rather than
+   as a prompt — measured by looking at it — so this is one bar where the
+   caret would blink. */
+.dock-app[data-app="terminal"]::after {
+  background-image: linear-gradient(var(--win-paper), var(--win-paper));
+  background-size: 40% 13%;
+  background-position: 26% 70%;
+}
+/* a ring: an equator across a circle */
+.dock-app[data-app="Brave"]::after {
+  background-image: linear-gradient(var(--win-paper), var(--win-paper));
+  background-size: 74% 11%;
+  background-position: center;
+}
+/* two lines of a message. Round dots here read as a face — a smiley in the
+   dock is not what this is — so they are lines, which is what a bubble holds. */
+.dock-app[data-app="Claude"]::after {
+  background-image:
+    linear-gradient(var(--win-paper), var(--win-paper)),
+    linear-gradient(var(--win-paper), var(--win-paper));
+  background-size: 46% 12%, 32% 12%;
+  background-position: 28% 36%, 28% 62%;
+}
+/* a caret bar down the middle */
+.dock-app[data-app="Cursor"]::after {
+  background-image: linear-gradient(var(--win-paper), var(--win-paper));
+  background-size: 13% 56%;
+  background-position: center;
+}
+/* the server rail, on the left where Discord's is */
+.dock-app[data-app="Discord"]::after {
+  background-image:
+    linear-gradient(var(--win-paper), var(--win-paper)),
+    linear-gradient(var(--win-paper), var(--win-paper));
+  background-size: 15% 46%, 40% 15%;
+  background-position: 24% center, 62% center;
+}
 
 /* `--bar-h` is the bite each bar takes out of the desk, and it is what stops a
    maximised window from sliding under one. It is declared per OS beside the bar
