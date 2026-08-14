@@ -252,6 +252,22 @@ pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<Reso
     resolve_inner(id, &refs, installed_apps, bundle_path_for)
 }
 
+/// Does anything on this machine answer to `id`? Resolves against both
+/// snapshots the caller already holds, which is what lets `check --resolve`
+/// pay for one `installed_apps()` scan per file instead of one per binding —
+/// `resolve` re-walks `/Applications` on every call.
+///
+/// No bundle path is looked up: the answer is a yes/no, and `bundle_path_for`
+/// is an NSWorkspace round trip on every running match.
+pub(crate) fn resolves_in(
+    id: &str,
+    running: &[RunningAppInfo],
+    installed: &[InstalledAppInfo],
+) -> bool {
+    let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
+    resolve_inner(id, &refs, || installed.to_vec(), |_| None).is_some()
+}
+
 /// Pure resolution against caller-supplied snapshots. Closures isolate the
 /// two NSWorkspace-touching operations (installed scan, bundle path lookup)
 /// so tests can pass stubs.

@@ -394,6 +394,16 @@ apply live, and a broken edit keeps the current bindings and fires a
 notification instead of dropping your keys. One `serve` per config path is
 enforced with a lock file.
 
+`beckon check --resolve shortcuts.toml` additionally asks whether each app
+name resolves to something *this machine* has installed, and exits 1 listing
+the bindings that do not — the case where a file is perfectly valid and the
+keys still do nothing, because the apps were never installed here. It reads
+installed-app metadata (`.desktop` files / LaunchServices / the Start menu),
+and on macOS the running apps too, since that is where `resolve` starts
+there. It never asks the compositor, so it runs over SSH and in a headless
+VM. Keep it off in CI: a runner has none of your apps, so it would report
+every line.
+
 **Trust the registration count, not the shortcut count.** Startup and reload
 report `5 shortcuts registered` when clean and `3 of 5 shortcuts registered
 (2 failed)` when another app already owns a chord — a config can parse

@@ -25,6 +25,20 @@ fn check_valid_file_exits_zero() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("ok: 1 shortcuts"));
 }
 
+/// Without `--resolve`, `check` must not consult the machine at all, so a
+/// name nothing anywhere could resolve still exits 0. That is what makes the
+/// bare verb usable in CI, where none of the apps are installed.
+#[test]
+fn check_without_resolve_says_nothing_about_whether_the_app_exists() {
+    let out = run_check("\"ctrl+super+alt+t\" = \"beckon-selftest-no-such-app\"\n");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("ok: 1 shortcuts"));
+}
+
 #[test]
 fn check_invalid_key_exits_nonzero_with_message() {
     let out = run_check("\"ctrl+banana\" = \"kitty\"\n");

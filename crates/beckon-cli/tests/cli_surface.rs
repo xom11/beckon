@@ -262,3 +262,42 @@ fn dash_dash_escapes_reserved_names_and_leading_dashes() {
         );
     }
 }
+
+/// `--resolve` is declared inside the `Check` variant, so every other reading
+/// of it is refused structurally — the same reason `--log` lives inside
+/// `Serve` rather than carrying a `requires =` guard.
+///
+/// The accepting half points at a file that does not exist on purpose:
+/// `cmd_check` reads the config before it resolves anything, so this proves
+/// the flag parses under `check` without asking this machine's app catalog a
+/// question whose answer is meaningless on a CI runner. What `--resolve` then
+/// does is unit-tested in `check_resolution`, where the resolver is a stub.
+#[test]
+fn resolve_belongs_to_check_and_nowhere_else() {
+    let out = beckon()
+        .args(["check", "--resolve", "/nonexistent/beckon-test-apps.toml"])
+        .output()
+        .expect("run beckon");
+    let stderr = stderr_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "`check --resolve` must reach beckon's own handler\nstderr: {stderr}",
+    );
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
+
+    for argv in [
+        vec!["--resolve", "check", "/nonexistent/beckon-test-apps.toml"],
+        vec!["--resolve", "definitely-not-installed-zzz"],
+        vec!["list", "--resolve"],
+    ] {
+        let out = beckon().args(&argv).output().expect("run beckon");
+        let stderr = stderr_of(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "`beckon {}` must be a usage error\nstderr: {stderr}",
+            argv.join(" "),
+        );
+    }
+}
