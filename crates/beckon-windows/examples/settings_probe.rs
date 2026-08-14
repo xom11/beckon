@@ -792,7 +792,7 @@ mod win {
             );
         }
 
-        // `WM_NCCALCSIZE` (`chrome::nccalcsize`, chrome.rs:121) returns 0
+        // `WM_NCCALCSIZE` (`chrome::nccalcsize`, chrome.rs:142) returns 0
         // without calling `DefWindowProcW` at all, so the proposed rect is
         // handed back untouched and the client becomes the WHOLE window --
         // every edge, not just the top. The client's on-screen origin should
@@ -806,16 +806,16 @@ mod win {
         // "where an unmodified `WS_CAPTION` window would show
         // `chrome::TITLEBAR_H` (40 @96 DPI) plus a border", which quoted a
         // stale number and conflated two unrelated ones. `TITLEBAR_H` is
-        // **34** -- chrome.rs:63, moved 40 -> 34 by the 2026-08-13
+        // **34** -- chrome.rs:74, moved 40 -> 34 by the 2026-08-13
         // compaction pass `1f46335` -- and it is the band beckon paints
-        // INSIDE the client (chrome.rs:245), a figure the OS has never been
+        // INSIDE the client (chrome.rs:292), a figure the OS has never been
         // told about and would never reserve. What `DefWindowProcW` would
         // reserve is `SM_CYSIZEFRAME + SM_CXPADDEDBORDER` for
         // `WS_THICKFRAME`, the same pair `chrome::nchittest` sizes its
         // resize strips from, plus `SM_CYCAPTION` on top for a window that
         // asked for a caption. This one does not ask: `WS_POPUP |
         // WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX`, no `WS_CAPTION`
-        // (mod.rs:1901).
+        // (mod.rs:1944).
         let mut wrc = RECT::default();
         let mut origin = POINT { x: 0, y: 0 };
         if unsafe { GetWindowRect(parent, &mut wrc) }.is_ok()

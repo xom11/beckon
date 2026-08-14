@@ -28,18 +28,29 @@
 //! `hit_button` -- and both now read it from the SAME rect: `GetClientRect`.
 //! `hit_button` receives `pt` in screen coordinates (as `WM_NCHITTEST`
 //! delivers them) and converts with `ScreenToClient` before calling
-//! `button_rects`, rather than reading `GetWindowRect` on its own. That
-//! matters because after `nccalcsize` restores only `.top`, the window rect
-//! and the client rect are NOT the same physical edge on the horizontal
-//! axis: the client stays inset left/right/bottom by the resize-frame
-//! metrics (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, ~8 px at 96 DPI). An
+//! `button_rects`, rather than reading `GetWindowRect` on its own. An
 //! earlier version had `hit_button` read `GetWindowRect` while `paint` read
 //! `GetClientRect` and called that "each caller supplies its own right edge,
 //! in its own coordinate space" -- which is exactly backwards: two different
 //! rulers were being compared as if they were one, so the drawn pixel and
-//! the hit-tested pixel disagreed by that same inset. Reading the same rect
-//! in the same space is what actually makes them agree, not "each caller
-//! owns its own space."
+//! the hit-tested pixel disagreed. Reading the same rect in the same space
+//! is what actually makes them agree, not "each caller owns its own space."
+//!
+//! **CORRECTED 2026-08-14: the two rulers differ in ORIGIN, not in size.**
+//! The reason above used to read "after `nccalcsize` restores only `.top`,
+//! the window rect and the client rect are NOT the same physical edge on the
+//! horizontal axis: the client stays inset left/right/bottom by the
+//! resize-frame metrics (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, ~8 px at
+//! 96 DPI)". That described the handler accurately until `c523e8e`
+//! (2026-08-13, "reclaim the whole frame, and hit-test the eight resize
+//! edges"). Read `nccalcsize` below: it returns `LRESULT(0)`, reads neither
+//! parameter and never calls `DefWindowProcW`, so the proposed WINDOW rect
+//! is handed back untouched as the CLIENT rect and **client == window on all
+//! four edges**. There is no inset left for the two rects to disagree by.
+//! What remains is a difference no reclaim can remove: `GetWindowRect`
+//! answers in SCREEN coordinates, `GetClientRect` answers from `(0,0)`.
+//! Mixing them is still the bug; only the size of the error changed, from
+//! "the inset plus the window origin" to "the window origin".
 
 use super::theme::ThemeCache;
 use super::{scale, text_size, wide, Fonts, Role};
@@ -93,7 +104,17 @@ fn button_rects(right: i32, top: i32, dpi: u32) -> [(RECT, u32); 2] {
     [(min, HTMINBUTTON), (close, HTCLOSE)]
 }
 
-/// Extend the client area over the caption, keeping the resize borders.
+/// Reclaim the ENTIRE window rect as the client area -- the caption band and
+/// all four resize borders alike.
+///
+/// **CORRECTED 2026-08-14: this line used to read "Extend the client area
+/// over the caption, keeping the resize borders."** It was accurate until
+/// `c523e8e` (2026-08-13), which stopped calling `DefWindowProcW` here. The
+/// borders really were left non-client before that, and DWM painted them
+/// black once `WS_CAPTION` was gone -- a 10 px band of `(0,0,0)` on three
+/// sides, measured on a14. Reclaiming them is what fixed it, and the price
+/// is that `nchittest` now answers all eight resize directions itself; see
+/// its own comment.
 ///
 /// The maximized correction every other implementation of this needs is
 /// absent because the state is unreachable: `WS_MAXIMIZEBOX` is off, so
@@ -134,12 +155,17 @@ pub(super) fn nccalcsize(_hwnd: HWND, _wparam: WPARAM, _lparam: LPARAM) -> LRESU
 ///
 /// Converts to client coordinates with `ScreenToClient`, then reads
 /// `GetClientRect` -- the same rect `paint` fills, not `GetWindowRect`.
-/// `nccalcsize` restores only `.top`, so the window rect and the client
-/// rect are inset from each other on the left/right/bottom by the
-/// resize-frame metrics; comparing screen-space hits against a
-/// client-space fill was the bug (see the module header). Working entirely
-/// in client space is what makes the drawn pixel and the hit-tested pixel
-/// unable to disagree, not "each caller owns its own space."
+/// Comparing screen-space hits against a client-space fill was the bug (see
+/// the module header). Working entirely in client space is what makes the
+/// drawn pixel and the hit-tested pixel unable to disagree, not "each caller
+/// owns its own space."
+///
+/// **CORRECTED 2026-08-14**: the reason here used to be "`nccalcsize`
+/// restores only `.top`, so the window rect and the client rect are inset
+/// from each other on the left/right/bottom by the resize-frame metrics".
+/// Since `c523e8e` the client IS the window on all four edges, so the two
+/// rects differ only in ORIGIN -- screen versus `(0,0)` -- which is reason
+/// enough on its own. The module header carries the full note.
 pub(super) fn hit_button(hwnd: HWND, pt: POINT, dpi: u32) -> Option<i32> {
     let mut client_pt = pt;
     if !unsafe { ScreenToClient(hwnd, &mut client_pt) }.as_bool() {
@@ -161,8 +187,20 @@ pub(super) fn hit_button(hwnd: HWND, pt: POINT, dpi: u32) -> Option<i32> {
     None
 }
 
-/// `None` means "let DefWindowProc answer" -- which is what resolves the
-/// eight resize borders, so they keep working without being restated here.
+/// Answers EVERY region of this window: the eight resize directions, the two
+/// caption buttons, the drag band, and the ordinary client below it.
+///
+/// `None` means "let DefWindowProc answer", and the only way to reach it is
+/// `GetWindowRect` failing.
+///
+/// **CORRECTED 2026-08-14: this used to read "`None` means 'let
+/// DefWindowProc answer' -- which is what resolves the eight resize borders,
+/// so they keep working without being restated here."** That was true while
+/// `nccalcsize` restored only `.top` and left a real non-client border for
+/// `DefWindowProc` to find a direction in. `c523e8e` (2026-08-13) reclaimed
+/// the whole frame, so there is no such border any more; the body below
+/// restates all eight, and deleting them would cost the window its resize
+/// entirely rather than fall back on anything.
 pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
     let dpi = unsafe { GetDpiForWindow(hwnd) }.max(96);
     let mut rc = RECT::default();
@@ -174,6 +212,21 @@ pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
     // is answered here. Corners first: a point in the bottom-left corner is in
     // both the left strip and the bottom strip, and answering `HTLEFT` there
     // would cost the diagonal cursor.
+    //
+    // **Both terms, not just `SM_CYSIZEFRAME`.** That is only half of what
+    // Windows itself uses for a `WS_THICKFRAME` sizing border; the pair is
+    // a `SIZEFRAME` metric plus `SM_CXPADDEDBORDER`, ~8 px at 96 DPI.
+    // Omitting `SM_CXPADDEDBORDER` left the grabbable strip half the width of
+    // every other window on the machine. There is no `SM_CYPADDEDBORDER` --
+    // `windows` 0.61.3 defines only index 92, `SM_CXPADDEDBORDER` -- so the
+    // one constant serves both axes; an earlier version of this note said
+    // "the same two constants under their Y names", which does not exist.
+    //
+    // **These metrics buy a hit-test strip, not an inset.** `nccalcsize`
+    // hands the space itself to the client, so this strip lies OVER pixels
+    // `paint` has already drawn. That is the whole of what the frame costs
+    // this window now: nothing in `layout`, `WINDOW_HEIGHT` or `MIN_HEIGHT`
+    // subtracts it, because there is nothing there to subtract.
     let border = unsafe {
         GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi)
     };
@@ -202,16 +255,10 @@ pub(super) fn nchittest(hwnd: HWND, pt: POINT) -> Option<LRESULT> {
         // controls under it must keep getting their own mouse messages.
         return Some(LRESULT(HTCLIENT as isize));
     }
-    // The resize border wins over the caption along the very top edge,
-    // otherwise the window cannot be resized upward at all.
-    //
-    // **Both terms, not just `SM_CYSIZEFRAME`.** That is only half of what
-    // Windows itself uses for the top resize border -- the module header's
-    // own arithmetic for the horizontal metrics already names the pair
-    // (`SM_CXSIZEFRAME + SM_CXPADDEDBORDER`, ~8 px at 96 DPI); the vertical
-    // one is the same two constants under their Y names. Omitting
-    // `SM_CXPADDEDBORDER` here left the top edge's grabbable strip half the
-    // width of every other window on the machine.
+    // Inside the bar and clear of every edge. The `edge` match above has
+    // already run, and that ORDER is what makes the resize border win over
+    // the caption along the very top -- reversed, the window could not be
+    // resized upward at all.
     if let Some(ht) = hit_button(hwnd, pt, dpi) {
         return Some(LRESULT(ht as isize));
     }

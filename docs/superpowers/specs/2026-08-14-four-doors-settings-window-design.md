@@ -501,10 +501,28 @@ control** — a blind probe and a clean result look identical without one.
 |---|---|---|
 | G1 | Does `Use Caps Lock as a shortcut key` fit at 680 px, at 96 and 144 DPI? `GetTextExtentPoint32W`, not estimation | The same measurement at 760 px, where it is known to fit |
 | G2 | Does `CDIS_HOT` reach a `BS_PUSHLIKE` radio? | An ordinary `BS_PUSHBUTTON` in the same run, which does get it |
-| G3 | Is the client rect the window rect? `chrome::nccalcsize` returns `LRESULT(0)` without `DefWindowProcW`, but `mod.rs:770-776` still subtracts an 8 px bottom frame | `GetClientRect` and `GetWindowRect` logged side by side in one run |
+| G3 | ~~Is the client rect the window rect?~~ **Settled by reading, 2026-08-14 — confirm only.** Does the invisible ~8 px resize strip, now painted like ordinary client, read wrong to a person? | `GetClientRect` and `GetWindowRect` logged side by side in one run — `measure_geometry` already does this and asserts a 0 px top inset |
 | G4 | Does `IsDialogMessageW` dispatch Enter to a hidden-but-enabled default button? | The documented disabled case, which is known not to dispatch |
 | G5 | Auto-save round trip: type, wait 600 ms, confirm one write and no reload storm | A build with the debounce disabled |
 | G6 | The 11 gates the 2026-08-13 pass left unrun — **4 must clear**, 2 are superseded, 5 written off by name | as recorded there |
+
+**G3, corrected 2026-08-14.** The row read *"Is the client rect the window
+rect? `chrome::nccalcsize` returns `LRESULT(0)` without `DefWindowProcW`, but
+`mod.rs:770-776` still subtracts an 8 px bottom frame"*. The contradiction was
+real and is the reason it was a gate; it is now resolved, and not in the
+direction the second half implied. `chrome::nccalcsize` reads neither
+parameter and never calls `DefWindowProcW`, so the proposed window rect
+survives untouched as the client rect on all four edges — client == window.
+The 8 px described the handler as it stood before `c523e8e` (2026-08-13,
+"reclaim the whole frame, and hit-test the eight resize edges"), and every
+copy of it in the crate has been retired against that reading. Nothing here
+needs hardware to decide any more; the run is confirmation. What is left is a
+question the reclaim created rather than answered: `chrome::nchittest` still
+treats a ~8 px strip along each edge as a resize direction, and that strip is
+now painted like ordinary client area — the window ground and the title-bar
+band run under it, and the outermost column of the Close button falls inside
+`HTRIGHT`. Whether that reads wrong is a look question, and only a person can
+answer it.
 
 Note: **a14 cannot be rebooted unattended into a signed-in state**; plan on a
 person being present. Kill `beckon*` before `cargo build` or the link fails on

@@ -591,17 +591,30 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //   gap_card                                            8
 //   command bar (CTL, not a card)                      26
 //   pad                                                10
-//   frame, bottom only (`chrome::nccalcsize` gives
-//     the rest back to the client; see `MIN_HEIGHT`)    8
+//
+// **There is no frame term, and the list above is the whole window.**
+// `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
+// and without reading either parameter (`chrome.rs`), so the proposed WINDOW
+// rect is handed back untouched as the CLIENT rect: client == window on all
+// four edges. See `MIN_HEIGHT` for the same point at length.
+//
+// **CORRECTED 2026-08-14.** This list carried a twelfth row, `frame, bottom
+// only ("chrome::nccalcsize" gives the rest back to the client) 8`, and it
+// was believed because it described the handler accurately until `c523e8e`
+// (2026-08-13, "reclaim the whole frame, and hit-test the eight resize
+// edges") -- before that commit `nccalcsize` restored only `.top` and the
+// bottom edge really did stay non-client. Reading the shipped handler
+// falsifies it. Every figure in the paragraph below moved with the row.
 //
 // `notes_height` is a live font measurement (`2 * Caption line + 4`), so it
 // does not scale by 1.5 between DPIs and no total here is unconditional. The
 // one conditional total worth writing down, since it is what the constant is
 // answerable for: at 96 DPI with a 16 px Caption line -- `notes_height` 36 --
-// and the banner down, the terms above sum to a 593 px window, so the shipped
-// 600 clears a full eight rows by 7 px. Re-derived from `compute_card_rects`
+// and the banner down, the terms above sum to a 585 px window, so the shipped
+// 600 clears a full eight rows by 15 px. Re-derived from `compute_card_rects`
 // for this comment, not carried over: its room-based cap for the list
-// evaluates to 204 px against a `want` of 197.
+// evaluates to 212 px against a `want` of 197. (Both figures were 8 lower --
+// 593 and 204, for a slack of 7 -- while the frame row stood.)
 //
 // `compute_card_rects` (`layout.rs`) is the arithmetic; this is a reading of
 // it, and the direction of that dependency is not negotiable.
@@ -679,10 +692,34 @@ const WINDOW_HEIGHT: i32 = 600;
 /// measures it with `GetTextExtentPoint32W`**; nothing here should be trusted
 /// until it has.
 ///
-/// (Whether the frame eats any of `w` at all is gate G3's question:
-/// `chrome::nccalcsize` returns `LRESULT(0)` without calling
-/// `DefWindowProcW`, yet `MIN_HEIGHT` below still subtracts an 8 px bottom
-/// frame. Every figure above assumes client == window on the horizontal.)
+/// **The frame eats none of `w`, and that is settled by reading rather than
+/// by gate G3.** `chrome::nccalcsize` returns `LRESULT(0)` without calling
+/// `DefWindowProcW` and without reading either parameter (`chrome.rs`), so
+/// the proposed WINDOW rect survives untouched as the CLIENT rect on all four
+/// edges. Every figure above therefore takes client == window on the
+/// horizontal as fact, not as an assumption.
+///
+/// **CORRECTED 2026-08-14**: this paragraph used to end "yet `MIN_HEIGHT`
+/// below still subtracts an 8 px bottom frame", and that contradiction is
+/// what made it a gate. The 8 px was the stale half — it described
+/// `nccalcsize` as it was before `c523e8e` (2026-08-13) reclaimed the whole
+/// frame — and `MIN_HEIGHT` no longer subtracts it. With both halves agreeing
+/// there is no question left for hardware to answer.
+///
+/// Two things G3 was carrying do survive it, and neither is this one:
+/// **confirming the reading on the machine**, which costs one a14 run of
+/// `examples/settings_probe.rs` — `measure_geometry` already prints
+/// `GetClientRect` beside `GetWindowRect` and asserts a 0 px top inset, so
+/// there is nothing to build; and **the look question**, which is new rather
+/// than settled. The ~8 px strip at 96 DPI that `chrome::nchittest` still
+/// answers as a resize direction is now painted, because it is client area:
+/// the window ground runs under it, and so does `chrome::paint`'s title-bar
+/// band, whose caption buttons are right-aligned flush against the client
+/// edge — so the outermost ~8 px column of Close is inside `HTRIGHT`, and
+/// `edge` is matched before `hit_button`. The cards themselves stay clear
+/// (`tok::PAD` is 10 at 96 DPI and both scale with the same DPI), so nothing
+/// is obscured; what is unknown is whether an invisible border painted like
+/// ordinary window ground reads as one. Only a person looking at it can say.
 ///
 /// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
 /// which card 1's list still shows **four** rows — half of `tok::ROWS` —
@@ -711,25 +748,35 @@ const WINDOW_HEIGHT: i32 = 600;
 ///   Four rows is `list_header_height` (21) + 4 * `list_row_height` (22)
 ///   = 109, and `notes_h` is 36 when the Caption line is 16 px, so
 ///
-///     h = 408 + 36 + 109 = 553  client
-///       + 8                     bottom frame (`chrome::nccalcsize` hands
-///                               the whole caption back to the client, so
-///                               only `SM_CXSIZEFRAME + SM_CXPADDEDBORDER`
-///                               on the bottom edge remains non-client)
-///       = 561                   window
+///     h = 408 + 36 + 109 = 553  client == window (see below)
 /// ```
 ///
-/// **The shipped constant is 560, so the floor is one pixel short of the
-/// four rows the table above derives.** At 560 the list is handed 108
-/// px: a 21 px header, three whole rows, and 21 px of a fourth. That is
-/// recorded rather than fixed -- moving the constant is a visible change, and
-/// this pass is the one that makes the numbers agree, not the one that moves
-/// them. It is also within the honest error of `notes_h`, which is a live
-/// font measurement: a Caption line of 15 px puts the four-row window at 559
-/// and the shipped 560 clears it, while one of 17 px puts it at 563, three
-/// pixels above. **Nothing on the machine this was derived on can display the
-/// window**; a14 can, and the four-row claim should be checked there before
-/// anyone spends a pixel on it.
+/// **The client rect IS the window rect, so there is no frame term.**
+/// `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
+/// (`chrome.rs:142`), which leaves the proposed WINDOW rect untouched as the
+/// client rect on all four edges — its own comment says so, and the window
+/// carries no `WS_CAPTION` (`WS_POPUP | WS_SYSMENU | WS_THICKFRAME |
+/// WS_MINIMIZEBOX`, the `CreateWindowExW` below).
+///
+/// **CORRECTED 2026-08-14.** Until this pass the table added `+ 8  bottom
+/// frame` here and concluded the shipped 560 was one pixel short of four
+/// rows. Both were wrong, and the error was inherited rather than invented:
+/// the `+ 8` and its justification ("`nccalcsize` hands the whole caption
+/// back to the client, so only the bottom edge remains non-client") describe
+/// the handler as it was BEFORE `c523e8e` reclaimed the whole frame and moved
+/// the eight resize directions into `chrome::nchittest`. With no frame term,
+/// the floor gets `list_h = 560 - 408 - 36 = 116` against the 109 four rows
+/// need — it clears them by 7 px rather than missing by 1.
+///
+/// The 7 px is inside `notes_h`'s honest error, since that is a live font
+/// measurement: `notes_h = 2L + 4`, so every extra pixel of Caption line `L`
+/// costs the list two. `L = 19` leaves one pixel of the seven; `L = 20` takes
+/// the fourth row. (An earlier draft of this sentence said 19 consumed it
+/// exactly, which is one step early.) **Nothing
+/// on the machine this was derived on can display the window**, and
+/// `examples/settings_probe.rs`'s `measure_geometry` already prints
+/// `GetClientRect` beside `GetWindowRect` with a verdict, so the reading
+/// above costs one a14 run to confirm rather than a new probe.
 ///
 /// The two row figures are `list_row_height` / `list_header_height`'s own
 /// 96-DPI fallbacks (`tok::ROW_H` and a literal 21). They are the honest
@@ -752,15 +799,24 @@ const WINDOW_HEIGHT: i32 = 600;
 /// `h - 352 - notes_h` instead of `h - 408 - notes_h`, and `want` is
 /// `21 + 8*22 = 197`:
 ///
-/// - at the floor (client 552), banner up: 108 px, three rows and part of a
-///   fourth — the one-pixel shortfall above;
-/// - at the floor, banner down: 164 px, six whole rows and 11 px of a
+/// - at the floor (client 560, which IS `MIN_HEIGHT` — see above), banner up:
+///   116 px, four whole rows and 7 px of a fifth;
+/// - at the floor, banner down: 172 px, six whole rows and 19 px of a
 ///   seventh;
-/// - at `WINDOW_HEIGHT`'s client height (592), banner down: the cap is 204,
-///   7 above `want`, so it never binds and the list reaches its full
+/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: the cap is 212,
+///   15 above `want`, so it never binds and the list reaches its full
 ///   `tok::ROWS`.
 ///
-/// The last of those is the same 7 px `WINDOW_HEIGHT`'s own comment reports
+/// **CORRECTED 2026-08-14** — all three bullets moved. They read `client 552`,
+/// `client 592`, `108`, `164` and `204`, because each subtracted an 8 px
+/// bottom frame from the constant beside it. That subtraction described
+/// `chrome::nccalcsize` as it was before `c523e8e` (2026-08-13); the shipped
+/// handler leaves client == window, so the client heights are the constants
+/// themselves and every cap is 8 px larger. The first bullet's "the
+/// one-pixel shortfall above" went with it: there is no shortfall, the floor
+/// clears four rows by 7 px.
+///
+/// The last of those is the same 15 px `WINDOW_HEIGHT`'s own comment reports
 /// as slack, measured the other way, and it is a property of these particular
 /// numbers rather than a designed-in guarantee — a future change to
 /// `notes_height`, `card2_h` or the row/header fallbacks can move it back
@@ -1893,8 +1949,13 @@ unsafe fn create() -> Result<(), String> {
         // same X disagree. `WM_NCCALCSIZE` reclaims the SPACE; it does not
         // stop DWM drawing the buttons it believes a captioned window needs.
         //
-        // `WS_POPUP` keeps `WS_THICKFRAME`'s resize border and the DWM shadow
-        // while declaring no caption for DWM to furnish. MSDN says
+        // `WS_POPUP` keeps `WS_THICKFRAME`'s resizability and the DWM shadow
+        // while declaring no caption for DWM to furnish. Resizability, not a
+        // visible border: `chrome::nccalcsize` gives the border's space back
+        // to the client and `chrome::nchittest` re-creates the eight
+        // directions as a hit-test strip over painted pixels. `WS_THICKFRAME`
+        // is still load-bearing -- it is what makes those hit-test codes mean
+        // anything to `DefWindowProc`'s sizing loop. MSDN says
         // `WS_SYSMENU` wants `WS_CAPTION`; it is kept anyway because the Alt
         // +Space menu and the taskbar's own close entry route through it, and
         // dropping it changes those without fixing anything.
@@ -1945,8 +2006,17 @@ unsafe fn create() -> Result<(), String> {
         c.borrow_mut().rebuild(t);
     });
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
-    // The resize frame is still non-client on three sides, and DWM paints
-    // it black without a caption. Tint it to the window's own ground.
+    // DWM still draws the 1 px border around the window -- reclaiming the
+    // frame in `chrome::nccalcsize` took the sizing border, not this. Tint it
+    // to the window's own ground.
+    //
+    // **CORRECTED 2026-08-14**: this comment (and its twin in
+    // `on_theme_changed`) read "The resize frame is still non-client on three
+    // sides, and DWM paints it black without a caption." True until
+    // `c523e8e`, and it is the black band that commit was written to fix --
+    // but the fix was reclaiming the frame, not this attribute, which
+    // `c523e8e`'s message records as NOT reaching the sizing border at all.
+    // See `theme::apply_dwm_border` for the full reversal.
     theme::apply_dwm_border(hwnd, t);
     // First backdrop decision. See `apply_current_backdrop`, below, for why
     // this window never calls `theme::read_backdrop_inputs` directly.
@@ -3358,35 +3428,62 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// which is why it is trusted for the DPI nobody has measured. If a real
 /// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
 /// nudged -- though the disagreement is bounded, not open-ended: the derived
-/// window height is `561 + 2(L - 16)` for a real Caption line height `L`.
+/// window height is `553 + 2(L - 16)` for a real Caption line height `L`.
 /// The FORM has never changed -- `notes_h` is a single linear term inside
 /// `card2_h`, which is a single linear term inside the total, so the
 /// coefficient survives every re-derivation and only the anchor moves. Five
 /// anchors so far: 546 before Task 7's title bar, 555 after it, 675 after
-/// Task 8's cards, 697 after Task 10's 26 px rows, and 561 after the
+/// Task 8's cards, 697 after Task 10's 26 px rows, and 553 after the
 /// 2026-08-13 compaction pass, which is the one this line now carries.
 ///
-/// (**CORRECTED**: this sentence said "Four anchors" and skipped Task 8's
-/// 675. The three separate re-derivation paragraphs that stood here were
-/// compressed into one sentence in `9e4e026`, and the middle anchor was lost
-/// in the compression rather than refuted. It is in that commit's parent,
-/// under "Re-derived for Task 8's cards": at the banner-up four-row floor
-/// `client = 631 + notes_h` exactly, and `notes_h = 2L + scale(4, dpi)`, so
-/// `client = 635 + 2L` at 96 DPI -- `675 + 2(L-16)` once the `+8` non-client
-/// frame and the `-32` from centring the formula on `L = 16` are folded in.)
+/// (**CORRECTED 2026-08-14: the fifth anchor read 561 and is 553.** The
+/// banner-up four-row floor is `client = 517 + notes_h`, and
+/// `notes_h = 2L + scale(4, dpi)`, so `client = 521 + 2L` at 96 DPI -- 553 at
+/// `L = 16`. 561 was that same 553 plus an 8 px bottom frame the shipped
+/// `chrome::nccalcsize` does not reserve: it returns `LRESULT(0)` without
+/// calling `DefWindowProcW` and reads neither parameter, so client == window
+/// on all four edges. What makes the error believable is its timing.
+/// `c523e8e` reclaimed the frame at 23:18 on 2026-08-13; 561 was written the
+/// next afternoon in `9e4e026`, a pass whose whole subject was making eight
+/// copies of this geometry agree. They did agree -- on a term that had
+/// stopped existing fourteen hours earlier. Agreement is not correctness,
+/// and this is what that failure looks like.)
 ///
-/// `MIN_HEIGHT`'s own table is where 561 comes from; re-read it there rather
+/// (**CORRECTED earlier**: this sentence said "Four anchors" and skipped
+/// Task 8's 675. The three separate re-derivation paragraphs that stood here
+/// were compressed into one sentence in `9e4e026`, and the middle anchor was
+/// lost in the compression rather than refuted. It is in that commit's
+/// parent, under "Re-derived for Task 8's cards": at the banner-up four-row
+/// floor `client = 631 + notes_h` exactly, and `notes_h = 2L + scale(4,
+/// dpi)`, so `client = 635 + 2L` at 96 DPI -- `675 + 2(L-16)` once the `+8`
+/// non-client frame and the `-32` from centring the formula on `L = 16` are
+/// folded in. **That `+8` is correct where it stands and must not be
+/// "fixed":** Task 8 predates `c523e8e` by weeks, so the bottom edge really
+/// was non-client when 675 was derived. It records an old geometry; only the
+/// current anchor answers for this one.)
+///
+/// `MIN_HEIGHT`'s own table is where 553 comes from; re-read it there rather
 /// than trusting this sentence.
 ///
-/// **The shipped 560 does NOT absorb `L = 16` with the four-row banner-up
-/// guarantee intact** -- it is one pixel short of it, which is the whole of
-/// `MIN_HEIGHT`'s "recorded rather than fixed" note. The guarantee holds at
-/// `L <= 15`; from `L = 16` the list draws three whole rows and part of a
-/// fourth, and it does not lose a second whole row until `L = 27`. Nothing
+/// **The shipped 560 absorbs `L = 16` with the four-row banner-up guarantee
+/// intact, and 7 px to spare.** The list is handed `148 - 2L` px at the
+/// floor, against the 109 four rows need, so the guarantee holds to
+/// `L <= 19`; at `L = 20` the list draws three whole rows and 21 px of a
+/// fourth, and it does not lose a second whole row until `L = 31`. Nothing
 /// there can overlap: `editor_min = card2_h` in `compute_card_rects` (see its
 /// own comment) is computed from the RUNTIME value, not from this estimate,
 /// so a wrong `L` can only shrink the list at the absolute floor. That is the
-/// safe direction, and it is why the shortfall is a note rather than a bug.
+/// safe direction, and it is why a large `L` would be a note rather than a
+/// bug.
+///
+/// (**CORRECTED 2026-08-14**: this paragraph read "The shipped 560 does NOT
+/// absorb `L = 16` with the four-row banner-up guarantee intact -- it is one
+/// pixel short of it ... The guarantee holds at `L <= 15`; from `L = 16` the
+/// list draws three whole rows and part of a fourth, and it does not lose a
+/// second whole row until `L = 27`." Every figure was 8 px of list short, off
+/// the same phantom bottom frame -- the trace ran `140 - 2L` where the
+/// shipped window gives `148 - 2L`. The shortfall it reported does not
+/// exist, and `MIN_HEIGHT`'s "recorded rather than fixed" note went with it.)
 unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
     let line = text_size(hwnd, ui.fonts.get(Role::Caption), dpi, "Ag").1;
     line * 2 + scale(4, dpi)
@@ -4557,8 +4654,9 @@ unsafe fn on_theme_changed(hwnd: HWND) {
         return;
     }
     theme::apply_dwm_dark(hwnd, t == beckon_core::theme::Theme::Dark);
-    // The resize frame is still non-client on three sides, and DWM paints
-    // it black without a caption. Tint it to the window's own ground.
+    // DWM's 1 px border around the window, tinted to the window's own ground
+    // -- same call and same reason as in `create`, which carries the note on
+    // what this comment used to claim and why it was wrong.
     theme::apply_dwm_border(hwnd, t);
     theme_list(hwnd, t == beckon_core::theme::Theme::Dark);
     let _ = InvalidateRect(Some(hwnd), None, true);

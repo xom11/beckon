@@ -30,9 +30,9 @@ already exist; System and About are a single waiting line each.
 
 | Claim | Evidence |
 |---|---|
-| The client rect **is** the window rect, all four edges | `chrome.rs:121` — `nccalcsize` is `LRESULT(0)` with no `DefWindowProcW` and no use of either parameter; no `WS_CAPTION` on the window |
-| A strip below the title bar needs **no** drag-zone arithmetic | `chrome.rs:199-204` — `nchittest` returns `HTCLIENT` for every `pt.y >= rc.top + TITLEBAR_H*dpi/96`, before it considers `HTCAPTION` at `:218` |
-| There is exactly **one** "content starts below the bar" statement | `layout.rs:241` — `let mut y = pad + s(chrome::TITLEBAR_H);`. The other four `TITLEBAR_H` consumers (`chrome.rs:80`, `:245`, `:199`, `mod.rs:4693`) all stay inside the bar |
+| The client rect **is** the window rect, all four edges | `chrome.rs:142` — `nccalcsize` is `LRESULT(0)` with no `DefWindowProcW` and no use of either parameter; no `WS_CAPTION` on the window |
+| A strip below the title bar needs **no** drag-zone arithmetic | `chrome.rs:252-256` — `nchittest` returns `HTCLIENT` for every `pt.y >= rc.top + TITLEBAR_H*dpi/96`, before it considers `HTCAPTION` at `:265` |
+| There is exactly **one** "content starts below the bar" statement | `layout.rs:241` — `let mut y = pad + s(chrome::TITLEBAR_H);`. The other four `TITLEBAR_H` consumers (`chrome.rs:91`, `:292`, `:252`, `mod.rs:4791`) all stay inside the bar |
 | `compute_card_rects` owns all vertical geometry | `layout.rs:177-312`, destructured at `layout.rs:500` (`layout`) and read back through `card_rects` (`layout.rs:322-328`) at `mod.rs:4985` (`WM_PAINT`) |
 | The strip is paid for by `list_h` and nothing else | `layout.rs:294`. `bar_y` (220), `kb_card_h` (222), `kb_y` (223), `card3` (224), `card2_h` (236), `editor_min` (292) are bottom-anchored or content-derived |
 | Creation order **is** tab order | `mod.rs:2300-2306` |
@@ -50,12 +50,15 @@ already exist; System and About are a single waiting line each.
 
 ### 1.1 Where the design was wrong
 
-- **`MIN_HEIGHT` was never one pixel short.** The derivation at `mod.rs:694`
+- **`MIN_HEIGHT` was never one pixel short.** The derivation at `mod.rs:731`
   added `+ 8  bottom frame`, which describes `nccalcsize` before `c523e8e`
   reclaimed the whole frame. With client == window the floor gets
   `list_h = 560 − 408 − 36 = 116` against the 109 four rows need — it cleared
   them by 7 px. Corrected on this branch, along with the rest of that prose
-  class.
+  class: the term list above `WINDOW_HEIGHT`, the `MIN_WIDTH` G3
+  parenthetical, the floor/shipped re-trace, `notes_height`'s anchor
+  (`561 → 553`), `theme::apply_dwm_border`'s justification and both of its
+  call sites.
 - **Gate G3 is settled by reading**, not by hardware. What remains is
   confirming it with the probe that already prints both rects
   (`examples/settings_probe.rs:781-862`) and the *look* question of painting
@@ -118,7 +121,7 @@ change: its card loop already skips degenerate rects (`mod.rs:4985-4993`).
 | at `MIN_HEIGHT` 560, banner up | 4 rows (116 px) | **2 rows** (82 px) |
 
 **Decision: `MIN_HEIGHT` stays 560 and the four-row guarantee is withdrawn.**
-`mod.rs:687-692` currently reads "a window whose list shows one row is not a
+`mod.rs:724-729` currently reads "a window whose list shows one row is not a
 smaller version of this window, it is a broken one" and derives the floor from
 four rows. That paragraph must be rewritten, not deleted: it records a real
 standard, and the reason it no longer applies is design §4 — the list is short

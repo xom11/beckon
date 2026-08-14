@@ -111,23 +111,45 @@ pub(super) fn apply_dwm_dark(hwnd: HWND, dark: bool) {
     }
 }
 
-/// Tint the resize frame to match the window's own ground.
+/// Tint the hairline DWM draws around the window to match the window's own
+/// ground.
 ///
-/// **`WM_NCCALCSIZE` reclaims only `.top`, so the left, right and bottom
-/// resize borders stay non-client and DWM paints them — and with no
-/// `WS_CAPTION` it paints them PURE BLACK.** Measured on a14 2026-08-13: a
-/// 10 px band of `(0,0,0)` on three sides of a `#15171C` window, which reads
-/// as the window sitting inside a black box.
+/// **REVERSED 2026-08-14: the "cheaper answer" this doc argued for is not
+/// the one that shipped, and this attribute is not what fixed the black
+/// box.** The block used to read:
 ///
-/// Reclaiming the whole frame instead would work, but it moves resize
-/// hit-testing out of `DefWindowProc` and into `nchittest` — eight directions
-/// and four corners to get right, for a border. One attribute is the cheaper
-/// answer, and it keeps `DefWindowProc` owning the resize behaviour that
-/// already works.
+/// > **`WM_NCCALCSIZE` reclaims only `.top`, so the left, right and bottom
+/// > resize borders stay non-client and DWM paints them — and with no
+/// > `WS_CAPTION` it paints them PURE BLACK.** Measured on a14 2026-08-13: a
+/// > 10 px band of `(0,0,0)` on three sides of a `#15171C` window, which
+/// > reads as the window sitting inside a black box.
+/// >
+/// > Reclaiming the whole frame instead would work, but it moves resize
+/// > hit-testing out of `DefWindowProc` and into `nchittest` — eight
+/// > directions and four corners to get right, for a border. One attribute
+/// > is the cheaper answer, and it keeps `DefWindowProc` owning the resize
+/// > behaviour that already works.
+///
+/// The measurement is real and the diagnosis was right. The prescription was
+/// not: `DWMWA_BORDER_COLOR` was tried first and **does not reach the sizing
+/// border at all** — it tints the hairline around the window, nothing wider.
+/// That is `c523e8e`'s own finding, in its message ("reclaim the whole frame,
+/// and hit-test the eight resize edges", 2026-08-13), and it is why the
+/// expensive path was taken the same evening: `chrome::nccalcsize` now
+/// returns `LRESULT(0)` without calling `DefWindowProcW`, so **client ==
+/// window on all four edges** and there is no sizing border left for DWM to
+/// paint black. `chrome::nchittest` pays the price the paragraph above
+/// quoted — all eight directions, corners first.
+///
+/// **The call stays, and it is not vestigial.** DWM still owns the 1 px
+/// border it draws around the window (see `apply_dwm_dark` above, same
+/// point), and that hairline is exactly what this attribute colours. Left
+/// alone it does not match a `#15171C` client.
 ///
 /// Windows 11 22H2+. The call fails harmlessly on anything older, which
-/// leaves the black band — a cosmetic fault on an OS this window already
-/// treats as second class (no Mica, no rounded corners there either).
+/// leaves an unthemed hairline — a cosmetic fault on an OS this window
+/// already treats as second class (no Mica, no rounded corners there
+/// either).
 pub(super) fn apply_dwm_border(hwnd: HWND, t: Theme) {
     const DWMWA_BORDER_COLOR: DWMWINDOWATTRIBUTE = DWMWINDOWATTRIBUTE(34);
     // Resolved here, not at the call site, so the high-contrast branch cannot
@@ -258,7 +280,11 @@ pub(super) fn apply_backdrop(hwnd: HWND, b: Backdrop) {
                 );
                 // Sheet of glass: extending the frame all the way in is what
                 // lets the Mica material fill the whole client rect instead
-                // of just the usual few pixels of non-client border. Its
+                // of just the usual few pixels of non-client border. "The
+                // usual" is the generic case, not this window's -- since
+                // `c523e8e` `chrome::nccalcsize` leaves no non-client area at
+                // all, so the extension is the only way any of it is reached
+                // here rather than merely the way to reach more of it. Its
                 // documented hazard -- GDI text drawn straight onto glass
                 // loses its alpha channel and fringes black -- does not
                 // apply here, because every string this window draws lives
