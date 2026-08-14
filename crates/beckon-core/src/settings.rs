@@ -406,9 +406,7 @@ impl Model {
 
     /// The indices in `rows` the filter is showing, in model order.
     ///
-    /// Matched case-insensitively against BOTH columns -- the app name and
-    /// the combo -- which is the rule `beckon search` already uses, so the
-    /// program has no third matching dialect.
+    /// Matched case-insensitively against the app name.
     ///
     /// Trimmed first: a trailing space left by typing would otherwise match
     /// nothing and hide every row, which reads as a hang.
@@ -434,6 +432,28 @@ impl Model {
     /// about an *existing* row the user is working on.
     ///
     /// Model order is a precondition of `remove_indices`, not a convenience.
+    ///
+    /// **The filter matches the app name ONLY, never the chord.** It used to
+    /// match both, and every beckon chord contains `alt` -- so `a` matched
+    /// every row while the filter box looked as though it had narrowed the
+    /// list. With `Remove` taking the ticked rows, that is a path to
+    /// deleting the whole table by typing one letter. Measured with four
+    /// bindings and filter `a`: `visible` returned all four.
+    ///
+    /// This block used to justify the combo arm by saying both columns is
+    /// the rule `beckon search` already uses, so the program has no third
+    /// matching dialect. That sentence was true and is no longer: `search`
+    /// still matches widely because its worst outcome is a long list, while
+    /// this window's worst outcome is a deleted binding. The dialects differ
+    /// on purpose, and the reason is the consequence of a false positive,
+    /// not the shape of the data.
+    ///
+    /// What this gives up is real and is pinned by
+    /// `filtering_by_a_key_name_finds_nothing`: the window can no longer
+    /// answer "what already owns this chord?" by filtering. If that has to
+    /// come back, match the chord's KEY (`f2`, `b`) -- the half a person
+    /// searches for and the half that is not `alt` on every row -- and never
+    /// the whole chord as a substring again.
     fn visible(&self) -> Vec<usize> {
         let f = self.filter.trim().to_lowercase();
         if f.is_empty() {
@@ -442,11 +462,7 @@ impl Model {
         self.rows
             .iter()
             .enumerate()
-            .filter(|(i, r)| {
-                self.selected == Some(*i)
-                    || r.app.to_lowercase().contains(&f)
-                    || r.combo.to_lowercase().contains(&f)
-            })
+            .filter(|(i, r)| self.selected == Some(*i) || r.app.to_lowercase().contains(&f))
             .map(|(i, _)| i)
             .collect()
     }
@@ -2721,15 +2737,42 @@ mod tests {
     }
 
     #[test]
-    fn the_filter_matches_the_combo_too() {
-        let mut m = three();
-        m.set_filter("alt+q");
+    fn the_filter_does_not_match_the_shortcut_column() {
+        // Every beckon chord contains `alt`, so a filter that matched the
+        // combo made `a` -- a plausible first keystroke of "brave" -- match
+        // EVERY row while the box looked filtered. Tick the visible rows,
+        // press Remove, lose the table. These are the four bindings the bug
+        // was measured with; before this changed, `visible` returned all
+        // four.
+        //
+        // `three()` cannot carry this test: `notepad`, `brave` and `weather`
+        // all contain an `a`, so filter `a` returns every row on the app
+        // column alone and the assertion could not tell the two rules apart.
+        let mut m = Model::from_text(
+            "\"ctrl+alt+b\"=\"Brave\"\n\
+             \"ctrl+alt+k\"=\"Kitty\"\n\
+             \"ctrl+alt+f\"=\"Firefox\"\n\
+             \"ctrl+alt+d\"=\"Discord\"\n",
+        )
+        .unwrap();
+        m.set_filter("a");
         assert_eq!(
             m.visible(),
-            vec![2],
-            "the question this file is usually opened to answer is what a key \
-             is already bound to"
+            vec![0],
+            "only Brave's NAME contains `a`; matching the chord too made \
+             this every row"
         );
+    }
+
+    #[test]
+    fn filtering_by_a_key_name_finds_nothing() {
+        // The cost of the fix, pinned rather than left to be rediscovered:
+        // this window can no longer answer "what is ctrl+alt+q bound to?" by
+        // filtering. If that bites, the way back is to match the chord's KEY
+        // only -- never substring-matching the whole chord again.
+        let mut m = three();
+        m.set_filter("alt+q");
+        assert!(m.visible().is_empty());
     }
 
     #[test]
