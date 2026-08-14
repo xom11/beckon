@@ -163,6 +163,35 @@ test('a relaunch takes back the place it freed, rather than drifting off the rin
   assert.equal(new Set(drawn).size, d.wins.length, `two windows drawn at one place: ${drawn}`);
 });
 
+/* --- what the renderer is allowed to animate ------------------------------- */
+
+test('only a launch reports a window as born', () => {
+  /* The page zooms a window open on step 4 and on nothing else, because step 4
+     is the only branch that puts something on the desk that was not there. If
+     any other branch started reporting a `born`, a raise would announce itself
+     as a launch — and telling those two apart is the whole point of the demo. */
+  const launch = deskPress(scene('4'), 'C');            // Chrome is not running
+  assert.equal(launch.step, '4');
+  assert.equal(launch.born, launch.desk.wins.find(w => w.app === 'Chrome').id);
+
+  for (const [name, d, key] of [
+    ['5',  scene('5'),  'C'],
+    ['5a', scene('5a'), 'C'],
+    ['5b', scene('5b'), 'C'],
+    ['5c', scene('5c'), 'C'],
+  ]) {
+    const r = deskPress(d, key);
+    assert.equal(r.step, name, `scene ${name} did not fire its own branch`);
+    assert.ok(!r.born, `step ${name} reported a window as born`);
+  }
+});
+
+test('an unbound letter reports nothing at all, born included', () => {
+  const r = deskPress(scene('hero'), 'Q');
+  assert.equal(r.step, null);
+  assert.ok(!r.born);
+});
+
 /* --- the two properties the ring exists to have --------------------------- */
 
 test('the ring visits every window exactly once per lap, and wraps', () => {

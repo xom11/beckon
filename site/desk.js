@@ -164,13 +164,20 @@ function deskPress(desk, letter) {
   var mine = d.wins.filter(function (w) { return w.app === app.name; });
 
   /* Step 4 — nothing of this app is running, so launch it. A new window takes
-     the next free place on the desk; it does not take someone else's. */
+     the next free place on the desk; it does not take someone else's.
+     THIS IS THE ONLY BRANCH THAT RETURNS `born`, and that is the whole reason
+     it exists: it is the only one that puts something on the desk that was not
+     there a moment ago, so it is the only one the renderer should announce.
+     Every other branch rearranges windows the reader can already see. The
+     caller reads `r.born` and nothing else has to know what a launch is —
+     `undefined` everywhere else is the answer "nothing was born", which is
+     both true and falsy. */
   if (mine.length === 0) {
     var born = { id: d.next++, app: app.name, min: false, max: false, slot: deskFreeSlot(d) };
     d.nextSlot++;
     d.wins = [born].concat(d.wins);
     d.focused = born.id;
-    return { desk: d, step: '4', app: app };
+    return { desk: d, step: '4', app: app, born: born.id };
   }
 
   var cur = d.focused === null ? null : deskWin(d, d.focused);

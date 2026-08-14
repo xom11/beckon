@@ -867,6 +867,67 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .win.is-focused { opacity: 1; box-shadow: var(--shadow); }
 
+/* --- A WINDOW OPENING, which is the one thing on this desk that is not a
+ * rearrangement ---
+ *
+ * beckon has five branches and exactly ONE of them puts something on the desk
+ * that was not there a moment ago: step 4, the launch. Focus, cycle, back and
+ * hide all move windows the reader can already see, and those keep the plain
+ * .3s transitions above — a raise that announced itself with a zoom would be
+ * saying "this is new" about a window that has been open the whole time, which
+ * is the one thing the demo must not blur, since telling those two apart is
+ * what the whole page is about.
+ *
+ * So this fires on one event and beckon.js is what decides: `deskPress`
+ * returns `born` from the launch branch and from nowhere else, and `renderDesk`
+ * hangs `.is-new` on that window for one animation's length.
+ *
+ * WHY `scale` AND `translate` RATHER THAN `transform`: the cascade offset lives
+ * in `transform: translate(var(--slot) …)`, and a keyframe touching `transform`
+ * REPLACES it — the window would zoom open from the desk's top-left corner and
+ * then snap to its place. The individual transform properties compose with
+ * `transform` instead of overriding it. Same trap, and the same answer, as the
+ * loop's keyframes at the end of this file, which stay off `transform` for the
+ * identical reason.
+ *
+ * EVERY ONE OF THESE IS A SINGLE `from` KEYFRAME. The implicit 100% is then the
+ * element's own computed style, which makes reduced motion correct for free:
+ * the block at the end of this file pins every animation to 1ms with
+ * `animation-fill-mode: forwards`, and the frame it holds is the window exactly
+ * as it would have been drawn anyway. A written-out `to { scale: 1; opacity: 1 }`
+ * would instead pin a focused window's opacity onto one that is about to lose
+ * focus.
+ *
+ * The three differ because the three shells differ, and that difference is what
+ * the OS strip is for. THEY ARE MODELLED BY EYE at desk scale, not copied out
+ * of Mutter or DWM: what each reproduces is the character rather than a
+ * constant — how far it zooms, how long it takes, and whether it rises.
+ */
+.win.is-new { animation: winOpen .22s cubic-bezier(.2, .85, .3, 1); }
+
+/* macOS: the widest zoom of the three and the shortest stop. A Mac window
+   arrives already at its size and is simply suddenly there. */
+.desk[data-os="macos"] .win.is-new {
+  animation: winOpenMac .24s cubic-bezier(.2, .85, .3, 1);
+}
+/* Windows 11: the smallest zoom, and the only one that RISES — a window comes
+   up out of the taskbar edge rather than out of its own middle. The curve is
+   Fluent's decelerate, which is flatter at the end than the other two. */
+.desk[data-os="windows"] .win.is-new {
+  animation: winOpenWin .25s cubic-bezier(.1, .9, .2, 1);
+}
+/* GNOME / KDE: a softer zoom over a longer curve. Both shells take visibly
+   longer over this than either of the others, and an expo-out is what makes a
+   300ms animation still feel immediate. */
+.desk[data-os="linux"] .win.is-new {
+  animation: winOpenLinux .3s cubic-bezier(.16, 1, .3, 1);
+}
+
+@keyframes winOpen       { from { scale: .90; opacity: 0; } }
+@keyframes winOpenMac    { from { scale: .86; opacity: 0; } }
+@keyframes winOpenWin    { from { scale: .94; translate: 0 2.4%; opacity: 0; } }
+@keyframes winOpenLinux  { from { scale: .90; opacity: 0; } }
+
 /* --- a window the reader is holding ---
  *
  * The desk is draggable, resizable and maximisable, and NONE OF THAT IS
@@ -1278,6 +1339,37 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
     0 0 clamp(7px, 1.1cqw, 13px) clamp(1px, .18cqw, 2px)
       color-mix(in srgb, var(--app) 45%, transparent);
 }
+/* --- and the icon of the app that just launched ---
+ *
+ * The dock already SAYS a launch happened: the icon goes from .32 to lit, and
+ * the comment above this block is about that being the only visible difference
+ * between step 4 and step 5. It says it in a place the reader is not looking —
+ * they are watching the middle of the desk, where the window is — and it says
+ * it with a 300ms opacity fade, which is not a thing the eye is drawn to.
+ *
+ * A movement is, and every one of these three shells makes one. On macOS it is
+ * the famous Dock bounce, which is literally what a Mac does while an app
+ * starts. Windows and GNOME/KDE do something quieter, so this does too: one
+ * pop, no repeat. `translate` / `scale` rather than `transform` because the
+ * hover lift owns `transform` and the two must not fight. */
+.dock-app.is-launching { animation: dockOpen .4s ease-out; }
+.desk[data-os="macos"] .dock-app.is-launching { animation: dockOpenMac .62s ease-out; }
+@keyframes dockOpen {
+  0%   { scale: 1; }
+  38%  { scale: 1.22; }
+  100% { scale: 1; }
+}
+/* Two bounces, the second half the height of the first — a Mac keeps bouncing
+   until the app is up, and beckon's demo apps are up immediately, so this is
+   what "it launched" looks like rather than what "it is still launching" does. */
+@keyframes dockOpenMac {
+  0%   { translate: 0 0; }
+  26%  { translate: 0 -46%; }
+  52%  { translate: 0 0; }
+  72%  { translate: 0 -18%; }
+  100% { translate: 0 0; }
+}
+
 /* The hue, the outline, and the ink the letter is set in.
  *
  * `--ink` IS PER APP AND NOT ONE COLOUR, because no single one works: white on

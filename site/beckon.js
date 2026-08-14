@@ -316,11 +316,32 @@
     return n;
   }
 
+  /* Hang a class on a node for one animation's length.
+     THE CLASS CANNOT BE LEFT ON. `renderDesk` takes a minimised window OUT of
+     the DOM and puts it back when it is restored, and a node re-inserted still
+     wearing `.is-new` replays the opening animation — an app that has been
+     running for a minute appearing to launch itself. The timeout is deliberately
+     longer than the longest animation here (.3s on Linux) and deliberately not
+     an `animationend` listener: that event bubbles from the title bar and the
+     lights too, so it would need a target check to be correct, and a timer needs
+     nothing to be correct. */
+  function flashFor(node, cls) {
+    node.classList.add(cls);
+    setTimeout(function () { node.classList.remove(cls); }, 700);
+  }
+
   /* Window elements are POOLED BY ID and never rebuilt, because the movement is
      the point: a replaced node has no previous transform for the transition in
      §4 to interpolate from, so a rebuild-per-press would make every raise
-     teleport. */
-  function renderDesk(host, desk) {
+     teleport.
+
+     `born` is the id of a window that did not exist before this render, and it
+     comes from `deskPress`'s launch branch — the ONLY branch that returns one.
+     It is not inferred here, and it deliberately cannot be: "a node that is not
+     in the pool" would also catch every window on the desk the first time it is
+     drawn and every window again after an OS switch, which would open the hero
+     with three launch animations for three apps that were already running. */
+  function renderDesk(host, desk, born) {
     var wins = host.querySelector('.desk-wins');
     if (!host._pool) host._pool = {};
     var pool = host._pool;
@@ -336,7 +357,10 @@
 
     order.forEach(function (w, i) {
       var n = pool[w.id];
-      if (!n) { n = makeWin(w); pool[w.id] = n; n.setAttribute('data-id', String(w.id)); }
+      if (!n) {
+        n = makeWin(w); pool[w.id] = n; n.setAttribute('data-id', String(w.id));
+        if (w.id === born) flashFor(n, 'is-new');
+      }
       if (n.parentNode !== wins) wins.appendChild(n);
       /* POSITION FROM THE WINDOW, STACKING FROM THE ORDER. The window's own
          slot never changes, so a raise leaves it exactly where it was and only
@@ -382,10 +406,19 @@
       var w = desk.wins.filter(function (x) { return x.id === desk.focused; })[0];
       front = w ? w.app : null;
     }
+    var bornApp = null;
+    if (born) {
+      var b = desk.wins.filter(function (x) { return x.id === born; })[0];
+      bornApp = b ? b.app : null;
+    }
     [].forEach.call(host.querySelectorAll('.dock-app'), function (d) {
       var app = d.getAttribute('data-app');
       d.classList.toggle('is-up', desk.wins.some(function (x) { return x.app === app; }));
       d.classList.toggle('is-focused', app !== null && app === front);
+      /* The icon of the app that just launched moves, because the state change
+         it already has — .32 to lit — happens over 300ms of opacity in the
+         corner of the eye while the reader is watching the middle of the desk. */
+      if (app === bornApp) flashFor(d, 'is-launching');
     });
   }
 
@@ -764,7 +797,12 @@
       if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
-      renderDesk(host, desk);
+      /* `r.born` is set by the launch branch and by no other, so this is the
+         one call site on the hero that can open a window rather than move one.
+         `act` below never passes it: no mouse gesture launches anything, and
+         closing an app and pressing its key again is a launch that comes back
+         through here. */
+      renderDesk(host, desk, r.born);
       if (ui) ui.flash(app.key);
       /* Only the LAST cap of each chord is rewritten — the letter. The
          modifiers are never touched: "one letter, whatever your modifier is"
@@ -866,7 +904,7 @@
       if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
-      renderDesk(host, desk);
+      renderDesk(host, desk, r.born);          /* set by the launch branch only */
       if (ui) ui.flash(app.key);
       mark('is-on', null);
       mark('is-hit', r.step);
