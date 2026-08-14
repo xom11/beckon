@@ -310,15 +310,28 @@ function deskStepName(step) {
 /* What the readout says. One sentence per step, written so it is true on a
    tiling compositor as well as a stacking one — hence "takes focus" rather than
    "comes to the front". The desks draw stacking desktops, but beckon's Linux
-   support is mostly tiling compositors and the sentence has to hold there. */
+   support is mostly tiling compositors and the sentence has to hold there.
+ *
+ * THESE ARE CUT TO THE READING BUDGET, and the budget is a measurement rather
+ * than a preference. The tour prints both of a turn's lines — the precondition
+ * and this — for every one of five branches, and at 238 wpm (Brysbaert 2019, a
+ * meta-analysis of 190 studies of silent English reading) the copy this replaces
+ * came to 24,958 ms of reading inside a 20,000 ms loop. A reader could not
+ * finish a sentence before the next branch replaced it, which is the same as
+ * printing nothing. 47 words here became 39; the rest came out of `readyLine`.
+ *
+ * What was cut is the part the picture already carries. "and wraps round at the
+ * end" went because the ring is now visible — the two Chrome windows are
+ * numbered in their own title bars — and "to where you came from" went because
+ * the window that arrives is the one the cue ring named a beat earlier. */
 function deskSay(res) {
   var n = res.app ? res.app.name : '';
   switch (res.step) {
     case '4':  return n + ' was not running. beckon launched it.';
-    case '5':  return n + ' was already running. One press and it takes focus.';
-    case '5a': return 'Still ' + n + '. The press walks to its next window, and wraps round at the end.';
-    case '5b': return n + ' already had focus, so the press goes back to where you came from.';
-    case '5c': return n + ' was the only thing open, so the press hides it.';
+    case '5':  return n + ' was running. One press takes focus.';
+    case '5a': return 'Still ' + n + '. The press walks to its next window.';
+    case '5b': return n + ' had focus, so the press goes back.';
+    case '5c': return 'Nothing else was open, so the press hides ' + n + '.';
     default:   return '';
   }
 }

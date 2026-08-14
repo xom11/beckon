@@ -446,6 +446,67 @@
     setTimeout(function () { node.classList.remove(cls); }, 700);
   }
 
+  /* --- a window leaving the desk -------------------------------------------
+   *
+   * Hiding used to be a `removeChild` in one frame, which looks exactly like a
+   * scene cut — so the one branch that takes something away was drawn with the
+   * same non-verb as the machinery between branches. The window now shrinks
+   * into its own dock icon, which is what all three of these machines draw, and
+   * `ox`/`oy` are that icon's centre expressed relative to the window's own top
+   * left, so it lands on the right icon on each.
+   *
+   * THE NODE OUTLIVES THE ANIMATION BY 420ms ON PURPOSE. A reader can click the
+   * dock icon to bring the window straight back, and `renderDesk` restores it
+   * by un-hiding this same node — which still carries wherever they dragged it
+   * to. `unhide` cancels the removal, so the two cannot race.
+   *
+   * The timer re-checks `parentNode` because `scene()` throws the pool away and
+   * may have detached this node in the meantime. */
+  function hideFor(node, ox, oy) {
+    if (node._gone) return;
+    node.style.transformOrigin = ox + 'px ' + oy + 'px';
+    node.classList.add('is-gone');
+    node._gone = setTimeout(function () {
+      node._gone = null;
+      if (node.parentNode) node.parentNode.removeChild(node);
+    }, 700);
+  }
+
+  /* Called unconditionally for every window `renderDesk` is about to show, and
+     unconditionally is the point: without it, clicking a dock icon during the
+     420ms grace above leaves the node in the DOM (so the `parentNode` check
+     skips re-appending it), still wearing `.is-gone` (so it is invisible), with
+     a live timer that then deletes a window the model says has focus. */
+  function unhide(node) {
+    if (node._gone) { clearTimeout(node._gone); node._gone = null; }
+    if (node.classList.contains('is-gone')) {
+      node.classList.remove('is-gone');
+      node.style.transformOrigin = '';
+    }
+  }
+
+  /* The tour's Pause/Play. Returns a `set(paused)` the tour calls whenever it
+     changes state for any reason, so the button can never disagree with what
+     the desk is doing — including when a reader takes over by clicking a row.
+     NO `aria-pressed`: the label already carries the state, and a button that
+     says "Play" while reporting pressed=false is two answers to one question. */
+  function buildTour(hostEl, onToggle) {
+    if (!hostEl) return null;
+    var b = el('button', 'ghost', 'Pause');
+    b.type = 'button';
+    b.addEventListener('click', onToggle);
+    hostEl.appendChild(b);
+    hostEl.hidden = false;
+    return {
+      set: function (paused) {
+        b.textContent = paused ? 'Play' : 'Pause';
+        b.setAttribute('aria-label', paused
+          ? 'Play the walk through the five branches'
+          : 'Pause the walk through the five branches');
+      }
+    };
+  }
+
   /* Window elements are POOLED BY ID and never rebuilt, because the movement is
      the point: a replaced node has no previous transform for the transition in
      §4 to interpolate from, so a rebuild-per-press would make every raise
@@ -471,13 +532,36 @@
        just stopped being of the one where the picture is hardest to read. */
     var order = desk.wins.filter(function (w) { return !w.min; });
 
+    /* WHICH WINDOW OF ITS APP THIS IS, numbered along the ring `deskPress`
+       actually walks — `mine.sort(by id)` at desk.js:202-206 — so "Chrome — 2"
+       is the window the next press really goes to. This is the only channel the
+       Cycle branch has: two windows of one app are two rectangles with the same
+       name, and a press that swaps which is in front is invisible unless they
+       can be told apart. An app with one window stays plain "Chrome"; a numeral
+       there would be noise about a ring of one.
+       COMPUTED OVER `desk.wins`, NOT `order`. `order` drops minimised windows,
+       so minimising one of two Chromes would make the numeral vanish from the
+       other and come back on restore — the number would be describing the
+       drawing rather than the ring. */
+    var rank = {}, seen = {}, total = {};
+    desk.wins.forEach(function (w) { total[w.app] = (total[w.app] || 0) + 1; });
+    desk.wins.slice().sort(function (a, b) { return a.id - b.id; })
+      .forEach(function (w) { seen[w.app] = (seen[w.app] || 0) + 1; rank[w.id] = seen[w.app]; });
+
     order.forEach(function (w, i) {
       var n = pool[w.id];
       if (!n) {
         n = makeWin(w); pool[w.id] = n; n.setAttribute('data-id', String(w.id));
         if (w.id === born) flashFor(n, 'is-new');
       }
+      /* Before the parentNode test, and unconditionally — see `unhide`. */
+      unhide(n);
       if (n.parentNode !== wins) wins.appendChild(n);
+      /* Written on every render rather than once in `makeWin`: nodes are pooled,
+         so a window that becomes the second of its app long after it was
+         created would otherwise keep the name it was born with. */
+      var nm = n.querySelector('.win-name');
+      if (nm) nm.textContent = total[w.app] > 1 ? w.app + ' — ' + rank[w.id] : w.app;
       /* POSITION FROM THE WINDOW, STACKING FROM THE ORDER. The window's own
          slot never changes, so a raise leaves it exactly where it was and only
          brings it in front — which is what raising a window looks like.
@@ -502,11 +586,34 @@
        and a restore that forgot that would teleport the window. A CLOSED window
        is gone from the model, so its node goes too — and if the app is launched
        again it gets a new id, a new node and the next free slot, which is what
-       launching looks like. */
+       launching looks like.
+
+       MINIMISE AND CLOSE PART COMPANY HERE, and they did not used to. Both were
+       one `removeChild`, so hiding a window — the whole of step 5c — was drawn
+       with the same nothing as a scene cut. A close still goes in one frame,
+       which is right: the window is gone from the model and there is nothing to
+       come back to. A hide shrinks into the app's own dock icon, where the icon
+       stays lit, which is exactly the difference the branch is about. */
     Object.keys(pool).forEach(function (id) {
       var shown = order.some(function (w) { return String(w.id) === id; });
       var known = desk.wins.some(function (w) { return String(w.id) === id; });
-      if (!shown && pool[id].parentNode) pool[id].parentNode.removeChild(pool[id]);
+      var n = pool[id];
+      if (!shown && n.parentNode) {
+        if (known && !n._gone) {
+          var w2 = desk.wins.filter(function (x) { return String(x.id) === id; })[0];
+          var icon = w2 && host.querySelector('.dock-app[data-app="' + w2.app + '"]');
+          var nb = n.getBoundingClientRect();
+          var ox = nb.width / 2, oy = nb.height / 2;
+          if (icon) {
+            var ib = icon.getBoundingClientRect();
+            ox = ib.left + ib.width / 2 - nb.left;
+            oy = ib.top + ib.height / 2 - nb.top;
+          }
+          hideFor(n, ox, oy);
+        } else if (!known) {
+          n.parentNode.removeChild(n);
+        }
+      }
       if (!known) delete pool[id];
     });
 
@@ -984,6 +1091,16 @@
     var desk = null;
     var ui = null;
 
+    /* THE READER-HAS-TAKEN-OVER HOOK, and `takeover` starts as a NO-OP rather
+       than as null on purpose. `onOs` at the foot of this closure calls its
+       callback SYNCHRONOUSLY the moment it is registered, and it runs BEFORE
+       the tour IIFE that assigns the real `pause` here — so a direct reference
+       would throw a ReferenceError out of the outermost IIFE and take the
+       keyboard router and the HUD down with it. `inTour` is how the two shared
+       entry points below tell the tour's own calls from a reader's. */
+    var inTour = false;
+    var takeover = function () {};
+
     function mark(cls, step) {
       rows.forEach(function (r) {
         r.classList.toggle(cls, step !== null && r.getAttribute('data-step') === step);
@@ -1037,6 +1154,7 @@
          an empty desk, and the sentence has to be about the app that press is
          going to open. */
       readout(out, deskStepName(step), readyLine(desk, deskSceneKey(step)));
+      if (!inTour) takeover();
     }
 
     /* What is true right now, for the app the tour presses. Short, and it names
@@ -1051,16 +1169,23 @@
       if (!f || f.app !== app.name) {
         return app.name + ' is open, behind ' + (f ? f.app : 'another window') + '.';
       }
-      if (mine.length > 1) return app.name + ' is focused, and has a second window.';
+      if (mine.length > 1) return app.name + ' is focused. Two windows.';
       var others = d.wins.filter(function (w) { return w.app !== app.name; });
-      if (others.length) return app.name + ' is focused. ' + others[0].app + ' is open too.';
-      return app.name + ' is focused, and nothing else is open.';
+      /* "So is Terminal." was the shorter phrasing and it was WRONG: it says
+         the other app is focused too, which is the one thing this scene is
+         about not being true. Two words back for a sentence that is correct. */
+      if (others.length) return app.name + ' is focused. ' + others[0].app + ' is open.';
+      return app.name + ' is focused. Nothing else is open.';
     }
 
     function press(key, ok) {
       var app = deskAppOf(key);
       if (!app || !desk) return false;
       if (!ok) { if (ui) ui.miss(); return false; }
+      /* AFTER the gate, not before it. A bare `t` this demo rejects changes
+         nothing on screen, so it must not stop the tour either — that is the
+         small version of the `document` keydown bug the tour no longer has. */
+      if (!inTour) takeover();
       var r = deskPress(desk, key);
       desk = r.desk;
       /* The cap now, the answer a beat later — see `keyHud`. It matters more
@@ -1120,6 +1245,7 @@
       mark('is-on', null);
       mark('is-hit', null);
       readout(out, 'Mouse', deskSayWindow(kind, name));
+      if (!inTour) takeover();
     }
 
     /* NO PRESS ROW IN THIS SECTION any more — the element is gone from the
@@ -1145,13 +1271,21 @@
     var steps = demo.querySelector('.demo-steps');
     if (steps) steps.hidden = true;
 
-    onOs(function () { scene(desk ? currentStep() : '5a'); });
+    /* THE ARRIVAL SCENE IS LAUNCH, and it used to be Cycle. The tour's first
+       act is now a press rather than a scene build, so whatever is on the desk
+       when a reader arrives is what that press acts on — and the press this
+       section should open with is the one the whole page is about: an empty
+       desk, a key, an app. Cycle as the opener meant the first thing on screen
+       was three windows disappearing at once to make room for it.
+       This is called synchronously, before the tour exists — which is why
+       `takeover` above must already be callable. */
+    onOs(function () { scene(desk ? currentStep() : '4'); });
 
     /* Which row the desk is currently built from, so an OS change rebuilds the
        same scenario on the new chrome instead of resetting the reader. */
     function currentStep() {
       var on = rows.filter(function (r) { return r.classList.contains('is-on'); })[0];
-      return on ? on.getAttribute('data-step') : '5a';
+      return on ? on.getAttribute('data-step') : '4';
     }
 
     /* The idle tour.
@@ -1175,62 +1309,176 @@
      * has something to open rather than something to move.
      */
     (function () {
-      if (!window.matchMedia || !window.IntersectionObserver) return;
-      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      if (!window.IntersectionObserver) return;
+
+      /* NO `prefers-reduced-motion` CHECK ANY MORE, and its removal is the
+         point rather than an oversight. It used to `return` here, so a reader
+         who asks for less motion got a still photograph of the one section
+         whose job is to show five different answers — measured over 12s with a
+         control: 5-11 distinct states at `no-preference`, exactly 1 at
+         `reduce`. The preference is about motion, not about information; the
+         difference now lives entirely in beckon.css §8, where every beat that
+         moves or resizes becomes a cut and every beat that changes colour or
+         opacity keeps its duration. There is no `matchMedia` branch anywhere in
+         this file, and adding one back would split the choreography across two
+         languages. */
 
       var STEPS = ['4', '5', '5a', '5b', '5c'];
-      var READ = 1500;  /* long enough to read the precondition the row states */
-      var WATCH = 2500; /* ...and then the readout that answers it */
+
+      /* THE PACE IS DERIVED FROM THE WORD COUNT, not chosen. The tour prints
+         two lines per turn — the precondition and the answer — and at 238 wpm
+         (Brysbaert 2019, a meta-analysis of 190 studies of silent English
+         reading) the old copy came to 24,958 ms of reading inside a 20,000 ms
+         loop of two constants. Every turn replaced a sentence the reader had
+         not finished.
+         So the copy was cut to 71 words (see `deskSay` and `readyLine`) and
+         each branch got its own pair:
+             READ   = 300 + words x 252,  rounded to 50, floor 1400
+             ANSWER = 300 + words x 252 + 400
+             TURN   = SEAM + READ + KEY_LEAD_MS + ANSWER
+         252ms is 60000/238; the 300 is the eye's trip from the table row to the
+         readout, and the 400 is a rest before the seam. `BEATS` is [READ, TURN]
+         and the loop comes to 25,250 ms. */
+      var BEATS = {
+        '4':  [1550, 4500],
+        '5':  [1800, 4750],
+        '5a': [1800, 5250],
+        '5b': [2050, 5250],
+        '5c': [2050, 5500]
+      };
+      var SEAM = 400;      /* the dip's whole length, `deskSeam` in §4 */
+      var SEAM_MID = 180;  /* ...and the bottom of it, where the scene swaps */
+      var CUE_AT = 260;    /* the ring, once the desk is back up */
+      var ARRIVE = 700;    /* a beat before the FIRST press, so a reader who
+                              lands mid-scroll sees the empty desk it acts on */
+      var RESUME = 900;    /* ...and a longer one after Play, which is a
+                              deliberate act and can afford to be answered */
 
       /* IN THE TABLE'S OWN ORDER, top to bottom, and that is the whole point of
-         the mark: it walks the list the way the reader reads it. It used to
-         start mid-table on the 5a scene `onOs` had already built so its first
-         act could answer what was on screen — which cost the order, because
-         after 5c it jumped back up to row one. The arrival scene is still
-         honoured, just by waiting a beat before the first move rather than by
-         starting there: the observer below opens with WATCH, so a reader sees
-         the Cycle desk the caption promises, then the mark starts at the top. */
-      var at = 0, armed = false, timer = null, stopped = false, onScreen = false;
+         the mark: it walks the list the way the reader reads it.
+         IT OPENS ON A PRESS, NOT ON A SCENE, and that is what makes the first
+         thing a reader ever sees the sentence they were promised: an empty
+         desk, a cap in the corner, a Terminal opening. It used to open by
+         BUILDING a scene, so the first event on screen was three windows
+         vanishing at once with nobody pressing anything — which is what Launch
+         looks like, performed as stage machinery. `onOs` builds the Launch
+         scene on arrival and `phase` starts at 'press', so the machinery has
+         already happened before anyone is looking. */
+      var at = 0, phase = 'press', paused = false, started = false;
+      var timer = null, onScreen = false, pending = [];
+      var tourUi = null;
 
-      function clear() { if (timer) { clearTimeout(timer); timer = null; } }
+      /* EVERY TIMER THE TOUR SETS GOES THROUGH HERE, because a turn now has
+         timers inside it — the scene lands mid-seam, the cue lands after that —
+         and a reader who takes over at t=300 must not still receive a cue ring
+         at t=440 on a desk that is no longer the tour's to draw. */
+      function later(fn, ms) { pending.push(setTimeout(fn, ms)); }
+
+      function clear() {
+        if (timer) { clearTimeout(timer); timer = null; }
+        pending.forEach(clearTimeout);
+        pending = [];
+      }
 
       function queue(ms) {
-        if (stopped || !onScreen || timer) return;
+        if (paused || !onScreen || timer) return;
         timer = setTimeout(tick, ms);
+      }
+
+      /* `scene` and `press` are shared with the row buttons and the keyboard,
+         and both call `takeover()` so that a reader's own action pauses the
+         tour. The tour calls the same two functions, so it has to say which of
+         them is speaking. */
+      function drive(fn) { inTour = true; try { fn(); } finally { inTour = false; } }
+
+      /* The ring that names the window this press is about to touch. It asks
+         the MODEL rather than guessing: `deskPress` clones before it mutates,
+         so calling it here to look at the answer is free and cannot drift from
+         what the press will actually do a second later. */
+      function cue(step) {
+        if (!desk) return;
+        var r = deskPress(desk, deskSceneKey(step));
+        var ids = step === '4' ? []
+          : step === '5c' ? [desk.focused]
+          : step === '5a' ? [desk.focused, r.desk.focused]
+          : [r.desk.focused];
+        ids.forEach(function (id) {
+          if (id === null || id === undefined) return;
+          var n = host.querySelector('.win[data-id="' + id + '"]');
+          if (n) flashFor(n, 'is-cued');
+        });
       }
 
       function tick() {
         timer = null;
-        if (stopped) return;
-        if (armed) {
-          press(deskSceneKey(STEPS[at]), true);
-          armed = false;
-          at = (at + 1) % STEPS.length;
-          queue(WATCH);
+        if (paused) return;
+        var step = STEPS[at];
+        if (phase === 'seam') {
+          /* The desk sinks, the new scene is built at the bottom of the dip
+             where the swap cannot be read as an outcome, and the cue follows it
+             out. */
+          flashFor(host, 'is-seam');
+          later(function () {
+            drive(function () { scene(step); });
+            later(function () { cue(step); }, CUE_AT);
+          }, SEAM_MID);
+          phase = 'press';
+          queue(SEAM + BEATS[step][0]);
         } else {
-          scene(STEPS[at]);
-          armed = true;
-          queue(READ);
+          drive(function () { press(deskSceneKey(step), true); });
+          at = (at + 1) % STEPS.length;
+          phase = 'seam';
+          queue(BEATS[step][1] - SEAM - BEATS[step][0]);
         }
       }
 
-      /* One way, and capture-phase so it lands before the control's own
-         handler moves anything. Somebody who has touched this section is
-         reading it, and a tour that resumed would pull the desk out from under
-         them mid-sentence. The table is a sibling of the demo, not a child, so
-         it needs its own listener; `keydown` is on the document because that is
-         where the page already routes a real press. */
-      function stop() {
-        if (stopped) return;
-        stopped = true;
+      function pause() {
+        if (paused) return;
+        paused = true;
         clear();
         /* Hand the table's marks back to their reader-driven meaning. */
-        table.classList.remove('is-touring');
+        table.classList.toggle('is-touring', false);
+        if (tourUi) tourUi.set(true);
       }
+
+      /* Resume at the START of a turn, never mid-sentence: a tour that picked
+         up at "press" would fire a key on a desk the reader has since
+         rearranged, and the readout would answer a question nobody asked. */
+      function play() {
+        if (!paused) return;
+        paused = false;
+        phase = 'seam';
+        table.classList.toggle('is-touring', true);
+        if (tourUi) tourUi.set(false);
+        queue(RESUME);
+      }
+
+      tourUi = buildTour(document.getElementById('how-tour'), function () {
+        if (paused) play(); else pause();
+      });
+      takeover = pause;
+
+      /* Capture-phase, so it lands before the control's own handler moves
+         anything. The table is a sibling of the demo, not a child, so it needs
+         its own listener.
+         THE GUARD IS LOAD-BEARING: the Pause button lives INSIDE `#how-demo`,
+         so without it a click on Play would pause on `pointerdown` and then
+         un-pause on `click`, and the button could never pause anything.
+         THERE IS NO `document` KEYDOWN LISTENER ANY MORE. There used to be, and
+         it killed the tour permanently for any key pressed anywhere on the page
+         — a Tab in the nav, before the reader had ever scrolled this far, left
+         #how frozen with nothing to say why. Presses that actually reach this
+         demo go through `press()`, which calls `takeover()` itself, and only
+         after the hit/miss gate: a bare `t` that this demo rejects changes
+         nothing on screen and so must not stop anything either. */
+      function readerTook(e) {
+        if (tourHost && tourHost.contains(e.target)) return;
+        pause();
+      }
+      var tourHost = document.getElementById('how-tour');
       table.classList.add('is-touring');
-      demo.addEventListener('pointerdown', stop, true);
-      table.addEventListener('pointerdown', stop, true);
-      document.addEventListener('keydown', stop, true);
+      demo.addEventListener('pointerdown', readerTook, true);
+      table.addEventListener('pointerdown', readerTook, true);
 
       /* The sentence that used to be prepended here — "It walks the five rows
          on its own, and stops for good the moment you touch it." — is gone with
@@ -1242,10 +1490,19 @@
          is that one key needs no explaining. */
 
       /* Off screen the tour would spend its laps unwatched and leave a reader
-         arriving in the middle of a branch. Hold, and pick up where it was. */
+         arriving in the middle of a branch. Hold, and pick up at the start of a
+         turn — never mid-sentence.
+         `threshold: 0` and NOT a fraction: at the stacked breakpoint the demo
+         is taller than a short window, so a threshold of .6 could never be
+         reached and the section would stand still with nothing anywhere to say
+         why. The "reader scrolled past too fast" problem is solved by ARRIVE
+         and by opening on the Launch press instead. */
       new IntersectionObserver(function (entries) {
         onScreen = entries[0].isIntersecting;
-        if (onScreen) queue(WATCH); else clear();
+        if (!onScreen) { clear(); return; }
+        if (paused) return;
+        if (!started) { started = true; queue(ARRIVE); }
+        else { phase = 'seam'; queue(RESUME); }
       }, { threshold: 0 }).observe(demo);
     }());
 

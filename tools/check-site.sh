@@ -235,6 +235,7 @@ theme
 hero-press
 hero-os
 how-readout
+how-tour
 hud
 CTLS
 # `how-press` was on this list until the #how section stopped carrying a press

@@ -914,6 +914,13 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   width: var(--win-w); height: var(--win-h);
   border-radius: 9px;
   overflow: hidden;
+  /* The resting state of the cue ring — see `.win.is-cued`. It is declared here
+     rather than only in the keyframes so the ring has something to animate FROM
+     and the first frame does not jump. `outline` takes no layout space, and the
+     negative offset draws it inside the border box, where `overflow: hidden`
+     cannot clip it. */
+  outline: 2px solid transparent;
+  outline-offset: -2px;
   /* A column, so the body takes whatever the title bar leaves. It used to be
      `height: calc(100% - 22px)`, which pinned the body to one bar height and
      broke the moment the bar started scaling with the desk. */
@@ -938,16 +945,32 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
      shrink to buy it, and it is the wrong thing to spend. */
   transform: translate(calc(var(--slot) * 10.5% + var(--dx)),
                        calc(var(--slot) * 10.5% + var(--dy)));
-  transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
+  transition: transform .3s ease, filter .3s ease, box-shadow .3s ease,
               border-color .3s ease, width .3s ease, height .3s ease;
   box-shadow: var(--shadow-soft);
   /* A background window is dimmed, not erased. It has to stay readable —
      seeing "Chrome" still sitting there behind VS Code is the whole evidence
-     that the press raised a window rather than renamed one — and at .78 over a
-     dark wallpaper its title bar disappeared entirely. */
-  opacity: .84;
+     that the press raised a window rather than renamed one.
+   *
+   * `filter`, NOT `opacity`, AND THE OLD WAY WAS BACKWARDS. Measured
+   * 2026-08-14 on the mean luminance of a strip of window that is never
+   * covered: under `opacity: .84` a window LOSING focus got BRIGHTER in three
+   * of the four app x theme cases — Chrome dark +6.71, Terminal light +8.42,
+   * Terminal dark +7.28, out of 255. The desks' wallpapers are a purple, a
+   * blue and a teal gradient, all lighter than a window's own paper in the
+   * dark theme, so making the window transparent let the wallpaper through and
+   * the sum came out ABOVE where it started. The one channel that is supposed
+   * to say "this one is not the one" was saying the opposite.
+   *
+   * A filter is applied to the element's own rendering BEFORE it is composited
+   * against anything, so there is no bleed to fight and the direction cannot
+   * invert whatever is behind it. It also leaves contrast INSIDE the window
+   * alone, which is why `.80` is safe where `opacity: .78` once erased a title
+   * bar outright: everything in the window darkens together, so the name stays
+   * as legible against its bar as it was. */
+  filter: brightness(.80);
 }
-.win.is-focused { opacity: 1; box-shadow: var(--shadow); }
+.win.is-focused { filter: none; box-shadow: var(--shadow); }
 
 /* --- A WINDOW OPENING, which is the one thing on this desk that is not a
  * rearrangement ---
@@ -1005,6 +1028,13 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   animation: winOpenLinux .3s cubic-bezier(.16, 1, .3, 1);
 }
 
+/* The reduced-motion stand-ins for the four above and for `winGone`. Same
+   events, same durations, with the size change taken out — which is the whole
+   of what `prefers-reduced-motion` is asking for. They live here, beside the
+   animations they replace, rather than down in the media query, so the pair is
+   readable as a pair. */
+@keyframes winFade       { from { opacity: 0; } }
+@keyframes winGoneFade   { to   { opacity: 0; } }
 @keyframes winOpen       { from { scale: .90; opacity: 0; } }
 @keyframes winOpenMac    { from { scale: .86; opacity: 0; } }
 @keyframes winOpenWin    { from { scale: .94; translate: 0 2.4%; opacity: 0; } }
@@ -1019,6 +1049,79 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * things opening, which is the sentence `.is-new` above is reserved for. */
 .desk-wins.is-cut { animation: deskCut .22s ease-out; }
 @keyframes deskCut { from { opacity: 0; } }
+
+/* --- THE SEAM: where one branch ends and the next begins ------------------
+ *
+ * The tour plays five branches in a row and the boundary between two of them
+ * was, measured on the 5c -> 4 seam, 216 changed pixels: a 16x16 box, one dock
+ * icon going dark. 0.07% of a 714x402 desk. Two statements about two different
+ * situations were separated by less ink than a full stop.
+ *
+ * Worse, two of the four seams borrowed a verb from a branch. 4 -> 5 swapped in
+ * a scene where a window appears with nobody pressing anything, which is
+ * exactly what Launch looks like; 5b -> 5c did the same with Hide. A reader
+ * cannot tell a cut from a claim if they are drawn the same way.
+ *
+ * So the seam gets a verb NO BRANCH USES: the whole desk — wallpaper, windows
+ * and bar together — sinks and comes back. Nothing beckon does darkens
+ * everything at once, so it cannot be read as an outcome, and the scene swap is
+ * hidden inside the trough (beckon.js builds the new desk at t=180, the darkest
+ * point) instead of happening in the open.
+ *
+ * `filter` and not `opacity`: opacity on `.desk` would reveal the page behind
+ * it, and the desk is meant to be a screen, not a pane of glass. */
+.desk.is-seam { animation: deskSeam .4s ease-out; }
+@keyframes deskSeam {
+  0%, 100% { filter: none; }
+  34%, 52% { filter: brightness(.42) saturate(.55); }
+}
+
+/* --- THE CUE: which window this press is about to touch -------------------
+ *
+ * Three of the five branches — Focus, Back, Hide — are a statement about a
+ * window the reader cannot read the name of. Measured on all three skins: in
+ * the Focus scene the window behind shows 19.9% of itself and its title is
+ * covered 100%; in the Back scene the Terminal's name is covered 100% too
+ * (48.2/48.2/50.0px of overlap, hit-testing at 15/50/85% returns Chrome every
+ * time). The table row says "running, not focused" and the readout names the
+ * app, but the PICTURE — the thing the section is built around — said nothing
+ * at all about which of these rectangles the sentence was about.
+ *
+ * So before the press, the window it is about to move gets an accent ring for
+ * six tenths of a second. It is the only channel that states a branch's
+ * precondition on the picture itself, and it is what makes Back legible: the
+ * ring lands on the Terminal while the cap about to appear reads `C`. That
+ * mismatch IS what "Back" means, and it was previously invisible.
+ *
+ * `outline` rather than `border` (no layout effect) with `outline-offset: -2px`
+ * so it draws INSIDE the border box — `.desk { overflow: hidden }` therefore
+ * cannot clip it, and it follows the window's `border-radius` on all three
+ * skins. The transparent outline on `.win` is the placeholder it animates from;
+ * without it the first frame would jump. */
+.win.is-cued { animation: winCue .6s ease-out; }
+@keyframes winCue {
+  0%       { outline-color: transparent; }
+  20%, 62% { outline-color: var(--accent); }
+  100%     { outline-color: transparent; }
+}
+
+/* --- LEAVING: the one branch that takes something off the desk ------------
+ *
+ * Hide used to be `removeChild` in a single frame, which is indistinguishable
+ * from a cut — and since the seam after it was also nearly invisible, the 5b ->
+ * 5c -> 4 stretch read as "a window was closed" rather than "a window was
+ * hidden, and here is a different situation". The window now shrinks into the
+ * dock icon it belongs to, which is what all three of these machines actually
+ * draw, and `hideFor` in beckon.js sets `transform-origin` to that icon's
+ * centre so it goes to the right place on each.
+ *
+ * `forwards` IS REQUIRED and is not the local convention. Every other animation
+ * in this file is a single `from` — an entrance, where the resting state is the
+ * end state and fill mode is irrelevant. This is an EXIT: without `forwards`
+ * the window snaps back to full size when the .28s is up and then waits another
+ * 420ms before the node is removed. */
+.win.is-gone { animation: winGone .28s ease-in forwards; }
+@keyframes winGone { to { scale: 0; opacity: 0; } }
 
 /* --- WHAT THE READER JUST PRESSED ---
  *
@@ -1066,6 +1169,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   gap: clamp(3px, .7cqw, 8px);
   opacity: 0; translate: 0 30%;
   transition: opacity .18s ease, translate .18s ease;
+  /* It is a picture of a keystroke, and the desk under it is draggable. Without
+     this the cap is a 30px dead zone over a window a reader may want to grab —
+     the same "looks like a control, silently does nothing" the page refuses
+     everywhere else, except here the honest fix is to be untouchable rather
+     than to be a control. */
+  pointer-events: none;
 }
 /* IN FAST, OUT SLOW, and the fast half is a number with a job.
  *
@@ -1089,15 +1198,42 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 /* Dark and translucent on all three machines, like every OSD is: the three
    wallpapers are a purple gradient, a blue radial and a teal one, and a light
    pill legible over the first is not legible over the third. */
+/* THE CAP IS THE CAUSE OF EVERYTHING ELSE ON THE DESK, so it is sized as the
+ * reader's own OSD and not as furniture belonging to the fake taskbar under it.
+ *
+ * Measured 2026-08-14 at a 1512x982 viewport, #how desk 714px wide: the same
+ * object printing the same string `Caps + T` rendered at three different sizes
+ * — 24.3px tall / 10.7px type on macOS, 19.3 / 8.9 on Windows, 17.8 / 8.9 on
+ * Linux. That is a 36% spread across skins, and the Linux box came out SMALLER
+ * than this rule's own no-container-unit fallback of 20px. Meanwhile the
+ * sentence explaining the cap, one line below the desk, is 17px. The thing that
+ * causes the demo was set at half the size of the caption describing it.
+ *
+ * The cause was the pair of overrides that used to sit below this block: on
+ * Windows and Linux the cap took its height from `--bar-h` so it would look
+ * welded into the taskbar. That premise is what is wrong. The cap is not an
+ * item on the bar; it is the on-screen display a machine throws up when you hit
+ * a key, and every one of the three draws that at a size you can read from
+ * across the room. macOS was the control sitting in this same file the whole
+ * time — nobody has ever reported its cap reading badly.
+ *
+ * THE ARITHMETIC, since the clamps are otherwise unfalsifiable. `3.7cqw` leaves
+ * the 24px floor at a 649px desk and reaches the 30px ceiling at 811px, so both
+ * desktop desks — #how at 714 and the hero at 807 — sit on the sloped middle
+ * and scale with the picture instead of pinning to an end. Type: `1.75cqw`
+ * leaves 11.5px at 657px and reaches 13.5px at 771px. The two endpoints are not
+ * invented: 11.5px is `.hud button .key`, the smallest keycap this page already
+ * ships, and 13.5px is `.press-key .key`, the biggest. The cap now lands
+ * between two caps a reader has already seen elsewhere on the page. */
 .desk-cap {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 5px;
-  min-width: clamp(20px, 3.4cqw, 34px);
-  height: clamp(20px, 3.4cqw, 34px);
-  padding-inline: clamp(5px, .9cqw, 10px);
-  border-radius: clamp(4px, .7cqw, 8px);
-  font: 600 11px/1 var(--mono);
-  font-size: clamp(10px, 1.5cqw, 15px);
+  min-width: 24px; height: 24px; padding: 0 7px; border-radius: 6px;
+  min-width: clamp(24px, 3.7cqw, 30px);
+  height: clamp(24px, 3.7cqw, 30px);
+  padding-inline: clamp(6px, .95cqw, 9px);
+  border-radius: clamp(5px, .8cqw, 7px);
+  font: 600 11.5px/1 var(--mono);
+  font-size: clamp(11.5px, 1.75cqw, 13.5px);
   color: #F4F5F8;
   background: rgba(14, 16, 22, .62);
   border: 1px solid rgba(255, 255, 255, .16);
@@ -1107,44 +1243,30 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .desk-plus {
   font: 600 10px/1 var(--mono);
-  font-size: clamp(9px, 1.2cqw, 13px);
+  font-size: clamp(10px, 1.5cqw, 12px);
   color: rgba(244, 245, 248, .72);
   text-shadow: 0 1px 3px rgba(0, 0, 0, .5);
 }
 
-/* --- and on the two machines where the rail is a full-width strip, the cap
- * takes its height from the strip rather than from the desk.
+/* --- REMOVED 2026-08-14: the two rules that made the cap fit the taskbar.
  *
- * IT DOES NOT FIT OTHERWISE. Measured at the 807px desk: the cap is 27.4px
- * against a 29.0px Windows taskbar and a 27.4px Linux panel — it fills the
- * panel exactly, which draws a pill welded into the bar rather than one sitting
- * in it. `--bar-h` minus an inset leaves 3.7px of bar visible above and below at
- * that width, and stays proportional at every other one.
+ * They read `min-width/height: calc(var(--bar-h) - clamp(5px, .9cqw, 9px))`
+ * plus a `1.25cqw` type ramp on Windows and Linux, and their stated reason was
+ * that on those two machines the rail is a full-width strip, so a cap that did
+ * not fit inside it drew "a pill welded into the bar rather than one sitting in
+ * it". The reasoning was sound about bars and wrong about what this object is:
+ * it is a picture of a KEYSTROKE, the OSD a machine flashes when you hit a key,
+ * and none of the three draws that at taskbar height. Windows' own volume OSD
+ * is a floating panel; GNOME's is a rounded card in the middle of the screen.
  *
- * macOS is deliberately NOT in this list. Its Dock is a centred floating pill
- * and the cap sits beside it over bare wallpaper, so it is a sibling of the
- * pill, not an item inside it — and shrinking it there would make the two
- * pills on one rail disagree about their own height.
+ * What it cost, measured before the removal: a 36% size spread across three
+ * skins for an object printing the identical string, and a Linux cap of 17.8px
+ * box / 8.9px type — smaller than the fallback in `.desk-cap`'s own first line.
+ * At the same moment the readout explaining the cap was 17px.
  *
- * The type grows at 1.25cqw, which is `.dock-app`'s rate rather than the cap's
- * old 1.5cqw: the cap now shares a bar with those icons, and two things on one
- * strip that scale at different rates only look right at one desk width.
- *
- * The height is spelled out twice rather than held in a local custom property,
- * for two reasons that agree. check-site.sh requires every token to be defined
- * on bare `:root`, and this is a one-rule expression, not a token — and a token
- * for it could not be declared at `:root` anyway, because `var(--bar-h)` would
- * substitute the `0px` there. That is the trap the `--bar-mid` note in §1
- * describes, and this pass shipped it once already. */
-.desk[data-os="windows"] .desk-cap,
-.desk[data-os="linux"]   .desk-cap {
-  min-width: calc(var(--bar-h) - clamp(5px, .9cqw, 9px));
-  height:    calc(var(--bar-h) - clamp(5px, .9cqw, 9px));
-  padding-inline: clamp(4px, .75cqw, 9px);
-  font-size: clamp(8.5px, 1.25cqw, 13px);
-}
-.desk[data-os="windows"] .desk-plus,
-.desk[data-os="linux"]   .desk-plus { font-size: clamp(8px, 1.05cqw, 11px); }
+ * If a future pass wants the cap to acknowledge the bar again, the lever is the
+ * bar's height, not the cap's: `--bar-h` is what would have to grow. Do not
+ * re-add a per-skin cap size. */
 
 /* --- a window the reader is holding ---
  *
@@ -1831,6 +1953,21 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .readout-say { margin: 0; min-width: 0; font-size: 15px; }
 
+/* The tour's own Pause/Play, under the readout and hard right — out of the
+   reading path, next to the thing it controls.
+ *
+ * WHY THERE IS A BUTTON AT ALL. The tour is auto-updating content, so WCAG
+ * 2.2.2 wants a mechanism to pause it, and the three listeners that used to
+ * serve as one do not: `pointerdown` never fires for a trackpad scroll past the
+ * section, and the `document` keydown listener was measured killing the tour
+ * for good when a reader pressed Tab anywhere on the page — before they had
+ * ever scrolled to #how. That listener is gone; this is its replacement, and
+ * unlike it this one is reversible.
+ *
+ * It ships `hidden` and beckon.js un-hides it, like every other JS-only
+ * control on this page: without JS there is no tour to pause. */
+.demo-tour { display: flex; justify-content: flex-end; margin-top: 10px; }
+
 /* The transcript. Not sr-only: it is the sentence the demo is making, and a
    reader who never looks at the stage should still get it. Left-aligned with
    its section by default; only the hero, which is a centred column, centres
@@ -1947,13 +2084,18 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    window keeps its place; raising it changes what is in front of what. Leaving
    `transform` out of the keyframes is what lets the base rule's
    `translate(var(--slot) …)` stand. */
+/* `filter`, not `opacity`, for the reason spelled out on `.win` — under
+   `opacity` a window losing focus measured BRIGHTER than one holding it in
+   three of four app x theme cases. These two keyframes are the JS-off loop and
+   both `.hero-demo` and `.how-demo` ride them, so the fix lands in one place
+   for both. */
 @keyframes deskRaise {
-  0%, 42%   { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
-  50%, 100% { opacity: 1;   z-index: 4; box-shadow: var(--shadow); }
+  0%, 42%   { filter: brightness(.80); z-index: 2; box-shadow: var(--shadow-soft); }
+  50%, 100% { filter: none;            z-index: 4; box-shadow: var(--shadow); }
 }
 @keyframes deskLower {
-  0%, 42%   { opacity: 1;   z-index: 3; box-shadow: var(--shadow); }
-  50%, 100% { opacity: .84; z-index: 2; box-shadow: var(--shadow-soft); }
+  0%, 42%   { filter: none;            z-index: 3; box-shadow: var(--shadow); }
+  50%, 100% { filter: brightness(.80); z-index: 2; box-shadow: var(--shadow-soft); }
 }
 /* The traffic lights follow the window they belong to. Two keyframes rather
    than six: the lights are coloured unconditionally and this animates the
@@ -2626,4 +2768,68 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
     transition-delay: 0ms !important;
   }
   html { scroll-behavior: auto; }
+
+  /* --- and then the demo gets its beats back, because the rule above was
+   * taking away INFORMATION rather than motion.
+   *
+   * Measured 2026-08-14, sampling #how over 12s with a control: with
+   * `no-preference` the section produced 5-11 distinct states; with `reduce` it
+   * produced exactly 1. The tour used to check `matchMedia` itself and return,
+   * so a reader who asks for less motion got a still photograph of a section
+   * whose entire job is to show five different answers. That is not what the
+   * preference asks for. WCAG 2.1's own glossary is explicit: "motion animation
+   * does not include changes of color, blurring, or opacity which do not change
+   * the perceived size, shape, or position". The media query is for vestibular
+   * triggers — things that move, scale and parallax — not for a page that
+   * changes what it says.
+   *
+   * So: everything that interpolates POSITION or SIZE stays killed by the
+   * universal rule above, and everything that interpolates COLOUR, BRIGHTNESS
+   * or OPACITY gets its real duration back. The JS is identical in both
+   * settings — there is no `matchMedia` branch anywhere in beckon.js — because
+   * this is a difference in how the demo is DRAWN, not in what it does.
+   *
+   * THIS BLOCK MUST STAY INSIDE THIS ONE MEDIA QUERY. check-site.sh's check 4
+   * anchors on the FIRST `prefers-reduced-motion: reduce` in the file and reads
+   * to the next `}` at column zero; a second block higher up would move that
+   * window and let the check pass on rules that guarantee nothing. There is
+   * exactly one, and this is it. */
+
+  /* The seam is the main signal here — with entrances flattened it is what
+     tells a reader that one branch ended and another began. */
+  .desk.is-seam     { animation-duration: .4s !important; }
+  .desk-wins.is-cut { animation-duration: .22s !important; }
+  .win.is-cued      { animation-duration: .6s !important; }
+
+  /* The cap arrives and leaves by opacity alone; the 30% rise is the part that
+     moves, so that is the part that goes. The .09s/.18s pair survives, which
+     keeps the cause-then-effect beat `KEY_LEAD_MS` is built on. */
+  .desk-key         { translate: none !important; transition: opacity .18s ease !important; }
+  .desk-key.is-on   { translate: none !important; transition: opacity .09s ease-out !important; }
+
+  /* Focus changes brightness, not geometry. `transform` is deliberately NOT in
+     this list: it carries drag and the cascade offset — real position — and
+     position is exactly what the preference is about. */
+  .win { transition: filter .3s ease, box-shadow .3s ease, border-color .3s ease !important; }
+  .desk[data-os="macos"] .win-lights { transition-duration: .3s !important; }
+
+  /* A window opening still reads as opening; it just does not zoom. */
+  .win.is-new,
+  .desk[data-os="macos"] .win.is-new,
+  .desk[data-os="windows"] .win.is-new,
+  .desk[data-os="linux"] .win.is-new       { animation-name: winFade !important; }
+  .win.is-new                              { animation-duration: .22s !important; }
+  .desk[data-os="macos"]   .win.is-new     { animation-duration: .24s !important; }
+  .desk[data-os="windows"] .win.is-new     { animation-duration: .25s !important; }
+  .desk[data-os="linux"]   .win.is-new     { animation-duration: .3s  !important; }
+  .win.is-gone { animation-name: winGoneFade !important; animation-duration: .28s !important; }
+
+  .desk-bar .dock-app { transition: opacity .3s ease, box-shadow .3s ease !important; }
+  /* The one beat that is DROPPED rather than translated. It is a bouncing icon
+     at the edge of vision — large-amplitude motion, and a copy of the very Dock
+     bounce that macOS's own Reduce Motion switches off. Nothing is lost: the
+     icon still lights .32 -> .8 with its focus ring over .3s, the cap prints
+     `Caps + T`, and the readout names the app. */
+  .dock-app.is-launching,
+  .desk[data-os="macos"] .dock-app.is-launching { animation: none !important; }
 }
