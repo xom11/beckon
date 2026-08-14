@@ -12,6 +12,56 @@ Cross-platform focus-or-launch app switcher for macOS, Windows, and Linux. A thi
 
 **Name-first identifiers.** The id can be a human-readable Name (e.g. `Claude`, `Brave`) or a canonical OS-level id (e.g. sway `app_id`, macOS `bundle_id`). beckon resolves Names against installed-app metadata (`.desktop` `Name=` on Linux). Names are stable across machines; OS-level ids often are not (Brave PWA hashes vary per install). Bindings should prefer Names; canonical ids are a fallback for ambiguity.
 
+## One worktree per session
+
+**Every session that is going to change anything works in its own git
+worktree. Never in the primary checkout, and never directly on `main`.**
+`.worktrees/` has been in `.gitignore` since before this entry existed — the
+rule was implicit, and being implicit is exactly how it got broken.
+
+```sh
+cd ~/Documents/dev/beckon
+git worktree add .worktrees/<branch> -b <branch> origin/main
+cd .worktrees/<branch>
+```
+
+**Why this is a rule and not a preference.** Measured on 2026-08-14: the
+primary checkout held **970 uncommitted lines belonging to two unrelated
+workstreams at once** — a Hyprland-parity change (`hyprland.rs`, `CLAUDE.md`,
+`testing/linux_live_test.py`) and a `check --resolve` implementation
+(`beckon-cli/src/lib.rs`, two test files) — while `ListAgents` showed three
+Claude sessions with that directory open. The failure modes are not
+hypothetical and not visible from inside any one session:
+
+- `git status` cannot say which change belongs to whom, so nobody can commit
+  without either sweeping in a stranger's work or hand-picking hunks.
+- `git switch` in one session moves the branch under every other session
+  sharing the checkout. One did, mid-edit.
+- Two sessions independently designed the *same* flag with **opposite**
+  semantics (`--resolve` exiting non-zero versus never changing the exit
+  code). Neither could see the other's work, because it was uncommitted.
+- A `CLAUDE.md` edit from either session lands on top of the other's
+  uncommitted text and is swept into whichever commit is made first.
+
+Rules that follow from that:
+
+- **Share the build directory.** `target/` is ~7.4 GB and this workspace also
+  cross-compiles to `aarch64-pc-windows-msvc`; a fresh worktree rebuilds all
+  of it. Export `CARGO_TARGET_DIR=~/Documents/dev/beckon/target` in the
+  worktree unless you have a reason to want a cold build. Cargo takes a lock
+  on that directory, so two worktrees building at once **serialise** — they
+  do not corrupt each other, and waiting is far cheaper than rebuilding.
+- **The primary checkout stays on `main` and stays clean.** It is for reading,
+  for `git log`, and for owning the shared `target/`.
+- **Clean up when the branch merges**: `git worktree remove .worktrees/<branch>`.
+  `git worktree list` is the inventory. Two strays predate this rule and are
+  not covered by it — `~/Documents/dev/beckon-fix-linux` and
+  `.claude/worktrees/four-doors-phase-0`.
+- **Before starting, look for company**: `git worktree list`, `git status` in
+  the primary checkout, and `ListAgents`. Uncommitted work in a shared
+  checkout means somebody is mid-task; a feature that already exists there
+  uncommitted means your plan needs reconciling, not executing.
+
 ## Architecture
 
 ### Workspace layout (Rust)
