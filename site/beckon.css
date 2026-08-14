@@ -981,6 +981,73 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 @keyframes winOpenWin    { from { scale: .94; translate: 0 2.4%; opacity: 0; } }
 @keyframes winOpenLinux  { from { scale: .90; opacity: 0; } }
 
+/* --- A CUT BETWEEN SCENES, which is not a thing that happened to the windows
+ *
+ * #how rebuilds the whole desk when a row is picked, so every window on it
+ * changes in one frame. Read as motion that is five windows doing something at
+ * once; read as a cut it is a different desktop, which is what it is. The fade
+ * is on the CONTAINER for exactly that reason — per window it would be five
+ * things opening, which is the sentence `.is-new` above is reserved for. */
+.desk-wins.is-cut { animation: deskCut .22s ease-out; }
+@keyframes deskCut { from { opacity: 0; } }
+
+/* --- WHAT THE READER JUST PRESSED ---
+ *
+ * A press moved a window and nothing on the desk said why. On the hero the
+ * reader's own finger was on the key, so it was survivable; #how presses for
+ * them on a timer, and a desk that rearranges itself with no visible cause is
+ * the "it just jumped" reading this exists to close.
+ *
+ * BOTTOM RIGHT because the cascade runs top-left to bottom-right and stops at
+ * slot 4 — that corner is the one piece of wallpaper no window reaches. Above
+ * the bar by `--bar-h`, so it sits in the work area with the windows rather
+ * than over the dock.
+ *
+ * It prints `Caps + <letter>`, the gesture the chord rows one screen up teach,
+ * rather than the real chord: those rows say Caps Lock stands in for the
+ * reader's own modifier, and this is that same sentence in the same words.
+ *
+ * z-index 45: over every window (a window's is `open windows - MRU index`, so
+ * at most six) and under the bar's 50, because a key cap floating over the dock
+ * would read as being part of it. */
+.desk-key {
+  position: absolute;
+  right: 3.5%; bottom: calc(var(--bar-h) + 3.5%);
+  z-index: 45;
+  display: flex; align-items: center;
+  gap: 4px;
+  gap: clamp(3px, .7cqw, 8px);
+  opacity: 0; translate: 0 30%;
+  transition: opacity .18s ease, translate .18s ease;
+}
+.desk-key.is-on { opacity: 1; translate: 0 0; }
+
+/* Dark and translucent on all three machines, like every OSD is: the three
+   wallpapers are a purple gradient, a blue radial and a teal one, and a light
+   pill legible over the first is not legible over the third. */
+.desk-cap {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 6px; border-radius: 5px;
+  min-width: clamp(20px, 3.4cqw, 34px);
+  height: clamp(20px, 3.4cqw, 34px);
+  padding-inline: clamp(5px, .9cqw, 10px);
+  border-radius: clamp(4px, .7cqw, 8px);
+  font: 600 11px/1 var(--mono);
+  font-size: clamp(10px, 1.5cqw, 15px);
+  color: #F4F5F8;
+  background: rgba(14, 16, 22, .62);
+  border: 1px solid rgba(255, 255, 255, .16);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .3);
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+}
+.desk-plus {
+  font: 600 10px/1 var(--mono);
+  font-size: clamp(9px, 1.2cqw, 13px);
+  color: rgba(244, 245, 248, .72);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+}
+
 /* --- a window the reader is holding ---
  *
  * The desk is draggable, resizable and maximisable, and NONE OF THAT IS

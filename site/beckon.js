@@ -316,6 +316,49 @@
     return n;
   }
 
+  /* --- what the reader just pressed, drawn on the desk itself ---------------
+   *
+   * A press moved a window and nothing on the desk said why. On the hero that
+   * was survivable — the reader's own finger was on the key — but #how presses
+   * for them on a timer, and a window that rearranges itself with no visible
+   * cause is the "it just jumped" complaint this exists to answer.
+   *
+   * BOTTOM RIGHT, over the wallpaper, out of the cascade's way: windows run
+   * top-left to bottom-right and slot 4's corner is the one place on the desk
+   * they never all reach at once.
+   *
+   * It prints `Caps + <letter>`, which is the gesture the hero's chord rows
+   * teach, not the raw chord — the whole page's claim is that Caps Lock stands
+   * in for the reader's real modifier, and this is the same sentence said in
+   * the same words one screen down.
+   *
+   * BUILT HERE, NEVER IN THE MARKUP, like `.win-grip`: without this file
+   * nothing can press anything, so a keycap sitting on a JS-off desk would be
+   * announcing a gesture that page cannot answer. */
+  function keyHud(host, letter) {
+    var hud = host._hud;
+    if (!hud) {
+      hud = el('div', 'desk-key');
+      hud.setAttribute('aria-hidden', 'true');   /* the readout is the accessible answer */
+      hud.appendChild(el('kbd', 'desk-cap is-caps', 'Caps'));
+      hud.appendChild(el('span', 'desk-plus', '+'));
+      hud.appendChild(el('kbd', 'desk-cap is-letter', ''));
+      host.appendChild(hud);
+      host._hud = hud;
+    }
+    hud.lastChild.textContent = letter;
+    /* Restart the animation on a second press of the same key: an animation
+       only replays if it is taken off and put back with a reflow in between,
+       and `void offsetWidth` is the reflow. Without it, pressing C twice shows
+       the cap once and the reader reads the second press as having done
+       nothing. */
+    hud.classList.remove('is-on');
+    void hud.offsetWidth;
+    hud.classList.add('is-on');
+    clearTimeout(host._hudOff);
+    host._hudOff = setTimeout(function () { hud.classList.remove('is-on'); }, 1400);
+  }
+
   /* Hang a class on a node for one animation's length.
      THE CLASS CANNOT BE LEFT ON. `renderDesk` takes a minimised window OUT of
      the DOM and puts it back when it is restored, and a node re-inserted still
@@ -326,6 +369,13 @@
      lights too, so it would need a target check to be correct, and a timer needs
      nothing to be correct. */
   function flashFor(node, cls) {
+    /* Off, reflow, on — an animation replays only if the class is taken away
+       and put back with a style recalculation in between. A second scene set
+       inside the timeout below would otherwise cut with no fade, because
+       `classList.add` of a class already there does nothing. The forced layout
+       is one per press or per scene change, both of which are human-paced. */
+    node.classList.remove(cls);
+    void node.offsetWidth;
     node.classList.add(cls);
     setTimeout(function () { node.classList.remove(cls); }, 700);
   }
@@ -792,6 +842,9 @@
       host._pool = {};
       host.querySelector('.desk-wins').replaceChildren();
       renderDesk(host, desk);
+      /* A new machine has not been pressed on yet, so the cap from the last one
+         must not still be sitting in the corner claiming otherwise. */
+      if (host._hud) host._hud.classList.remove('is-on');
     }
 
     /* `ok` is "the gesture was made" — a real chord, a held Caps Lock, or a
@@ -809,6 +862,7 @@
          closing an app and pressing its key again is a launch that comes back
          through here. */
       renderDesk(host, desk, r.born);
+      keyHud(host, app.label);
       if (ui) ui.flash(app.key);
       /* Only the LAST cap of each chord is rewritten — the letter. The
          modifiers are never touched: "one letter, whatever your modifier is"
@@ -860,8 +914,21 @@
       desk = deskMake(root.dataset.os || 'linux', DESK_SCENES[step]);
       host.setAttribute('data-os', desk.os);
       host._pool = {};                       /* a new scene is new windows */
-      host.querySelector('.desk-wins').replaceChildren();
+      var wins = host.querySelector('.desk-wins');
+      wins.replaceChildren();
       renderDesk(host, desk);
+      /* A SCENE CHANGE IS A CUT, AND IT HAS TO LOOK LIKE ONE. Building the desk
+         swaps every window on it in a single frame, which reads as the windows
+         having moved — the same misreading `.is-new` exists to prevent, one
+         level up. A short fade over the whole `.desk-wins` says "different
+         desktop" instead of "these windows did something", and it is on the
+         CONTAINER rather than on each window precisely so it cannot be mistaken
+         for five things opening at once. */
+      flashFor(wins, 'is-cut');
+      /* The key cap belongs to the press, not to the setup, so a cut clears it:
+         leaving `Caps T` on screen next to a desk that has just been rebuilt
+         claims the reader pressed something to get here. */
+      if (host._hud) host._hud.classList.remove('is-on');
       mark('is-on', step);
       mark('is-hit', null);
 
@@ -882,8 +949,12 @@
          actual windows with actual names in them, and the line under it named
          none of them. `readyLine` reads the scene the desk was just built from,
          so it cannot drift from what is on screen, and it stays correct if a
-         scene in desk.js is ever changed. */
-      readout(out, deskStepName(step), readyLine(desk, 'c'));
+         scene in desk.js is ever changed.
+
+         `deskSceneKey` and not a hard-coded 'c': the Launch scene presses T on
+         an empty desk, and the sentence has to be about the app that press is
+         going to open. */
+      readout(out, deskStepName(step), readyLine(desk, deskSceneKey(step)));
     }
 
     /* What is true right now, for the app the tour presses. Short, and it names
@@ -911,6 +982,7 @@
       var r = deskPress(desk, key);
       desk = r.desk;
       renderDesk(host, desk, r.born);          /* set by the launch branch only */
+      keyHud(host, app.label);                 /* the tour presses for the reader */
       if (ui) ui.flash(app.key);
       mark('is-on', null);
       mark('is-hit', r.step);
@@ -1005,9 +1077,11 @@
      * so it can never show a state a reader could not reach themselves, and
      * desk.js stays the only thing that decides what a press does.
      *
-     * `c` in every scene, and that is DESK_SCENES' own design rather than a
-     * choice made here: "Pressing C in each of these is what makes that row's
-     * step fire".
+     * THE LETTER COMES FROM `deskSceneKey`, which is DESK_SCENES' own pairing
+     * rather than a choice made here — a scene and the key that answers it are
+     * one fact and they live together. It was `c` in every scene until the
+     * Launch scene became an empty desk, which is the one case where the key
+     * has something to open rather than something to move.
      */
     (function () {
       if (!window.matchMedia || !window.IntersectionObserver) return;
@@ -1038,7 +1112,7 @@
         timer = null;
         if (stopped) return;
         if (armed) {
-          press('c', true);
+          press(deskSceneKey(STEPS[at]), true);
           armed = false;
           at = (at + 1) % STEPS.length;
           queue(WATCH);

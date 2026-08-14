@@ -12,8 +12,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  DESK_APPS, DESK_SCENES, DESK_SLOTS,
-  deskMake, deskPress, deskAppOf, deskSay, deskStepName,
+  DESK_APPS, DESK_SCENES, DESK_SCENE_KEY, DESK_SLOTS,
+  deskMake, deskPress, deskAppOf, deskSceneKey, deskSay, deskStepName,
   deskFocus, deskMinimize, deskClose, deskToggleMax, deskSayWindow
 } = require('./desk.js');
 
@@ -161,6 +161,42 @@ test('a relaunch takes back the place it freed, rather than drifting off the rin
   assert.equal(reborn.slot, chrome.slot, 'Chrome came back somewhere else');
   const drawn = d.wins.map(w => w.slot % DESK_SLOTS);
   assert.equal(new Set(drawn).size, d.wins.length, `two windows drawn at one place: ${drawn}`);
+});
+
+/* --- each scene and the key that answers it -------------------------------- */
+
+test('every row of #how fires its own branch, with its own letter', () => {
+  /* The table in #how sets a scene per row and the tour then presses for the
+     reader. If a scene and its key ever stop matching, the mark lands on a row
+     the desk is not demonstrating — and nothing else would notice, because both
+     halves are individually valid. */
+  for (const step of ['4', '5', '5a', '5b', '5c']) {
+    const r = deskPress(scene(step), deskSceneKey(step));
+    assert.equal(r.step, step, `scene ${step} + ${deskSceneKey(step)} fired ${r.step}`);
+  }
+});
+
+test('the Launch scene is an empty desk, and its key opens the first window', () => {
+  /* It used to hold a Terminal while the row beside it read "not running" and
+     the line under it named Chrome — a picture with a window in it, captioned
+     about an app that was not that window. */
+  assert.deepEqual(DESK_SCENES['4'], []);
+  const d = scene('4');
+  assert.equal(d.wins.length, 0);
+  assert.equal(d.focused, null);
+
+  const r = deskPress(d, deskSceneKey('4'));
+  assert.equal(r.step, '4');
+  assert.equal(r.desk.wins.length, 1);
+  assert.equal(front(r.desk).app, 'Terminal', 'T on an empty desk opens the terminal');
+  assert.ok(r.born, 'and the renderer is told to animate it open');
+});
+
+test('every scene key is a real letter, and an unknown step still answers', () => {
+  for (const [step, key] of Object.entries(DESK_SCENE_KEY)) {
+    assert.ok(deskAppOf(key), `scene ${step} is keyed to ${key}, which is bound to nothing`);
+  }
+  assert.ok(deskAppOf(deskSceneKey('nope')), 'the fallback letter is unbound');
 });
 
 /* --- what the renderer is allowed to animate ------------------------------- */

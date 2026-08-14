@@ -372,22 +372,48 @@ var DESK_SCENES = {
      to open with. */
   hero: [{ app: 'VS Code' }, { app: 'Chrome' }, { app: 'Terminal' }],
 
-  /* One per row of the algorithm table in #how. Pressing C in each of these is
-     what makes that row's step fire; every other letter still runs the real
-     algorithm and lights whichever row it lands on. */
-  '4':  [{ app: 'Terminal' }],
+  /* One per row of the algorithm table in #how. Each is paired with the letter
+     in `DESK_SCENE_KEY` below, and pressing that letter is what makes the row's
+     step fire; every other letter still runs the real algorithm and lights
+     whichever row it lands on.
+
+     THE LAUNCH SCENE IS AN EMPTY DESK. It used to hold a Terminal while the row
+     beside it said "not running" and the line under it said "Chrome is not
+     running" — so the picture the reader was looking at had a window in it, and
+     the only two sentences on screen were about an app that was not the window.
+     Nothing is running here, which is what the row claims, and it is the one
+     scene where the press has something to show rather than something to
+     rearrange. */
+  '4':  [],
   '5':  [{ app: 'Terminal' }, { app: 'Chrome' }],
   '5a': [{ app: 'Chrome' }, { app: 'Chrome' }, { app: 'Terminal' }],
   '5b': [{ app: 'Chrome' }, { app: 'Terminal' }],
   '5c': [{ app: 'Chrome' }]
 };
 
+/* WHICH LETTER MAKES EACH ROW'S BRANCH FIRE. It was `c` for all five, hard-coded
+   in two places in the renderer, and it stayed `c` because every scene had a
+   Chrome in it — which is exactly why the Launch scene had a window in it at
+   all. With that scene empty the pairing has to be stated somewhere, and here
+   is where the scenes are: a scene and the key that answers it are one fact.
+
+   Launch presses T on an empty desk. Any of the five letters would fire step 4
+   there; T is the one whose app a reader expects to be the first thing open on
+   a bare desktop, and it is what the tour and the readout both name. */
+var DESK_SCENE_KEY = { '4': 't', '5': 'c', '5a': 'c', '5b': 'c', '5c': 'c' };
+
+function deskSceneKey(step) {
+  return DESK_SCENE_KEY[step] || 'c';
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     DESK_APPS: DESK_APPS,
     DESK_SCENES: DESK_SCENES,
+    DESK_SCENE_KEY: DESK_SCENE_KEY,
     DESK_SLOTS: DESK_SLOTS,
     deskAppOf: deskAppOf,
+    deskSceneKey: deskSceneKey,
     deskMake: deskMake,
     deskPress: deskPress,
     deskSay: deskSay,
