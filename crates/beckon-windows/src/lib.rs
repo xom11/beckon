@@ -85,8 +85,7 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
-/// Which of `names` no installed app answers to, for
-/// `beckon check --resolve`.
+/// One resolution report per name, for `beckon check --resolve`.
 ///
 /// A batch rather than a loop, and deliberately over the full
 /// `scan_installed_apps()` rather than `resolve_lazy`: the AppsFolder half of
@@ -94,19 +93,14 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
 /// for an eighteen-binding file is the thing to avoid, while paying it once
 /// buys the same completeness `installed` / `resolve` are given.
 #[cfg(target_os = "windows")]
-pub fn unresolved_names<'a>(names: &[&'a str]) -> Result<Vec<&'a str>> {
-    let installed = apps::scan_installed_apps();
-    Ok(names
-        .iter()
-        .copied()
-        .filter(|n| apps::resolve(n, &installed).is_none())
-        .collect())
+pub fn resolve_reports(names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Ok(apps::resolve_reports(names))
 }
 
 /// Returns an error rather than an empty vector: an empty one reads as
 /// "every name resolved", which is the one answer this cannot know.
 #[cfg(not(target_os = "windows"))]
-pub fn unresolved_names<'a>(_names: &[&'a str]) -> Result<Vec<&'a str>> {
+pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
     Err(BackendError::UnsupportedEnvironment(
         "beckon-windows only runs on Windows".to_string(),
     ))

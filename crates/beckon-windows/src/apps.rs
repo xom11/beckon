@@ -11,6 +11,7 @@
 //!   3. Exe filename stem/name match (e.g. `brave` matches `brave.exe`).
 //!   4. Installed name substring (alphabetical-first wins).
 
+use beckon_core::certainty::{Certainty, NameReport};
 use std::path::{Path, PathBuf};
 use windows::core::{Interface, GUID, PCWSTR, PWSTR};
 use windows::Win32::Foundation::PROPERTYKEY;
@@ -61,6 +62,21 @@ impl MatchType {
             MatchType::InstalledAumid => "AppUserModelID",
             MatchType::InstalledExeStem => "exe filename stem",
             MatchType::InstalledNameSubstring => "Start Menu/app display name (substring)",
+        }
+    }
+
+    /// How sure this tier is, in the cross-OS vocabulary.
+    ///
+    /// Exhaustive with no wildcard arm on purpose. `InstalledExeStem` is
+    /// `Exact`: it compares `a.exe_name == needle_exe`, whole-string
+    /// equality, not a substring.
+    pub fn certainty(self) -> beckon_core::certainty::Certainty {
+        use beckon_core::certainty::Certainty;
+        match self {
+            MatchType::InstalledName => Certainty::Exact,
+            MatchType::InstalledAumid => Certainty::Exact,
+            MatchType::InstalledExeStem => Certainty::Exact,
+            MatchType::InstalledNameSubstring => Certainty::Guess,
         }
     }
 }
@@ -452,6 +468,84 @@ pub fn name_substring_matches(id: &str, installed: &[InstalledAppInfo]) -> Vec<I
     matches
 }
 
+/// What a keypress costs when a name matched only by substring and exactly one
+/// app answered it.
+const GUESS_LONE: &str =
+    "substring match, so an app installed later can quietly take this name";
+
+/// What happens on a miss. Not "nothing": the window-matching layer still
+/// tries the exe name and then the window title, so a miss can still focus
+/// something — it just can never launch.
+const MISS_CONSEQUENCE: &str =
+    "no installed app; focus may still match by exe or window title, launch will fail";
+
+fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> NameReport {
+    let certainty = m.match_type.certainty();
+    let (consequence, suggestions) = if certainty == Certainty::Guess {
+        let needle = normalize(id);
+        let mut others: Vec<String> = installed
+            .iter()
+            .filter(|a| {
+                normalize(&a.name).contains(&needle) && normalize(&a.name) != normalize(&m.name)
+            })
+            .map(|a| a.name.clone())
+            .collect();
+        others.sort();
+        let sentence = if others.is_empty() {
+            GUESS_LONE.to_string()
+        } else {
+            format!(
+                "substring match with {} candidates; \"{}\" wins only because it sorts first",
+                others.len() + 1,
+                m.name
+            )
+        };
+        others.truncate(3);
+        (sentence, others)
+    } else {
+        (String::new(), Vec::new())
+    };
+    // An AUMID is what activation actually uses for a packaged app; for a
+    // classic shortcut the exe path is the honest answer.
+    let target = match &m.aumid {
+        Some(aumid) => aumid.clone(),
+        None => m.exe_path.clone(),
+    };
+    NameReport {
+        id: id.to_string(),
+        certainty,
+        target: Some(target),
+        tier: Some(m.match_type.describe()),
+        consequence,
+        suggestions,
+    }
+}
+
+/// One `NameReport` per name, in the order given, against a caller-supplied
+/// catalog.
+pub(crate) fn resolve_reports_in(names: &[&str], installed: &[InstalledAppInfo]) -> Vec<NameReport> {
+    names
+        .iter()
+        .map(|id| match resolve(id, installed) {
+            Some(m) => report_for(id, &m, installed),
+            None => NameReport {
+                id: (*id).to_string(),
+                certainty: Certainty::NoMatch,
+                target: None,
+                tier: None,
+                consequence: MISS_CONSEQUENCE.to_string(),
+                suggestions: Vec::new(),
+            },
+        })
+        .collect()
+}
+
+/// One `NameReport` per name, against this machine, with a single catalog scan.
+pub fn resolve_reports(names: &[&str]) -> Vec<NameReport> {
+    let installed = scan_installed_apps();
+    resolve_reports_in(names, &installed)
+}
+
 // -- helpers --
 
 fn to_wide_path(path: &Path) -> Vec<u16> {
@@ -836,5 +930,97 @@ mod tests {
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
             .collect();
         assert_eq!(names, vec!["shallow.lnk"]);
+    }
+
+    // ---------- certainty ----------
+
+    /// Exactly one tier is a guess. `InstalledExeStem` looks fuzzy and is not:
+    /// it is `a.exe_name == needle_exe`, whole-string equality.
+    #[test]
+    fn only_the_substring_tier_is_a_guess() {
+        use beckon_core::certainty::Certainty;
+        assert_eq!(MatchType::InstalledName.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::InstalledAumid.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::InstalledExeStem.certainty(), Certainty::Exact);
+        assert_eq!(
+            MatchType::InstalledNameSubstring.certainty(),
+            Certainty::Guess
+        );
+    }
+
+    // ---------- reports ----------
+
+    #[test]
+    fn every_name_gets_one_report_in_the_order_asked() {
+        let installed = vec![app("Claude", "claude.exe"), app("Brave", "brave.exe")];
+        let reports = resolve_reports_in(&["Brave", "Claude", "nope-zzz"], &installed);
+        let ids: Vec<&str> = reports.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["Brave", "Claude", "nope-zzz"]);
+    }
+
+    #[test]
+    fn an_exact_name_has_nothing_to_warn_about() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![app("Claude", "claude.exe")];
+        let r = &resolve_reports_in(&["Claude"], &installed)[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.tier, Some("Start Menu/app display name (exact)"));
+        assert!(r.consequence.is_empty());
+        assert!(r.suggestions.is_empty());
+    }
+
+    /// The exe names are deliberately not `brave.exe`: tier 3 is
+    /// `a.exe_name == "brave.exe"`, which would match the id `brave` exactly
+    /// and grade `Exact` before the substring tier is reached.
+    #[test]
+    fn several_substring_candidates_name_the_winner_and_the_runners_up() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![
+            app("Brave Browser", "bravebrowser.exe"),
+            app("Brave Browser Beta", "bravebeta.exe"),
+        ];
+        let r = &resolve_reports_in(&["brave"], &installed)[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert_eq!(r.tier, Some("Start Menu/app display name (substring)"));
+        assert!(r.consequence.contains('2'), "{:?}", r.consequence);
+        assert_eq!(r.suggestions, vec!["Brave Browser Beta".to_string()]);
+    }
+
+    #[test]
+    fn a_lone_substring_match_says_a_new_install_could_take_it() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![app("Brave Browser", "bravebrowser.exe")];
+        let r = &resolve_reports_in(&["brave"], &installed)[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert!(r.suggestions.is_empty());
+        assert!(r.consequence.contains("install"), "{:?}", r.consequence);
+    }
+
+    /// On Windows a miss is not the end of the story — the window-matching
+    /// layer still tries exe name and window title — so the sentence must not
+    /// claim the key does nothing.
+    #[test]
+    fn a_miss_says_what_windows_actually_does_next() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![app("Claude", "claude.exe")];
+        let r = &resolve_reports_in(&["zalo"], &installed)[0];
+        assert_eq!(r.certainty, Certainty::NoMatch);
+        assert_eq!(r.target, None);
+        assert!(r.consequence.contains("title"), "{}", r.consequence);
+    }
+
+    /// A packaged app reports its AUMID, because that is what activation uses.
+    #[test]
+    fn a_packaged_app_reports_its_aumid_as_the_target() {
+        let installed = vec![appx(
+            "Windows Terminal",
+            "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App",
+            "wt.exe",
+        )];
+        let r = &resolve_reports_in(&["Windows Terminal"], &installed)[0];
+        assert_eq!(
+            r.target.as_deref(),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe!App")
+        );
     }
 }
