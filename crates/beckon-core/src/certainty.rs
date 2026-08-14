@@ -215,6 +215,20 @@ mod tests {
         assert_eq!(s.line(), "5 exact, 2 no match");
     }
 
+    /// The complement of the test above. Without it, coupling the guess push
+    /// to `no_match > 0` passes every other test in this module while
+    /// silently dropping the guess count — which is the one number
+    /// `check --resolve` exists to surface.
+    #[test]
+    fn line_omits_no_match_when_there_are_none() {
+        let s = Summary {
+            exact: 5,
+            guess: 3,
+            no_match: 0,
+        };
+        assert_eq!(s.line(), "5 exact, 3 guess");
+    }
+
     #[test]
     fn line_says_so_plainly_when_nothing_is_wrong() {
         let s = Summary {
