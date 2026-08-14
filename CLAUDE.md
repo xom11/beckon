@@ -1194,11 +1194,27 @@ OS metadata on every call.
   **The hook must never outlive the window**, and it does not: `end_capture`
   is idempotent and is called by the `Stop` button, all three of §F.4's focus
   layers, a 10 s watchdog, `WM_CLOSE` (before the save prompt — that prompt
-  is a modal loop on the hook's own thread), `WM_DESTROY`, and both
+  is a modal loop on the hook's own thread), `WM_DESTROY`, both
   `std::process::exit` arms of `hotkey::run_forever` (Quit from the tray
-  never reaches a `WM_DESTROY`). The watchdog is not belt-and-braces:
-  `is_installed()` can lie, because past `LowLevelHooksTimeout` Windows
-  removes the hook silently and there is no API to ask.
+  never reaches a `WM_DESTROY`) — and, since the tab strip landed
+  (2026-08-14, `fa16bf3`), **a page switch**: `settings_window::show_page`
+  calls it after the unchanged-door guard and before anything is hidden.
+  That one is not redundant with the three focus layers, and this is why it
+  had to be added rather than assumed: **`WM_KILLFOCUS`, `WM_ACTIVATE` and
+  `WM_ACTIVATEAPP` are all about the WINDOW losing focus, and a pill click is
+  a child-to-child focus move inside one window** — none of the three fires.
+  `Stop` is `IDC_RECORD` wearing another caption and `IDC_RECORD` is a
+  Shortcuts-page control, so the switch takes the only visible way out of a
+  recording off the screen while the hook is still swallowing every
+  keystroke; the mouse reaches the pills freely because the hook swallows the
+  keyboard only. The watchdog is a weak bound on that, not a substitute:
+  `CAPTURE_TIMEOUT_MS` bounds SILENCE and `on_capture` re-arms the timer for
+  every outcome the hook posts, so a held modifier keeps the clock running.
+  Worse, a chord completed behind another door still ran `Outcome::Captured`
+  all the way into `push_shortcut`. The watchdog itself is not
+  belt-and-braces either: `is_installed()` can lie, because past
+  `LowLevelHooksTimeout` Windows removes the hook silently and there is no
+  API to ask.
 
   The typed path stays primary — capture is an accelerator, not a
   replacement. Someone who cannot physically produce a chord still has the

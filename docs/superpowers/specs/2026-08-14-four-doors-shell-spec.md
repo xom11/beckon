@@ -262,20 +262,33 @@ property (`layout.rs:165-168`).
    window-wide fact — the design's warn dot on the Shortcuts pill is how it
    stays visible from the other three pages.
 
-   **INCOMPLETE, corrected 2026-08-14 after Task 4 landed.** That is the whole
-   of what this item said, and it is only half the consequence. Making the
-   *announcement* Shortcuts-only while `external_change` stays window-wide
-   silently made Save — which is chrome, enabled from `apply_enabled` alone,
-   the default ring's resting place and `Ctrl+S`'s target — able to overwrite
-   an externally changed file from three pages with nothing on screen saying
-   so. `apply_settings` (`serve.rs`) writes unconditionally and there is no
-   prompt anywhere: **the banner being on screen WAS the whole protection.**
-   The warn dot is a notice and does not close this, so the guard cannot wait
-   for Task 6: `beckon_core::settings::save_press` refuses the press once and
-   opens `BANNER_PAGE` instead, which puts `Reload from disk` and `Keep mine`
-   under the user's hand; the next press writes. It is enforced in
-   `apply_settings` rather than on the button because the close prompt's
-   `SaveChoice::Save` reaches the same write without going near `IDC_APPLY`.
+   **WRONG, corrected 2026-08-14 after Task 4 landed — and the first
+   correction was wrong too.** Making the *announcement* Shortcuts-only while
+   `external_change` stays window-wide silently made Save — which is chrome,
+   enabled from `apply_enabled` alone, the default ring's resting place and
+   `Ctrl+S`'s target — able to overwrite an externally changed file from three
+   pages with nothing on screen saying so. `apply_settings` (`serve.rs`) writes
+   unconditionally and there is no prompt anywhere: **the banner being on
+   screen WAS the whole protection.**
+
+   The first correction (`aa9fbd6`) kept this item's rule and added a guard —
+   `save_press` refused the press once and switched the window to the banner's
+   door. **Reverted.** It bought the protection with a third route into
+   `show_page`, and that route moved no focus and changed card geometry, which
+   are exactly the two properties `repair_hidden_button` and
+   `combo_needs_placing` are built to survive; both promptly had a live defect
+   through it. What ships instead is the simple thing: **`banner_shown` ignores
+   the page while `external_change` is set**, so the announcement is on every
+   door and there is no door Save can be pressed from with the warning off
+   screen. That removes a page-switch route rather than adding one, and it
+   answers the failure directly instead of routing around it.
+
+   So this item's rule returns **at Task 6**, not before: the warn dot on the
+   Shortcuts pill (§5) is what carries the fact to the other three doors, and
+   only once it exists can the drawing narrow back to `BANNER_PAGE`. Until then
+   the cost is a band of height on Keyboard, System and About in a rare state —
+   a layout cost, not a correctness one. `banner_shown` keeps its `page`
+   parameter so Task 6 is one edit to that body and to nothing else.
 4. **`Ui` gains `shown_page`**, beside `shown_external` and `shown_empty`, and
    the `layout` guard at `mod.rs:3789-3796` gains that term. Without it a
    page switch through `apply_state` would leave the previous page's geometry
@@ -476,7 +489,9 @@ in place**.
 |---|---|---|
 | G2 | Does `CDIS_HOT` reach a `BS_PUSHLIKE` auto-radio's `NM_CUSTOMDRAW`? The whole control choice rests on it | an ordinary `BS_PUSHBUTTON` in the same run, which is known to get it (`mod.rs:4356-4366`) |
 | G3 | `GetClientRect` and `GetWindowRect` logged side by side | already built: `settings_probe.rs:781-862` prints both with a MATCH verdict. Reading says they are equal; this confirms it |
-| G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with the skip disabled, which must lose the text. **There are TWO skips and the round trip needs both** — `if shortcuts` in `layout` on the way out, `combo_needs_placing` on the way back (§10 item 1) — so disable them one at a time: with only the second removed the text is lost on the way back, which is the half Task 4 shipped |
+| G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with each guard disabled in turn, which must lose the text. **There are THREE guards and the round trip needs all of them** — `if shortcuts` in `layout` on the way out, `combo_needs_placing` on the way back, and `place_app_combo`'s save/restore for the trip back that really did move the combo. Disable them one at a time: with only the second removed the text is lost on the way back, which is the half Task 4 shipped; with only the third removed it survives the plain round trip and is lost by the round trip taken **while the external-change banner appears on the other page**, which is the run to script |
+| G-S5 | What does `GetFocus()` return with the App combo focused, and does `hidden_child` recognise it once the combo is hidden? Focus `IDC_APP`, read `GetFocus`, read `GetDlgCtrlID` on it, `SW_HIDE` the combo, then read `GetWindowLongW(GWL_STYLE)` **and** `IsWindowVisible` on the same handle | the same four reads on `IDC_FILTER`, a plain EDIT with no inner child, where the two answers must agree. The expected split is the whole point: on the combo's inner EDIT the style bit stays set and `IsWindowVisible` goes false, which is why the repair shipped one commit reading the wrong one |
+| G-S6 | Does `place_app_combo`'s restore actually restore? Type into App, resize the window so `want_app` moves, read the field back | the same resize with the restore removed, which must show a catalogue entry. This is the only evidence that `CB_GETEDITSEL`/`CB_SETEDITSEL` round-trip the selection and that `WM_SETTEXT` does not itself provoke a second re-sync — both are reasoned from documentation here, neither is measured |
 | G-S2 | Does user32 migrate `WS_TABSTOP` onto the checked radio? Read all four pills' styles back with `GetWindowLongW` | the same read before any pill is checked |
 | G-S3 | Does `is_checked` report a `BS_AUTORADIOBUTTON` correctly? | `CheckRadioButton` a known pill, then read all four |
 | G-S4 | The strip under each of the four shipped HC schemes | the same screenshot in ordinary dark, where the trough is known to be visible |
@@ -513,6 +528,20 @@ re-scope it rather than inherit it.
    deliberately phrased that way round so it is correct under either answer to
    this question. What the answer would still buy is the general case (a
    `place_h` on any combo, any pass); what it can no longer buy is this defect.
+
+   **Still not blocking, and now for a second reason, 2026-08-14.** The
+   paragraph above closes only the placements that are *unnecessary*. Some are
+   necessary — `layout` skips the App combo from three of the four doors, so
+   any of its six inputs that moves while one of those is open leaves the combo
+   genuinely stale and the trip back genuinely has to place it. (Making
+   `banner_shown` page-wide, §4.3 item 3, added one such input; a resize or a
+   `WM_DPICHANGED` taken on another page, and the list gaining its first row,
+   were already there, and `WM_SIZE` on Shortcuts never involved a door at
+   all.) Those go through `settings_window::place_app_combo`, which saves the
+   edit's text and selection across the `SetWindowPos` and puts them back if
+   the control re-synchronised — a fix for the *consequence* rather than for
+   the call, so it too is correct under either answer to this question. Gate
+   G-S6 is what would confirm it on hardware.
 2. What `SetWindowPos` does to a **hidden** populated combo — relevant if the
    skip in §4.2 is ever weakened.
 3. Whether the trough runs edge to edge or is inset by `PAD`. This spec says

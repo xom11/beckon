@@ -65,6 +65,21 @@
 //! `SWP_NOSIZE` short-circuit, so it does not depend on spec 10 open
 //! question 1.
 //!
+//! **EXTENDED 2026-08-14: skipping the unnecessary placements is not the whole
+//! of it either, because some of them are necessary.** `layout` reads six
+//! inputs (`Ui::shown_external` lists them) and skips the App combo whenever
+//! another door is open, so any input that moves while the user is behind
+//! Keyboard, System or About leaves the combo genuinely stale and the trip back
+//! genuinely has to place it. Making `banner_shown` page-wide added one such
+//! input; a resize taken on another door, a `WM_DPICHANGED` there and the list
+//! gaining its first row were all already there, and `WM_SIZE` on Shortcuts
+//! itself never went through the doors at all. `place_app_combo` is what makes
+//! the necessary placement survivable: it saves the edit's text and selection
+//! across the one `SetWindowPos` and puts them back if the control rewrote
+//! them. So the rule for this call site now has three parts -- do not place
+//! from another door, do not place a combo that has not moved, and restore the
+//! edit when you do place.
+//!
 //! **The App field's text is still read from the message loop, one keystroke
 //! behind the notification that reported it** — see `WM_APP_EDITED`. It is
 //! deferred debt rather than settled design: with the layout defect fixed the
@@ -453,11 +468,13 @@ fn tab_id_of(page: Page) -> i32 {
 /// - **The four pills and the command bar's three buttons are chrome.** They
 ///   are drawn on every page, so they belong to none, and listing them here
 ///   with a page would be a lie the first time someone read it.
-/// - **The banner's three (`IDC_BANNER`, `IDC_RELOAD`, `IDC_KEEPMINE`) are
-///   conditional twice over** -- `banner_shown` -- so a table that only knows
-///   about pages would show them on Shortcuts whether or not the file moved.
-///   `show_page_controls` handles them beside this loop, from the same
-///   function core's `DefaultButton::visible` reads.
+/// - **The banner's three (`IDC_BANNER`, `IDC_RELOAD`, `IDC_KEEPMINE`) answer
+///   to `banner_shown`, not to a page.** They are on every door while the file
+///   has moved and on none of them otherwise, so a table that only knows about
+///   pages would either strand them on one door or show them with nothing to
+///   announce. `show_page_controls` handles them beside this loop, from the
+///   same function core's `DefaultButton::visible` reads -- which is what
+///   keeps them a single decision when Task 6 narrows it back to Shortcuts.
 /// - **System and About own nothing yet.** Both draw as an empty surface
 ///   below the strip until Task 7 gives them a line each.
 ///
@@ -1367,15 +1384,19 @@ struct Ui {
     /// the measured data-loss path above.
     ///
     /// **`layout` running is no longer the same event as the combo being
-    /// resized**, since `combo_needs_placing`: a `layout` whose geometry comes
-    /// out identical now makes no `SetWindowPos` on the combo at all. That
-    /// weakens nothing here -- every push this guard suppresses is one whose
-    /// geometry the guard cannot know is unchanged, and the three fields are
-    /// still what keep `layout` off the keystroke path -- but it is why the
-    /// "run `layout` more often" trade above is now *cheaper* than the
-    /// paragraph makes it sound. Do not take that as permission to reopen it
-    /// without measuring: the argument for the gutter is that it is a margin
-    /// and never a clipped column, and that has not changed either.
+    /// resized**, and since 2026-08-14 it is not the same event as the App
+    /// field being LOST either. `combo_needs_placing` means a `layout` whose
+    /// geometry comes out identical makes no `SetWindowPos` on the combo at
+    /// all, and `place_app_combo` means the placements that do run put the
+    /// edit's text and selection back afterwards. That weakens nothing here --
+    /// every push this guard suppresses is one whose geometry the guard cannot
+    /// know is unchanged, and the three fields are still what keep `layout` off
+    /// the keystroke path, where the cheapest correct answer is not to run it
+    /// -- but it is why the "run `layout` more often" trade above is now
+    /// cheaper than the paragraph makes it sound. Do not take that as
+    /// permission to reopen it without measuring: the argument for the gutter
+    /// is that it is a margin and never a clipped column, and that has not
+    /// changed either.
     shown_external: Option<bool>,
     /// Whether the list was EMPTY when the current layout was computed, for
     /// the same reason `shown_external` exists: it is the fourth of `layout`'s
@@ -1688,6 +1709,62 @@ fn text_of(h: HWND) -> String {
 fn set_text(h: HWND, s: &str) {
     unsafe {
         let _ = SetWindowTextW(h, PCWSTR(wide(s).as_ptr()));
+    }
+}
+
+/// `SetWindowPos` on the App combo, with the edit field it rewrites put back.
+///
+/// **The other half of `combo_needs_placing`, and the half that was missing.**
+/// That function stopped the placements that were NOT needed -- the return trip
+/// into Shortcuts on a combo that had not moved a pixel. It cannot stop the
+/// ones that are: `layout` skips the App combo entirely while another door is
+/// open (`if shortcuts`), so every input `layout` reads that moves while the
+/// user is behind Keyboard, System or About leaves the combo genuinely stale,
+/// and the trip back has to place it. The banner is one such input and is the
+/// one this task added -- `banner_shown` is page-wide now, so the announcement
+/// can appear while the user is elsewhere, card 0 gains height, card 2 moves
+/// down, `want_app.y` differs, and the placement runs. A resize on another
+/// door, a `WM_DPICHANGED` there, and the list gaining its first row all reach
+/// it the same way, so this is not a doors defect wearing a doors fix.
+///
+/// And a placement is the measured data-loss call: a populated `CBS_DROPDOWN`
+/// answers a resize by re-synchronising its edit to the closest catalogue entry
+/// and selecting the whole string (a14, comctl32 6.16, 121 items; see
+/// `Ui::shown_external`). So this saves the edit's text and selection, places,
+/// and puts both back if the control rewrote them.
+///
+/// **It closes the same defect on the paths that are not doors at all**, which
+/// is the reason it is spelled here rather than at the one call site's `if`:
+/// `Ui::shown_external` keeps `layout` OFF the keystroke path, but a `WM_SIZE`
+/// or a `WM_DPICHANGED` arriving while the App field holds half-typed text was
+/// always going to run it, and was always going to lose the text.
+///
+/// **Nothing happens when nothing was rewritten**, which is the overwhelmingly
+/// common case (an empty field, or a catalogue with nothing close enough to
+/// snap to) -- so the cost of the guard is two `WM_GETTEXT`s on a call that
+/// already only runs when the geometry moved.
+///
+/// **The restore's own notification is harmless, and that is a property of the
+/// value rather than of a suppression.** `WM_SETTEXT` raises `CBN_EDITCHANGE`,
+/// whose arm posts a deferred read (`WM_APP_EDITED`); the read is dispatched
+/// from the message loop after this returns, so it reads the text this put
+/// back -- the user's own -- and `Model::set_app` compares before assigning, so
+/// a value the model already holds does not mark the file dirty. The re-snap's
+/// own `CBN_EDITCHANGE` is the same read and reads the same restored value.
+///
+/// `CB_GETEDITSEL` packs the selection start in the LOW word and the end in the
+/// HIGH word, which is exactly what `CB_SETEDITSEL` takes back as its `LPARAM`,
+/// so the value passes through unexamined. Reading it BEFORE the placement is
+/// the whole point: afterwards the control has already selected everything, and
+/// "everything is selected" is what makes the next keystroke destructive rather
+/// than merely surprising.
+unsafe fn place_app_combo(h: HWND, x: i32, y: i32, cx: i32, cy: i32) {
+    let before = text_of(h);
+    let sel = SendMessageW(h, CB_GETEDITSEL, None, None).0 as u32;
+    let _ = SetWindowPos(h, None, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
+    if text_of(h) != before {
+        set_text(h, &before);
+        SendMessageW(h, CB_SETEDITSEL, None, Some(LPARAM(sel as isize)));
     }
 }
 
@@ -2028,15 +2105,26 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 /// `CBN_KILLFOCUS`, so no `commit_fields`, so text in no model and on no
 /// screen.
 ///
-/// **Fixed before it can fire, deliberately.** Every switch that exists today
-/// arrives as a pill click or an arrow key, and both move focus onto the pill
-/// BEFORE `show_page` hides anything -- so the control being hidden is never
-/// the focused one and this arm cannot be reached. `Ctrl+Tab` / `Ctrl+1`..`4`
-/// (Task 5) are what make it reachable: `TranslateAcceleratorW` runs before
-/// `IsDialogMessageW` and moves no focus at all, which is the same property
-/// that makes them the sharp case for `layout` (module header). A repair
-/// added with the keystroke would be a repair written under the pressure of
-/// the defect it prevents.
+/// **Fixed before it can fire -- true again, and it was FALSE for one commit.**
+/// The claim is that every switch arrives as a pill click or an arrow key, both
+/// of which move focus onto the pill BEFORE `show_page` hides anything, so the
+/// control being hidden is never the focused one. That was true when this was
+/// written, and `aa9fbd6` broke it in the same commit that wrote it down:
+/// `apply_settings` -> `switch_to_page` -> `show_page` was a third route, it
+/// moved no focus at all, and `Ctrl+S` reaches it with focus wherever the user
+/// left it -- the App combo included. The gap was live and shipped, not
+/// hypothetical. That route is gone (`banner_shown` is page-wide now, so Save
+/// needs no door to open), `show_page` is back to its one caller in
+/// `handle_command`'s pill arm, and `build_accelerators` still holds `Ctrl+S`
+/// and nothing else -- checked, not assumed, both times.
+///
+/// `Ctrl+Tab` / `Ctrl+1`..`4` (Task 5) are what will make it reachable again:
+/// `TranslateAcceleratorW` runs before `IsDialogMessageW` and moves no focus at
+/// all, which is the same property that made the deleted route sharp and that
+/// makes them the sharp case for `layout` (module header). A repair added with
+/// the keystroke would be a repair written under the pressure of the defect it
+/// prevents -- and the one commit this arm spent live is the evidence that
+/// "unreachable today" is a statement with a shelf life, not a property.
 ///
 /// The two tests agree at both call sites and neither is redundant for that
 /// reason: `apply_state` pushes the banner's visibility and `show_page` calls
@@ -2129,22 +2217,41 @@ fn show(h: HWND, on: bool) {
     }
 }
 
-/// Is `h` a control of `parent`'s that `show(h, false)` has taken off screen?
+/// Is `h` a control of `parent`'s that is not on screen?
 ///
-/// **The control's OWN `WS_VISIBLE` bit, not `IsWindowVisible`**, which
-/// answers for the whole ancestor chain and so folds in a second question --
-/// whether the window itself is on screen -- that the one caller has no
-/// opinion about. `paint::field_border` wants the chain and uses the other
-/// call; this wants "did this window hide it", which is exactly the bit
-/// `show` writes.
+/// **`IsWindowVisible`, which folds in the whole ancestor chain -- CORRECTED
+/// 2026-08-14.** This read `GetWindowLongW(h, GWL_STYLE) & WS_VISIBLE`, "the
+/// control's OWN bit, not `IsWindowVisible`", on the argument that the parent
+/// chain is a second question the one caller has no opinion about. That
+/// reasoning is backwards, and it made the repair blind to exactly the control
+/// it was written for.
+///
+/// `IDC_APP` is a `CBS_DROPDOWN`, so comctl32 gives it an inner EDIT with an id
+/// of its own choosing, and **that EDIT is what `GetFocus` returns** -- the
+/// same fact `an_id_that_is_not_a_push_button_reads_as_home` records and that
+/// `WM_APP_EDITED`'s measurement rests on. `show(combo, false)` clears
+/// `WS_VISIBLE` on the COMBOBOX and on nothing else, so the inner EDIT keeps
+/// its own bit set for ever. The own-bit test therefore answered "visible" for
+/// the one focused control a door can hide invisibly, which is the case the
+/// commit message, the doc and the test all named.
+///
+/// So the parent chain IS this repair's question, and it is the only one worth
+/// asking: if an ancestor is hidden the control cannot be seen, so focus on it
+/// is stranded whichever window in the chain did the hiding. "Did THIS window
+/// hide it" was never the interesting half -- it is a narrower question with
+/// the same answer in every case that reaches here, except the one it gets
+/// wrong. `paint::field_border` asks with the same call, for its own reason (a
+/// hidden window keeps its window rect, and the border is drawn by the parent),
+/// which is why that reason is spelled there and not borrowed here.
 ///
 /// **`IsChild` is the other half and is not defensive.** `GetFocus` answers
 /// for the whole THREAD, and `serve` owns another window on it (the tray's,
 /// plus whatever COM creates), so without it a hidden window that is none of
 /// this window's business would be read as a hidden control of ours and pull
-/// focus away from it.
+/// focus away from it. It also reads "descendant", not "immediate child",
+/// which is what lets the inner EDIT above pass it at all.
 unsafe fn hidden_child(parent: HWND, h: HWND) -> bool {
-    IsChild(parent, h).as_bool() && (GetWindowLongW(h, GWL_STYLE) as u32) & WS_VISIBLE.0 == 0
+    IsChild(parent, h).as_bool() && !IsWindowVisible(h).as_bool()
 }
 
 thread_local! {
@@ -2284,33 +2391,6 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
         }
     });
     true
-}
-
-/// Open a door from OUTSIDE the window's own message handling.
-///
-/// The one caller is `serve`'s Save. Pressing it while the file has changed
-/// under the window's own edits refuses the write and sends the user to the
-/// door the announcement is drawn on, so the two answers to it -- `Reload
-/// from disk` and `Keep mine` -- are under their hand instead of three doors
-/// away. The decision and the whole of its reasoning are
-/// `beckon_core::settings::save_press`; this is only the arm that moves the
-/// window.
-///
-/// **It deliberately does NOT raise `SettingsCommand::ShowPage`, and that is
-/// not an omission.** `with_cb` is take-then-run: it moves the callbacks OUT
-/// of the `RefCell` for the duration of the call, so any `with_cb` reached
-/// from inside a callback finds the slot empty and silently does nothing.
-/// This function is always reached from inside one (Save is a callback), so a
-/// command raised here would be dropped without a trace -- and
-/// `ServeState::settings_page` would go on naming the door the user is no
-/// longer behind, after which the next Save would be refused again, for ever.
-/// The caller asked for the switch and is the one that records it.
-///
-/// Silent when no window is open: there is then nobody to show a door to.
-pub fn switch_to_page(page: Page) {
-    if let Some(h) = hwnd() {
-        show_page(h, page);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4511,16 +4591,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             enable(hwnd, id, st.editable && st.caps_checked);
         }
 
-        // `banner_shown`, not `external_change` on its own: the file moving
-        // is a window-wide fact, but the announcement is drawn on the page it
-        // is about. The warn dot on the Shortcuts pill is how it stays
-        // visible from the other three, and `external_change` is untouched --
-        // it still says the file moved whichever door is open.
+        // `banner_shown`, not `external_change` on its own -- even though the
+        // two currently agree. The function is where the condition is allowed
+        // to change: it draws the announcement on every door until Task 6 puts
+        // a warn dot on the Shortcuts pill, and then narrows to that pill's own
+        // page. Reading the flag here would be one of five sites that has to be
+        // found and edited on that day, and the one whose omission is silent.
         //
-        // One function, four readers: this, `layout`'s card 0,
-        // `compute_card_rects`, and core's `DefaultButton::visible` for the
-        // two buttons. A ring left on a `Reload` this line has hidden is the
-        // measured defect `default_button` exists for.
+        // One function, five readers: this, `show_page_controls`, `layout`'s
+        // card 0, `compute_card_rects`, and core's `DefaultButton::visible` for
+        // the two buttons. A ring left on a `Reload` this line has hidden is
+        // the measured defect `default_button` exists for.
         let page = PAGE.with(|p| p.get());
         let banner_on = banner_shown(external_change, page);
         show(banner, banner_on);
@@ -7307,6 +7388,13 @@ mod tests {
     /// on one would leave `GetFocus` on an off-screen control. On `IDC_APP`
     /// that is not merely invisible typing: no `CBN_KILLFOCUS` means no
     /// `commit_fields`, so the text reaches no model either.
+    ///
+    /// **What this test still cannot see, and it is the half that was wrong for
+    /// a commit:** `IDC_APP` is a `CBS_DROPDOWN`, so `GetFocus` returns its
+    /// inner EDIT rather than the COMBOBOX in this table, and whether
+    /// `hidden_child` recognises that EDIT depends on `IsWindowVisible` versus
+    /// the control's own style bit -- a distinction no id table can express and
+    /// no host but Windows can run. Gate G-S5 is where it gets checked.
     #[test]
     fn the_focusable_controls_a_door_hides_are_not_push_buttons() {
         for id in [IDC_APP, IDC_FILTER, IDC_COMBO, IDC_LIST] {

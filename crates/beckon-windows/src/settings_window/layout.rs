@@ -5,10 +5,13 @@
 //! a new call site for it on a keystroke path.
 //!
 //! That call is now made only when the combo is not already where this pass
-//! would put it (`combo_needs_placing`) -- so "nothing may add a new call
-//! site" has a second reading it did not have before: an unguarded
-//! `place_h(ui.app, ..)` would not merely be one more call site, it would
-//! reinstate the unconditional one this file just stopped making.
+//! would put it (`combo_needs_placing`), and when it IS made it goes through
+//! `place_app_combo`, which saves the edit's text and selection across it --
+//! so "nothing may add a new call site" has two readings it did not have
+//! before. An unguarded `place_h(ui.app, ..)` would not merely be one more
+//! call site: it would reinstate the unconditional call this file stopped
+//! making, AND it would drop the restore that makes the remaining, genuinely
+//! needed placements safe.
 //!
 //! Task 8 turns the flat bands into cards. `compute_card_rects` is the ONE
 //! place that decides where the four cards sit and how tall each is; `layout`
@@ -383,10 +386,12 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // -- Card 0: the banner. Contributes NO height when hidden -- `y` is
     // not advanced and the returned rect has zero height at that `y`.
     //
-    // `banner_shown`, not `ui.external_change`: the announcement is drawn on
-    // the page it is about, and that pair of conditions is spelled once, in
-    // core, where `DefaultButton::visible` reads the same function for the
-    // banner's two buttons.
+    // `banner_shown`, not `ui.external_change`, even though the two agree
+    // today: the condition is allowed to change in exactly one place, and Task
+    // 6 changes it (back to the Shortcuts door, once its pill carries a warn
+    // dot). Card 0 is the band that would then stop being spent on the other
+    // three pages -- the one visible cost of the wide version -- so this is
+    // the site with the most to gain from having no opinion of its own.
     let card0 = if banner_shown(ui.external_change, ui.page) {
         let h0 = card_pad * 2 + ctl;
         let r = card(y, h0);
@@ -508,9 +513,21 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// that in the ordinary case has not moved a pixel -- and the placement is a
 /// real resize even so, because the `cy` handed to a combo is its DROPPED
 /// height while its window rect holds its closed one, so the request can
-/// never equal the current state. The return trip is closed by
-/// `combo_needs_placing`, at the `place_h` itself: the control is asked where
-/// it is, and the call is not made when it is already there.
+/// never equal the current state. That half of the return trip is closed by
+/// `combo_needs_placing`: the control is asked where it is, and the call is not
+/// made when it is already there.
+///
+/// **The other half of the return trip is the case where the combo really did
+/// need moving**, and no skip can close that one. Because this function leaves
+/// the combo alone from three of the four doors, every input it reads that
+/// moves while one of those doors is open makes the trip back a genuine
+/// placement -- the banner appearing (page-wide since 2026-08-14), a resize or
+/// a `WM_DPICHANGED` taken on another page, the list gaining its first row.
+/// `place_app_combo` is what those go through: it saves the edit's text and
+/// selection across the `SetWindowPos` and restores them if the control
+/// re-synchronised. It also covers the routes that never touched a door --
+/// `WM_SIZE` while the App field holds half-typed text was always going to run
+/// this function.
 ///
 /// **The LIST is the one thing that flexes.** See `compute_card_rects`'s
 /// own comment on why, and on `editor_min`/`room`/`y.min(kb_y)` — that
@@ -759,8 +776,9 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         tab_x += tab_w;
     }
 
-    // -- Card 0: the banner. Contributes NO height when hidden, and it is
-    // hidden behind any door but its own -- see `banner_shown`.
+    // -- Card 0: the banner. Contributes NO height when hidden, and since
+    // 2026-08-14 it is hidden on a door only when there is nothing to announce
+    // -- see `banner_shown`, which is also where that narrows again.
     if banner_shown(ui.external_change, ui.page) {
         let bx = card0.left + card_pad;
         let by = card0.top + card_pad;
@@ -932,26 +950,34 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // Line 1: App, full width.
         let mut ly = grp_y + s(24);
         place(IDC_LBL_APP, ins_x, ly, lw_lbl, ctl);
-        // **Skipped when the combo is already exactly here, and that is the
-        // other half of the `if shortcuts` above.** That guard is
-        // one-directional: it keeps the combo out of reach while another door
-        // is open, and then every switch BACK through this door placed it
-        // again -- on a combo that had not moved a pixel, which is the same
-        // resize the a14 measurement pinned (nothing in the layout had moved
-        // and typing was still lost). `combo_needs_placing` carries the whole
-        // argument, including why the `cy` below is not what to change and why
-        // this settles the return trip without waiting on spec 10 open
-        // question 1.
+        // **Two guards, and they answer two different questions.**
+        //
+        // `combo_needs_placing` is "should this call be made at all". The
+        // `if shortcuts` above is one-directional: it keeps the combo out of
+        // reach while another door is open, and then every switch BACK through
+        // this door placed it again -- on a combo that had not moved a pixel,
+        // which is the same resize the a14 measurement pinned (nothing in the
+        // layout had moved and typing was still lost). That function carries
+        // the whole argument, including why the `cy` below is not what to
+        // change and why it settles the no-op return trip without waiting on
+        // spec 10 open question 1.
+        //
+        // `place_app_combo` is "what does the call do when it IS needed", and
+        // it is the half that was missing. A return trip after the banner
+        // appeared on another door, a resize taken there, a `WM_DPICHANGED`
+        // there, or the list gaining its first row all move this combo for
+        // real -- so the placement runs, and the placement is what re-snaps the
+        // edit. It saves the edit's text and selection across the call.
         //
         // `field_h * 9` is the DROPPED height, and is left exactly as it was.
         // It is also why the height is absent from `ComboSpot`: it is the one
         // component `GetWindowRect` can never report back.
         //
-        // Not applied to `ui.combo` or `IDC_TAP` below. Both are
+        // Neither guard is applied to `ui.combo` or `IDC_TAP` below. Both are
         // `CBS_DROPDOWNLIST`, which has no edit child for a resize to
         // re-synchronise, so there is no data to lose there and no second
         // measured hazard to guard -- and an unnecessary guard on the two
-        // harmless controls would make the one on the dangerous control look
+        // harmless controls would make the ones on the dangerous control look
         // like tidiness.
         let want_app = ComboSpot {
             x: fld_x,
@@ -959,7 +985,7 @@ pub(super) unsafe fn layout(hwnd: HWND) {
             cx: fld_w,
         };
         if combo_needs_placing(want_app, app_seen) {
-            place_h(ui.app, want_app.x, want_app.y, want_app.cx, field_h * 9);
+            place_app_combo(ui.app, want_app.x, want_app.y, want_app.cx, field_h * 9);
         }
         ly += ctl + gap;
 

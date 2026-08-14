@@ -305,91 +305,55 @@ pub enum Page {
 
 /// Is the external-change banner on screen?
 ///
-/// **One condition written once, for four readers.** The banner is a STATIC
+/// **One condition written once, for five readers.** The banner is a STATIC
 /// and two push buttons, and the three are placed by `layout`, shown by
-/// `apply_state`, given a card rect by `compute_card_rects` and reasoned
-/// about by `DefaultButton::visible` -- so "the file changed AND the user is
-/// looking at the page that says so" had four places to be spelled and four
-/// chances to be spelled differently. The one that mattered is the last:
-/// `visible` deciding the banner's Reload is on screen while the window has
-/// hidden it is exactly the measured defect `default_button` exists for,
-/// reached through a door instead of through a dismissal.
+/// `apply_state` and by `show_page_controls`, given a card rect by
+/// `compute_card_rects` and reasoned about by `DefaultButton::visible` -- so
+/// "is the announcement up" had five places to be spelled and five chances to
+/// be spelled differently. The one that mattered is the last: `visible`
+/// deciding the banner's Reload is on screen while the window has hidden it is
+/// exactly the measured defect `default_button` exists for, reached through a
+/// door instead of through a dismissal.
 ///
-/// `external_change` stays a WINDOW-wide fact rather than becoming a
-/// Shortcuts-page one. The file really did move whichever door the user is
-/// behind; what this function answers is only where the announcement is
-/// drawn. The design's warn dot on the Shortcuts pill is how the fact stays
-/// visible from the other three pages.
+/// **`page` is taken and ignored, and that is this pass's decision rather than
+/// a leftover.** Task 4 shipped `external_change && page == BANNER_PAGE`, which
+/// drew the announcement on Shortcuts alone -- and Save is chrome: on all four
+/// pages, enabled from `apply_enabled` alone, the resting place of the default
+/// ring and the target of `Ctrl+S`. `apply_settings` writes unconditionally and
+/// there is no prompt anywhere, so **the banner being on screen WAS the whole
+/// protection**, and three quarters of the window had lost it. Edit a binding,
+/// open the Keyboard door, let an editor save the config underneath, press
+/// `Ctrl+S`, and the file was overwritten with nothing having said it moved.
 ///
-/// **A fifth reader, and the one that makes the gap between those two
-/// sentences safe:** `save_press`. Until the warn dot exists there is nothing
-/// on the other three pages saying the file moved, while Save is on all four
-/// of them -- so the answer is not only to show the fact somewhere else, it is
-/// that Save refuses to write from a page this function returns `false` for.
-pub fn banner_shown(external_change: bool, page: Page) -> bool {
-    external_change && page == BANNER_PAGE
+/// **REPLACED 2026-08-14.** The first repair (`aa9fbd6`, `save_press`) had Save
+/// refuse the press once and switch the window to `BANNER_PAGE`. It worked, and
+/// it cost a THIRD route into `show_page` -- one that moves no focus and changes
+/// card geometry, which is precisely the shape `repair_hidden_button` and
+/// `combo_needs_placing` exist to survive. Showing the banner on every page
+/// removes a page-switch route instead of adding one, and it answers the failure
+/// directly: what went wrong was that the warning was invisible while Save
+/// stayed reachable, so the fix is a warning the user can see from where they
+/// are standing.
+///
+/// **Task 6 narrows this again, and this is deliberately the wide version until
+/// it does.** The design's own answer (spec §5) is a warn dot on the Shortcuts
+/// pill: the announcement goes back to `BANNER_PAGE`, and the dot is what
+/// carries the fact to the other three doors. Until that dot exists there is
+/// nothing else to carry it. The cost of being wide is that Keyboard, System and
+/// About each spend a band of height on the banner in a state that is rare --
+/// a layout cost, not a correctness one, and the parameter is kept in the
+/// signature so Task 6 is one edit to this body and to nothing else.
+pub fn banner_shown(external_change: bool, _page: Page) -> bool {
+    external_change
 }
 
-/// The door the external-change announcement is drawn on.
+/// The door the external-change announcement is ABOUT.
 ///
-/// Named rather than written into `banner_shown` as a literal, because
-/// `save_press` has to send the user THERE and the two must not be able to
-/// name different doors.
+/// Not currently where it is drawn -- `banner_shown` draws it on every page
+/// until Task 6 -- but the two are the same question again the moment that
+/// task lands, and this is the door its warn dot goes on: the file that moved
+/// is the shortcut table, so the pill that has to grow a dot is Shortcuts'.
 pub const BANNER_PAGE: Page = Page::Shortcuts;
-
-/// What pressing Save does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SavePress {
-    /// Write the model to disk.
-    Write,
-    /// Do not write. Open this door first -- it is the one the announcement
-    /// and its two answers are on.
-    ShowTheBanner(Page),
-}
-
-/// What pressing Save does when the file has moved under the window's own
-/// edits.
-///
-/// **The banner being on screen WAS the whole protection, and the four doors
-/// took it away.** `apply_settings` writes the file unconditionally and
-/// clears `external_change`; there is no prompt anywhere and there never
-/// was one. What stopped somebody overwriting a file that changed under them
-/// is that they were looking at the announcement when they pressed Save.
-/// `banner_shown` is `BANNER_PAGE`-only while `external_change` is
-/// window-wide, and Save is chrome -- placed on every page, enabled from
-/// `apply_enabled` alone, the resting place of the default ring, and the
-/// target of `Ctrl+S`. So from Keyboard, System or About the file was
-/// overwritten silently, with the warning about it three doors away.
-///
-/// So Save refuses ONCE and opens the announcement's door instead. The next
-/// press writes, because by then the banner is on screen with its two
-/// answers -- `Reload from disk` and `Keep mine` -- under the user's hand.
-/// That restores the pre-four-doors rule rather than inventing a new one:
-/// nothing here makes an externally changed file unsaveable, it makes the
-/// warning unmissable again.
-///
-/// **Not "grey Save out".** `apply_enabled` is `dirty && no errors`, and a
-/// button greyed on three pages with nothing saying why is the same silence
-/// in a costume. The refusal has to be the thing that shows the reason,
-/// which means it has to be a press that visibly does something.
-///
-/// **Not a dialog either.** A modal can only tell the user to go and find
-/// the banner; opening the door puts the banner and both its buttons in
-/// front of them, one press instead of three.
-///
-/// The design's own answer for cross-page visibility is a warn dot on the
-/// Shortcuts pill, which is not built. This is not a stand-in for it and is
-/// not retired by it: a dot is a notice, this is a guard.
-///
-/// Spelled through `banner_shown` rather than `page != BANNER_PAGE`, so a
-/// second page ever showing the announcement moves both together.
-pub fn save_press(external_change: bool, page: Page) -> SavePress {
-    if external_change && !banner_shown(external_change, page) {
-        SavePress::ShowTheBanner(BANNER_PAGE)
-    } else {
-        SavePress::Write
-    }
-}
 
 /// Where the App combo sits, in the window's client coordinates: left, top
 /// and WIDTH.
@@ -433,6 +397,16 @@ pub struct ComboSpot {
 /// That answer would decide whether an `SWP_NOSIZE | SWP_NOMOVE`
 /// short-circuit inside the call is safe. Not making the call is safe under
 /// either answer, which is why the fix is spelled this way round.
+///
+/// **What it does NOT do, and what does:** it answers only "is this placement
+/// unnecessary". Some are necessary -- `layout` skips the combo from three of
+/// the four doors, so any of its inputs that moves while one of those is open
+/// leaves the combo genuinely stale, and the trip back genuinely has to place
+/// it. Returning `true` there is correct, and the placement is still the
+/// measured data-loss call. `settings_window::place_app_combo` (Windows crate)
+/// is the guard on that side: it saves the edit's text and selection across the
+/// `SetWindowPos`. Neither guard subsumes the other, and a reading of this
+/// function as "the combo is now safe" is the reading to avoid.
 ///
 /// `seen` is where the OS says the control is now, and `None` means the
 /// question could not be asked -- which places, never skips.
@@ -3145,83 +3119,68 @@ mod tests {
         }
     }
 
-    /// The banner's two are conditional twice over, and both conditions bind.
+    /// The banner's two follow `external_change` and nothing else, on every
+    /// door.
     ///
-    /// `external_change` stays a window-wide fact -- the file really did move
-    /// -- so it is only the drawing that is page-bound. Without the page
-    /// half, opening the Keyboard door while the banner is up would leave
-    /// Enter pressing a `Reload` that is not on screen, which is the original
-    /// defect with a different way of hiding the button.
+    /// **This test used to assert the opposite half** -- that
+    /// `visible(true, Page::Keyboard)` is `false` -- and that was the defect,
+    /// not the design. Save is chrome and `apply_settings` writes without a
+    /// prompt, so an announcement drawn on Shortcuts alone left three pages
+    /// where the file could be overwritten with nothing on screen saying it
+    /// had moved. Task 6's warn dot is what lets the drawing narrow again; the
+    /// assertion narrows with it.
     #[test]
-    fn the_banners_two_need_both_the_change_and_the_page() {
+    fn the_banners_two_follow_the_change_on_every_door() {
         let busy = busy_state();
         for b in [DefaultButton::Reload, DefaultButton::KeepMine] {
-            assert!(b.visible(true, Page::Shortcuts));
-            assert!(!b.visible(false, Page::Shortcuts), "no change to announce");
-            assert!(!b.visible(true, Page::Keyboard), "announced behind a door");
-            assert_eq!(
-                default_button(b, &busy, true, Page::Keyboard),
-                DefaultButton::Save
-            );
+            for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+                assert!(b.visible(true, page), "{b:?} is hidden on {page:?}");
+                assert!(!b.visible(false, page), "no change to announce on {page:?}");
+                // The ring may rest on a banner button from any door now,
+                // which is the other half of "it is on screen there".
+                assert_eq!(default_button(b, &busy, true, page), b);
+                assert_eq!(default_button(b, &busy, false, page), DefaultButton::Save);
+            }
         }
-        assert!(banner_shown(true, Page::Shortcuts));
-        assert!(!banner_shown(true, Page::About));
-        assert!(!banner_shown(false, Page::Shortcuts));
+        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert!(banner_shown(true, page));
+            assert!(!banner_shown(false, page));
+        }
     }
 
-    /// The regression the four doors opened: Save is chrome, the banner is
-    /// not, so from three of the four pages Save wrote over a file that had
-    /// moved while the only warning about it was behind a door.
+    /// The regression the four doors opened, stated as the thing that closes
+    /// it: on every page Save is pressable, the announcement is drawn too.
     ///
-    /// The pairing with `visible` is the point of the test rather than
-    /// decoration: it asserts that on exactly the pages where Save is
-    /// pressable and `Reload`/`Keep mine` are NOT drawn, the press is
-    /// refused.
+    /// Written as a pairing with `visible` rather than as a restatement of
+    /// `banner_shown`, because the defect was exactly a disagreement between
+    /// those two -- Save reachable where the warning was not.
     #[test]
-    fn save_refuses_from_a_page_that_hides_the_announcement() {
-        for page in [Page::Keyboard, Page::System, Page::About] {
-            assert!(
-                !DefaultButton::Reload.visible(true, page),
-                "{page:?} draws the banner after all -- this test is measuring the wrong thing"
-            );
+    fn save_is_never_pressable_where_the_announcement_is_not_drawn() {
+        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
             assert!(
                 DefaultButton::Save.visible(true, page),
-                "Save is chrome; if it is not on {page:?} there is nothing to guard"
+                "Save is chrome; if it is not on {page:?} this test measures nothing"
             );
-            assert_eq!(
-                save_press(true, page),
-                SavePress::ShowTheBanner(BANNER_PAGE),
-                "Save overwrote an externally changed file from {page:?}"
+            assert!(
+                banner_shown(true, page),
+                "Save can overwrite an externally changed file from {page:?} \
+                 with nothing on screen saying it moved"
             );
-        }
-    }
-
-    /// The other half, and the reason this is a guard and not a ban: with the
-    /// announcement on screen the press goes straight through, so the second
-    /// press after being sent to `BANNER_PAGE` saves.
-    #[test]
-    fn save_writes_wherever_the_announcement_is_answerable() {
-        assert_eq!(save_press(true, BANNER_PAGE), SavePress::Write);
-        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
-            assert_eq!(
-                save_press(false, page),
-                SavePress::Write,
-                "nothing changed on disk, so {page:?} has nothing to answer"
+            assert!(
+                DefaultButton::Reload.visible(true, page)
+                    && DefaultButton::KeepMine.visible(true, page),
+                "the announcement is drawn on {page:?} without its two answers"
             );
         }
     }
 
-    /// The door Save sends the user to has to be the door the banner is
-    /// actually drawn on, or the guard becomes a dead end -- the press would
-    /// be refused for ever, since the page it lands on still hides the
-    /// answers.
+    /// `BANNER_PAGE` is Task 6's target, and it has to name a door the strip
+    /// really has -- the warn dot goes on that pill, and the announcement goes
+    /// back to that page with it.
     #[test]
-    fn the_door_save_opens_is_the_one_with_the_answers() {
-        let SavePress::ShowTheBanner(door) = save_press(true, Page::About) else {
-            panic!("expected a refusal");
-        };
-        assert!(banner_shown(true, door));
-        assert_eq!(save_press(true, door), SavePress::Write);
+    fn the_banner_page_is_the_shortcut_table_it_is_about() {
+        assert_eq!(BANNER_PAGE, Page::Shortcuts);
+        assert!(banner_shown(true, BANNER_PAGE));
     }
 
     /// The return trip into Shortcuts is a placement on a combo that has not
