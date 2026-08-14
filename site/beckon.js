@@ -631,10 +631,18 @@
      a chord at all. "Hold Caps and press C" teaches nothing on its own; "Caps
      Lock is your Hyper key here" is the sentence that makes the row under the
      desk — Cmd Ctrl Alt C, marked yours — mean something. */
+  /* THESE ARE THE CHORD ROWS READ BACK, in words, and the two must not drift:
+     the row draws the keys and this sentence names them, about six lines apart
+     on screen. So it is spelled out rather than glyphed — a hint that printed
+     ⌘ would be repeating the picture instead of captioning it — and Linux says
+     three modifiers here because the row now shows three.
+     "Hyper (Cmd Ctrl Alt)" went with the row's own note: the page no longer
+     uses the word anywhere, and a hint that introduced a term nothing else
+     defines was the sentence doing the introducing. */
   var CHORD_OF = {
-    macos: 'Hyper (Cmd Ctrl Alt)',
-    windows: 'Ctrl Win Alt',
-    linux: 'Super'
+    macos: 'Command, Control and Option',
+    windows: 'Ctrl, the Windows key and Alt',
+    linux: 'Super, Alt and Ctrl'
   };
   function hintAsk(os) {
     return 'Caps Lock stands in for ' + (CHORD_OF[os] || CHORD_OF.linux) +

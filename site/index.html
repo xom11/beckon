@@ -230,8 +230,7 @@
         <!-- What that key really is, on each machine. ALL THREE ROWS SHIP, and CSS
              keeps only the reader's own once `data-os` is resolved — so a reader
              with JS off, who has no OS strip to press, still gets the
-             cross-platform claim in full. The "yours" chip is generated content
-             keyed on :root[data-os].
+             cross-platform claim in full.
 
              CAPS LOCK LEADS ON ALL THREE ROWS, and the real chord follows it
              behind an `=`. A draft of this redesign cut Caps Lock from here as
@@ -245,31 +244,40 @@
              `"ctrl+super+alt+t"` is what actually goes in apps.toml, and a
              reader has to be able to copy it.
 
-             THE THREE NOTES ARE LOAD-BEARING, NOT DECORATION. beckon maps Caps
-             itself on Windows only; on macOS and Linux that is a remapper the
-             reader already runs, and saying so is the difference between a
-             feature and a claim we cannot keep. -->
+             ALL THREE ROWS NAME THE SAME THREE MODIFIERS, since 2026-08-14.
+             Linux used to print a bare `Super`, which is what every config
+             under examples/linux/ still binds — so the page and the examples
+             disagree by one chord until those are changed too. It reads as one
+             claim now rather than as three, which is the argument the row set
+             exists to make.
+
+             THE THREE NOTES ARE GONE, and this records what went with them.
+             They read "Hyper, via Karabiner" / "built into beckon" / "via
+             kanata or xkb", and they were the only place on the page saying
+             that BECKON MAPS CAPS ITSELF ON WINDOWS ONLY — on macOS and Linux
+             that is a remapper the reader already runs. The FAQ deliberately
+             carries no Caps Lock entry either (see the note above #faq), so
+             nothing on the page says it any more and the `=` on these rows is
+             doing more work than it can strictly keep. Removed on request;
+             put back one line, anywhere, if that trade stops being worth it. -->
         <ul class="mods hero-chords">
           <li class="os-row" data-os="macos">
             <span class="mod-os">macOS</span>
             <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
             <span class="chord-is">=</span>
-            <span class="chord is-alias"><kbd class="key">Cmd</kbd><kbd class="key">Ctrl</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
-            <span class="mod-note">Hyper, via Karabiner</span>
+            <span class="chord is-alias"><kbd class="key is-glyph"><span aria-hidden="true">&#8984;</span><span class="sr-only">Command</span></kbd><kbd class="key is-glyph"><span aria-hidden="true">&#8963;</span><span class="sr-only">Control</span></kbd><kbd class="key is-glyph"><span aria-hidden="true">&#8997;</span><span class="sr-only">Option</span></kbd><kbd class="key is-letter">C</kbd></span>
           </li>
           <li class="os-row" data-os="windows">
             <span class="mod-os">Windows</span>
             <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
             <span class="chord-is">=</span>
-            <span class="chord is-alias"><kbd class="key">Ctrl</kbd><kbd class="key">Win</kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
-            <span class="mod-note">built into beckon</span>
+            <span class="chord is-alias"><kbd class="key">Ctrl</kbd><kbd class="key is-glyph"><svg class="glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><rect x=".2" y=".2" width="5.1" height="5.1" rx="1"/><rect x="6.7" y=".2" width="5.1" height="5.1" rx="1"/><rect x=".2" y="6.7" width="5.1" height="5.1" rx="1"/><rect x="6.7" y="6.7" width="5.1" height="5.1" rx="1"/></svg><span class="sr-only">Windows key</span></kbd><kbd class="key">Alt</kbd><kbd class="key is-letter">C</kbd></span>
           </li>
           <li class="os-row" data-os="linux">
             <span class="mod-os">Linux</span>
             <span class="chord"><kbd class="key is-caps">Caps Lock</kbd><kbd class="key is-letter">C</kbd></span>
             <span class="chord-is">=</span>
-            <span class="chord is-alias"><kbd class="key">Super</kbd><kbd class="key is-letter">C</kbd></span>
-            <span class="mod-note">via kanata or xkb</span>
+            <span class="chord is-alias"><kbd class="key is-glyph"><svg class="glyph" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><rect x=".2" y=".2" width="5.1" height="5.1" rx="1"/><rect x="6.7" y=".2" width="5.1" height="5.1" rx="1"/><rect x=".2" y="6.7" width="5.1" height="5.1" rx="1"/><rect x="6.7" y="6.7" width="5.1" height="5.1" rx="1"/></svg><span class="sr-only">Super</span></kbd><kbd class="key">Alt</kbd><kbd class="key">Ctrl</kbd><kbd class="key is-letter">C</kbd></span>
           </li>
         </ul>
 

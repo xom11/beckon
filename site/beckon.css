@@ -104,6 +104,14 @@
           sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, "Cascadia Mono", Consolas,
           "Adwaita Mono", "Liberation Mono", monospace;
+  /* The macOS modifier glyphs — ⌘ ⌃ ⌥ — and nothing else. Fallback is per
+     CHARACTER, not per family, so leading with `system-ui` is safe: it carries
+     all three on macOS, and on Windows and Linux, where it does not, the
+     browser walks on to the symbol faces named after it. `--mono`, which every
+     other keycap is set in, cannot be trusted here — Consolas has no U+2318.
+     Same rule as above: no "SF Pro". */
+  --glyph: system-ui, -apple-system, "Segoe UI Symbol", "Noto Sans Symbols 2",
+           "DejaVu Sans", sans-serif;
 
   /* ================= @os-parity begin =================================
      Every token below is restated in ALL THREE skin blocks in §1c, and
@@ -400,9 +408,13 @@ html { scroll-behavior: smooth; }
    avoided by discipline. */
 [hidden] { display: none !important; }
 
-/* The only sr-only text on the page: the copy button's "Copied" confirmation,
-   which is otherwise a label swap nothing is told about. JS creates it
-   alongside the button, so the JS-off page has no sr-only content at all. */
+/* Two uses, and they are opposite kinds. The copy button's "Copied"
+   confirmation is a label swap nothing would otherwise be told about, and JS
+   creates it. The modifier keycaps' names — Command, Control, Option, Super —
+   ship in the markup, because there the visible thing is a GLYPH and the name
+   is the only text there is; see the `.key.is-glyph` block in §5a. So the
+   JS-off page does carry sr-only content now, which it deliberately did not
+   before. */
 .sr-only {
   position: absolute;
   width: 1px; height: 1px;
@@ -694,7 +706,9 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .mods { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; justify-items: center; }
 .mods li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .mod-os { font-size: 14px; min-width: 68px; text-align: right; color: var(--fg-dim); }
-.mod-note { font-size: 13px; color: var(--fg-dim); }
+/* `.mod-note` went with the three notes it styled — see the comment over
+   `.hero-chords` in index.html for what they said and what the page lost by not
+   saying it. A row is now three things: the machine, the gesture, the chord. */
 
 /* The one `=` on the page, and it is not a plus sign: it separates two whole
    chords rather than two keys, and what it claims is that they are the same
@@ -707,6 +721,42 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    out — because a reader has to be able to copy it. */
 .key.is-caps { font-weight: 640; }
 .chord.is-alias .key { color: var(--fg-dim); border-bottom-width: 1px; }
+
+/* --- MODIFIERS ARE DRAWN THE WAY THE KEY IS ETCHED, not spelled out ---
+ *
+ * A Mac's own menus print ⌘ ⌃ ⌥ and its keycaps carry them, so `Cmd Ctrl Alt`
+ * was the page translating a thing the reader is looking at into words. The
+ * Windows and Linux rows keep `Ctrl` and `Alt` as words for the same reason
+ * inverted: those keys are etched as words on every keyboard either OS ships on.
+ *
+ * TWO TECHNIQUES, AND THE SPLIT IS DELIBERATE.
+ *
+ * The macOS three are Unicode — U+2318, U+2303, U+2325 — because they are real
+ * characters with one correct shape, and drawing ⌘'s knot or ⌥'s switch by hand
+ * would be an approximation of something the reader has on the key in front of
+ * them. The risk is a font without them, and it is small where it matters: the
+ * row is only shown under `:root[data-os="macos"]`, which is the reader's own
+ * platform unless they went and pressed the switcher, and every macOS system
+ * font carries all three. `--glyph` puts the symbol faces first anyway.
+ *
+ * The Super key is an inline SVG instead, because it is the opposite case: it
+ * has NO standard character. ⊞ (U+229E) is a maths operator pressed into
+ * service by convention, it sits outside the mono stack's usual coverage, and
+ * it renders at maths weight beside letter keycaps. Four rounded panes is what
+ * the key is etched with on both machines and it cannot fail to render.
+ *
+ * EVERY GLYPH CARRIES AN `.sr-only` NAME. `<kbd>` has no implicit role, so an
+ * `aria-label` on it is not reliably exposed — the accessible name has to be
+ * real text. Without it `.chord-is`'s whole argument collapses: that `=` is
+ * left readable so a screen reader says "Caps Lock C equals Command Control
+ * Option C", and a bare ⌘ reads as "place of interest sign" or as nothing. */
+.key.is-glyph { padding: 0 6px; font-size: 15px; line-height: 1; }
+.key.is-glyph > [aria-hidden] { font-family: var(--glyph); }
+.glyph {
+  width: 12px; height: 12px;
+  fill: currentColor;
+  display: block;
+}
 
 /* THE PRESS IS THE SIGNATURE, and it is one rule set reading four tokens the
    skin swaps. Glass descends 4px and its blur tightens from 20px to 14px, so
@@ -2261,10 +2311,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   .os-switch label { display: none; }
   .os-switch select, .ghost { padding: 5px 8px; font-size: 13px; }
 
-  /* One chord row is on screen at a time, and at full keycap size a four-key
-     macOS chord plus its label is ~330px of content on a 350px line. Smaller
-     caps keep it on one line without dropping the "yours" chip, which this page
-     does not hide on a phone. */
+  /* One chord row is on screen at a time, and at full keycap size a row is two
+     chords and an `=` on a 350px line. Smaller caps keep it to one line.
+     It used to be tighter still: every row also carried a note, and the macOS
+     chord spelled `Cmd Ctrl Alt` in words rather than in three glyph caps. */
   .mods .key { height: 24px; min-width: 22px; padding: 0 6px; font-size: 11px; }
   .mods li { justify-content: center; gap: 5px 9px; }
   .mods .mod-os { min-width: 0; text-align: left; }
