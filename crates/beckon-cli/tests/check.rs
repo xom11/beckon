@@ -69,3 +69,26 @@ fn check_missing_file_exits_nonzero() {
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
     assert!(stderr.contains("cannot read"), "stderr: {stderr}");
 }
+
+fn run_check_resolve(content: &str) -> Output {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("apps.toml");
+    std::fs::write(&path, content).expect("write config");
+    beckon()
+        .arg("check")
+        .arg(&path)
+        .arg("--resolve")
+        .output()
+        .expect("run beckon")
+}
+
+/// End to end, against this machine's real catalog: a name nothing can resolve
+/// still exits 1, and says which key is dead.
+#[test]
+fn resolve_still_fails_on_a_name_this_machine_cannot_find() {
+    let out = run_check_resolve("\"ctrl+super+alt+t\" = \"beckon-selftest-no-such-app\"\n");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(stdout.contains("ctrl+super+alt+t"), "stdout: {stdout}");
+}

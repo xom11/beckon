@@ -4,6 +4,7 @@
 //! is what lets `serve.rs` have exactly one implementation.
 
 use anyhow::{anyhow, Context, Result};
+use beckon_core::certainty::{Certainty, NameReport};
 use beckon_core::shortcuts::Shortcut;
 use beckon_core::Backend;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -384,19 +385,24 @@ fn cmd_check(path: &std::path::Path, resolve: bool) -> Result<()> {
     if !resolve {
         return Ok(());
     }
-    check_resolution(&shortcuts, unresolved_names)
+    check_resolution(&shortcuts, name_reports)
 }
 
-/// The `--resolve` half of `check`: does every binding name something this
-/// machine can actually find?
+/// The `--resolve` half of `check`: what grade does every binding's name earn
+/// on this machine?
 ///
 /// The resolver is passed in, so the whole flag — the batching, the counting
 /// and the report — is testable on a machine that has none of the apps in
 /// question, which is every CI runner and is the exact condition the flag
 /// exists to describe.
+///
+/// **Only `NoMatch` gates the exit code.** A `Guess` resolves; it is slow and
+/// fragile, not dead, and two of this user's own bindings live on that tier on
+/// purpose. Failing on it would turn a correct file red, which is how a check
+/// stops being run.
 fn check_resolution<'a>(
     shortcuts: &'a [Shortcut],
-    unresolved: impl FnOnce(&[&'a str]) -> Result<Vec<&'a str>>,
+    report: impl FnOnce(&[&'a str]) -> Result<Vec<NameReport>>,
 ) -> Result<()> {
     // Distinct names, asked in one call: several hotkeys aiming at one app is
     // the normal shape of a shortcuts file, and every backend answers a batch
@@ -404,17 +410,31 @@ fn check_resolution<'a>(
     let mut names: Vec<&str> = shortcuts.iter().map(|s| s.app.as_str()).collect();
     names.sort_unstable();
     names.dedup();
-    let missing: std::collections::HashSet<&str> = unresolved(&names)?.into_iter().collect();
+    let reports = report(&names)?;
+    let grade: std::collections::HashMap<&str, &NameReport> =
+        reports.iter().map(|r| (r.id.as_str(), r)).collect();
 
-    let dead: Vec<&Shortcut> = shortcuts
-        .iter()
-        .filter(|s| missing.contains(s.app.as_str()))
-        .collect();
+    let pick = |want: Certainty| -> Vec<(&Shortcut, &NameReport)> {
+        shortcuts
+            .iter()
+            .filter_map(|s| grade.get(s.app.as_str()).map(|r| (s, *r)))
+            .filter(|(_, r)| r.certainty == want)
+            .collect()
+    };
+    let dead = pick(Certainty::NoMatch);
+    let guessed = pick(Certainty::Guess);
+
     if dead.is_empty() {
         println!("ok: every app name resolves on this machine");
+    } else {
+        print!("{}", unresolved_report(&dead));
+    }
+    if !guessed.is_empty() {
+        print!("{}", guess_report(&guessed));
+    }
+    if dead.is_empty() {
         return Ok(());
     }
-    print!("{}", unresolved_report(&dead));
     // The counts live here and nowhere else: the block above lists the
     // bindings, `main` prints this to stderr, and the two do not repeat
     // each other.
@@ -433,9 +453,9 @@ fn check_resolution<'a>(
 /// reader is sent for the detail on any single one — printing all of
 /// `resolve`'s suggestion blocks here would bury the answer under fourteen
 /// of them.
-fn unresolved_report(dead: &[&Shortcut]) -> String {
+fn unresolved_report(dead: &[(&Shortcut, &NameReport)]) -> String {
     let mut s = String::from("\nThese shortcuts name an app this machine has no match for:\n");
-    for b in dead {
+    for (b, _) in dead {
         s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app));
     }
     s.push_str(
@@ -445,7 +465,30 @@ fn unresolved_report(dead: &[&Shortcut]) -> String {
     s
 }
 
-/// Which of `names` no installed app on this machine answers to.
+/// The block for bindings that resolve, but only by substring.
+///
+/// Separate from `unresolved_report` because it says something different: not
+/// "this key is dead" but "this key works today for a reason the config does
+/// not state". Each line carries the reason, because the reason is what makes
+/// it actionable — a lone substring match invites a future install to steal
+/// the name, while several candidates means the winner is already decided by
+/// sort order rather than by anything the user wrote.
+fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s = String::from("\nThese shortcuts resolve, but only loosely:\n");
+    for (b, r) in guessed {
+        s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app));
+        if !r.consequence.is_empty() {
+            s.push_str(&format!("   {:<30} {}\n", "", r.consequence));
+        }
+        for other in &r.suggestions {
+            s.push_str(&format!("   {:<30} also matches: {}\n", "", other));
+        }
+    }
+    s.push_str("\nThey do not fail this check. Naming the app exactly makes them exact.\n");
+    s
+}
+
+/// One resolution report per name, from whichever backend this OS has.
 ///
 /// Deliberately does NOT go through `pick_backend`. Resolution reads
 /// installed-app metadata — `.desktop` files, LaunchServices, the Start menu
@@ -463,22 +506,22 @@ fn unresolved_report(dead: &[&Shortcut]) -> String {
 ///
 /// An OS with no backend crate is the one case left, and it errors: an empty
 /// list would read as "every name resolved".
-fn unresolved_names<'a>(names: &[&'a str]) -> Result<Vec<&'a str>> {
+fn name_reports(names: &[&str]) -> Result<Vec<NameReport>> {
     #[cfg(target_os = "linux")]
     {
-        beckon_linux::unresolved_names(names)
+        beckon_linux::resolve_reports(names)
             .map_err(|e| anyhow!("{e}"))
             .context("resolving app names failed")
     }
     #[cfg(target_os = "macos")]
     {
-        beckon_macos::unresolved_names(names)
+        beckon_macos::resolve_reports(names)
             .map_err(|e| anyhow!("{e}"))
             .context("resolving app names failed")
     }
     #[cfg(target_os = "windows")]
     {
-        beckon_windows::unresolved_names(names)
+        beckon_windows::resolve_reports(names)
             .map_err(|e| anyhow!("{e}"))
             .context("resolving app names failed")
     }
@@ -742,6 +785,7 @@ fn cmd_doctor() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use beckon_core::shortcuts::parse_shortcuts;
 
     #[test]
     fn already_running_is_expected() {
@@ -776,13 +820,40 @@ mod tests {
         beckon_core::shortcuts::parse_shortcuts(text).expect("test fixture must parse")
     }
 
+    fn report(id: &str, certainty: Certainty) -> NameReport {
+        NameReport {
+            id: id.to_string(),
+            certainty,
+            target: None,
+            tier: None,
+            consequence: if certainty == Certainty::Exact {
+                String::new()
+            } else {
+                "because".to_string()
+            },
+            suggestions: Vec::new(),
+        }
+    }
+
     /// The whole point of the flag: a file that parses can still be entirely
     /// dead on the machine it is installed on, and bare `check` reports that
     /// file as `ok: N shortcuts`.
     #[test]
     fn resolution_fails_when_a_binding_names_an_app_this_machine_does_not_have() {
         let s = shortcuts("\"ctrl+alt+t\" = \"Terminal\"\n\"ctrl+alt+c\" = \"Claude\"\n");
-        let e = check_resolution(&s, |_| Ok(vec!["Claude"])).unwrap_err();
+        let e = check_resolution(&s, |names| {
+            Ok(names
+                .iter()
+                .map(|n| {
+                    if *n == "Claude" {
+                        report(n, Certainty::NoMatch)
+                    } else {
+                        report(n, Certainty::Exact)
+                    }
+                })
+                .collect())
+        })
+        .unwrap_err();
         assert_eq!(
             format!("{e}"),
             "1 of 2 shortcuts name an app that does not resolve on this machine"
@@ -792,7 +863,10 @@ mod tests {
     #[test]
     fn resolution_passes_when_every_name_resolves() {
         let s = shortcuts("\"ctrl+alt+t\" = \"Terminal\"\n\"ctrl+alt+c\" = \"Claude\"\n");
-        assert!(check_resolution(&s, |_| Ok(Vec::new())).is_ok());
+        assert!(check_resolution(&s, |names| {
+            Ok(names.iter().map(|n| report(n, Certainty::Exact)).collect())
+        })
+        .is_ok());
     }
 
     /// A backend that cannot answer must not be read as "all clear" — the
@@ -818,7 +892,16 @@ mod tests {
         let mut asked: Vec<String> = Vec::new();
         let e = check_resolution(&s, |names| {
             asked = names.iter().map(|n| n.to_string()).collect();
-            Ok(vec!["Terminal"])
+            Ok(names
+                .iter()
+                .map(|n| {
+                    if *n == "Terminal" {
+                        report(n, Certainty::NoMatch)
+                    } else {
+                        report(n, Certainty::Exact)
+                    }
+                })
+                .collect())
         })
         .unwrap_err();
         assert_eq!(asked, ["Claude", "Terminal"]);
@@ -832,7 +915,9 @@ mod tests {
     #[test]
     fn the_report_names_every_dead_binding_with_the_key_that_will_not_work() {
         let s = shortcuts("\"ctrl+super+alt+c\" = \"Claude\"\n\"ctrl+super+alt+g\" = \"Gmail\"\n");
-        let dead: Vec<&Shortcut> = s.iter().collect();
+        let claude = report("Claude", Certainty::NoMatch);
+        let gmail = report("Gmail", Certainty::NoMatch);
+        let dead: Vec<(&Shortcut, &NameReport)> = vec![(&s[0], &claude), (&s[1], &gmail)];
         let report = unresolved_report(&dead);
         assert!(report.contains("ctrl+super+alt+c"), "{report}");
         assert!(report.contains("Claude"), "{report}");
@@ -845,9 +930,47 @@ mod tests {
     #[test]
     fn the_report_sends_the_reader_to_resolve_for_the_detail() {
         let s = shortcuts("\"ctrl+alt+c\" = \"Claude\"\n");
-        let dead: Vec<&Shortcut> = s.iter().collect();
+        let claude = report("Claude", Certainty::NoMatch);
+        let dead: Vec<(&Shortcut, &NameReport)> = vec![(&s[0], &claude)];
         let report = unresolved_report(&dead);
         assert!(report.contains("beckon resolve <ID>"), "{report}");
         assert!(report.contains("beckon installed"), "{report}");
+    }
+
+    /// A guess resolves. It is slow and fragile, not dead — so it is printed
+    /// and the exit code is untouched. This is the rule the whole three-grade
+    /// change exists to express, and the one that separates it from the
+    /// boolean it replaces.
+    #[test]
+    fn a_guess_is_reported_and_does_not_fail_the_check() {
+        let shortcuts = parse_shortcuts("\"ctrl+alt+a\" = \"Brave\"\n").unwrap();
+        let out = check_resolution(&shortcuts, |names| {
+            Ok(names.iter().map(|n| report(n, Certainty::Guess)).collect())
+        });
+        assert!(out.is_ok(), "a guess must not fail the check: {out:?}");
+    }
+
+    /// And a guess alongside a miss must not soften the miss.
+    #[test]
+    fn a_miss_still_fails_even_when_another_row_is_only_a_guess() {
+        let shortcuts =
+            parse_shortcuts("\"ctrl+alt+a\" = \"Brave\"\n\"ctrl+alt+b\" = \"Zalo\"\n").unwrap();
+        let err = check_resolution(&shortcuts, |names| {
+            Ok(names
+                .iter()
+                .map(|n| {
+                    if *n == "Zalo" {
+                        report(n, Certainty::NoMatch)
+                    } else {
+                        report(n, Certainty::Guess)
+                    }
+                })
+                .collect())
+        })
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("1 of 2 shortcuts"),
+            "the count must name only the dead ones: {err}"
+        );
     }
 }
