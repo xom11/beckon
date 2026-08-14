@@ -1739,10 +1739,20 @@ fn set_text(h: HWND, s: &str) {
 /// or a `WM_DPICHANGED` arriving while the App field holds half-typed text was
 /// always going to run it, and was always going to lose the text.
 ///
-/// **Nothing happens when nothing was rewritten**, which is the overwhelmingly
-/// common case (an empty field, or a catalogue with nothing close enough to
-/// snap to) -- so the cost of the guard is two `WM_GETTEXT`s on a call that
-/// already only runs when the geometry moved.
+/// **The text restore is conditional; the SELECTION restore is not**, and the
+/// asymmetry is the whole fix rather than a detail of it. The measured
+/// mechanism is two things at once: the control re-synchronises its edit to the
+/// closest matching item AND selects the whole string. When the field already
+/// holds an exact catalogue entry -- which is ordinary, not exotic, since
+/// `apply_state` writes `d.app` straight from the model and bindings normally
+/// name apps by their exact Start-menu name -- the re-sync leaves the text
+/// byte-identical, a text-only guard sees no change, and the select-all
+/// survives. The next keystroke then replaces the field, which is the defect
+/// verbatim with the right characters on screen.
+///
+/// So `CB_SETEDITSEL` runs unconditionally. It is a no-op when the selection
+/// was already what it puts back, and it costs one message on a call that only
+/// runs when the geometry moved.
 ///
 /// **The restore's own notification is harmless, and that is a property of the
 /// value rather than of a suppression.** `WM_SETTEXT` raises `CBN_EDITCHANGE`,
@@ -1764,8 +1774,11 @@ unsafe fn place_app_combo(h: HWND, x: i32, y: i32, cx: i32, cy: i32) {
     let _ = SetWindowPos(h, None, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE);
     if text_of(h) != before {
         set_text(h, &before);
-        SendMessageW(h, CB_SETEDITSEL, None, Some(LPARAM(sel as isize)));
     }
+    // Unconditional: an exact catalogue entry re-snaps to identical TEXT and a
+    // selected-all EDIT, so a guard on the text alone leaves the destructive
+    // half in place. See the doc above.
+    SendMessageW(h, CB_SETEDITSEL, None, Some(LPARAM(sel as isize)));
 }
 
 fn enable(parent: HWND, id: i32, on: bool) {
