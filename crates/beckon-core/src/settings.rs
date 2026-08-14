@@ -303,6 +303,46 @@ pub enum Page {
     About,
 }
 
+impl Page {
+    /// The door to the right, wrapping past the last one.
+    ///
+    /// `Ctrl+Tab`'s answer, and it is here rather than in the window for the
+    /// same reason the rest of `Page` is: the two CI jobs that never compile a
+    /// wndproc can check it. The window's own spelling of strip order is
+    /// `TABS`, and `the_strip_order_is_the_cycle` pins the two together --
+    /// which is the only thing that can, since a table and a cycle are the
+    /// same fact written twice.
+    ///
+    /// **An exhaustive `match` rather than an index into a list**, matching
+    /// `tab_id_of`'s decision for the same reason: a fifth `Page` is then a
+    /// compile error in this file instead of a silent wrap at the one call
+    /// that decides which door `Ctrl+Tab` opens. The cost is that the cycle is
+    /// spelled twice, forwards and backwards, and `next_and_prev_are_inverses`
+    /// is what stops those two drifting.
+    ///
+    /// **It wraps.** Four doors and a key that means "the next one" have
+    /// nowhere else to go, and a `Ctrl+Tab` that stops dead on `About` reads
+    /// as a broken key rather than as an edge.
+    pub fn next(self) -> Page {
+        match self {
+            Page::Shortcuts => Page::Keyboard,
+            Page::Keyboard => Page::System,
+            Page::System => Page::About,
+            Page::About => Page::Shortcuts,
+        }
+    }
+
+    /// The door to the left, wrapping past the first one -- `Ctrl+Shift+Tab`.
+    pub fn prev(self) -> Page {
+        match self {
+            Page::Shortcuts => Page::About,
+            Page::Keyboard => Page::Shortcuts,
+            Page::System => Page::Keyboard,
+            Page::About => Page::System,
+        }
+    }
+}
+
 /// Is the external-change banner on screen?
 ///
 /// **One condition written once, for five readers.** The banner is a STATIC
@@ -3181,6 +3221,62 @@ mod tests {
     fn the_banner_page_is_the_shortcut_table_it_is_about() {
         assert_eq!(BANNER_PAGE, Page::Shortcuts);
         assert!(banner_shown(true, BANNER_PAGE));
+    }
+
+    /// `Ctrl+Tab` four times comes home, having stopped at every door once.
+    ///
+    /// This is the whole of what a cycle has to be, and both halves are worth
+    /// asserting separately from the inverse test below: a `next` that skipped
+    /// a door would still return home in four steps if it visited another
+    /// twice, and a `next` that returned its argument would visit one door
+    /// four times and come "home" every step.
+    #[test]
+    fn four_steps_forward_visit_every_door_and_come_home() {
+        let start = Page::Shortcuts;
+        let mut seen = Vec::new();
+        let mut p = start;
+        for _ in 0..4 {
+            assert_ne!(p.next(), p, "{p:?} is its own next door");
+            p = p.next();
+            seen.push(p);
+        }
+        assert_eq!(p, start, "four doors, four steps, and this is not home");
+        for door in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert_eq!(
+                seen.iter().filter(|s| **s == door).count(),
+                1,
+                "{door:?} is visited {} times in one lap of {seen:?}",
+                seen.iter().filter(|s| **s == door).count()
+            );
+        }
+    }
+
+    /// `Ctrl+Shift+Tab` undoes `Ctrl+Tab`, from every door.
+    ///
+    /// The cycle is spelled twice -- once forwards and once backwards, both as
+    /// exhaustive `match`es so that a fifth `Page` cannot be added without
+    /// answering for it in both -- so this is the test that stops the two
+    /// spellings drifting. Nothing else can: each is internally consistent on
+    /// its own.
+    #[test]
+    fn next_and_prev_are_inverses() {
+        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert_eq!(page.next().prev(), page, "next then prev left {page:?}");
+            assert_eq!(page.prev().next(), page, "prev then next left {page:?}");
+        }
+    }
+
+    /// The strip wraps in both directions, named at the two ends where it is
+    /// the only thing to do.
+    ///
+    /// Spelled out rather than left to the lap above, because "wraps" is a
+    /// decision (`Page::next`'s doc) rather than an implementation detail: a
+    /// later reader who thinks `Ctrl+Tab` should stop at `About` has to delete
+    /// a test that says otherwise.
+    #[test]
+    fn the_strip_wraps_at_both_ends() {
+        assert_eq!(Page::About.next(), Page::Shortcuts);
+        assert_eq!(Page::Shortcuts.prev(), Page::About);
     }
 
     /// The return trip into Shortcuts is a placement on a combo that has not

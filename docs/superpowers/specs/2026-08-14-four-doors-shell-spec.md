@@ -314,7 +314,32 @@ Within the strip, Left/Right move between pills and the auto-radio group
 selects as it moves. Whether user32 migrates `WS_TABSTOP` onto the checked
 radio (making "the strip is ONE tab stop" free rather than hand-maintained) is
 **not settled by reading** — nothing in this tree exercises a radio group, the
-three that existed were retired. See §9 G-S2.
+three that existed were retired. See §9 G-S2, **which was run on a14
+2026-08-14 and still did not settle it**: the probe read the styles back with
+the one radio that was *created* carrying `WS_TABSTOP` also being the checked
+one, so migration and a no-op produce the identical readback. It is unchanged
+either way — all four pills carry `WS_TABSTOP`, worst case Tab visits four
+stops instead of one — so nothing waits on the answer, and no code may be
+written to migrate the style by hand on the strength of it.
+
+**Two things the table brings with it, and both had to exist before it.** An
+accelerator MOVES NO FOCUS, so `Ctrl+1`..`4` taken while the App combo holds
+focus leave focus on a control the switch immediately hides — that is
+`repair_hidden_button`'s `hidden_child` arm, which shipped in Task 4 one commit
+ahead of the keystroke that reaches it. And an accelerator's `WM_COMMAND`
+carries `1` in the high word where a click carries `BN_CLICKED` (0), so the
+pill arm must not filter on `BN_CLICKED` alone; it already takes
+`CMD_FROM_ACCELERATOR`.
+
+`Ctrl+Tab` and `Ctrl+Shift+Tab` **cannot ride on a pill id.** They name a
+direction, whose answer depends on the door that is open, and an `ACCEL`
+carries a command id and nothing else — so the direction has to be resolved in
+`handle_command`. They get two ids of their own (`IDM_PAGE_NEXT` /
+`IDM_PAGE_PREV` = 2001-2, deliberately outside the control range, guarded by
+`the_command_ids_are_not_control_ids` because `handle_command` dispatches on
+the number alone). The cycle itself is `Page::next` / `Page::prev` in core, so
+the one part of this section that is not Win32 is testable on all three CI
+jobs, and `the_strip_order_is_the_cycle` pins it against `TABS`.
 
 ---
 
@@ -487,13 +512,13 @@ in place**.
 
 | # | Gate | Control |
 |---|---|---|
-| G2 | Does `CDIS_HOT` reach a `BS_PUSHLIKE` auto-radio's `NM_CUSTOMDRAW`? The whole control choice rests on it | an ordinary `BS_PUSHBUTTON` in the same run, which is known to get it (`mod.rs:4356-4366`) |
+| G2 | **PASSED, a14 2026-08-14, comctl32 6.16** (`examples/pill_probe.rs`). Does `CDIS_HOT` reach a `BS_PUSHLIKE` auto-radio's `NM_CUSTOMDRAW`? The whole control choice rests on it. It does — the radio and the control both reported hot, so the pills keep `BS_AUTORADIOBUTTON \| BS_PUSHLIKE` and the named fallback is not built | an ordinary `BS_PUSHBUTTON` in the same run, which is known to get it (`mod.rs:4356-4366`) |
 | G3 | `GetClientRect` and `GetWindowRect` logged side by side | already built: `settings_probe.rs:781-862` prints both with a MATCH verdict. Reading says they are equal; this confirms it |
 | G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with each guard disabled in turn, which must lose the text. **There are THREE guards and the round trip needs all of them** — `if shortcuts` in `layout` on the way out, `combo_needs_placing` on the way back, and `place_app_combo`'s save/restore for the trip back that really did move the combo. Disable them one at a time: with only the second removed the text is lost on the way back, which is the half Task 4 shipped; with only the third removed it survives the plain round trip and is lost by the round trip taken **while the external-change banner appears on the other page**, which is the run to script |
 | G-S7 | What does `GetFocus()` return with the App combo focused, and does `hidden_child` recognise it once the combo is hidden? Focus `IDC_APP`, read `GetFocus`, read `GetDlgCtrlID` on it, `SW_HIDE` the combo, then read `GetWindowLongW(GWL_STYLE)` **and** `IsWindowVisible` on the same handle | the same four reads on `IDC_FILTER`, a plain EDIT with no inner child, where the two answers must agree. The expected split is the whole point: on the combo's inner EDIT the style bit stays set and `IsWindowVisible` goes false, which is why the repair shipped one commit reading the wrong one |
 | G-S6 | Does `place_app_combo`'s restore actually restore? Type into App, resize the window so `want_app` moves, read the field back | the same resize with the restore removed, which must show a catalogue entry. This is the only evidence that `CB_GETEDITSEL`/`CB_SETEDITSEL` round-trip the selection and that `WM_SETTEXT` does not itself provoke a second re-sync — both are reasoned from documentation here, neither is measured |
-| G-S2 | Does user32 migrate `WS_TABSTOP` onto the checked radio? Read all four pills' styles back with `GetWindowLongW` | the same read before any pill is checked |
-| G-S3 | Does `is_checked` report a `BS_AUTORADIOBUTTON` correctly? | `CheckRadioButton` a known pill, then read all four |
+| G-S2 | **RUN a14 2026-08-14 AND STILL OPEN** — the run answered nothing, and the reason is worth more than the gate. Does user32 migrate `WS_TABSTOP` onto the checked radio? Read all four pills' styles back with `GetWindowLongW`. It read `WS_TABSTOP=true WS_GROUP=true` on the checked radio and `false false` on its sibling — **which is exactly how the probe created them** (`pill_probe.rs:113-131`: A with `WS_GROUP \| WS_TABSTOP`, B with `WINDOW_STYLE(0)`), and A was the radio it checked. Migration and a total no-op are indistinguishable in that readback. Nothing waits on the answer (see §4.4), so this is a note, not a blocker | **the missing one, and its absence is the finding.** "The same read before any pill is checked" was the control this row asked for and the probe did not take. It now checks radio B and reads a second time: only the CHANGE between the two readings is evidence |
+| G-S3 | **PASSED, a14 2026-08-14.** Does `is_checked` report a `BS_AUTORADIOBUTTON` correctly? `BM_GETCHECK` answered 1 for the checked radio and 0 for its sibling, which is what §6.1's "selected-ness comes from `is_checked`, never `CDIS_CHECKED`" rests on | `CheckRadioButton` a known pill, then read all four |
 | G-S4 | The strip under each of the four shipped HC schemes | the same screenshot in ordinary dark, where the trough is known to be visible |
 | G-S5 | `GetSystemMetricsForDpi(SM_CXSIZEFRAME / SM_CYSIZEFRAME / SM_CXPADDEDBORDER, dpi)` printed by name at 96 and 144, and the left/right resize edge dragged across the strip's band | dragging the same edge below the strip, where it is known to work |
 | G1 | `GetTextExtentPoint32W` on the Caps line at 680, 96 and 144 DPI | the same measurement at 760, where it is known to fit |

@@ -471,27 +471,29 @@ would press it. Four of them are Shortcuts-page push buttons."
 ## Task 5: Keyboard
 
 **Files:**
-- Modify: `crates/beckon-core/src/settings.rs` — `DefaultButton::visible`
-- Modify: `crates/beckon-windows/src/settings_window/mod.rs` — `build_accelerators`, `repair_default_button`'s call
+- Modify: `crates/beckon-core/src/settings.rs` — `Page::next` / `Page::prev`
+- Modify: `crates/beckon-windows/src/settings_window/ids.rs` — the two command ids
+- Modify: `crates/beckon-windows/src/settings_window/mod.rs` — `build_accelerators`, `handle_command`, `go_to_door`
+- Modify: `crates/beckon-windows/examples/pill_probe.rs` — G-S2's missing control
 
-- [ ] **Step 1: Write the failing core test**
+**CORRECTED 2026-08-14, before this task started: steps 1 and 2 were already
+done, and this task is only step 3.** Task 4 moved `page` into
+`DefaultButton::visible` / `pressable` / `default_button` along with the core
+tests scheduled here, because deferring it made Task 4's own
+`repair_default_button` call a no-op for the page hazard — the fix and the
+thing it fixes could not be split across two commits. So the "page-aware
+default button" half of the commit message below describes work that is
+already in the tree.
 
-`DefaultButton::visible(self, external_change: bool)` gains a `page`. Write
-tests in `beckon-core` for the cases the Windows side cannot test: a
-Shortcuts-page button is not visible on Keyboard; the banner's Reload is
-visible only on Shortcuts and only with `external_change`.
+- [x] ~~**Step 1: Write the failing core test**~~ — landed in Task 4
+  (`the_shortcuts_pages_buttons_lose_the_default_behind_another_door`,
+  `the_banners_two_follow_the_change_on_every_door`).
+- [x] ~~**Step 2: Change the signature and fix every caller**~~ — landed in
+  Task 4.
 
-This is the payoff §12 Q3 of the design predicted — `Page` in core makes this
-testable on all three CI jobs.
+- [x] **Step 3: Extend the accelerator table**
 
-- [ ] **Step 2: Change the signature and fix every caller**
-
-`beckon-core/src/settings.rs:1445`. Its doc sentence "the banner's visibility
-… is the window's only conditional geometry" becomes false — rewrite it.
-
-- [ ] **Step 3: Extend the accelerator table**
-
-`build_accelerators` (`mod.rs:2918-2927`) goes `[ACCEL; 1]` → `[ACCEL; 7]`:
+`build_accelerators` goes `[ACCEL; 1]` → `[ACCEL; 3 + TABS.len()]`, i.e. seven:
 `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Ctrl+1`..`Ctrl+4`, plus the existing `Ctrl+S`.
 
 **`Ctrl+Tab` must be an accelerator**, not left to the dialog manager:
@@ -499,23 +501,43 @@ testable on all three CI jobs.
 state, so forgetting the entry gives "focus moves one control" — which looks
 like nothing happened and is far harder to spot than a dead key.
 
-- [ ] **Step 4: Gate**
+Three things the plan did not name and the work needed:
+
+1. **Two command ids**, `IDM_PAGE_NEXT` / `IDM_PAGE_PREV` (2001-2). The two
+   `Tab` entries name a *direction*, not a door, and an `ACCEL` carries a
+   command id and nothing else — so the direction is resolved in
+   `handle_command` against `PAGE`. `Ctrl+1`..`4` need no new id: they ride on
+   the pills'.
+2. **`Page::next` / `Page::prev` in core**, as exhaustive `match`es so a fifth
+   door is a compile error, with the off-Windows tests this task can have:
+   four steps forward visit every door once and come home, `prev` inverts
+   `next`, and the strip wraps at both ends. `the_strip_order_is_the_cycle`
+   (Windows-side) pins them against `TABS`.
+3. **`go_to_door`**, so "raise `SettingsCommand::ShowPage` only when the door
+   really moved" is spelled once for all three arms rather than three times.
+
+- [x] **Step 4: Gate**
 
 All five, plus `cargo test -p beckon-core` for the new tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/beckon-core/src/settings.rs \
-        crates/beckon-windows/src/settings_window/mod.rs
-git commit -m "feat(settings): Ctrl+Tab, Ctrl+1..4, and a page-aware default button
-
-DefaultButton::visible takes the page, which is what Page-in-core was for --
-the cases the window cannot test now run on all three CI jobs.
+        crates/beckon-windows/src/settings_window/ids.rs \
+        crates/beckon-windows/src/settings_window/mod.rs \
+        crates/beckon-windows/examples/pill_probe.rs \
+        docs/superpowers/specs/2026-08-14-four-doors-shell-spec.md \
+        docs/superpowers/plans/2026-08-14-four-doors-shell.md
+git commit -m "feat(settings-window): Ctrl+Tab, Ctrl+Shift+Tab and Ctrl+1..4
 
 Ctrl+Tab is an accelerator rather than dialog-manager behaviour because
 IsDialogMessageW's VK_TAB branch is not documented to consult Ctrl: forgetting
-the entry moves focus one control, which reads as nothing happening."
+the entry moves focus one control, which reads as nothing happening.
+
+The page-aware default button this task was also scheduled for landed in Task
+4 -- splitting it made that task's own repair a no-op -- so what is left is the
+table, the two direction ids it needs, and the cycle in core."
 ```
 
 ---

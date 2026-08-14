@@ -40,15 +40,19 @@
 //! the same call site.** `layout` places only the CURRENT page's controls, so
 //! a switch away from Shortcuts never reaches the App combo at all -- which
 //! is a correctness requirement rather than an optimisation, because
-//! `Ctrl+1`..`Ctrl+4` BECOME accelerators in Task 5 and
+//! `Ctrl+Tab` and `Ctrl+1`..`Ctrl+4` ARE accelerators, and
 //! `TranslateAcceleratorW` runs before `IsDialogMessageW` and moves no focus,
 //! so the combo would otherwise be resized while focused, populated and
-//! holding half-typed text. The future tense is the honest one and this
-//! sentence used to be written in the present: `build_accelerators` holds
-//! `Ctrl+S` and nothing else today, so the only switch that exists yet is a
-//! pill click or an arrow key, both of which move focus onto the pill first.
-//! `handle_command`'s pill arm already takes `CMD_FROM_ACCELERATOR` so that
-//! task is one line there.
+//! holding half-typed text.
+//!
+//! **This sentence was written in the future tense until the table grew, and
+//! before that in the present when it should not have been.** What it said
+//! while `build_accelerators` held `Ctrl+S` alone was that every switch
+//! arrives as a pill click or an arrow key, both of which move focus onto the
+//! pill first -- true then, and no longer: an accelerator moves no focus at
+//! all, so the six keys reach `show_page` with focus wherever the user left
+//! it. That is why the guard here and `repair_hidden_button` in `show_page`'s
+//! step 5 both had to exist BEFORE this table did.
 //!
 //! **CORRECTED 2026-08-14: that guard is ONE-DIRECTIONAL, and on its own it
 //! left half the round trip unfixed.** Skipping the band keeps the combo out
@@ -171,7 +175,7 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, IsWindowEnabled, SetFocus, TrackMouseEvent, TME_LEAVE, TME_NONCLIENT,
-    TRACKMOUSEEVENT,
+    TRACKMOUSEEVENT, VK_1, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -2118,26 +2122,32 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 /// `CBN_KILLFOCUS`, so no `commit_fields`, so text in no model and on no
 /// screen.
 ///
-/// **Fixed before it can fire -- true again, and it was FALSE for one commit.**
-/// The claim is that every switch arrives as a pill click or an arrow key, both
-/// of which move focus onto the pill BEFORE `show_page` hides anything, so the
-/// control being hidden is never the focused one. That was true when this was
-/// written, and `aa9fbd6` broke it in the same commit that wrote it down:
-/// `apply_settings` -> `switch_to_page` -> `show_page` was a third route, it
+/// **"Fixed before it can fire" is no longer true, and this arm now fires.**
+/// The claim was that every switch arrives as a pill click or an arrow key,
+/// both of which move focus onto the pill BEFORE `show_page` hides anything, so
+/// the control being hidden is never the focused one. It was true when it was
+/// written; `aa9fbd6` broke it in the same commit that wrote it down
+/// (`apply_settings` -> `switch_to_page` -> `show_page` was a third route, it
 /// moved no focus at all, and `Ctrl+S` reaches it with focus wherever the user
-/// left it -- the App combo included. The gap was live and shipped, not
-/// hypothetical. That route is gone (`banner_shown` is page-wide now, so Save
-/// needs no door to open), `show_page` is back to its one caller in
-/// `handle_command`'s pill arm, and `build_accelerators` still holds `Ctrl+S`
-/// and nothing else -- checked, not assumed, both times.
+/// left it -- the App combo included, live and shipped rather than
+/// hypothetical); that route was then deleted and the claim restored.
 ///
-/// `Ctrl+Tab` / `Ctrl+1`..`4` (Task 5) are what will make it reachable again:
+/// **`Ctrl+Tab` and `Ctrl+1`..`4` retire it for good.**
 /// `TranslateAcceleratorW` runs before `IsDialogMessageW` and moves no focus at
-/// all, which is the same property that made the deleted route sharp and that
-/// makes them the sharp case for `layout` (module header). A repair added with
-/// the keystroke would be a repair written under the pressure of the defect it
-/// prevents -- and the one commit this arm spent live is the evidence that
-/// "unreachable today" is a statement with a shelf life, not a property.
+/// all -- the same property that made the deleted route sharp, and what makes
+/// these six keys the sharp case for `layout` (module header). So the ordinary
+/// way to reach this arm is now: focus the App field, press `Ctrl+2`, and the
+/// combo it was typing into is hidden under the focus. `hidden_child` is what
+/// sees that (its own doc explains why the parent chain is the question, since
+/// the focused window is the combo's inner EDIT and keeps its own `WS_VISIBLE`
+/// bit for ever), and `CBN_KILLFOCUS` -> `commit_fields` is what keeps the
+/// half-typed text.
+///
+/// The order this landed in is deliberate and is the point: the repair shipped
+/// one commit ahead of the keystroke that needs it, rather than being written
+/// under the pressure of a defect it was supposed to prevent. The one commit
+/// this arm spent live in `aa9fbd6` is the evidence that "unreachable today" is
+/// a statement with a shelf life, not a property.
 ///
 /// The two tests agree at both call sites and neither is redundant for that
 /// reason: `apply_state` pushes the banner's visibility and `show_page` calls
@@ -2320,10 +2330,21 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 /// model from a page that shows nothing about it.
 ///
 /// Here rather than in `handle_command`'s pill arm because this function is
-/// the one funnel every door change goes through -- the arm, and `Ctrl+Tab` /
-/// `Ctrl+1`..`4` when Task 5 adds them. `end_capture` is idempotent, so the
-/// overwhelmingly common switch, with nothing armed, costs a cleared flag and
-/// a `KillTimer` that fails.
+/// the one funnel every door change goes through -- that arm, and the two
+/// accelerator arms beside it, which now cover `Ctrl+Tab`, `Ctrl+Shift+Tab`
+/// and `Ctrl+1`..`Ctrl+4`. `end_capture` is idempotent, so the overwhelmingly
+/// common switch, with nothing armed, costs a cleared flag and a `KillTimer`
+/// that fails.
+///
+/// **The keyboard routes cannot in practice arrive with a capture armed, and
+/// that is not why this call is here.** While armed the hook swallows every
+/// keystroke with the window foreground (`show_capture`: "there is no keyboard
+/// route to fall back on", which is why `Stop` must stay enabled), so
+/// `Ctrl+Tab` is recorded as a chord rather than delivered as an accelerator;
+/// and with the window NOT foreground, all three of spec F.4's focus layers
+/// have already disarmed. Those are two facts about the hook, both of which
+/// could change; this call is a property of the funnel, which is what makes it
+/// worth having anyway. The MOUSE route is the one that measurably needed it.
 ///
 /// **After the unchanged-door guard, not before it.** Clicking the pill you
 /// are already behind changes nothing and hides nothing, and `Stop` is still
@@ -2404,6 +2425,23 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
         }
     });
     true
+}
+
+/// Move to `page` and tell the caller, if the door really moved.
+///
+/// The three `handle_command` arms that open a door -- a pill, `Ctrl+1`..`4`
+/// and `Ctrl+Tab` -- all come through here, so "report `ShowPage` only when
+/// the page changed" is spelled once. It matters because the caller STORES
+/// what it is told (`ServeState::settings_page`, so the next `open` lands
+/// where the user left off) and because pressing the accelerator for the door
+/// you are already behind is not the user moving anywhere.
+///
+/// `show_page`'s own return value is what says so; this function exists only
+/// to keep that test off three call sites.
+fn go_to_door(hwnd: HWND, page: Page) {
+    if show_page(hwnd, page) {
+        with_cb(|cb| (cb.on_command)(SettingsCommand::ShowPage(page)));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3029,6 +3067,16 @@ unsafe fn build_children(hwnd: HWND) {
     // which is the whole reason `WM_CHIP_STATE` had to be invented for the
     // seven chips, while a pill's whole job is to say which door is open.
     //
+    // **Both halves measured on a14 2026-08-14, comctl32 6.16
+    // (`examples/pill_probe.rs`, gates G2 and G-S3), and the choice stands.**
+    // `CDIS_HOT` does reach a `BS_AUTORADIOBUTTON | BS_PUSHLIKE`, with the
+    // plain `BS_PUSHBUTTON` beside it reporting hot in the same run -- the
+    // control that makes a clean result mean anything. And `BM_GETCHECK`
+    // answers an auto-radio 1 / 0, which is what `is_checked` reads and what
+    // Task 6's painter takes selected-ness from instead of `CDIS_CHECKED`.
+    // So the named fallback (`BS_PUSHBUTTON + BS_NOTIFY`, a `BN_SETFOCUS` arm
+    // and `TrackMouseEvent`) is not needed and should not be built.
+    //
     // Nothing draws a pill yet: `push_button_custom_draw`'s dispatch is gated
     // on `is_push_button`, which these deliberately are not, so until
     // `paint::tab_pill` and its own `NM_CUSTOMDRAW` arm land the four render
@@ -3036,17 +3084,32 @@ unsafe fn build_children(hwnd: HWND) {
     //
     // The `AUTO` is doing real work: it clears the sibling pills on a click
     // and it makes Left/Right inside the group select as they move. What it
-    // does NOT do is move on an accelerator, which is why `show_page` ticks
-    // the pill itself rather than trusting the click path.
+    // does NOT do is move on an accelerator -- `Ctrl+1`..`Ctrl+4` and
+    // `Ctrl+Tab` are exactly that -- which is why `show_page` ticks the pill
+    // itself rather than trusting the click path.
     //
     // `WS_TABSTOP` on all four, which may or may not be what Tab ends up
     // seeing. In a real dialog user32 migrates the style onto whichever radio
     // is checked, so a group is ONE tab stop; nothing in this tree has ever
     // exercised a radio group -- the three that existed were retired -- so
-    // whether it does that for hand-created controls is unsettled and is gate
-    // G-S2. Setting it on all four is the safe end of that: worst case Tab
+    // whether it does that for hand-created controls is gate G-S2.
+    //
+    // **G-S2 was run on a14 2026-08-14 (`examples/pill_probe.rs`) and it did
+    // not answer.** It read back `WS_TABSTOP=true WS_GROUP=true` on the
+    // checked radio and `false false` on its sibling -- which is exactly how
+    // the probe CREATED them (`pill_probe.rs:113-131`: radio A gets
+    // `WS_GROUP | WS_TABSTOP`, radio B gets `WINDOW_STYLE(0)`), and the radio
+    // it checked was A. Migration and a total no-op produce that same
+    // readback, so the run distinguishes nothing: the probe's own missing
+    // control, in the file that opens by insisting every gate needs one. It
+    // now checks radio B as well, which is the reading that separates them.
+    //
+    // **Nothing here changes either way, which is why this is a note and not
+    // a defect.** Setting the bit on all four is the safe end: worst case Tab
     // visits four stops instead of one, where the other way round would leave
-    // a pill unreachable from the keyboard.
+    // a pill unreachable from the keyboard. Do not add code to migrate the
+    // style by hand on the strength of the answer -- if user32 does it, the
+    // hand-maintenance is a second writer on a value user32 owns.
     //
     // No `&` on any of the four captions -- `mod cap` writes out why four
     // unique mnemonics do not exist.
@@ -3701,24 +3764,77 @@ unsafe fn build_children(hwnd: HWND) {
     });
 }
 
-/// The window's accelerator table: `Ctrl+S` -> Save, and nothing else.
+/// The window's accelerator table: `Ctrl+S` -> Save, and the six keys that
+/// move between doors.
 ///
 /// Enter and Esc are deliberately absent. Both are the dialog manager's
 /// already — Enter through `DM_GETDEFID`, Esc through the `IDCANCEL`
 /// `WM_COMMAND` it synthesises — and an entry here would only race
 /// `IsDialogMessageW` for keys it already routes correctly.
 ///
+/// **`Ctrl+Tab` is the exception to that, and it MUST be an entry here.**
+/// `IsDialogMessageW` claims `VK_TAB` on its own account, and its `VK_TAB`
+/// branch is **not documented to consult the Ctrl state** — the documented
+/// behaviour is "move to the next control, or the previous one with Shift",
+/// with Ctrl named nowhere. So the failure mode of leaving `Ctrl+Tab` to the
+/// dialog manager is not a dead key, which would be noticed: it is focus
+/// moving one control, which is what plain Tab does and which reads as the
+/// keystroke having done nothing at all. `filter_dialog_message` calls
+/// `TranslateAcceleratorW` first precisely so an entry here can win that race.
+///
+/// **An accelerator moves no focus**, and that is the property every reader of
+/// this function needs to carry away. `Ctrl+1` taken while the App combo holds
+/// focus switches the door with the focus still on a control the switch is
+/// about to hide — which is why `layout` places only the current page's
+/// controls (module header) and why `show_page` ends in `repair_hidden_button`
+/// (its step 5). Both were built for this table before it existed; this is the
+/// commit that makes them fire.
+///
+/// The four digits are `VK_1`..`VK_4`, which are the ASCII codes and are
+/// contiguous — so the table is built by walking `TABS`, and strip order IS
+/// digit order rather than a second list that agrees with it today.
+/// `the_digits_match_the_strip` pins the contiguity that walk assumes. The
+/// **numeric keypad** is not covered: `VK_NUMPAD1` is a different code, and
+/// `Ctrl+1` on the keypad reaches nothing. Left that way on purpose — the
+/// entries are an accelerator for the pills, which stay clickable, rather than
+/// the only way in.
+///
 /// An empty or failed table is not fatal: `filter_dialog_message` skips an
 /// invalid handle and every command it would have carried is still reachable
 /// by mouse, by mnemonic and by Tab-then-Enter.
 unsafe fn build_accelerators() -> HACCEL {
-    let table = [ACCEL {
-        // FVIRTKEY is what makes `key` a virtual-key code rather than a
-        // character, and it is REQUIRED for FCONTROL to mean anything.
-        fVirt: FVIRTKEY | FCONTROL,
+    // FVIRTKEY is what makes `key` a virtual-key code rather than a
+    // character, and it is REQUIRED for FCONTROL to mean anything.
+    let ctrl = FVIRTKEY | FCONTROL;
+    // Sized from `TABS` rather than written as 7, so a fifth door is a
+    // one-line change in one place. The three fixed entries lead.
+    let mut table = [ACCEL::default(); 3 + TABS.len()];
+    table[0] = ACCEL {
+        fVirt: ctrl,
         key: b'S' as u16,
         cmd: IDC_APPLY as u16,
-    }];
+    };
+    table[1] = ACCEL {
+        fVirt: ctrl,
+        key: VK_TAB.0,
+        cmd: IDM_PAGE_NEXT as u16,
+    };
+    // `FSHIFT` is an ADDITIONAL requirement, not an alternative: with both
+    // entries present, `Ctrl+Tab` matches only the first and
+    // `Ctrl+Shift+Tab` only the second. An entry naming no shift state would
+    // match both and swallow the reverse direction.
+    table[2] = ACCEL {
+        fVirt: ctrl | FSHIFT,
+        key: VK_TAB.0,
+        cmd: IDM_PAGE_PREV as u16,
+    };
+    for (i, (id, _, _)) in TABS.iter().enumerate() {
+        table[3 + i] = ACCEL {
+            fVirt: ctrl,
+            key: VK_1.0 + i as u16,
+            cmd: *id as u16,
+        };
+    }
     CreateAcceleratorTableW(&table).unwrap_or_default()
 }
 
@@ -6975,28 +7091,37 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // took only the one code would drop it. Here that would mean a
         // double-click on a pill switching once and then appearing not to.
         // (Switching twice is not a risk: `show_page` returns on an unchanged
-        // door.) `CMD_FROM_ACCELERATOR` is what `Ctrl+1`..`Ctrl+4` arrive as
-        // once `build_accelerators` names these ids -- taken now so that is a
-        // one-line change there rather than a key that silently does nothing,
-        // which is the same failure mode spec 4.4 warns about for `Ctrl+Tab`.
+        // door.) `CMD_FROM_ACCELERATOR` is what `Ctrl+1`..`Ctrl+4` arrive as,
+        // and it is the reason this arm does NOT filter on `BN_CLICKED`
+        // alone: an accelerator's `WM_COMMAND` carries 1 in the high word
+        // where a click carries 0, so a `c == BN_CLICKED` test would leave
+        // four keys that silently do nothing -- the same failure mode
+        // `build_accelerators` records for `Ctrl+Tab`.
         //
         // A mouse click has already moved the tick before this runs, because
-        // the pills are auto-radios. `show_page` ticks anyway; see its doc.
-        //
-        // `SettingsCommand::ShowPage` is raised only when the door really
-        // moved -- the caller stores it so the next `open` lands where the
-        // user left off, and "the user moved to another door" should not be
-        // reported for a click on the door they are already behind.
+        // the pills are auto-radios. An accelerator has moved nothing at all.
+        // `show_page` ticks in both cases; see its doc.
         (_, c)
             if page_of_tab(id).is_some()
                 && (c == BN_CLICKED || c == BN_DOUBLECLICKED || c == CMD_FROM_ACCELERATOR) =>
         {
             if let Some(page) = page_of_tab(id) {
-                if show_page(hwnd, page) {
-                    with_cb(|cb| (cb.on_command)(SettingsCommand::ShowPage(page)));
-                }
+                go_to_door(hwnd, page);
             }
         }
+        // ---- `Ctrl+Tab` and `Ctrl+Shift+Tab`. Neither id belongs to a
+        // control, so the accelerator table is their only sender and there is
+        // no notification code to sort -- which is why this arm takes `_`
+        // where the pills above take three codes.
+        //
+        // The direction is resolved HERE rather than in the table because it
+        // depends on the door that is currently open, and an `ACCEL` carries
+        // a command id and nothing else. `PAGE` is the authority for that,
+        // not the pills' checked state: `show_page` writes both, but `PAGE`
+        // is what `layout` reads, so reading anything else here could open a
+        // door the layout does not agree with.
+        (IDM_PAGE_NEXT, _) => go_to_door(hwnd, PAGE.with(|p| p.get()).next()),
+        (IDM_PAGE_PREV, _) => go_to_door(hwnd, PAGE.with(|p| p.get()).prev()),
         // The five controls that spell one shortcut, in the two
         // notifications that mean the user changed one: a check box reports
         // `BN_CLICKED`, the key list reports `CBN_SELCHANGE`.
@@ -7433,6 +7558,50 @@ mod tests {
     #[test]
     fn stop_is_behind_the_shortcuts_door() {
         assert_eq!(page_of_control(IDC_RECORD), Some(Page::Shortcuts));
+    }
+
+    /// `Ctrl+1`..`Ctrl+4` are built by walking `TABS` and adding `i` to
+    /// `VK_1`, which assumes the four digit virtual-key codes are a
+    /// contiguous ascending run. They are (`VK_1` is 0x31, the ASCII code),
+    /// but nothing in `build_accelerators` says so out loud, and the failure
+    /// if that ever stopped holding is a key bound to the wrong door rather
+    /// than a key bound to nothing.
+    ///
+    /// It also pins the count: four doors, four digits, and `Ctrl+5` is not a
+    /// key this window answers.
+    #[test]
+    fn the_digits_match_the_strip() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::VK_4;
+        assert_eq!(
+            VK_4.0 - VK_1.0,
+            3,
+            "the digit keys are not a contiguous run, so `VK_1.0 + i` names \
+             the wrong key"
+        );
+        assert_eq!(
+            TABS.len(),
+            (VK_4.0 - VK_1.0 + 1) as usize,
+            "the strip has {} doors and Ctrl+1..Ctrl+4 is four keys",
+            TABS.len()
+        );
+    }
+
+    /// `Page::next` and `Page::prev` walk the strip in the order the strip is
+    /// drawn in.
+    ///
+    /// Core owns the cycle (so `Ctrl+Tab`'s answer is testable on all three
+    /// CI jobs) and this file owns `TABS` (so the pills' ids and captions sit
+    /// beside each other). They are the same fact spelled twice, and this is
+    /// the only place both are visible -- core cannot see `TABS`, and a
+    /// disagreement would send `Ctrl+Tab` to a door the strip draws somewhere
+    /// else, with every pill still lighting correctly.
+    #[test]
+    fn the_strip_order_is_the_cycle() {
+        for (i, (_, page, _)) in TABS.iter().enumerate() {
+            let next = TABS[(i + 1) % TABS.len()].1;
+            assert_eq!(page.next(), next, "Ctrl+Tab leaves {page:?} for {next:?}");
+            assert_eq!(next.prev(), *page, "Ctrl+Shift+Tab disagrees at {page:?}");
+        }
     }
 
     /// The seam between `Ui::defid` (a control id) and the pure decision (an

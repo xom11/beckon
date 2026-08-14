@@ -1,4 +1,4 @@
-//! Dialog control ids.
+//! Dialog control ids, and the two command ids that belong to no control.
 //!
 //! Split out of `mod.rs` so the cross-check against
 //! `beckon_core::settings::CONTROL_IDS` sits beside the numbers it checks,
@@ -8,6 +8,18 @@
 //! this file is the definition, and `ids_match_the_core_table` is what keeps
 //! the two from drifting. Core is the crate that must stay free of Win32
 //! concepts, and a dialog control id is one.
+//!
+//! **`IDM_` is not `IDC_`, and the prefix is load-bearing.** Every test below
+//! iterates `MINE`, and `every_declared_id_has_a_row_in_mine` finds its
+//! subjects by reading this file's own source for `const IDC_` -- so a name
+//! that starts `IDM_` is deliberately outside that net, because it names no
+//! control and so has no window to place, no page to belong to and no row in
+//! core's `CONTROL_IDS`. What it still shares with a control id is the
+//! `WM_COMMAND` id space: `handle_command` matches on the number alone, so a
+//! collision would route an accelerator into a button.
+//! `the_command_ids_are_not_control_ids` is that guard, and it is why the two
+//! live here rather than beside the accelerator table that is their only
+//! sender.
 
 pub(super) const IDC_LIST: i32 = 1001;
 pub(super) const IDC_COMBO: i32 = 1002;
@@ -113,6 +125,25 @@ pub(super) const IDC_TAB_SHORTCUTS: i32 = 1040;
 pub(super) const IDC_TAB_KEYBOARD: i32 = 1041;
 pub(super) const IDC_TAB_SYSTEM: i32 = 1042;
 pub(super) const IDC_TAB_ABOUT: i32 = 1043;
+
+/// `Ctrl+Tab` and `Ctrl+Shift+Tab`: "the next door" and "the one before it".
+///
+/// **Commands, not controls.** `Ctrl+1`..`Ctrl+4` name a door outright and so
+/// ride on the four pill ids above; these two name a *direction*, whose answer
+/// depends on the door that is open, so they need ids of their own. An
+/// accelerator table entry carries a `WM_COMMAND` id and nothing else, which
+/// is why the direction cannot be resolved before `handle_command` sees it.
+///
+/// **2001 rather than 1044**, deliberately far from the control range. 1044-6
+/// are already spoken for in core's `CONTROL_IDS` (`SERVICE_LINE`, `SAVED`,
+/// `UNDO`) and the whole 1001-1115 span belongs to controls this window either
+/// has or is going to grow; a command id sitting inside it would be a number
+/// that has to be skipped by everyone allocating from a range, for ever. The
+/// two are contiguous and ascending for no reason beyond reading order --
+/// nothing does arithmetic on them, unlike the pills, whose contiguity
+/// `CheckRadioButton` depends on.
+pub(super) const IDM_PAGE_NEXT: i32 = 2001;
+pub(super) const IDM_PAGE_PREV: i32 = 2002;
 
 #[cfg(test)]
 mod tests {
@@ -227,6 +258,42 @@ mod tests {
                 "`IDC_{name}` is {id} here and {:?} in \
                  `beckon_core::settings::CONTROL_IDS`",
                 core.map(|(_, v)| *v)
+            );
+        }
+    }
+
+    /// The two `IDM_` command ids answer for nothing else in the window.
+    ///
+    /// `handle_command` dispatches on the id alone, and an accelerator's
+    /// `WM_COMMAND` is indistinguishable from a control's once it is in that
+    /// match -- so `IDM_PAGE_NEXT` colliding with a control id would make
+    /// `Ctrl+Tab` press a button, and nothing above would notice: the `IDM_`
+    /// names are outside `MINE` by design, so every other test in this module
+    /// looks straight past them.
+    ///
+    /// `RETIRED_IDS` is checked for the same reason `no_defined_id_is_retired`
+    /// checks it: a retired number is one `examples/settings_probe.rs` may
+    /// still be looking for.
+    #[test]
+    fn the_command_ids_are_not_control_ids() {
+        assert_ne!(super::IDM_PAGE_NEXT, super::IDM_PAGE_PREV);
+        for (name, id) in [
+            ("PAGE_NEXT", super::IDM_PAGE_NEXT),
+            ("PAGE_PREV", super::IDM_PAGE_PREV),
+        ] {
+            assert!(
+                !MINE.iter().any(|(_, v)| v == &id),
+                "`IDM_{name}` ({id}) is also a control id in this file"
+            );
+            assert!(
+                !CONTROL_IDS.iter().any(|(_, v)| *v == id),
+                "`IDM_{name}` ({id}) is also a control id in \
+                 `beckon_core::settings::CONTROL_IDS`, including the pages \
+                 nothing has built yet"
+            );
+            assert!(
+                !RETIRED_IDS.contains(&id),
+                "`IDM_{name}` uses retired id {id}"
             );
         }
     }

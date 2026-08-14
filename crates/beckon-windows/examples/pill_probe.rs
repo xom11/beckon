@@ -28,7 +28,9 @@
 //!
 //!   - Does user32 migrate `WS_TABSTOP` onto the checked radio and off its
 //!     siblings? (Spec G-S2: decides whether "the strip is ONE tab stop" is
-//!     free or hand-maintained.)
+//!     free or hand-maintained.) **This one needed a control of its own and
+//!     did not have it on the 2026-08-14 run** -- see the correction at that
+//!     section.
 //!   - Does `is_checked`'s `BM_GETCHECK` answer a `BS_AUTORADIOBUTTON`
 //!     correctly? (Spec G-S3.)
 //!
@@ -218,20 +220,60 @@ unsafe fn run() {
     }
 
     // --- G-S2 / G-S3, free while a window exists ---------------------------
+    //
+    // **CORRECTED 2026-08-14, after the first run answered nothing.** This
+    // section used to read the two styles back once, with radio A checked --
+    // and A is the radio CREATED with `WS_GROUP | WS_TABSTOP` while B was
+    // created with neither. So "A has both, B has neither" is what migration
+    // produces AND what doing nothing at all produces, and the run could not
+    // tell them apart. That is this file's own opening rule broken in this
+    // file: every gate needs a control.
+    //
+    // The control is the second reading. Check radio B and read again: if
+    // user32 migrates, the two bits move to B; if it does not, they stay on A
+    // where `CreateWindowExW` put them. Only the CHANGE between the two
+    // readings is evidence, so print both and compare them out loud.
     println!("\n--- G-S2: does user32 migrate WS_TABSTOP onto the checked radio? ---");
-    for (name, id) in [("radio A (checked)", ID_RADIO_A), ("radio B", ID_RADIO_B)] {
-        let h = GetDlgItem(Some(hwnd), id).unwrap();
-        let st = GetWindowLongW(h, GWL_STYLE) as u32;
-        println!(
-            "  {name}: WS_TABSTOP={} WS_GROUP={}",
-            st & WS_TABSTOP.0 != 0,
-            st & WS_GROUP.0 != 0
-        );
+    println!("  (created: A with WS_GROUP|WS_TABSTOP, B with neither)");
+    let mut readings = [[false; 2]; 2];
+    for (phase, checked) in [ID_RADIO_A, ID_RADIO_B].into_iter().enumerate() {
+        // Re-checking A on the first pass is deliberate: both readings are
+        // then preceded by a `CheckRadioButton` of their own, so the only
+        // difference between them is WHICH radio is checked.
+        let _ = CheckRadioButton(hwnd, ID_RADIO_A, ID_RADIO_B, checked);
+        for (slot, (name, id)) in [("radio A", ID_RADIO_A), ("radio B", ID_RADIO_B)]
+            .into_iter()
+            .enumerate()
+        {
+            let h = GetDlgItem(Some(hwnd), id).unwrap();
+            let st = GetWindowLongW(h, GWL_STYLE) as u32;
+            readings[phase][slot] = st & WS_TABSTOP.0 != 0;
+            println!(
+                "  [{} checked] {name}: WS_TABSTOP={} WS_GROUP={}",
+                if phase == 0 { "A" } else { "B" },
+                readings[phase][slot],
+                st & WS_GROUP.0 != 0
+            );
+        }
     }
-    println!("  (if only the checked one has WS_TABSTOP, the strip is ONE tab stop for free)");
+    let (before, after) = (readings[0], readings[1]);
+    if before == after {
+        println!("  VERDICT: the bits did not move. user32 does NOT migrate WS_TABSTOP for");
+        println!("  hand-created radios, so a four-pill strip is FOUR tab stops.");
+    } else if after == [false, true] {
+        println!("  VERDICT: WS_TABSTOP followed the check onto B. The strip is ONE tab stop");
+        println!("  for free -- do not hand-maintain it.");
+    } else {
+        println!("  VERDICT: the bits moved, but not onto the checked radio alone. Read the");
+        println!("  two lines above before concluding anything.");
+    }
 
     println!("\n--- G-S3: does BM_GETCHECK answer a BS_AUTORADIOBUTTON? ---");
-    for (name, id) in [("radio A (checked)", ID_RADIO_A), ("radio B", ID_RADIO_B)] {
+    // B is the checked one by now: the G-S2 control above moved it, and that
+    // is deliberate rather than a leftover -- reading `BM_GETCHECK` back
+    // after a `CheckRadioButton` that this run performed is what makes the
+    // answer about the message rather than about the creation styles.
+    for (name, id) in [("radio A", ID_RADIO_A), ("radio B (checked)", ID_RADIO_B)] {
         let h = GetDlgItem(Some(hwnd), id).unwrap();
         let st = SendMessageW(h, BM_GETCHECK, None, None).0;
         println!("  {name}: BM_GETCHECK={st}  (1 = BST_CHECKED)");
