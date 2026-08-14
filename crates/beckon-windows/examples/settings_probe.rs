@@ -792,16 +792,30 @@ mod win {
             );
         }
 
-        // `WM_NCCALCSIZE` (`chrome::nccalcsize`, Task 7) restores
-        // `rgrc[0].top` to the window's OWN top edge, unconditionally -- not
-        // just the caption band, the whole non-client top inset
-        // `DefWindowProcW` would otherwise reserve for `WS_CAPTION`. So the
-        // client's on-screen origin should sit EXACTLY at the window's own
-        // top edge: 0 px of inset, where an unmodified `WS_CAPTION` window
-        // would show `chrome::TITLEBAR_H` (40 @96 DPI) plus a border. That is
-        // a property of the code (`before.top` copied back verbatim), not of
-        // the hardware, so the top figure below is asserted; the bottom
-        // figure is only printed; see the comment beside it for why.
+        // `WM_NCCALCSIZE` (`chrome::nccalcsize`, chrome.rs:121) returns 0
+        // without calling `DefWindowProcW` at all, so the proposed rect is
+        // handed back untouched and the client becomes the WHOLE window --
+        // every edge, not just the top. The client's on-screen origin should
+        // therefore sit EXACTLY at the window's own top edge: 0 px of inset.
+        // That is a property of the code, not of the hardware, so the top
+        // figure below is asserted; the bottom figure is only printed; see
+        // the comment beside it for why.
+        //
+        // **CORRECTED 2026-08-14: the inset this replaces is a system
+        // metric, never `chrome::TITLEBAR_H`.** The sentence used to read
+        // "where an unmodified `WS_CAPTION` window would show
+        // `chrome::TITLEBAR_H` (40 @96 DPI) plus a border", which quoted a
+        // stale number and conflated two unrelated ones. `TITLEBAR_H` is
+        // **34** -- chrome.rs:63, moved 40 -> 34 by the 2026-08-13
+        // compaction pass `1f46335` -- and it is the band beckon paints
+        // INSIDE the client (chrome.rs:245), a figure the OS has never been
+        // told about and would never reserve. What `DefWindowProcW` would
+        // reserve is `SM_CYSIZEFRAME + SM_CXPADDEDBORDER` for
+        // `WS_THICKFRAME`, the same pair `chrome::nchittest` sizes its
+        // resize strips from, plus `SM_CYCAPTION` on top for a window that
+        // asked for a caption. This one does not ask: `WS_POPUP |
+        // WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX`, no `WS_CAPTION`
+        // (mod.rs:1901).
         let mut wrc = RECT::default();
         let mut origin = POINT { x: 0, y: 0 };
         if unsafe { GetWindowRect(parent, &mut wrc) }.is_ok()
@@ -817,19 +831,26 @@ mod win {
                 }
             );
             // Everything left over (window height minus client height minus
-            // the top inset already accounted for) is whatever
-            // `DefWindowProcW` still reserves at the BOTTOM -- a resize
-            // border, not a caption, now that the top figure above reads 0.
-            // The task brief for this probe describes the new shape as
-            // `window_height - 2*border` against an old
-            // `window_height - caption - 2*border`; this code only restores
-            // the TOP unconditionally (`nccalcsize`'s `rgrc[0].top =
-            // before.top`), so whether the bottom figure below actually
-            // equals one border or two is exactly what this line is for --
-            // printed rather than asserted, because the precise pixel count
-            // depends on `GetSystemMetricsForDpi(SM_CYSIZEFRAME, ...)` plus
-            // `SM_CXPADDEDBORDER`, both DPI- and theme-dependent in ways
-            // this probe cannot verify from source alone.
+            // the top inset already accounted for) is whatever the OS still
+            // reserves at the BOTTOM.
+            //
+            // **CORRECTED 2026-08-14: it reserves nothing there either.**
+            // This text was written against `nccalcsize`'s old body, which
+            // called `DefWindowProcW` and then wrote `rgrc[0].top =
+            // before.top` back over the answer -- so the sides and the
+            // bottom kept whatever `DefWindowProcW` made them, and "one
+            // border or two" was a real question. `c523e8e` deleted that
+            // body two hours later the same evening, because leaving those
+            // three borders non-client had DWM painting them black once
+            // `WS_CAPTION` was gone: `nccalcsize` now returns 0 without
+            // calling `DefWindowProcW`, so the expected bottom inset is 0,
+            // the same as the top.
+            //
+            // Still printed rather than asserted, for a different reason
+            // than before: that expectation is read off the source, and
+            // nobody has read this figure back on hardware since the frame
+            // was reclaimed. A non-zero bottom is the first thing that would
+            // say the reclaim did not take.
             let vertical_inset = (wrc.bottom - wrc.top) - (rc.bottom - rc.top);
             println!(
                 "    total vertical inset (window - client): {vertical_inset}px \
@@ -1719,8 +1740,19 @@ mod win {
     /// are never virtualized -- so an unaware probe prints logical pixels and
     /// physical pixels side by side, in the same block, unlabelled. That is
     /// how a 29 px row and a 21 px header end up in the same table when they
-    /// are really 29 and 31. One awareness for the whole probe, so every
-    /// number below is in physical pixels.
+    /// are really 29 and 31 -- two numbers that look 8 px apart and are 2.
+    /// One awareness for the whole probe, so every number below is in
+    /// physical pixels.
+    ///
+    /// **The 29 is history, not today's row.** It is the row measured while
+    /// `tok::ROW_H` was 20 (see the twice-corrected `Ui::shown_empty`
+    /// comment in `settings_window::mod`, which quotes it). The pair is kept
+    /// because the arithmetic is what this paragraph is for. Since the
+    /// 2026-08-13 compaction pass `1f46335` took `tok::ROW_H` to 22, the
+    /// state image list floors the live row at `scale(tok::ROW_H, dpi)` --
+    /// 33 px at a14's 144 DPI -- and comctl32 may pad above that, so do not
+    /// read 29 as a figure to check the output against. The 1140/760 pair
+    /// above is current: `WINDOW_WIDTH` is 760.
     fn go_dpi_aware() {
         let set =
             unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };

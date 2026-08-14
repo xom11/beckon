@@ -49,6 +49,65 @@ undetected, because nobody has run the probe on hardware in between.
 The fix is therefore **not** to delete the independent copy. It is to keep it
 and add the check that can run without a person: §2.3.
 
+**CORRECTED 2026-08-14, by this phase's own execution: the count is not five.
+Fourteen copies have been corrected on this branch, and fourteen is not a
+ceiling.** The table's five claims are each right about themselves — every cite
+in it was re-read while fixing it and every one held. What is wrong is the
+arithmetic in the sentence under it, and every later line that quotes the same
+total: §2's heading and §2.2's "the four copies", and §7's "three of the five
+geometry copies". Nine more copies turned up in the course of fixing the five,
+in three waves. Line numbers in this table are as of `7d8eae3`, not `e42f5bb`,
+because the earlier waves moved them; every cite below was checked with
+`git show 7d8eae3:<file>`.
+
+| Where | What it asserted | Corrected in |
+|---|---|---|
+| `mod.rs`, `notes_height`'s doc | the same `MIN_HEIGHT` relationship, anchored at **697 / 702** | `9e4e026` |
+| `layout.rs:258` | the banner costs **76 px** | `9e4e026` |
+| `mod.rs:3801`, in `apply_state` | the banner costs **~76 px** | `9e4e026` |
+| `mod.rs:1068-1070`, `list_row_height`'s empty-list fallback | `scale(26, dpi)`, **39 px** at 144 DPI | `e50ed34` |
+| `mod.rs:3365-3367`, the anchor sentence | **four** anchors — Task 8's **675** was lost when three re-derivation paragraphs were compressed into one | `e50ed34` |
+| `layout.rs:23, 34, 38`, `mod tok`'s own doc | `CTL` is **32** (said twice), `GAP_CARD` (**12**), `GAP` (**8**) | this pass |
+| `layout.rs:699`, the `IDC_CAPS` budget | `tok::GAP` (**8 px**) before the caption | this pass |
+| `paint.rs:1336`, the paired half of that budget | the same sentence, in `toggle`'s doc | this pass |
+| `examples/settings_probe.rs:801` | `chrome::TITLEBAR_H` (**40** @96 DPI) | this pass |
+
+Shipped values, for reading that table against: `PAD 10`, `CARD_PAD 11`,
+`GAP_CARD 8`, `GAP 6`, `LABEL 10`, `CTL 26`, `ROW_H 22`, `TITLEBAR_H 34`. All
+eight moved in one commit, `1f46335` (2026-08-13).
+
+**Why a hand-listed count was always going to be short**, which is the part
+worth writing down. The five in the table are the *window's own dimensions*,
+and they are searchable as such: `900`, `740`, `753`, `702` are four distinct
+strings that occur for no other reason, so a grep for them finds every copy and
+the sweep that produced the table was exactly that grep. Every one of the nine
+is a different thing — a figure **derived** from a token, written out as a
+literal, in prose that nothing compiles and no test reads. A card's
+`CARD_PAD*2 + CTL`, `scale(ROW_H, dpi)` at 144 DPI, `s(50)` minus a track and
+an inset: each lands on a small integer that occurs a hundred times for
+unrelated reasons, so there is no string to search for and no compiler edge
+between the token and the sentence. The first sweep looked for the window, and
+found every copy of the window. It could not have found the tokens the window
+is made of.
+
+`e50ed34`'s note on `list_row_height` is the worked example: that one site went
+stale twice, once per token move, for this exact reason, and the second time
+there was nothing left in the tree to check it against.
+
+Two consequences, neither of which changes an instruction below. **§2's list of
+four is the list the first sweep found, not an inventory of the geometry prose**
+— §2.2 stays as written and is executed as written; the other nine are fixed
+alongside it. And **the test §2.3 adds cannot catch this class**: it compares
+four named constants against four literals in one other file, which is the
+window's dimensions again. Nothing in Phase 0 builds an instrument that reads a
+token value out of `mod tok` and checks the prose against it.
+
+**A comment that records what a value USED to be is not one of these.**
+`mod tok` says "`BAND` (14) is gone" and "Was `BAND` (14) before Task 8"; both
+are history, both are accurate, and neither is touched. The defect is a
+sentence whose tense asserts what a value **is** while quoting a number that
+has moved.
+
 Two more facts this phase depends on:
 
 | Claim | Evidence |
