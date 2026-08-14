@@ -307,9 +307,19 @@ mod win {
     /// leaving this machine.
     const WINDOW_WIDTH_96: i32 = 760;
     const WINDOW_HEIGHT_96: i32 = 600;
-    /// Printed for reference only -- gate 09 (eight rows, no scrollbar) is
-    /// what actually has to be checked at this floor, and that needs a
-    /// human to drag the corner; this probe does not drive a resize.
+    /// Printed for reference only. What has to be checked at this floor
+    /// needs a human to drag the corner, and this probe does not drive a
+    /// resize.
+    ///
+    /// **CORRECTED 2026-08-14: that check is no longer "gate 09 (eight rows,
+    /// no scrollbar)".** Two things were wrong with the sentence. Gate 09 of
+    /// the redesign plan is eight rows at the SHIPPED size against a 20-row
+    /// config, not at the floor -- the floor has never shown eight. And the
+    /// tab strip's band (`tok::TABSTRIP_H`) takes 34 px out of the list, so
+    /// the shipped 600 now caps it at seven rows and the floor at two; the
+    /// derivation is under `MIN_HEIGHT` in `settings_window::mod`, which
+    /// withdraws the four-row guarantee in the same landing. Eight rows is
+    /// not a property of this window any more, at either size.
     const MIN_WIDTH_96: i32 = 660;
     const MIN_HEIGHT_96: i32 = 560;
 
@@ -1841,7 +1851,7 @@ mod win {
             );
             println!(
                 "  floor:   {MIN_WIDTH_96}x{MIN_HEIGHT_96} @96 DPI -- not driven by this probe, \
-                 gate 09 must resize down to it by hand"
+                 a human must resize down to it by hand"
             );
         }
 

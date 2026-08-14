@@ -109,6 +109,42 @@ pub(super) mod tok {
     /// later because Task 8 is what sizes the list's card around
     /// `tok::ROWS`, and the two numbers belong beside each other.
     pub const ROW_H: i32 = 22;
+
+    /// A tab pill's drawn height.
+    pub const TAB_VISUAL: i32 = 26;
+    /// The trough's inner padding above and below the pill row.
+    pub const TAB_PAD_Y: i32 = 2;
+    /// A pill's margin inside the trough. The perceived gap between two
+    /// pills is `2 * FOCUS_SLACK` = 6, which is `tok::GAP` -- the pills
+    /// touch, and the space between them is their own margin. `TAB_GAP`
+    /// would therefore be 0, which is why it is not a token.
+    pub const FOCUS_SLACK: i32 = 3;
+    /// The tab strip's trough.
+    ///
+    /// **Not an independent number**, and written as the sum rather than as
+    /// the 36 the spec tabulates so that it cannot quietly stop being the
+    /// sum: `TAB_VISUAL 26 + 2*TAB_PAD_Y 2 + 2*FOCUS_SLACK 3 = 36`. Move any
+    /// of the three and this follows on its own rather than by anyone
+    /// remembering to.
+    ///
+    /// It also earns the three their keep. `tok` is `pub` inside a PRIVATE
+    /// module, so a token nothing reads is a hard `dead_code` error under the
+    /// gate's `-D warnings` -- measured, by deleting the `allow` below and
+    /// watching the build fail. Spelling this as the sum is what makes
+    /// `TAB_VISUAL`, `TAB_PAD_Y` and `FOCUS_SLACK` live in the same commit
+    /// that introduces them, before anything paints a pill.
+    pub const TABSTRIP_H: i32 = TAB_VISUAL + 2 * TAB_PAD_Y + 2 * FOCUS_SLACK;
+    /// A pill's inner padding, left and right.
+    ///
+    /// The one token in this group with no reader yet: the band this landed
+    /// with is empty, and the pills that spend it come next. It sits here
+    /// anyway because it is one of the five numbers the spec (§2.1) fixes
+    /// together, and splitting a token set across two commits is how it stops
+    /// being reviewable as one. **Delete the `allow` with the first reader**
+    /// -- it is scoped to this constant precisely so that it expires rather
+    /// than blanketing the module.
+    #[allow(dead_code)]
+    pub const TAB_PAD_X: i32 = 14;
 }
 
 /// Everything `layout` needs out of `Ui`, copied in ONE borrow that is
@@ -148,6 +184,49 @@ impl LayoutHandles {
             fonts: ui.fonts,
             external_change: ui.external_change,
         }
+    }
+}
+
+/// The tab strip's trough, in client coordinates.
+///
+/// Separate from `compute_card_rects` because it is not a card and the
+/// `WM_PAINT` card loop must not draw it -- but it is the SOURCE of the
+/// strip's height, and `compute_card_rects` calls it rather than repeating
+/// `s(tok::TABSTRIP_H)`. Two copies of that arithmetic would drift, and the
+/// drift would look like a rendering bug rather than a duplication one --
+/// the same rule `compute_card_rects` states for itself below.
+///
+/// The left and right edges are computed the way `compute_card_rects`
+/// computes `cx` and `cw`, from the same `tok::PAD`, so the trough and every
+/// card share two numbers rather than two arithmetics that agree today.
+///
+/// **That inset is load-bearing beyond looks.** `chrome::nchittest` resolves
+/// all eight resize directions itself -- there is no non-client border left
+/// for `DefWindowProc` to find one in -- and a child window gets its own
+/// `WM_NCHITTEST`, so the parent's is only consulted for points no child
+/// covers. A pill reaching the client edge would therefore kill the left and
+/// right resize edge across this whole band. The strip Windows treats as
+/// grabbable is `SM_CYSIZEFRAME + SM_CXPADDEDBORDER` wide (that pair, read
+/// back from `chrome::nchittest`'s own `border`; note it spends the *Y*
+/// size-frame metric on both axes, because there is no `SM_CYPADDEDBORDER`
+/// to pair an X one with) -- roughly 8 px at 96 DPI against a `PAD` of 10,
+/// and roughly 12 at 144 against a `PAD` of 15. A margin of 2-3 px, which is
+/// why gate G-S5 prints those metrics by name rather than assuming them.
+///
+/// The one subtraction is clamped, for the reason `compute_card_rects`
+/// gives below: `WM_SIZE` fires with a 0x0 client rect on minimize.
+pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let pad = s(tok::PAD);
+    // No `pad` above it: the surface padding that used to sit between the
+    // title bar and the first card is what the strip is spent on. See
+    // `compute_card_rects`' `y`.
+    let top = s(chrome::TITLEBAR_H);
+    RECT {
+        left: pad,
+        top,
+        right: pad + (rc.right - rc.left - pad * 2).max(0),
+        bottom: top + s(tok::TABSTRIP_H),
     }
 }
 
@@ -235,10 +314,27 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     let grp_content_h = s(24) + ctl + gap + ctl + gap + notes_h + gap;
     let card2_h = card_pad * 2 + grp_content_h;
 
-    // Offset by the client-drawn title bar (Task 7): `GetClientRect` now
-    // includes that band -- `nccalcsize` gave it back to the client -- so
-    // the first card has to start below it rather than draw underneath it.
-    let mut y = pad + s(chrome::TITLEBAR_H);
+    // Offset by the client-drawn title bar (Task 7) and the tab strip's
+    // trough below it. `GetClientRect` includes the title bar --
+    // `nccalcsize` gave it back to the client -- so the first card has to
+    // start below both bands rather than draw underneath them.
+    //
+    // **Read from `strip_rect`, not re-added from `tok::TABSTRIP_H`.** This
+    // is the file's ONE "content starts below the bar" statement and it now
+    // has to agree with a rect something else paints; deriving it from that
+    // rect's own bottom edge is what makes disagreement unrepresentable
+    // rather than merely unlikely.
+    //
+    // **The strip costs 34, not 36.** The surface `pad` that used to sit
+    // above the first card is SPENT by the strip rather than added to it --
+    // `strip_rect`'s top is `TITLEBAR_H` with no `pad` above it, and the
+    // mockup's `.tabstrip{padding:0 10px 8px}` puts none there either. So
+    // this line went from `pad 10 + TITLEBAR_H 34 = 44` to `TITLEBAR_H 34 +
+    // TABSTRIP_H 36 + GAP_CARD 8 = 78`. Everything vertical below moves by
+    // that 34 and nothing else in the module may add a second offset; the
+    // term list beside `WINDOW_HEIGHT` and the derivation under `MIN_HEIGHT`
+    // are both readings of this line and both were re-run against it.
+    let mut y = strip_rect(rc, dpi).bottom + gap_card;
 
     // -- Card 0: the banner. Contributes NO height when hidden -- `y` is
     // not advanced and the returned rect has zero height at that `y`.

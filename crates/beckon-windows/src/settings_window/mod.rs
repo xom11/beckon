@@ -572,12 +572,19 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // and run on a14 at 144 DPI and measured **1140 x 900** -- exactly 760 x 600
 // scaled by 1.5 -- with all eight list rows present and no scroll bar.
 //
+// **The eight-rows half of that run no longer describes this window.** The
+// tab strip's band (`tok::TABSTRIP_H`, added below) costs the list 34 px, and
+// at 600 the cap lands at 178 against a `want` of 197 -- seven rows. The
+// 1140 x 900 half is untouched: it measures the window against the constants,
+// which is what it was run for, and the constants have not moved.
+//
 // **Which terms compose the height, in order** -- the part of the old block
 // that was worth keeping, restated against the shipped tokens. This is a map
 // of what a token change spends, not a claim about the total:
 //
 //   title bar (chrome::TITLEBAR_H)                     34
-//   pad (tok::PAD)                                     10
+//   tab strip (tok::TABSTRIP_H)                        36
+//   gap_card                                            8
 //   card 0  banner -- NO height unless it is up      0/48
 //           (plus one gap_card, 8, when it is)
 //   card 1  Shortcuts: 2*CARD_PAD, head CTL, GAP,
@@ -610,11 +617,20 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // does not scale by 1.5 between DPIs and no total here is unconditional. The
 // one conditional total worth writing down, since it is what the constant is
 // answerable for: at 96 DPI with a 16 px Caption line -- `notes_height` 36 --
-// and the banner down, the terms above sum to a 585 px window, so the shipped
-// 600 clears a full eight rows by 15 px. Re-derived from `compute_card_rects`
-// for this comment, not carried over: its room-based cap for the list
-// evaluates to 212 px against a `want` of 197. (Both figures were 8 lower --
-// 593 and 204, for a slack of 7 -- while the frame row stood.)
+// and the banner down, the terms above sum to a **619** px window, so the
+// shipped 600 is **19 px short** of a full eight rows. Re-derived from
+// `compute_card_rects` for this comment, not carried over: its room-based cap
+// for the list evaluates to `h - 386 - notes_h` = **178** px against a `want`
+// of 197, which is seven whole rows and 3 px of an eighth.
+//
+// **That total was 585, and the slack was 15 px the other way, until the tab
+// strip landed.** The band spends 34 -- `TABSTRIP_H` 36 plus a `gap_card` 8,
+// less the `pad` 10 it displaced -- and the whole of it comes out of the
+// list, because the list is the one figure in the window that flexes
+// (`compute_card_rects`, and `MIN_HEIGHT` below at length). 600 is left
+// deliberately: the design makes the list scroll, so the constant stops being
+// answerable for showing every row. (Both figures were 8 lower again -- 593
+// and 204 -- while the frame row stood.)
 //
 // `compute_card_rects` (`layout.rs`) is the arithmetic; this is a reading of
 // it, and the direction of that dependency is not negotiable.
@@ -721,35 +737,66 @@ const WINDOW_HEIGHT: i32 = 600;
 /// is obscured; what is unknown is whether an invisible border painted like
 /// ordinary window ground reads as one. Only a person looking at it can say.
 ///
-/// `MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
+/// **WITHDRAWN 2026-08-14: the four-row guarantee.** This paragraph read
+/// "`MIN_HEIGHT` is derived, at 96 DPI, from the smallest client height at
 /// which card 1's list still shows **four** rows — half of `tok::ROWS` —
-/// **with the external-change banner up**. Four is enough to see a
-/// selection with a row of context above and below it; a window whose list
-/// shows one row is not a smaller version of this window, it is a broken
-/// one.
+/// **with the external-change banner up**. Four is enough to see a selection
+/// with a row of context above and below it; a window whose list shows one
+/// row is not a smaller version of this window, it is a broken one."
+///
+/// The standard in that last sentence stands and is not what changed. What
+/// changed is underneath it: the tab strip takes 34 px out of the list
+/// (`compute_card_rects`' `y`), which leaves the floor two rows rather than
+/// four — and design §4 makes the list **short and scrolling** instead of a
+/// list the window grows to fit. Once it scrolls, a floor's job stops being
+/// "enough rows to see context" and becomes "enough rows to see that it is a
+/// list". Two rows plus a scrollbar meets that; one row does not. So the
+/// constant keeps its meaning while its derivation changes, and it is
+/// withdrawn here in writing rather than left to be discovered as a window
+/// that no longer does what its own comment claims.
+///
+/// The alternatives were costed and rejected in the spec (§2.3), and both of
+/// its figures move when re-derived from the table below — check them before
+/// reopening either. Raising the floor to keep four rows spends draggability
+/// on a promise design §4 has already retired; the spec puts that floor at
+/// 596, and solving the table for four rows gives **587**. Waiting instead
+/// for the Shortcuts workstream to return the editor's `Editing "…"` caption
+/// line (the `s(24)` inside `grp_content_h`) couples two landings that are
+/// otherwise independent; the spec says 572 then suffices, and the same solve
+/// with that `s(24)` struck out gives **563**. Neither gap changes which
+/// option was taken — both lose on their own terms rather than on a pixel —
+/// but neither of the spec's two numbers should be quoted onward as measured.
 ///
 /// ```text
 ///   Derived from `compute_card_rects` (`layout.rs`) at 96 DPI, banner UP,
 ///   with the shipped tokens. Solving that function for the client height
-///   `h` at which the list gets exactly four rows:
+///   `h` at which the list gets exactly two rows:
 ///
 ///     bar_y     = h - PAD - CTL                       = h - 36
 ///     kb_card_h = 2*CARD_PAD + (24 + CTL + GAP)       = 78
 ///     kb_y      = bar_y - GAP_CARD - kb_card_h        = h - 122
 ///     card2_h   = 2*CARD_PAD + (24 + 2*CTL + 2*GAP
 ///                 + notes_h + GAP)                    = 116 + notes_h
-///     y0        = PAD + TITLEBAR_H                    = 44
-///     card0     = 2*CARD_PAD + CTL = 48, so y         = 100
-///     list_top  = y + CARD_PAD + CTL + GAP            = 143
-///     room      = kb_y - GAP_CARD - list_top          = h - 273
+///     y0        = TITLEBAR_H + TABSTRIP_H + GAP_CARD  = 78
+///     card0     = 2*CARD_PAD + CTL = 48, so y         = 134
+///     list_top  = y + CARD_PAD + CTL + GAP            = 177
+///     room      = kb_y - GAP_CARD - list_top          = h - 307
 ///     list_h    = room - GAP_CARD - CARD_PAD - card2_h
-///               = h - 408 - notes_h
+///               = h - 442 - notes_h
 ///
-///   Four rows is `list_header_height` (21) + 4 * `list_row_height` (22)
-///   = 109, and `notes_h` is 36 when the Caption line is 16 px, so
+///   Two rows is `list_header_height` (21) + 2 * `list_row_height` (22)
+///   = 65, and `notes_h` is 36 when the Caption line is 16 px, so
 ///
-///     h = 408 + 36 + 109 = 553  client == window (see below)
+///     h = 442 + 36 + 65 = 543  client == window (see below)
 /// ```
+///
+/// **543, and the constant stays 560.** The spec (§2.3) puts it as "560 is
+/// where two rows stop fitting"; solving the function says 543 is, and 560
+/// clears two rows by 17 px. The decision the spec was recording is
+/// unaffected — nothing here argues for lowering the floor to its exact
+/// two-row point, any more than the previous derivation argued for 553 — but
+/// the sentence is off by 17 px and this is the file that has to be right
+/// about it. Three rows need 87, so 560 misses a third by 5.
 ///
 /// **The client rect IS the window rect, so there is no frame term.**
 /// `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
@@ -758,21 +805,24 @@ const WINDOW_HEIGHT: i32 = 600;
 /// carries no `WS_CAPTION` (`WS_POPUP | WS_SYSMENU | WS_THICKFRAME |
 /// WS_MINIMIZEBOX`, the `CreateWindowExW` below).
 ///
-/// **CORRECTED 2026-08-14.** Until this pass the table added `+ 8  bottom
+/// **CORRECTED 2026-08-14.** Until `0098457` the table added `+ 8  bottom
 /// frame` here and concluded the shipped 560 was one pixel short of four
 /// rows. Both were wrong, and the error was inherited rather than invented:
 /// the `+ 8` and its justification ("`nccalcsize` hands the whole caption
 /// back to the client, so only the bottom edge remains non-client") describe
 /// the handler as it was BEFORE `c523e8e` reclaimed the whole frame and moved
-/// the eight resize directions into `chrome::nchittest`. With no frame term,
-/// the floor gets `list_h = 560 - 408 - 36 = 116` against the 109 four rows
-/// need — it clears them by 7 px rather than missing by 1.
+/// the eight resize directions into `chrome::nchittest`. With no frame term
+/// the floor got `list_h = 560 - 408 - 36 = 116` against the 109 four rows
+/// need — it cleared them by 7 px rather than missing by 1. That is the
+/// window BEFORE the tab strip; the strip then spent 34 of it, which is the
+/// other half of why four rows are gone and is not a reason to re-open this
+/// half.
 ///
-/// The 7 px is inside `notes_h`'s honest error, since that is a live font
-/// measurement: `notes_h = 2L + 4`, so every extra pixel of Caption line `L`
-/// costs the list two. `L = 19` leaves one pixel of the seven; `L = 20` takes
-/// the fourth row. (An earlier draft of this sentence said 19 consumed it
-/// exactly, which is one step early.) **Nothing
+/// The floor's margin is now **17 px** — `list_h = 560 - 442 - 36 = 82`
+/// against the 65 two rows need — and `notes_h`'s honest error is what eats
+/// into it, since that is a live font measurement: `notes_h = 2L + 4`, so
+/// every extra pixel of Caption line `L` costs the list two. `L = 24` leaves
+/// one pixel of the seventeen; `L = 25` takes the second row. **Nothing
 /// on the machine this was derived on can display the window**, and
 /// `examples/settings_probe.rs`'s `measure_geometry` already prints
 /// `GetClientRect` beside `GetWindowRect` with a verdict, so the reading
@@ -796,32 +846,34 @@ const WINDOW_HEIGHT: i32 = 600;
 /// **What the floor and the shipped size actually buy, re-traced through
 /// `compute_card_rects` for this pass rather than carried over.** With the
 /// banner down the stack starts 56 px higher, so the list's cap is
-/// `h - 352 - notes_h` instead of `h - 408 - notes_h`, and `want` is
+/// `h - 386 - notes_h` instead of `h - 442 - notes_h`, and `want` is
 /// `21 + 8*22 = 197`:
 ///
 /// - at the floor (client 560, which IS `MIN_HEIGHT` — see above), banner up:
-///   116 px, four whole rows and 7 px of a fifth;
-/// - at the floor, banner down: 172 px, six whole rows and 19 px of a
-///   seventh;
-/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: the cap is 212,
-///   15 above `want`, so it never binds and the list reaches its full
-///   `tok::ROWS`.
+///   82 px, two whole rows and 17 px of a third;
+/// - at the floor, banner down: 138 px, five whole rows and 7 px of a sixth;
+/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: the cap is 178,
+///   19 px **below** `want`, so it binds — seven whole rows and 3 px of an
+///   eighth. The list no longer reaches `tok::ROWS` at the shipped size, and
+///   that is the strip being paid for rather than a regression: design §4
+///   makes the list scroll.
 ///
-/// **CORRECTED 2026-08-14** — all three bullets moved. They read `client 552`,
-/// `client 592`, `108`, `164` and `204`, because each subtracted an 8 px
-/// bottom frame from the constant beside it. That subtraction described
-/// `chrome::nccalcsize` as it was before `c523e8e` (2026-08-13); the shipped
-/// handler leaves client == window, so the client heights are the constants
-/// themselves and every cap is 8 px larger. The first bullet's "the
-/// one-pixel shortfall above" went with it: there is no shortfall, the floor
-/// clears four rows by 7 px.
+/// **CORRECTED 2026-08-14** — all three bullets moved twice in one day, and
+/// the record of the first move is worth as much as the numbers. They read
+/// `client 552`, `client 592`, `108`, `164` and `204` while an 8 px bottom
+/// frame was subtracted from the constant beside each; that subtraction
+/// described `chrome::nccalcsize` as it was before `c523e8e` (2026-08-13),
+/// and removing it (`0098457`) made the client heights the constants
+/// themselves and every cap 8 px larger — 116 / 172 / 212. The tab strip then
+/// took 34 off all three. The first bullet's "the one-pixel shortfall above"
+/// went with the first move and has not come back.
 ///
-/// The last of those is the same 15 px `WINDOW_HEIGHT`'s own comment reports
-/// as slack, measured the other way, and it is a property of these particular
-/// numbers rather than a designed-in guarantee — a future change to
-/// `notes_height`, `card2_h` or the row/header fallbacks can move it back
-/// below eight — so re-check it by the same hand trace rather than assuming
-/// it survives. Simulated, not seen: nothing on the machine this was written
+/// The last of those is the same 19 px `WINDOW_HEIGHT`'s own comment reports
+/// as a shortfall, measured the other way, and it is a property of these
+/// particular numbers rather than anything designed in — a future change to
+/// `notes_height`, `card2_h` or the row/header fallbacks moves it in either
+/// direction — so re-check it by the same hand trace rather than assuming it
+/// survives. Simulated, not seen: nothing on the machine this was written
 /// on can display the window.
 const MIN_WIDTH: i32 = 660;
 const MIN_HEIGHT: i32 = 560;
@@ -3428,15 +3480,25 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// which is why it is trusted for the DPI nobody has measured. If a real
 /// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
 /// nudged -- though the disagreement is bounded, not open-ended: the derived
-/// window height is `553 + 2(L - 16)` for a real Caption line height `L`.
+/// window height is `543 + 2(L - 16)` for a real Caption line height `L`.
 /// The FORM has never changed -- `notes_h` is a single linear term inside
 /// `card2_h`, which is a single linear term inside the total, so the
-/// coefficient survives every re-derivation and only the anchor moves. Five
+/// coefficient survives every re-derivation and only the anchor moves. Six
 /// anchors so far: 546 before Task 7's title bar, 555 after it, 675 after
-/// Task 8's cards, 697 after Task 10's 26 px rows, and 553 after the
-/// 2026-08-13 compaction pass, which is the one this line now carries.
+/// Task 8's cards, 697 after Task 10's 26 px rows, 553 after the 2026-08-13
+/// compaction pass, and 543 after the tab strip -- which is the one this line
+/// now carries.
 ///
-/// (**CORRECTED 2026-08-14: the fifth anchor read 561 and is 553.** The
+/// **The sixth anchor is not the fifth plus the strip's 34.** It is 10
+/// LOWER, because the row count it solves for changed in the same landing:
+/// `MIN_HEIGHT` promises two rows now, not four (see its own comment for the
+/// withdrawal). Two rows banner-up is `client = 507 + notes_h` = `511 + 2L`
+/// at 96 DPI, i.e. 543 at `L = 16`. The four-row floor did move by the full
+/// 34, from 553 to 587; it is simply not what anything is derived from any
+/// more.
+///
+/// (**CORRECTED 2026-08-14: the fifth anchor read 561 and is 553.** That
+/// anchor's own derivation, from the window before the tab strip: the
 /// banner-up four-row floor is `client = 517 + notes_h`, and
 /// `notes_h = 2L + scale(4, dpi)`, so `client = 521 + 2L` at 96 DPI -- 553 at
 /// `L = 16`. 561 was that same 553 plus an 8 px bottom frame the shipped
@@ -3462,19 +3524,24 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// was non-client when 675 was derived. It records an old geometry; only the
 /// current anchor answers for this one.)
 ///
-/// `MIN_HEIGHT`'s own table is where 553 comes from; re-read it there rather
+/// `MIN_HEIGHT`'s own table is where 543 comes from; re-read it there rather
 /// than trusting this sentence.
 ///
-/// **The shipped 560 absorbs `L = 16` with the four-row banner-up guarantee
-/// intact, and 7 px to spare.** The list is handed `148 - 2L` px at the
-/// floor, against the 109 four rows need, so the guarantee holds to
-/// `L <= 19`; at `L = 20` the list draws three whole rows and 21 px of a
-/// fourth, and it does not lose a second whole row until `L = 31`. Nothing
+/// **The shipped 560 absorbs `L = 16` with the two-row banner-up guarantee
+/// intact, and 17 px to spare.** The list is handed `114 - 2L` px at the
+/// floor, against the 65 two rows need, so the guarantee holds to `L <= 24`;
+/// at `L = 25` the list draws one whole row and 21 px of a second, and it
+/// does not lose that one until `L = 36`. Nothing
 /// there can overlap: `editor_min = card2_h` in `compute_card_rects` (see its
 /// own comment) is computed from the RUNTIME value, not from this estimate,
 /// so a wrong `L` can only shrink the list at the absolute floor. That is the
 /// safe direction, and it is why a large `L` would be a note rather than a
 /// bug.
+///
+/// (Pre-strip this read `148 - 2L` against the 109 four rows need, holding to
+/// `L <= 19`. The 34 px the strip takes moves every figure in the sentence;
+/// the shape of it -- one linear term, a floor, and a bounded, safe-direction
+/// error -- is what survives the move.)
 ///
 /// (**CORRECTED 2026-08-14**: this paragraph read "The shipped 560 does NOT
 /// absorb `L = 16` with the four-row banner-up guarantee intact -- it is one
