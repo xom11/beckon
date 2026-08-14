@@ -1246,3 +1246,39 @@ of scope.
   over the module is the sweep, and any further find goes in the same commit.
 - T3's `every_core_id_is_defined_here` is not written, and why is stated at
   the step.
+
+---
+
+## What this plan got wrong — written after executing it, 2026-08-14
+
+Kept rather than edited away, because the two defects below are the kind a
+plan produces and only execution catches.
+
+**1. T1's test had no discriminating power.** Step 1 filters `three()` —
+Notepad / Brave / Weather — on `a` and asserts `vec![0]`. All three names
+contain an `a`, so the test fails identically before and after the fix
+(`left: [0, 1, 2]` either way) and would have left T1 permanently red. Step 2
+predicted that failure and read it as proof the test worked, which is exactly
+the trap: **a test that fails for the right reason and a test that cannot pass
+look the same at Step 2.** Shipped with its own four-binding model — Brave /
+Kitty / Firefox / Discord, where only `brave` contains an `a` — and checked in
+both directions by temporarily restoring the combo arm.
+
+**2. T3's Step 3 dictated a comment describing a test this same plan cancels
+at line 1247.** The comment shipped verbatim, so `ids.rs` spent three commits
+claiming a safety net that existed nowhere — and the claim was load-bearing:
+`ids_match_the_core_table` iterates `MINE`, never `CONTROL_IDS`, so `MINE` was
+an unguarded hinge and a forgotten row would have collided silently. Fixed by
+writing the net (`every_declared_id_has_a_row_in_mine`), not by softening the
+sentence. **A plan may not dictate prose asserting a fact the plan itself does
+not create.**
+
+**3. The sweep in "Known gaps" was aimed at the wrong things.** It lists
+window dimensions (`900`, `860`, `76`) and found one more copy. The real count
+was fourteen, because nine copies write no dimension at all — they write a
+figure *derived from a token* (`39 px` from `ROW_H`, a `705 px` card interior
+from `PAD` + `CARD_PAD`, an `s(50)` budget from `GAP`) as a literal in prose
+nothing compiles. Sweeping for the tokens rather than the dimensions found
+seven more, including four inside `mod tok`'s own doc comment and one whose
+*conclusion* was wrong rather than just its number. See the corrected §1 of
+the spec.
