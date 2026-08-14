@@ -96,6 +96,35 @@ pub(super) mod tok {
     pub const BTN: i32 = 88;
     /// The right-aligned `Shortcut` column, the editor field under it, and
     /// the key list's ceiling.
+    ///
+    /// **A ceiling in four places, and at 680 px only two of them still
+    /// bind.** Re-derived at 96 DPI when `WINDOW_WIDTH` moved 760 -> 680,
+    /// because "a ceiling" and "the width that is actually used" are
+    /// different claims and only the first is a property of this token:
+    ///
+    /// - `filter_w` -- other term `cw1 / 3` = **212**. Binds, and does so
+    ///   down to a card interior of 600, i.e. a window of 642.
+    /// - `col_shortcut` -- other term `inner / 2` = **310**. Binds.
+    /// - `key_w` (the editor's key list) -- **stopped binding at 680**, and
+    ///   that needs no font to show. Binding wants `mx <= 265`, while `mx` is
+    ///   `61 + lw_lbl + the four chips` and the chips alone floor at
+    ///   `4 * CHIP_MIN` = 184 -- so it would need `"Shortcut"` to measure
+    ///   16 px. At 760 the same term was 545 - `mx` and cleared 200 by
+    ///   roughly 40 px.
+    /// - `tap_w` (the Caps line's `Tap` list) -- does not bind at 680: its run
+    ///   is `653 - kx`, and `kx` is 279 px of fixed terms (the three `Hold`
+    ///   chips at their `CHIP_MIN` floor, the toggle's own `s(50)` budget, and
+    ///   six gaps) plus three measured captions, of which
+    ///   `"Use Caps Lock as a shortcut key"` is by far the largest and which
+    ///   no trace puts under 200 px in Body at 96 DPI. **Whether it EVER bound
+    ///   is unmeasured and
+    ///   the two available traces disagree**: `layout`'s own hand measurement
+    ///   of that line (about 547 px without the `Tap` box, and flagged there
+    ///   as pre-compaction and over-stated) leaves 159 px at 760, already
+    ///   under the ceiling, while a per-character trace of the same string
+    ///   puts it at 213 and just over. Gate G1 is the run that settles it.
+    ///   Nothing depends on the answer -- both figures are below the ceiling
+    ///   at the width that shipped.
     pub const SHORTCUT_COL: i32 = 200;
     /// A modifier chip is never narrower than this, nor than its own caption
     /// plus `glyph` -- direction B's `.wtog { min-width:46px }`.
@@ -231,7 +260,18 @@ impl LayoutHandles {
 /// size-frame metric on both axes, because there is no `SM_CYPADDEDBORDER`
 /// to pair an X one with) -- roughly 8 px at 96 DPI against a `PAD` of 10,
 /// and roughly 12 at 144 against a `PAD` of 15. A margin of 2-3 px, which is
-/// why gate G-S5 prints those metrics by name rather than assuming them.
+/// why gate G-S5 prints those metrics by name rather than assuming them --
+/// `examples/settings_probe.rs` prints all three, since Task 8.
+///
+/// **That margin does not move with the window's WIDTH**, which Task 8 had to
+/// check rather than assume when `WINDOW_WIDTH` went 760 -> 680. Both edges
+/// here are one `pad` in from the client rect, at every width, so the margin
+/// stays 2 px at 96 DPI and 3 px at 144 whatever the window is dragged to.
+/// Only the LEFT edge is anywhere near being spent: the pill run starts at
+/// `strip.left` and, at four one-word captions, ends nowhere near the trough's
+/// right edge at any width this window has -- and the trough's own FILL is
+/// paint, not a window, so it takes no hit-test and cannot cover an edge that
+/// no pill covers.
 ///
 /// The one subtraction is clamped, for the reason `compute_card_rects`
 /// gives below: `WM_SIZE` fires with a 0x0 client rect on minimize.
@@ -588,6 +628,15 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// `"Use Caps Lock as a shortcut key"` is the widest measured string in the
 /// window, which is why this line and not another decides the floor.
 ///
+/// **At the SHIPPED width the same trace gives 79 px, not 59** (Task 8, where
+/// `WINDOW_WIDTH` went 760 -> 680). A card interior is 638 there, the run is
+/// 626, and the same ≈547 px line leaves `IDC_TAP` 79 px. Both figures are the
+/// same hand measurement read at two widths, so both inherit its error in the
+/// same direction and the 20 px between them is just the 20 px between 660 and
+/// 680. The floor is what `MIN_WIDTH` is answerable for and it did not move;
+/// the number a user actually sees is this one, and it was 159 px while the
+/// window opened at 760.
+///
 /// The version of this note that stood here until 2026-08-14 said
 /// `MIN_WIDTH (753)` and concluded ≈150 px of slack. 753 has not been this
 /// window's floor since the compaction pass; the real floor is 93 px
@@ -595,8 +644,12 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// rather than against this run, so it was over-generous by two `CARD_PAD`s
 /// and a `gap` on top of the width it borrowed from a window that does not
 /// exist. **Gate G1 measures the line with `GetTextExtentPoint32W` at 96 and
-/// 144 DPI, with the same measurement at 760 px as its control.** Do not move
-/// `MIN_WIDTH` — in either direction — before it has run.
+/// 144 DPI, with the same measurement at a WIDER window as its control.** That
+/// control used to be free — 760 was the shipped width, so the gate got it by
+/// doing nothing — and since Task 8 it costs a hand-drag, because the window
+/// now opens at 680. Say which width the control run was taken at; a G1
+/// result with no width beside it answers nothing. Do not move `MIN_WIDTH` —
+/// in either direction — before it has run.
 pub(super) unsafe fn layout(hwnd: HWND) {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
@@ -798,11 +851,22 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // under the row at 150 %, which reads as a paint bug rather than as
     // integer division.
     //
-    // Nothing clamps the run to the trough's right edge. The four captions
-    // would have to measure 504 px between them to overflow it at
-    // `MIN_WIDTH` -- 660 less `2*PAD` is 640, less the
-    // `4 * (2*TAB_PAD_X + 2*FOCUS_SLACK)` = 136 px of padding they carry --
-    // and four one-word captions at Body size are not within reach of that.
+    // Nothing clamps the run to the trough's right edge. At `MIN_WIDTH` the
+    // trough is `660 - 2*PAD` = 640 px wide, and the four pills spend
+    // `4 * (2*TAB_PAD_X + 2*FOCUS_SLACK)` = 136 px of padding plus one
+    // `badge_slot_w` before a caption is drawn at all -- so the four captions
+    // would have to measure about 470 px between them to overflow, and four
+    // one-word captions at Body size are not within reach of that. At the
+    // shipped 680 the trough is 660 and the budget is 20 px larger again.
+    //
+    // **CORRECTED 2026-08-14, Task 8: that budget read 504 and left out the
+    // badge.** It was written when a pill was exactly its caption plus its
+    // padding; Task 6 then added the Shortcuts pill's fixed four-digit slot to
+    // this very loop, which is `tok::GAP` plus the width of `"0000"` in the
+    // Keycap face -- roughly 34 px at 96 DPI, and the reason the figure here
+    // is "about". It is spelled as a term rather than a number because
+    // `badge_slot_w` is a live font measurement and this comment is not.
+    //
     // The padding half of that is exact; the caption half is unmeasured, here
     // as everywhere in this function (no string in this window has been
     // through `GetTextExtentPoint32W` on hardware -- gate G1). Read it as

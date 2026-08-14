@@ -19,7 +19,7 @@ Last updated: 2026-08-14, branch `four-doors-phase-0`.
 |---|---|---|
 | Four tab pills in a horizontal owner-drawn pill strip below the title bar | **done** | `mod.rs` `build_children`; ids 1040-1043 |
 | `BS_AUTORADIOBUTTON \| BS_PUSHLIKE`, not `BS_OWNERDRAW` | **done** | and **measured**: gate G2 on a14, `CDIS_HOT` reaches it under comctl32 6.16 |
-| Window narrows 760 → **680** | **open** | Task 8. Deliberately last, so every earlier task's arithmetic is checked at the width it was written for |
+| Window narrows 760 → **680** | **done** | Task 8, deliberately last so every earlier task's arithmetic was written and checked at 760 and this is the one change that re-tests all of it. One constant plus the probe's transcribed copy — and `ids::geometry_matches_the_probe` failed on the unedited copy, on the dev machine, which is exactly the drift that test was built for. A card interior is 638 at 96 DPI (`cw1` / `grp_w` / `kb_w` alike), and **`col_app` is 421, not the design's ~438** — `layout` subtracts `SM_CXVSCROLL` from the list's client width whether or not a bar is up, so it is `638 − 17 − 200`, and 404 with one actually up. `MIN_WIDTH` did not move; `layout.rs` states that as a rule until G1 runs |
 | `MIN_WIDTH` 660 unchanged | **done** | and must not move until G1 runs — `layout.rs` states that as a rule |
 | `MIN_HEIGHT` 560 unchanged | **changed** | kept at 560, but its **four-row guarantee is withdrawn**: the strip costs 34 px and the floor now buys two rows. Design §4 makes the list scroll, so the floor's job changed. Recorded in `mod.rs` |
 | Defaults to **dark** | **open** | System page (Task 7+) |
@@ -191,6 +191,24 @@ typed text), **G-S4** (the strip under four high-contrast schemes), **G-S5**
 (frame metrics and the resize edge across the strip band), **G-S6** (does
 `place_app_combo`'s restore restore), **G-S7** (what `GetFocus` returns for the
 App combo).
+
+**G-S5's instrument exists now, and G1's control got more expensive.** Task 8
+gave `examples/settings_probe.rs` a strip section: per pill the id, the rect,
+the checked state and four style bits (`BS_AUTORADIOBUTTON`, `BS_PUSHLIKE`,
+`WS_TABSTOP`, `WS_GROUP`), then `GetSystemMetricsForDpi` for
+`SM_CXSIZEFRAME` / `SM_CYSIZEFRAME` / `SM_CXPADDEDBORDER` **by name** — there
+is no `SM_CYPADDEDBORDER`, index 92 is the X one and `chrome::nchittest`
+spends it on both axes — plus `SM_CXVSCROLL` and the two `LVM_GETCOLUMNWIDTH`
+readings, which are what make the 421/404 arithmetic above checkable rather
+than asserted. It also prints the leftmost pill's `x` against
+`SM_CYSIZEFRAME + SM_CXPADDEDBORDER`, which is G-S5's whole question in one
+line. One reading of the style bits is still not evidence of `WS_TABSTOP`
+migration; the section is built to be run twice with a door change between,
+because only the change is evidence — that is the lesson of the first G-S2
+run, recorded below. And G1's control was free while the window opened at 760
+(measure the line, then measure it at the shipped size); at 680 the wider
+control costs a hand-drag, so a G1 result now has to name the width it was
+taken at.
 
 **What Task 6 shipped that no test on this host can see.** Everything the
 painter draws is pixels, and the two CI jobs that compile it cannot run it.

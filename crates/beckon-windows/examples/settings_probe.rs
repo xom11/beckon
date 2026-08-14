@@ -36,12 +36,12 @@ mod win {
     // `BST_CHECKED` is deliberately gone: nothing here asks `BM_GETCHECK`
     // any more. See `chip_armed`.
     use windows::Win32::UI::Controls::{
-        BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOUNTPERPAGE, LVM_GETHEADER,
-        LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
+        BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE,
+        LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
     };
     use windows::Win32::UI::HiDpi::{
         GetAwarenessFromDpiAwarenessContext, GetDpiForSystem, GetDpiForWindow,
-        GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
+        GetSystemMetricsForDpi, GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled;
@@ -255,6 +255,22 @@ mod win {
     const IDC_MOD_WIN: i32 = 1029;
     const IDC_MOD_ALT: i32 = 1030;
     const IDC_MOD_SHIFT: i32 = 1031;
+    /// The four tab pills, in the order `settings_window::TABS` holds them --
+    /// which is also the order `layout` places them left to right, so a rect
+    /// that goes backwards down this list is a placement bug and not a
+    /// transcription one.
+    ///
+    /// **Contiguous, and that is a requirement rather than tidiness.**
+    /// `CheckRadioButton(hwnd, IDC_TAB_SHORTCUTS, IDC_TAB_ABOUT, id)` is what
+    /// lights a pill, and it takes a FIRST and a LAST id and walks the range
+    /// between them. Transcribed here like every other id in this file: the
+    /// probe drives another process and cannot link the crate.
+    const TAB_PILLS: [(i32, &str); 4] = [
+        (1040, "Shortcuts"),
+        (1041, "Keyboard"),
+        (1042, "System"),
+        (1043, "About"),
+    ];
     /// `[(id, the word the config file spells it with, the word the SCREEN
     /// spells it with)]`, in the canonical order `Combo::canonical` prints.
     /// The probe reconstructs the whole combo from the controls, so it needs
@@ -305,7 +321,13 @@ mod win {
     /// probe driving an OLDER binary), and `geometry_matches_the_probe` in
     /// `settings_window::ids` now catches the source-level drift without
     /// leaving this machine.
-    const WINDOW_WIDTH_96: i32 = 760;
+    ///
+    /// **That test earned its keep the same day it was written.** Task 8 took
+    /// `WINDOW_WIDTH` 760 -> 680 and `geometry_matches_the_probe` failed on
+    /// the unedited copy below, on the developer's own machine, with no
+    /// hardware in the loop -- which is the exact drift the paragraph above
+    /// says nobody would otherwise have seen until a person ran this probe.
+    const WINDOW_WIDTH_96: i32 = 680;
     const WINDOW_HEIGHT_96: i32 = 600;
     /// Printed for reference only. What has to be checked at this floor
     /// needs a human to drag the corner, and this probe does not drive a
@@ -774,6 +796,43 @@ mod win {
             println!("      LVM_GETITEMRECT(0):   FAIL -- no remote buffer (OpenProcess denied?)");
         }
 
+        // The two column widths, and the arithmetic Task 8 claims they come
+        // from. `layout` sizes them off the list's OWN client width less
+        // `SM_CXVSCROLL`, unconditionally -- so `App` is
+        // `client - SM_CXVSCROLL - min(200, .)` and it loses a second
+        // `SM_CXVSCROLL` once a scroll bar is actually up and the client
+        // shrinks under it. Both figures are printed because the difference
+        // between them is the whole point: the design's "~438 px for the app
+        // name" is the client width less the Shortcut column and forgets both
+        // subtractions.
+        //
+        // `LVM_GETCOLUMNWIDTH` returns a plain integer, so unlike
+        // `LVM_GETITEMRECT` above it needs no remote buffer.
+        // `w` is the control's WINDOW width, read at the top of this function;
+        // the client width below is what is left of it once comctl32 has taken
+        // a scroll bar. Comparing the two is how the last field says whether
+        // one is up, and it is why both are printed rather than only the one
+        // `layout` reads.
+        let lw = w;
+        let mut lrc = RECT::default();
+        let client_w = if unsafe { GetClientRect(list, &mut lrc) }.is_ok() {
+            lrc.right - lrc.left
+        } else {
+            RECT_FAIL
+        };
+        let sb = unsafe { GetSystemMetricsForDpi(SM_CXVSCROLL, GetDpiForWindow(parent)) };
+        println!(
+            "      columns:              App {}   Shortcut {}   (window {lw}, client \
+             {client_w}, SM_CXVSCROLL {sb}, scroll bar {})",
+            send(list, LVM_GETCOLUMNWIDTH, 0, 0),
+            send(list, LVM_GETCOLUMNWIDTH, 1, 0),
+            if client_w != RECT_FAIL && lw != RECT_FAIL && lw - client_w >= sb {
+                "UP"
+            } else {
+                "down"
+            }
+        );
+
         let hdr = HWND(send(list, LVM_GETHEADER, 0, 0) as *mut c_void);
         if hdr.0.is_null() {
             println!("      header:               MISSING -- LVM_GETHEADER returned null");
@@ -1054,6 +1113,129 @@ mod win {
             );
         } else {
             println!("    COMBOBOX IDC_APP:     MISSING");
+        }
+    }
+
+    /// The tab strip, and the frame metrics the strip's own inset is measured
+    /// against. Two gates read this block and they want different halves of
+    /// it.
+    ///
+    /// **G-S2 wants the style bits, and it wants them for a reason a re-read
+    /// of `WS_TABSTOP` alone cannot serve.** user32 migrates that bit onto
+    /// whichever radio in a group is checked, so a group is ONE tab stop --
+    /// measured on a14 2026-08-14 with `examples/pill_probe.rs`, and the FIRST
+    /// run of that gate proved nothing because it read the styles once, on a
+    /// pair it had created with different styles to begin with. This section
+    /// prints the checked state on the same line as the bits so the two can
+    /// be read against each other, and it prints all four pills so a second
+    /// run after clicking a different door is a comparison rather than a
+    /// fresh assertion. **One reading here is still not evidence of
+    /// migration** -- run it, switch doors, run it again, and read the CHANGE.
+    ///
+    /// **G-S5 wants the frame metrics by name.** `chrome::nchittest` resolves
+    /// all eight resize directions itself out of `SM_CYSIZEFRAME +
+    /// SM_CXPADDEDBORDER`, and `strip_rect` insets the trough by `tok::PAD`
+    /// so a pill cannot cover the left or right resize edge across the
+    /// strip's whole band. That margin is 2-3 px by arithmetic and has never
+    /// been read off a machine, which is what makes printing the metrics
+    /// worth a section rather than a comment.
+    ///
+    /// **There is no `SM_CYPADDEDBORDER`.** `windows` 0.61.3 defines index 92
+    /// as `SM_CXPADDEDBORDER` and nothing else, and `chrome::nchittest`
+    /// spends that one X metric on both axes -- so the pair printed below is
+    /// what the window itself computes, not a convenient substitute for it.
+    fn measure_strip(parent: HWND) {
+        println!("  -- tab strip (G-S2) and frame metrics (G-S5) --");
+        let dpi = unsafe { GetDpiForWindow(parent) };
+
+        let mut leftmost: Option<i32> = None;
+        let mut prev_right: Option<i32> = None;
+        for (id, caption) in TAB_PILLS {
+            let Some(ctl) = dlg_item(parent, id) else {
+                println!("    pill {id} {caption:<9}: MISSING <<< FAIL");
+                continue;
+            };
+            let (x, y, w, h) = box_in_client(parent, ctl);
+            let st = unsafe { GetWindowLongPtrW(ctl, GWL_STYLE) } as u32;
+            // `BM_GETCHECK` on an auto-radio was gate G-S3, and it passed on
+            // a14 2026-08-14: 1 for the checked radio, 0 for its sibling. It
+            // is a bare integer message, so unlike the comctl32 messages
+            // `Remote` exists for, it crosses the process boundary as it is.
+            // This is also what `is_checked` reads, and what `paint::tab_pill`
+            // takes selected-ness from instead of `CDIS_CHECKED` -- so a
+            // reading here that disagrees with the lit pill on screen is the
+            // painter's bug, not this probe's.
+            let checked = send(ctl, BM_GETCHECK, 0, 0);
+            println!(
+                "    pill {id} {caption:<9}: {}   checked={checked}   style 0x{st:08X}",
+                fmt_box(x, y, w, h)
+            );
+            println!(
+                "        BS_AUTORADIOBUTTON: {}   BS_PUSHLIKE: {}   WS_TABSTOP: {}   \
+                 WS_GROUP: {}",
+                // `BS_TYPEMASK` is the low nibble; `BS_AUTORADIOBUTTON` is 9.
+                // A 0 here means something ran `set_button_type` over a pill,
+                // which is exactly why they are absent from `PUSH_BUTTONS`.
+                if st & 0x0F == 0x09 {
+                    "yes"
+                } else {
+                    "NO <<< FAIL, a pill was rewritten into a push button"
+                },
+                if st & 0x1000 != 0 {
+                    "yes"
+                } else {
+                    "NO <<< FAIL"
+                },
+                // Neither of these two is a pass/fail. `WS_TABSTOP` is
+                // user32's to move and `WS_GROUP` is set on the control AFTER
+                // the last pill, never on a pill -- so both are printed as
+                // facts to compare across runs.
+                if st & 0x00010000 != 0 { "yes" } else { "no" },
+                if st & 0x00020000 != 0 { "yes" } else { "no" },
+            );
+            if x != RECT_FAIL {
+                leftmost = Some(leftmost.map_or(x, |l: i32| l.min(x)));
+                if let Some(r) = prev_right {
+                    if x < r {
+                        println!(
+                            "        <<< FAIL: this pill starts at {x}, left of the previous \
+                             pill's right edge {r} -- the run is out of order or overlapping"
+                        );
+                    }
+                }
+                prev_right = Some(x + w);
+            }
+        }
+
+        let (cxframe, cyframe, padded, vscroll) = unsafe {
+            (
+                GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi),
+                GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi),
+                GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi),
+                GetSystemMetricsForDpi(SM_CXVSCROLL, dpi),
+            )
+        };
+        println!(
+            "    GetSystemMetricsForDpi @{dpi}:  SM_CXSIZEFRAME {cxframe}   SM_CYSIZEFRAME \
+             {cyframe}   SM_CXPADDEDBORDER {padded}   SM_CXVSCROLL {vscroll}"
+        );
+        // The pair `chrome::nchittest` actually spends -- the Y size-frame
+        // metric on BOTH axes, since there is no `SM_CYPADDEDBORDER` to pair
+        // an X one with. `SM_CXSIZEFRAME` is printed beside it only so a
+        // machine where the two size-frame metrics disagree says so here
+        // rather than in a resize that misses by a pixel.
+        let border = cyframe + padded;
+        match leftmost {
+            Some(x) if x > border => println!(
+                "    resize border {border}px vs leftmost pill at x={x}: clear by {}px -- \
+                 HTLEFT survives across the strip band",
+                x - border
+            ),
+            Some(x) => println!(
+                "    resize border {border}px vs leftmost pill at x={x}: <<< FAIL, the pill \
+                 covers the left resize edge and the band cannot be dragged"
+            ),
+            None => println!("    resize border {border}px: no pill rect to compare it against"),
         }
     }
 
@@ -1744,8 +1926,8 @@ mod win {
     /// Make THIS process per-monitor aware before it measures anything.
     ///
     /// Not cosmetic. A DPI-unaware caller gets virtualized answers from
-    /// `GetWindowRect`: on a 150 % display a 1140 px window is reported as
-    /// 760, silently divided by the scale factor. `LVM_GETITEMRECT` and
+    /// `GetWindowRect`: on a 150 % display a 1020 px window is reported as
+    /// 680, silently divided by the scale factor. `LVM_GETITEMRECT` and
     /// `BCM_GETIDEALSIZE` come back through `ReadProcessMemory` instead and
     /// are never virtualized -- so an unaware probe prints logical pixels and
     /// physical pixels side by side, in the same block, unlabelled. That is
@@ -1761,8 +1943,9 @@ mod win {
     /// 2026-08-13 compaction pass `1f46335` took `tok::ROW_H` to 22, the
     /// state image list floors the live row at `scale(tok::ROW_H, dpi)` --
     /// 33 px at a14's 144 DPI -- and comctl32 may pad above that, so do not
-    /// read 29 as a figure to check the output against. The 1140/760 pair
-    /// above is current: `WINDOW_WIDTH` is 760.
+    /// read 29 as a figure to check the output against. The 1020/680 pair
+    /// above is current: `WINDOW_WIDTH` is 680 since Task 8 (it was 760, and
+    /// this sentence exists because the pair went stale once already).
     fn go_dpi_aware() {
         let set =
             unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -1875,6 +2058,12 @@ mod win {
         });
 
         measure_geometry(h);
+        // After `measure_geometry`, not inside it: the strip is chrome and is
+        // present on every door, while everything that block reads belongs to
+        // whichever page is open. Keeping them separate is what lets a second
+        // run -- taken after a door change -- be read as a comparison of this
+        // section alone.
+        measure_strip(h);
 
         // **Asked before anything reads a chord, and it is a control for the
         // probe itself.** Every shortcut this run prints is rebuilt from the

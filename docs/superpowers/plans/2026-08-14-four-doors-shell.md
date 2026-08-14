@@ -806,7 +806,7 @@ it was written for.
 - Modify: `crates/beckon-windows/src/settings_window/mod.rs` — `WINDOW_WIDTH`
 - Modify: `crates/beckon-windows/examples/settings_probe.rs` — `WINDOW_WIDTH_96`, and a strip section
 
-- [ ] **Step 1: Change the constant and watch the test fail**
+- [x] **Step 1: Change the constant and watch the test fail**
 
 `WINDOW_WIDTH: i32 = 680`. Then:
 
@@ -818,7 +818,12 @@ compiles, but `geometry_matches_the_probe` (`ids.rs`) would fail on CI. **Run
 it in your head against the probe's constant and fix the probe** — that test
 is Phase 0's and this is exactly the drift it exists to catch.
 
-- [ ] **Step 2: Re-check the widths the spec flags**
+Done. It cannot RUN on macOS, so "in your head" is the whole of it: the test
+asserts `src.contains("const WINDOW_WIDTH_96: i32 = 680;")` against the
+example's source, and both literals were read back afterwards to confirm the
+pairing.
+
+- [x] **Step 2: Re-check the widths the spec flags**
 
 Card interior becomes `680 − 2·PAD − 2·CARD_PAD = 638` — confirm against
 `cw1` / `grp_w` / `kb_w` (`layout.rs:525`, `:636`, `:713`). Note in the commit
@@ -827,7 +832,20 @@ that `col_app` is 421, not the design's ~438: `layout.rs:597-602` subtracts
 
 **`MIN_WIDTH` does not move.**
 
-- [ ] **Step 3: Give the probe a strip section**
+Done, and one of the spec's four figures did not survive re-derivation.
+**Spec §7's "at 680 two [of `SHORTCUT_COL`'s four sites] stop binding" is one
+site, not two, on any trace this branch can take.** `filter_w` (other term
+`cw1/3` = 212) and `col_shortcut` (`inner/2` = 310) provably still bind — no
+font enters either. `key_w` provably stops: binding wants `mx ≤ 265` and `mx`
+is `61 + lw_lbl + four chips` with the chips floored at `4·CHIP_MIN` = 184, so
+it would need `"Shortcut"` to measure 16 px. `tap_w` is the fourth, and
+whether it EVER bound is unmeasured: this window's own hand measurement of the
+Caps line leaves it 159 px at 760 — already under the ceiling — while a
+per-character trace of the same string puts it at 213 and just over. Recorded
+at `tok::SHORTCUT_COL` rather than settled; gate G1 is the run that settles
+it, and nothing depends on the answer.
+
+- [x] **Step 3: Give the probe a strip section**
 
 It should print, for each of the four pills: the id, the style bits (so G-S2
 can read `WS_TABSTOP` migration), the rect, and the checked state. Plus
@@ -835,9 +853,32 @@ can read `WS_TABSTOP` migration), the rect, and the checked state. Plus
 dpi)` by name, for G-S5.
 
 **There is no `SM_CYPADDEDBORDER`** — `windows` 0.61.3 defines index 92 as
-`SM_CXPADDEDBORDER` alone, and one constant serves both axes.
+`SM_CXPADDEDBORDER` alone, and one constant serves both axes. Confirmed by
+grepping the vendored crate rather than taken from the plan.
 
-- [ ] **Step 4: Gate and commit**
+Done, with three things the plan did not ask for and one it could not have.
+`SM_CXVSCROLL` and both `LVM_GETCOLUMNWIDTH` readings, because step 2's
+421/404 is the only width claim this commit makes and one more integer message
+turns it from asserted into checkable. The leftmost pill's `x` printed against
+`SM_CYSIZEFRAME + SM_CXPADDEDBORDER`, which is G-S5's question in one line. An
+out-of-order/overlap check across the run, since `layout` places the pills
+edge to edge and equality is the healthy case. And what it could not have: the
+section is written to be run TWICE with a door change between, because one
+reading of `WS_TABSTOP` is what made the first G-S2 run blind.
+
+**Step 3.5 (unplanned): the strip's own width fit at 680, which Task 8 was
+written before the strip existed.** The four pills spend
+`4·(2·TAB_PAD_X + 2·FOCUS_SLACK)` = 136 px of padding plus one `badge_slot_w`
+(≈34 at 96 DPI) out of a 660 px trough, leaving ≈490 px for four one-word
+captions — not close. `layout`'s own note on this was **stale**: it read "504
+px between them to overflow" and predates Task 6 adding the badge slot to that
+very loop. Corrected in place. The badge's fixed four-digit slot therefore
+still fits, and `strip_rect`'s `PAD` inset is width-independent — both edges
+are one `pad` in from the client rect at every width — so the resize-edge
+margin is unchanged at **2 px at 96 DPI and 3 px at 144**, and only the left
+edge is anywhere near being spent.
+
+- [x] **Step 4: Gate and commit**
 
 ```bash
 git add crates/beckon-windows/src/settings_window/mod.rs \

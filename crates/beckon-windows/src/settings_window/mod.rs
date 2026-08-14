@@ -821,20 +821,45 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 /// window is born on whichever monitor `CW_USEDEFAULT` picked, which
 /// `GetDpiForWindow` can then reveal was guessed wrong) -- both must agree
 /// on the un-scaled size or the correction would resize to the wrong target.
-// **760x600, since the 2026-08-13 compaction pass.** The 900x740 derivation
-// that stood here was for a window with 26 px rows and 16 px padding and was
-// already marked superseded; a full derivation of a window that does not
-// exist is worse than none, so it is gone rather than annotated again.
+// **680x600 since Task 8; 760x600 from the 2026-08-13 compaction pass until
+// then.** The 900x740 derivation that stood here was for a window with 26 px
+// rows and 16 px padding and was already marked superseded; a full derivation
+// of a window that does not exist is worse than none, so it is gone rather
+// than annotated again.
 //
 // What replaced it as evidence is better than a table: the window was built
 // and run on a14 at 144 DPI and measured **1140 x 900** -- exactly 760 x 600
 // scaled by 1.5 -- with all eight list rows present and no scroll bar.
 //
-// **The eight-rows half of that run no longer describes this window.** The
-// tab strip's band (`tok::TABSTRIP_H`, added below) costs the list 34 px, and
-// at 600 the cap lands at 178 against a `want` of 197 -- seven rows. The
-// 1140 x 900 half is untouched: it measures the window against the constants,
-// which is what it was run for, and the constants have not moved.
+// **NEITHER half of that run describes this window any more**, and it is kept
+// because it is a record of an event rather than a table to check against. The
+// tab strip's band (`tok::TABSTRIP_H`, added below) costs the list 34 px, so
+// at 600 the cap lands at 178 against a `want` of 197 -- seven rows, not
+// eight. And the width is 680 now, so a fresh run at 144 DPI has to come back
+// **1020 x 900**. What survives untouched is the PROPERTY that run
+// established, which is the only part a later run can re-check: the window
+// comes up at exactly `scale(WINDOW_WIDTH, dpi)` by `scale(WINDOW_HEIGHT,
+// dpi)`. `examples/settings_probe.rs` re-asserts it against its own
+// transcribed copy of both constants, and `ids::geometry_matches_the_probe`
+// is what keeps that copy from going stale -- it failed on this commit, which
+// is the net working.
+//
+// **What 680 does to the widths, derived here rather than carried over from
+// the spec.** A card's interior is `w - 2*tok::PAD - 2*tok::CARD_PAD` = **638**
+// px at 96 DPI, and that one number is `cw1`, `grp_w` and `kb_w` alike
+// (`layout.rs`) -- the three cards share a width because they share both
+// insets.
+//
+// Inside the list that leaves `col_app` at **421**, not the design's ~438.
+// `layout` subtracts `GetSystemMetricsForDpi(SM_CXVSCROLL, dpi)` from the
+// list's own client width whether or not a scroll bar is showing (that
+// subtraction is what makes a clipped column structurally impossible), so
+// `col_app` is `638 - 17 - 200` with the list unscrolled and `638 - 34 - 200`
+// = **404** with a scroll bar actually up. The design's figure is `638 - 200`
+// and forgets both. 17 is `SM_CXVSCROLL` at 96 DPI on the default theme --
+// the same figure `layout`'s own "34 px gutter at 96 DPI, 52 at 150 %" note
+// is computed from -- and it is a system metric rather than a constant, which
+// is why `settings_probe` now prints it by name beside the frame metrics.
 //
 // **Which terms compose the height, in order** -- the part of the old block
 // that was worth keeping, restated against the shipped tokens. This is a map
@@ -914,7 +939,7 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // comment is the worked example of what that costs. A pixel figure derived
 // from `tok::ROW_H` has gone stale there twice now, once per move, and the
 // second time there was nothing left in the tree to check it against.
-const WINDOW_WIDTH: i32 = 760;
+const WINDOW_WIDTH: i32 = 680;
 const WINDOW_HEIGHT: i32 = 600;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
