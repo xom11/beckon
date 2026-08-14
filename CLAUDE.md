@@ -149,7 +149,12 @@ all. Every Linux bug fixed in the 2026-08 pass was found by it, and none of
 them were visible to the 65 unit tests that were green the whole time.
 
 It detects its environment the same way `pick_backend` does, so run it inside
-the session under test. All four backends currently pass 19/19 on Ubuntu
+the session under test. **`HyprEnv` exists but has never been run** — it was
+added 2026-08-14 together with the Hyprland hide/MRU/filter fixes, and the
+session it was written against logged out before the suite could be driven
+end to end. Until someone runs it on a live Hyprland, treat Hyprland as
+verified only by the hand probes recorded in the Phase 1c note, not by this
+suite. The other four backends pass 19/19 on Ubuntu
 26.04 arm64 (GNOME Shell 50.1 headless, sway 1.11, i3 + Xvfb, openbox + Xvfb)
 — see `testing/README.md` for the headless bring-up recipes, including the
 D-Bus service-directory trick that keeps `gnome-shell --headless` from
@@ -182,7 +187,7 @@ beckon installed                     # list installed apps with launch ids
 beckon search <NAME>                 # fuzzy search across running + installed
 beckon resolve <ID>                  # validate id, print metadata + suggestions
 beckon doctor                        # check environment (permissions, IPC, etc.)
-beckon check <CONFIG>                # validate a shortcuts TOML file (CI-friendly)
+beckon check <CONFIG> [--resolve]    # validate a shortcuts TOML file (CI-friendly)
 beckon serve <CONFIG> [--log PATH]   # resident hotkey service (macOS, Windows)
 beckon -v, --verbose                 # debug logging (combine with any command)
 beckon -h, --help
@@ -621,22 +626,46 @@ fallback ladder.
   (Hyprland 0.40+) with `/tmp/hypr/<sig>/.socket.sock` as fallback for older
   installs. Each request opens a fresh `UnixStream` — Hyprland closes the
   socket after responding.
-- **Cycle order (5a)**: pick the same-app window with the lowest non-current
-  `focusHistoryID`. Two-window apps end up oscillating between the most-recent
-  pair, mirroring the practical i3ipc behaviour.
-- **Hide (5c)**: `dispatch movetoworkspacesilent special:beckon,address:0xN`.
-  All apps that beckon hides land on the same shared `special:beckon`
-  workspace; the next `beckon <id>` finds the window in `j/clients`, sees
-  it's not focused, and `dispatch focuswindow` brings the special workspace
-  back into view automatically (Hyprland surfaces the window's workspace on
-  focus). No state file or per-app special workspaces required.
-- **MRU (5b)**: reuses the same `state.rs` file at
-  `$XDG_RUNTIME_DIR/beckon-mru` as the i3ipc backend. Sharing is safe — a
-  user runs only one Linux compositor at a time.
-- **Decision logic** is split into a pure `decide(clients, active, target,
-  previous_app) -> Decision` function that the IPC layer then translates
-  into dispatch commands. This is what makes the algorithm unit-testable
-  without a live Hyprland session (19 tests in `hyprland::tests`).
+- **Cycle order (5a)** is the shared address-ordered ring in
+  `algorithm::decide`, *not* `focusHistoryID`. This entry used to say
+  "pick the same-app window with the lowest non-current `focusHistoryID`",
+  which describes code that was deleted: because `focusHistoryID` is real
+  focus history, focusing a window promotes it to 0 and demotes the one just
+  left, so that ring is a 2-cycle and windows 3..N are unreachable. Verified
+  live on Hyprland 0.56.0 — three `foot` windows, six presses, the ring walks
+  all three and laps.
+- **Hide (5c)**: `dispatch movetoworkspacesilent special:beckon,address:0xN`,
+  and **coming back out is beckon's job** — `focus_window` moves a window off
+  `special:beckon` before focusing it. This entry used to claim `dispatch
+  focuswindow` alone was enough because "Hyprland surfaces the window's
+  workspace on focus". Measured on 0.56.0, that is wrong in the way that
+  matters: the special workspace is *shown* as an overlay, but the window
+  keeps belonging to it, so the moment focus moves elsewhere it disappears
+  and `$mod+1..4`, `movefocus` and `movetoworkspace` all behave as if it does
+  not exist — only `beckon <id>` could surface it again. sway does not have
+  this problem because `focus` on a scratchpad container runs
+  `root_scratchpad_show`, which re-parents it onto the workspace the user is
+  looking at. The same bug also made the *second* hide a silent no-op
+  (`movetoworkspace` early-returns when the window is already there) while
+  beckon reported `Hidden`. Only `special:beckon` is unparked; a user's own
+  `special:*` workspace is left where they put it.
+- **No MRU state file (5b)**: unlike every other Linux backend, this one
+  passes `previous_app = None` to `decide`. `$XDG_RUNTIME_DIR/beckon-mru`
+  exists because the sway tree carries no focus history; `focusHistoryID` is
+  real MRU and — measured on 0.56.0 — reorders on focus changes beckon never
+  made, including mouse clicks and native binds. Consulting a file that only
+  records beckon's own actions could only make step 5b less accurate.
+- **Window filter**: `list_clients` drops clients with an empty `class` and
+  those with `hidden = true` (Hyprland sets it on windows it deliberately
+  keeps off screen, e.g. terminal swallowing). It must **never** filter on
+  `visible`: measured on 0.56.0, a group tab that is not on top reports
+  `hidden=false, visible=false`, so filtering there would hide every tab but
+  the front one and break step 5a through a tabbed group. Windows parked on
+  `special:beckon` stay in the list on purpose — drop them and the next
+  keypress launches a duplicate instead of bringing the window back.
+- **Decision logic** lives in `algorithm::decide`, shared with every other
+  Linux backend; `hyprland.rs` owns only the `Client` → `WindowSnapshot`
+  projection and the `Decision` → dispatch translation.
 - **No `hyprctl` dep**: keeps the hot path at a single short-lived socket
   connection per query, and works in containers/Nix builds where `hyprctl`
   may not be on PATH.
@@ -898,7 +927,9 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at
    `$XDG_RUNTIME_DIR/beckon-mru` containing the `app_id` focused before
-   the most recent beckon action. Each invocation reads the live focus
+   the most recent beckon action — **except on Hyprland**, which has real
+   focus history in `focusHistoryID` and therefore reads and writes nothing
+   (see the Phase 1c note). Each invocation reads the live focus
    from IPC, so transitions made by mouse / native hotkeys reconcile on
    the next beckon call. Limitation: only beckon-mediated focus changes
    are recorded; a sequence of mouse-only switches between beckon calls
@@ -1199,6 +1230,25 @@ OS metadata on every call.
 - **Scoop bucket** (Windows, x86_64 + arm64): `scoop bucket add xom11 https://github.com/xom11/scoop-bucket && scoop install xom11/beckon` — bucket repo `xom11/scoop-bucket`. Manifest auto-bumped by the same workflow.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+
+  **`nix build` was broken from v0.8.0 to v0.9.3 and nobody noticed for a
+  month.** `c33fcf6` inserted `pub mod settings_window;` between
+  `#[cfg(target_os = "windows")]` and `pub mod shell;` in
+  `crates/beckon-windows/src/lib.rs`, leaving `shell` ungated; `package.nix`
+  built the whole workspace, so every Linux/macOS `nix build` hit
+  `E0433: unresolved module \`windows\``. The user's Hyprland laptop sat on
+  0.6.0 the whole time because `nix flake update beckon` could not succeed.
+  Nothing in CI could see it: the build matrix passes
+  `--exclude beckon-windows` off Windows and `release.yml` builds
+  `-p beckon-cli`. Two guards now exist and they cover *different* halves —
+  `package.nix` passes `-p beckon-cli --bin beckon`, so **nix no longer
+  compiles `beckon-windows` at all** and the `nix` CI job cannot catch a
+  future ungated `mod`; the step that can is `the whole workspace still
+  compiles, unexcluded` (`cargo check --workspace --all-targets`, Linux and
+  macOS legs) in the `build` matrix. Do not delete one believing the other
+  covers it — and note the trap in that step's own history: it was written
+  as "mirroring what nix does", which stopped being true in the same commit
+  range that made it load-bearing.
 
 **Landing page**: `site/`, deployed by `.github/workflows/pages.yml` (Pages
 source = **GitHub Actions**, set by hand in repo settings — left at *Deploy
