@@ -234,16 +234,47 @@ are printed in their canonical spelling (`Combo::canonical`), never in the
 display form `combo_display` produces, per the `display_never_reaches_the_serialiser`
 rule.
 
-**The exit code does not change.** A parse failure is still non-zero, exactly as
-today. A `Guess` or a `None` is a **finding, not a failure**:
+**REVERSED 2026-08-15. This section used to read "the exit code does not
+change", arguing that a `Guess` or a miss is a finding rather than a failure
+because `Zalo` legitimately does not resolve on macOS and a check that goes red
+on a file its author considers correct is a check people stop running.** That
+was written before two things were known, and both of them beat it:
 
-- `Zalo` legitimately does not resolve on macOS right now and the user knows it.
-- A check that goes red on a file its author considers correct is a check people
-  stop running, and `beckon check` is already wired into CI where a false red is
-  expensive.
+1. **The user had already decided.** They were asked a two-option question
+   (`exit 1` versus `exit 0` with a warning) and chose `exit 1`, because the
+   flag is opt-in — typing it means you want to know — and because a non-zero
+   exit is the only thing that makes it usable as a gate in a script or a
+   pre-switch hook. A decision the user has made is not the spec's to relitigate.
+2. **The scale was wrong by an order of magnitude.** Measured on the user's
+   Hyprland machine `rog`: **14 of 18 shortcuts did not resolve** — every Brave
+   PWA, none of them installed there — while `beckon check` reported
+   `ok: 18 shortcuts`. The case this section reasoned from was one absent app;
+   the real case is 78 % of the keyboard silently dead.
 
-If a hard gate is wanted later it is a **second** flag (`--strict`), not a
-change to this one. Deliberately not in this design.
+The "permanently red CI" worry does not survive either: CI runs bare
+`beckon check` on a runner with none of the apps installed, that path is
+unchanged, and `check_without_resolve_says_nothing_about_whether_the_app_exists`
+pins it. Red requires someone to add `--resolve` to CI deliberately, and then
+red is what they asked for.
+
+**The rule, as shipped and as extended here:**
+
+| Grade | Exit code | Why |
+|---|---|---|
+| `NoMatch` | **non-zero** — unchanged from `b64905a` | the key is dead; that is the whole point of the gate |
+| `Guess` | **no effect** | it *does* resolve. It is slow and fragile, not broken |
+| `Exact` | no effect | nothing to say |
+
+`Guess` not failing the gate is a **new** decision, not a re-run of the old one:
+the grade did not exist when the user was asked, so their answer could not have
+covered it. It is settled the way it is because two of their own bindings
+deliberately live on the substring tier — `Settings` matching *System Settings*,
+`DeepSeek` matching *DeepSeek - Into the Unknown* — so failing on `Guess` would
+turn a correct file red and reproduce, exactly, the failure mode this section
+originally feared. The difference is that the fear now attaches to the grade it
+is actually true of.
+
+A stricter gate, if ever wanted, is a **second** flag. Still not in this design.
 
 ## 7. What CI can and cannot do — a correction
 
