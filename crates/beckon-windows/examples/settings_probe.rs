@@ -296,13 +296,22 @@ mod win {
     /// independent copy that agrees with the source today, and a later
     /// resize that changes one without the other shows up as a
     /// disagreement on hardware rather than being absorbed silently.
-    const WINDOW_WIDTH_96: i32 = 900;
-    const WINDOW_HEIGHT_96: i32 = 740;
+    ///
+    /// **The independence is real and it did not save us.** These four sat
+    /// at 900/740/753/702 from the 2026-08-13 compaction pass until
+    /// 2026-08-14 -- the probe would have printed `<<< FAIL` against a
+    /// perfectly healthy window, and nobody saw it, because the mechanism
+    /// only fires with a person at a14. The copy stays (it is what catches a
+    /// probe driving an OLDER binary), and `geometry_matches_the_probe` in
+    /// `settings_window::ids` now catches the source-level drift without
+    /// leaving this machine.
+    const WINDOW_WIDTH_96: i32 = 760;
+    const WINDOW_HEIGHT_96: i32 = 600;
     /// Printed for reference only -- gate 09 (eight rows, no scrollbar) is
     /// what actually has to be checked at this floor, and that needs a
     /// human to drag the corner; this probe does not drive a resize.
-    const MIN_WIDTH_96: i32 = 753;
-    const MIN_HEIGHT_96: i32 = 702;
+    const MIN_WIDTH_96: i32 = 660;
+    const MIN_HEIGHT_96: i32 = 560;
 
     /// A 96-DPI value scaled to `dpi`, transcribed from
     /// `settings_window::mod::scale` -- truncating, not `MulDiv`'s

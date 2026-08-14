@@ -252,12 +252,13 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // 1's OWN bottom inset, a fixed cost the old bare band 3 never had.
     // Miss it and the guard below cannot save it: at `MIN_HEIGHT`, where
     // this floor is exact-fit by construction, the list would be handed
-    // `card_pad` (16 px at 96 DPI) more room than the card can actually
+    // `card_pad` (11 px at 96 DPI) more room than the card can actually
     // afford, and card 2 draws exactly that far over card 3 -- worst with
     // the banner up, where there is no slack left to absorb it, because the
-    // 76 px card 0 would otherwise have taken swallows a shortfall that
-    // small with room to spare. Simulated, not seen: nothing on the
-    // machine this was written on can display the window.
+    // 56 px card 0 would otherwise have taken (its own 48 plus the
+    // `gap_card` below it) swallows a shortfall that small with room to
+    // spare. Simulated, not seen: nothing on the machine this was written
+    // on can display the window.
     let editor_min = card2_h;
     let room = clamp(kb_y - gap_card - list_top);
     let list_h = clamp(want.min(clamp(room - gap_card - card_pad - editor_min)));
@@ -316,15 +317,25 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// arithmetic lives there now, not here; this function only reads
 /// `card1`'s already-resolved height back out.
 ///
-/// **The keyboard line is the width-critical one, and `MIN_WIDTH` (753) has
-/// never been checked against it by arithmetic.** It moved 720→753
-/// "proportionally" when Task 8 introduced cards, and Task 11 then grew the
-/// line itself by 26 px at 96 DPI on top of that; a hand review at 753
-/// found the line consumes ≈547 px of a 705 px card interior, leaving
-/// `IDC_TAP` ≈150 px against its 200 px ceiling — it fits, but by luck
-/// rather than by anyone's re-derivation, and `"Use Caps Lock as a shortcut
-/// key"` is the widest measured string in the window. Re-check this line
-/// specifically before ever moving `MIN_WIDTH` again.
+/// **The keyboard line is the width-critical one.** `MIN_WIDTH` is 660, and
+/// a card interior there is `w - 2*tok::PAD - 2*tok::CARD_PAD` = 618 px at
+/// 96 DPI — but this line is inset one `gap` at each end (`inner_x` on the
+/// left, the `- gap` inside `tap_w` on the right), so the run it gets is 606.
+/// The line — `"Use Caps Lock as a shortcut key"`, the three `Hold` chips and
+/// the `Tap` combo — was hand-measured at ≈547 px, which leaves `IDC_TAP`
+/// about **59 px** against its `tok::SHORTCUT_COL` ceiling of 200.
+/// `"Use Caps Lock as a shortcut key"` is the widest measured string in the
+/// window, which is why this line and not another decides the floor.
+///
+/// The version of this note that stood here until 2026-08-14 said
+/// `MIN_WIDTH (753)` and concluded ≈150 px of slack. 753 has not been this
+/// window's floor since the compaction pass; the real floor is 93 px
+/// narrower, and that note also measured the line against `cw` (705 there)
+/// rather than against this run, so it was over-generous by two `CARD_PAD`s
+/// and a `gap` on top of the width it borrowed from a window that does not
+/// exist. **Gate G1 measures the line with `GetTextExtentPoint32W` at 96 and
+/// 144 DPI, with the same measurement at 760 px as its control.** Do not move
+/// `MIN_WIDTH` — in either direction — before it has run.
 pub(super) unsafe fn layout(hwnd: HWND) {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {

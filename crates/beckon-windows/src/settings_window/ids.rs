@@ -158,4 +158,29 @@ mod tests {
             );
         }
     }
+
+    /// The probe transcribes the window's geometry by hand, on purpose --
+    /// see its own comment. What that cannot catch is a resize here that
+    /// nobody copies over there, because the disagreement only surfaces when
+    /// a person runs the probe on a14. This reads the example's SOURCE and
+    /// compares the literals.
+    #[test]
+    fn geometry_matches_the_probe() {
+        let src = include_str!("../../examples/settings_probe.rs");
+        for (name, value) in [
+            ("WINDOW_WIDTH_96", super::super::WINDOW_WIDTH),
+            ("WINDOW_HEIGHT_96", super::super::WINDOW_HEIGHT),
+            ("MIN_WIDTH_96", super::super::MIN_WIDTH),
+            ("MIN_HEIGHT_96", super::super::MIN_HEIGHT),
+        ] {
+            let want = format!("const {name}: i32 = {value};");
+            assert!(
+                src.contains(&want),
+                "examples/settings_probe.rs does not contain `{want}`. The \
+                 probe prints its own copy as the EXPECTED geometry and \
+                 reports `<<< FAIL` against it, so a stale copy makes a \
+                 healthy window look broken on hardware."
+            );
+        }
+    }
 }
