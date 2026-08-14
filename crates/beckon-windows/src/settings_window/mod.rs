@@ -31,9 +31,18 @@
 //! `apply_state` used to end with an unconditional `layout(hwnd)`, which
 //! `SetWindowPos`es every control on every keystroke. Typing `Notepad` left
 //! `d` in the model and "Debuggable Package Manager" on screen. The fix is
-//! `Ui::shown_external` plus `Ui::shown_empty`, which make that layout
-//! conditional; see `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
-//! sections 24-26.
+//! `Ui::shown_external` plus `Ui::shown_empty` plus `Ui::shown_page`, which
+//! make that layout conditional; see
+//! `docs/superpowers/measurements/2026-08-11-landing-1-a14.md` sections
+//! 24-26.
+//!
+//! **The tab strip is the same hazard from the other side, and the answer is
+//! the same call site.** `layout` places only the CURRENT page's controls, so
+//! a switch away from Shortcuts never reaches the App combo at all -- which
+//! is a correctness requirement rather than an optimisation, because
+//! `Ctrl+1`..`Ctrl+4` are accelerators and `TranslateAcceleratorW` runs
+//! before `IsDialogMessageW` and moves no focus, so the combo would otherwise
+//! be resized while focused, populated and holding half-typed text.
 //!
 //! **The App field's text is still read from the message loop, one keystroke
 //! behind the notification that reported it** — see `WM_APP_EDITED`. It is
@@ -98,8 +107,8 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths,
-    SettingsCommand,
+    banner_shown, default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note,
+    Page, Paths, SettingsCommand,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -413,6 +422,90 @@ fn tab_id_of(page: Page) -> i32 {
         Page::Keyboard => IDC_TAB_KEYBOARD,
         Page::System => IDC_TAB_SYSTEM,
         Page::About => IDC_TAB_ABOUT,
+    }
+}
+
+/// Which door each control lives behind.
+///
+/// **Three kinds of control are absent, and each absence is a decision:**
+///
+/// - **The four pills and the command bar's three buttons are chrome.** They
+///   are drawn on every page, so they belong to none, and listing them here
+///   with a page would be a lie the first time someone read it.
+/// - **The banner's three (`IDC_BANNER`, `IDC_RELOAD`, `IDC_KEEPMINE`) are
+///   conditional twice over** -- `banner_shown` -- so a table that only knows
+///   about pages would show them on Shortcuts whether or not the file moved.
+///   `show_page_controls` handles them beside this loop, from the same
+///   function core's `DefaultButton::visible` reads.
+/// - **System and About own nothing yet.** Both draw as an empty surface
+///   below the strip until Task 7 gives them a line each.
+///
+/// `every_control_belongs_to_exactly_one_group` in `ids.rs` is what keeps the
+/// three absences honest: it partitions `MINE` across this table, the pills,
+/// the banner and the command bar, and fails on any control that lands in
+/// neither or in two. Without it, a control added later and forgotten here is
+/// simply visible on all four pages -- which looks like a layout bug and is a
+/// table bug.
+const PAGE_CONTROLS: [(i32, Page); 26] = [
+    // -- Shortcuts: the head row, the list, and the editor strip below it.
+    (IDC_LBL_SECTION, Page::Shortcuts),
+    (IDC_LBL_COUNT, Page::Shortcuts),
+    (IDC_FILTER, Page::Shortcuts),
+    (IDC_REMOVE, Page::Shortcuts),
+    (IDC_ADD, Page::Shortcuts),
+    (IDC_LIST, Page::Shortcuts),
+    (IDC_GRP_EDITOR, Page::Shortcuts),
+    (IDC_LBL_APP, Page::Shortcuts),
+    (IDC_APP, Page::Shortcuts),
+    (IDC_LBL_SHORTCUT, Page::Shortcuts),
+    (IDC_MOD_CTRL, Page::Shortcuts),
+    (IDC_MOD_WIN, Page::Shortcuts),
+    (IDC_MOD_ALT, Page::Shortcuts),
+    (IDC_MOD_SHIFT, Page::Shortcuts),
+    (IDC_COMBO, Page::Shortcuts),
+    (IDC_RECORD, Page::Shortcuts),
+    (IDC_RESET, Page::Shortcuts),
+    (IDC_NOTES, Page::Shortcuts),
+    // -- Keyboard: the Caps line, and nothing else yet.
+    (IDC_GRP_KEYBOARD, Page::Keyboard),
+    (IDC_CAPS, Page::Keyboard),
+    (IDC_LBL_HOLD, Page::Keyboard),
+    (IDC_HOLD_CTRL, Page::Keyboard),
+    (IDC_HOLD_WIN, Page::Keyboard),
+    (IDC_HOLD_ALT, Page::Keyboard),
+    (IDC_LBL_TAP, Page::Keyboard),
+    (IDC_TAP, Page::Keyboard),
+];
+
+/// Show the controls `page` owns and hide every other page's.
+///
+/// **Pages HIDE, they are never destroyed**, and three things that keep
+/// working on a hidden control would break on a destroyed one: `enable`,
+/// `check` and `set_text_if_changed` all resolve through `GetDlgItem`;
+/// `list_row_height` behind `Ui::shown_empty` needs the ListView to exist in
+/// order to measure a row, and the ListView is off screen from three of the
+/// four pages; and `IsDialogMessageW`'s `GetNextDlgTabItem` already skips
+/// non-`WS_VISIBLE` controls, so hiding takes a page out of the tab order for
+/// free.
+///
+/// Called by `show_page` on every switch and by `build_children` once, since
+/// `show_page` cannot establish the INITIAL page -- it returns early on an
+/// unchanged door, and `PAGE` already holds the one `open` asked for by the
+/// time any control exists.
+unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
+    for (id, owner) in PAGE_CONTROLS {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            show(h, owner == page);
+        }
+    }
+    // The banner's three, from the same function `layout`'s card 0 and
+    // core's `DefaultButton::visible` both read, so the announcement, its
+    // card and its two buttons cannot disagree about whether it is up.
+    let on = banner_shown(external_change, page);
+    for id in [IDC_BANNER, IDC_RELOAD, IDC_KEEPMINE] {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            show(h, on);
+        }
     }
 }
 
@@ -1230,29 +1323,34 @@ struct Ui {
     /// itself. See `docs/superpowers/measurements/2026-08-11-landing-1-a14.md`
     /// section 24 for the bisect that pinned it to this one call.
     ///
-    /// `layout`'s output depends on FIVE things -- the client rect, the DPI,
-    /// whether the banner is showing, whether the list has any rows in it,
-    /// and the list's own client width, which shrinks by `SM_CXVSCROLL` the
-    /// moment the item count crosses the page size and comctl32 grows a
-    /// vertical scroll bar. The first two arrive as `WM_SIZE` /
-    /// `WM_DPICHANGED`, which call `layout` directly and still do. The next
-    /// two can change on a data push, so a push watches both: this field and
-    /// `shown_empty`.
+    /// **CORRECTED 2026-08-14: `layout`'s output depends on SIX things, not
+    /// five.** This paragraph listed the client rect, the DPI, the banner's
+    /// visibility, whether the list has any rows in it, and the list's own
+    /// client width, which shrinks by `SM_CXVSCROLL` the moment the item
+    /// count crosses the page size and comctl32 grows a vertical scroll bar.
+    /// The tab strip added a sixth, the PAGE: `layout` places only the
+    /// current page's controls and `compute_card_rects` gives every other
+    /// page's card a zero-height rect. See `Ui::shown_page`.
     ///
-    /// **The fifth is deliberately NOT guarded**, and the reason it is safe
-    /// to leave unguarded is written out at its own site -- see the column
-    /// sizing in `layout`. In one sentence: the error it produces is always a
-    /// gutter and never a clipped column, and buying it back would mean
-    /// running `layout`, and therefore `SetWindowPos` on the populated App
-    /// combo, on more data pushes than these two fields already allow --
-    /// trading a cosmetic stale margin for a re-entry into the measured
-    /// data-loss path above.
+    /// The first two arrive as `WM_SIZE` / `WM_DPICHANGED`, which call
+    /// `layout` directly and still do. Three can change on a data push, so a
+    /// push watches all three: this field, `shown_empty` and `shown_page`.
+    ///
+    /// **The list's client width is deliberately NOT guarded**, and the
+    /// reason it is safe to leave unguarded is written out at its own site --
+    /// see the column sizing in `layout`. In one sentence: the error it
+    /// produces is always a gutter and never a clipped column, and buying it
+    /// back would mean running `layout`, and therefore `SetWindowPos` on the
+    /// populated App combo, on more data pushes than these three fields
+    /// already allow -- trading a cosmetic stale margin for a re-entry into
+    /// the measured data-loss path above.
     shown_external: Option<bool>,
     /// Whether the list was EMPTY when the current layout was computed, for
     /// the same reason `shown_external` exists: it is the fourth of `layout`'s
-    /// five inputs, and skipping a layout that one of them has invalidated
-    /// leaves stale geometry on screen. (The fifth, the list's own client
-    /// width, is tolerated rather than guarded -- see `shown_external`.)
+    /// six inputs, and skipping a layout that one of them has invalidated
+    /// leaves stale geometry on screen. (The list's own client width is
+    /// tolerated rather than guarded -- see `shown_external`; the page is
+    /// guarded, by `shown_page`.)
     ///
     /// The path runs through `list_row_height`, which cannot measure a row
     /// that is not there and returns `scale(tok::ROW_H, dpi)` when the list
@@ -1305,6 +1403,29 @@ struct Ui {
     /// Empty-vs-not is the whole condition: every non-empty list measures the
     /// same row, so no other transition changes the answer.
     shown_empty: Option<bool>,
+    /// Which door the CURRENT layout was computed for -- the third guard,
+    /// beside `shown_external` and `shown_empty`, and the third of `layout`'s
+    /// inputs a data push can invalidate.
+    ///
+    /// **`layout` has six inputs now, not five.** `Ui::shown_external`
+    /// enumerates them and its list is the one being extended: the client
+    /// rect, the DPI, the banner's visibility, whether the list is empty,
+    /// the list's own client width (deliberately unguarded, argued at the
+    /// column sizing in `layout`) -- and now the page, because `layout`
+    /// places only the current page's controls and gives every other page's
+    /// card a zero-height rect.
+    ///
+    /// It is guarded rather than tolerated for the same reason
+    /// `shown_external` is: without it a page switch that arrives through
+    /// `apply_state` -- a file-watch tick or a catalog landing in the same
+    /// instant as a `Ctrl+Tab` -- would skip the layout and leave the
+    /// previous page's geometry on screen. `show_page` writes this field
+    /// itself after its own `layout`, so the ordinary switch is not laid out
+    /// twice.
+    ///
+    /// `None` until the first push, like its two neighbours, which therefore
+    /// always lays out.
+    shown_page: Option<Page>,
     /// Set while `apply_state` is writing control contents, so the
     /// `EN_CHANGE`/`CBN_EDITCHANGE` those writes generate are not mistaken
     /// for the user typing. Without it, every repaint would feed the old
@@ -1758,27 +1879,41 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 /// Take the ring -- and the focus -- off anything this push has just put out
 /// of reach.
 ///
-/// **`apply_state` is the authoritative moment, and it is the only one.**
-/// The window's normal migration is focus-driven (`BN_SETFOCUS` /
-/// `BN_KILLFOCUS` in `handle_command`), and that covers every way a user can
-/// move the ring by hand. What it cannot cover is a control going away
-/// underneath it: hiding a window raises no focus notification at all
-/// (measured on a14 2026-08-11 -- `DM_GETDEFID` still answered `IDC_RELOAD`
-/// after the banner was dismissed, and Enter pressed a button that was not on
-/// screen). Every `show` and every `enable` in this window happens in
-/// `apply_state`, so running this after the last of them closes the gap by
-/// construction rather than by listing the cases.
+/// **CORRECTED 2026-08-14: `apply_state` is no longer the only authoritative
+/// moment.** This paragraph read "**`apply_state` is the authoritative
+/// moment, and it is the only one.** ... Every `show` and every `enable` in
+/// this window happens in `apply_state`, so running this after the last of
+/// them closes the gap by construction rather than by listing the cases."
+/// The premise was true until the tab strip landed and is not now:
+/// `show_page` hides a whole page's controls without going near
+/// `apply_state`, so there are two moments, and `repair_hidden_button` below
+/// is the half they share.
+///
+/// What has not changed is why either moment exists. The window's normal
+/// migration is focus-driven (`BN_SETFOCUS` / `BN_KILLFOCUS` in
+/// `handle_command`), and that covers every way a user can move the ring by
+/// hand. What it cannot cover is a control going away underneath it: hiding a
+/// window raises no focus notification at all (measured on a14 2026-08-11 --
+/// `DM_GETDEFID` still answered `IDC_RELOAD` after the banner was dismissed,
+/// and Enter pressed a button that was not on screen). A page switch reaches
+/// the identical defect by another route, and with four buttons rather than
+/// two: `Add`, `Remove`, `Record` and `Reset` are all Shortcuts-page controls
+/// and all four are in `PUSH_BUTTONS`.
 ///
 /// Two repairs, in this order, because the first can make the second
-/// unnecessary:
+/// unnecessary. **Both now live in `repair_hidden_button`**, which this
+/// function calls first and `show_page` calls on its own; the third repair,
+/// the enablement pass at the bottom of this function, is the half that
+/// needs a `ControlState` and is the reason the two are separate functions
+/// rather than one:
 ///
-/// 1. **Focus.** Measured on Windows ARM64: by the time this function runs,
-///    focus is usually already off the vanished button. `show(reload,
-///    external_change)` / `show(keep, external_change)` above -- called
-///    earlier in the same push, before this function -- hide whichever of
-///    Reload/KeepMine just lost `visible()`, and hiding a control that
-///    currently holds focus is enough for user32 to hand focus to the
-///    PARENT on its own, as part of that same `ShowWindow(SW_HIDE)` call.
+/// 1. **Focus.** Measured on Windows ARM64: by the time that function runs,
+///    focus is usually already off the vanished button. The `show` calls
+///    that hide whatever just lost `visible()` -- the banner's three in
+///    `apply_state`, a whole page's in `show_page` -- have already run, and
+///    hiding a control that currently holds focus is enough for user32 to
+///    hand focus to the PARENT on its own, as part of that same
+///    `ShowWindow(SW_HIDE)` call.
 ///    So `GetFocus()` below typically already resolves to the window itself
 ///    -- `GetDlgCtrlID` reads back `0`, not `IDC_CLOSE` -- `is_push_button`
 ///    on that id is false, and the match has nothing left to do. It stays
@@ -1823,10 +1958,42 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 /// own `UI.with`, and `set_default_id` takes and drops its own before it
 /// sends.
 unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: bool) {
+    // Both repairs that need only VISIBILITY, run first and shared with
+    // `show_page`. `default_button` below cannot undo them: if this moved the
+    // ring HOME, `default_button(HOME, ..)` returns HOME by its own early
+    // return, and if it left the ring alone the button is on screen and the
+    // enablement pass runs exactly as it did before pages existed.
+    let page = PAGE.with(|p| p.get());
+    repair_hidden_button(hwnd, external_change, page);
+    let cur = UI
+        .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
+        .unwrap_or(IDC_APPLY);
+    let want = default_button(default_button_of(cur), st, external_change, page);
+    // `set_default_id` no-ops when the id it is handed is already the
+    // default, so the overwhelmingly common push repaints nothing.
+    set_default_id(hwnd, id_of_default_button(want));
+}
+
+/// The half of `repair_default_button` that needs no `ControlState`: move
+/// focus and the ring off a button that is not on screen.
+///
+/// **`show_page` has no `ControlState` and does not need one.** Nothing calls
+/// `apply_state` on a tab click -- there is no model change to push -- and a
+/// page switch cannot change whether a button is ENABLED, only whether it is
+/// drawn. `DefaultButton::visible` is exactly that question, and the
+/// enablement half runs on the next push as usual.
+///
+/// The ring falls back to `HOME` rather than following focus onto
+/// `IDC_CLOSE`. That looks like a disagreement with repair 2 above and is
+/// not: `SetFocus` on a push button raises `BN_SETFOCUS`, `handle_command`
+/// answers it with `set_default_id(hwnd, id)`, and that has already happened
+/// by the time the `visible` test below runs -- so the fallback fires only
+/// when focus did NOT land on a push button, which is the case `HOME` is for.
+unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page) {
     let focus = GetFocus();
     if !focus.is_invalid() {
         let fid = GetDlgCtrlID(focus);
-        if is_push_button(fid) && !default_button_of(fid).visible(external_change) {
+        if is_push_button(fid) && !default_button_of(fid).visible(external_change, page) {
             match GetDlgItem(Some(hwnd), IDC_CLOSE) {
                 Ok(close) => {
                     let _ = SetFocus(Some(close));
@@ -1853,10 +2020,9 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
     let cur = UI
         .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
         .unwrap_or(IDC_APPLY);
-    let want = default_button(default_button_of(cur), st, external_change);
-    // `set_default_id` no-ops when the id it is handed is already the
-    // default, so the overwhelmingly common push repaints nothing.
-    set_default_id(hwnd, id_of_default_button(want));
+    if !default_button_of(cur).visible(external_change, page) {
+        set_default_id(hwnd, id_of_default_button(DefaultButton::HOME));
+    }
 }
 
 /// Swap which KIND of button `id` is, keeping every other `BS_` bit it has.
@@ -1927,14 +2093,35 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 
 /// Move to another door. Returns whether the door actually changed.
 ///
-/// **A stub, knowingly, and this is the whole of what it does today**: it
-/// records the page, lights the pill and re-runs `layout`. Nothing is hidden
-/// and nothing is shown, so the four pills currently switch nothing but
-/// themselves and every page's controls stay on screen together. Page
-/// switching proper -- hiding the outgoing page, showing the incoming one,
-/// `repair_default_button` afterwards because hiding a control raises no
-/// focus notification, and the per-page skip that keeps `layout` away from
-/// the App combo -- belongs here and is the next task.
+/// Five steps, and the order of the middle three is the whole of the
+/// function:
+///
+/// 1. **`PAGE` first**, because `layout` reads the page out of it rather
+///    than being handed one (`LayoutHandles::page`), so nothing below would
+///    place the incoming page's controls if the `Cell` still named the
+///    outgoing one.
+/// 2. `CheckRadioButton` even though a mouse click has already moved the
+///    tick -- the `AUTO` in `BS_AUTORADIOBUTTON` only fires for a click, and
+///    the accelerator route moves nothing at all.
+/// 3. **Hide and show before `layout`, never after.** A control placed and
+///    then hidden flickers at its new position for one frame; a control
+///    shown and then placed appears where it belongs. `show_page_controls`
+///    is also what makes the tab order correct before anything can Tab.
+/// 4. **`layout` DIRECTLY, the way `WM_SIZE` does** -- never through
+///    `apply_state`, which nothing calls on a tab click and which has no
+///    model change to push. The invalidate afterwards is `WM_SIZE`'s too and
+///    for its reason: `SetWindowPos` on a child only invalidates what THAT
+///    child vacated, so the cards, their `CARD_PAD` rings and the gaps
+///    between them are left painted with the outgoing page's geometry
+///    otherwise.
+/// 5. **`repair_hidden_button` last, and it is not optional.** Hiding a
+///    control raises no focus notification at all, so without it the ring
+///    and the focus are left on an off-screen button and Enter presses it --
+///    the measured a14 defect, reached through a door instead of through the
+///    banner. `Add`, `Remove`, `Record` and `Reset` are all Shortcuts-page
+///    controls and all four are in `PUSH_BUTTONS`. It runs after step 3
+///    rather than before it, because `ShowWindow(SW_HIDE)` on the focused
+///    control is what usually moves focus in the first place.
 ///
 /// **The unchanged-page guard is not an optimisation.** `layout` is
 /// `SetWindowPos` on the populated App combo, the measured path that
@@ -1945,25 +2132,34 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 ///
 /// It also means a caller cannot use this to establish an INITIAL page: at
 /// creation `PAGE` already holds the door `open` asked for, so a call naming
-/// that door does nothing. Whatever hides the off-page controls at build
-/// time has to do it directly.
-///
-/// `layout` directly, the way `WM_SIZE` does, never through `apply_state`:
-/// nothing calls `apply_state` on a tab click and there is no model change to
-/// push.
-///
-/// `CheckRadioButton` even though a mouse click has already moved the tick --
-/// the `AUTO` in `BS_AUTORADIOBUTTON` only fires for a click, and the
-/// accelerator route moves nothing at all.
+/// that door does nothing. `build_children` therefore calls
+/// `show_page_controls` itself.
 fn show_page(hwnd: HWND, page: Page) -> bool {
     if PAGE.with(|p| p.get()) == page {
         return false;
     }
     PAGE.with(|p| p.set(page));
+    // ONE borrow, taken and dropped on this line: everything below sends or
+    // re-enters this wndproc, and a second `RefCell` borrow across an
+    // `extern "system"` boundary aborts the process rather than unwinding.
+    let external_change = UI
+        .with(|u| u.borrow().as_ref().map(|ui| ui.external_change))
+        .unwrap_or(false);
     unsafe {
         let _ = CheckRadioButton(hwnd, IDC_TAB_SHORTCUTS, IDC_TAB_ABOUT, tab_id_of(page));
+        show_page_controls(hwnd, page, external_change);
         layout(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, true);
+        repair_hidden_button(hwnd, external_change, page);
     }
+    // `Ui::shown_page` records the page the CURRENT layout was computed for,
+    // and this is that layout -- so `apply_state`'s guard does not run a
+    // second one for a switch that has already been laid out.
+    UI.with(|u| {
+        if let Some(ui) = u.borrow_mut().as_mut() {
+            ui.shown_page = Some(page);
+        }
+    });
     true
 }
 
@@ -1981,13 +2177,18 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
 ///
 /// `page` is the door to land on: it is stored in `PAGE`, and
 /// `build_children` lights the matching pill before any other control
-/// exists. **CORRECTED 2026-08-14** -- this used to read "stored and read
-/// nowhere yet: there is nothing to switch until the tab strip exists", which
-/// was true for exactly as long as it took the strip to land.
+/// exists, then hides every other page's controls with `show_page_controls`.
 ///
-/// What it does NOT do yet is decide which controls are shown: every page's
-/// controls are still created and placed together, so landing on `Keyboard`
-/// currently lights the second pill and shows the same window.
+/// **CORRECTED 2026-08-14, twice.** This read "stored and read nowhere yet:
+/// there is nothing to switch until the tab strip exists" until the strip
+/// landed, and then "what it does NOT do yet is decide which controls are
+/// shown: every page's controls are still created and placed together, so
+/// landing on `Keyboard` currently lights the second pill and shows the same
+/// window" until page switching did. Both were true when written and neither
+/// lasted a day.
+///
+/// `serve` passes the door the user last left the window on
+/// (`ServeState::settings_page`), which is `Shortcuts` until they move.
 pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     if let Some(h) = hwnd() {
         unsafe {
@@ -2685,9 +2886,12 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_KEEPMINE,
         &fonts,
     );
-    show(banner, false);
-    show(reload, false);
-    show(keep, false);
+    // The three are hidden at the end of this function rather than here.
+    // `show_page_controls` puts every control behind its own door in one
+    // pass, and the banner's condition is `banner_shown` -- the same function
+    // `layout`'s card 0 and core's `DefaultButton::visible` read -- so
+    // hiding them beside their creation would be a second, page-blind
+    // spelling of a rule that has to be total to be worth anything.
 
     // -- Band 2: the section head, the filter, then Remove and Add.
     child(
@@ -3203,6 +3407,14 @@ unsafe fn build_children(hwnd: HWND) {
     let mut tip_text = wide(&path.to_string_lossy());
     add_tooltip(hwnd, openfile, &mut tip_text);
 
+    // Every control now exists, so this is the first moment the page rule can
+    // be applied at all -- and it has to be applied HERE rather than through
+    // `show_page`, which returns early on an unchanged door and so cannot
+    // establish the door `open` asked for. `external_change` is false at
+    // creation: `serve` pushes the first state after `open` returns, and a
+    // file cannot have moved under a window that does not exist yet.
+    show_page_controls(hwnd, PAGE.with(|p| p.get()), false);
+
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
             hwnd,
@@ -3229,6 +3441,11 @@ unsafe fn build_children(hwnd: HWND) {
             shown_dirty: None,
             shown_external: None,
             shown_empty: None,
+            // `None`, not the page `show_page_controls` was just handed:
+            // `WM_CREATE`'s own `layout` runs after this, so the first push
+            // must lay out unconditionally exactly as its two neighbours
+            // make it.
+            shown_page: None,
             suppress: false,
             external_change: false,
             items: Vec::new(),
@@ -4144,9 +4361,21 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             enable(hwnd, id, st.editable && st.caps_checked);
         }
 
-        show(banner, external_change);
-        show(reload, external_change);
-        show(keep, external_change);
+        // `banner_shown`, not `external_change` on its own: the file moving
+        // is a window-wide fact, but the announcement is drawn on the page it
+        // is about. The warn dot on the Shortcuts pill is how it stays
+        // visible from the other three, and `external_change` is untouched --
+        // it still says the file moved whichever door is open.
+        //
+        // One function, four readers: this, `layout`'s card 0,
+        // `compute_card_rects`, and core's `DefaultButton::visible` for the
+        // two buttons. A ring left on a `Reload` this line has hidden is the
+        // measured defect `default_button` exists for.
+        let page = PAGE.with(|p| p.get());
+        let banner_on = banner_shown(external_change, page);
+        show(banner, banner_on);
+        show(reload, banner_on);
+        show(keep, banner_on);
         // Geometry only, and ONLY when the geometry can have changed.
         //
         // `layout` re-places every control, the App COMBOBOX included, and a
@@ -4160,15 +4389,25 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // measures. See `Ui::shown_empty`. `sync_list` has already run, so
         // `st.items` is what the control holds.
         //
-        // These two do not cover `layout`'s fifth input, the list's client
-        // width; that omission is deliberate and is argued at the column
-        // sizing inside `layout`.
+        // These three do not cover `layout`'s list-client-width input; that
+        // omission is deliberate and is argued at the column sizing inside
+        // `layout`.
+        //
+        // **THREE terms since the tab strip, not two.** `layout` places only
+        // the current page's controls and gives every other page's card a
+        // zero-height rect, so the page is an input like the banner and the
+        // empty list are -- see `Ui::shown_page`. `show_page` lays out on its
+        // own and records the page it laid out for, so the ordinary switch
+        // arrives here already satisfied and is not laid out twice; what this
+        // term catches is a switch racing a push.
         let list_empty = st.items.is_empty();
         let relayout = UI.with(|u| {
             u.borrow()
                 .as_ref()
                 .map(|x| {
-                    x.shown_external != Some(external_change) || x.shown_empty != Some(list_empty)
+                    x.shown_external != Some(external_change)
+                        || x.shown_empty != Some(list_empty)
+                        || x.shown_page != Some(page)
                 })
                 .unwrap_or(true)
         });
@@ -4206,6 +4445,12 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             // `shown_dirty` is recorded after the caption write.
             ui.shown_external = Some(external_change);
             ui.shown_empty = Some(st.items.is_empty());
+            // Read again rather than carried down from the block above: it
+            // is a `Cell`, so a fresh read costs nothing, and the value
+            // cannot have moved in between -- `show_page` is the only writer
+            // and it runs on this thread, from a `WM_COMMAND` this function
+            // is not inside.
+            ui.shown_page = Some(PAGE.with(|p| p.get()));
             // What the five shortcut controls now show, in model terms --
             // see `Ui::shown_combo` and `commit_fields`.
             ui.shown_combo = st.detail.as_ref().map(|d| d.combo.clone());

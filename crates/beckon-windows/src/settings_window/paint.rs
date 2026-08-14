@@ -1593,6 +1593,14 @@ pub(super) unsafe fn toggle(
 /// stay correct -- `handle_command`'s `CBN_SETFOCUS`/`EN_SETFOCUS` arms
 /// exist only to ask for the repaint, never to hand this function an
 /// answer.
+///
+/// **`IsWindowVisible`, and it is load-bearing since the tab strip.** Both
+/// controls this is called for live on the Shortcuts page, and a hidden
+/// window keeps its window rect -- so without this test the parent would
+/// keep stroking two rounded rectangles at the App combo's and the filter
+/// box's last positions from every other page, with nothing inside them.
+/// The control's own `WM_PAINT` stops when it is hidden; this border is
+/// drawn by the PARENT, which is exactly why it does not stop on its own.
 pub(super) unsafe fn field_border(
     hdc: HDC,
     ctl: HWND,
@@ -1601,7 +1609,7 @@ pub(super) unsafe fn field_border(
     focused: bool,
     dpi: u32,
 ) {
-    if ctl.is_invalid() {
+    if ctl.is_invalid() || !IsWindowVisible(ctl).as_bool() {
         return;
     }
     let mut wr = RECT::default();

@@ -241,6 +241,59 @@ mod tests {
         }
     }
 
+    /// Every control is behind exactly one door, in the banner, or chrome.
+    ///
+    /// `show_page_controls` shows what `PAGE_CONTROLS` assigns to the
+    /// incoming page and hides everything else it names -- so a control
+    /// MISSING from that table is not hidden by anything and is drawn on all
+    /// four pages, which reads as a layout bug rather than as a table bug.
+    /// Nothing else can catch it: `layout` skips the whole band such a
+    /// control belongs to, so it would sit wherever it was last placed, and
+    /// no compiler has an opinion about a 26-row table.
+    ///
+    /// The two exempt groups are listed here rather than in `mod.rs` because
+    /// this is the only place that needs them enumerated. **Chrome** is drawn
+    /// on every page: the four pills and the command bar's three buttons.
+    /// **The banner's three** are conditional on `banner_shown`, which is a
+    /// page AND `external_change`, so they cannot ride in a page table.
+    #[test]
+    fn every_control_belongs_to_exactly_one_group() {
+        let chrome = [
+            super::IDC_TAB_SHORTCUTS,
+            super::IDC_TAB_KEYBOARD,
+            super::IDC_TAB_SYSTEM,
+            super::IDC_TAB_ABOUT,
+            super::IDC_OPENFILE,
+            super::IDC_CLOSE,
+            super::IDC_APPLY,
+        ];
+        let banner = [super::IDC_BANNER, super::IDC_RELOAD, super::IDC_KEEPMINE];
+        for (name, id) in MINE {
+            let paged = super::super::PAGE_CONTROLS
+                .iter()
+                .filter(|(c, _)| c == id)
+                .count();
+            let other = usize::from(chrome.contains(id)) + usize::from(banner.contains(id));
+            assert_eq!(
+                paged + other,
+                1,
+                "`IDC_{name}` ({id}) is in {paged} `PAGE_CONTROLS` rows and \
+                 {other} of the two exempt groups. Exactly one is right: a \
+                 control in none is shown on every page, and a control in two \
+                 is shown and hidden by two rules that will disagree."
+            );
+        }
+        assert_eq!(
+            super::super::PAGE_CONTROLS.len() + chrome.len() + banner.len(),
+            MINE.len(),
+            "the three groups cover {} controls and `MINE` has {} rows. Every \
+             `MINE` row found exactly one group above, so the surplus names a \
+             constant that is gone.",
+            super::super::PAGE_CONTROLS.len() + chrome.len() + banner.len(),
+            MINE.len()
+        );
+    }
+
     /// The probe transcribes the window's geometry by hand, on purpose --
     /// see its own comment. What that cannot catch is a resize here that
     /// nobody copies over there, because the disagreement only surfaces when

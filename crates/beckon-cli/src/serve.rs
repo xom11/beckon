@@ -300,6 +300,21 @@ struct ServeState {
     /// on Windows: the settings window is the one thing that asks.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     probe: Option<beckon_core::settings::ProbeResult>,
+    /// The door the settings window was last showing, so the next open lands
+    /// where the user left off.
+    ///
+    /// **Outlives the window on purpose.** It is not part of the window's own
+    /// state -- the window is closed most of the time and forgets everything
+    /// when it is -- and it is not in the config file either: which page
+    /// someone was reading is a session fact, not a setting, and writing it
+    /// to disk would mark a file dirty for a mouse click.
+    ///
+    /// `Page::default()` is `Shortcuts`, which is where a fresh `serve`
+    /// opens. Written by `SettingsCommand::ShowPage`, read by
+    /// `open_settings`; both are gated `any(windows, macos)`, and macOS
+    /// currently discards the page it is handed, so this is live on Windows
+    /// and merely honest on macOS.
+    settings_page: beckon_core::settings::Page,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -367,6 +382,7 @@ pub fn cmd_serve_app(
         catalog: None,
         external_change: false,
         probe: None,
+        settings_page: beckon_core::settings::Page::default(),
     }));
 
     let mgr = {
@@ -1619,15 +1635,21 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 }
             }
         }),
-        // An exhaustive `match` with empty arms, not a `_ => {}`: every
-        // variant added later is a compile error at this one site, which is
-        // the site that has to handle it. The four workstreams that follow
-        // fill these in; Phase 0 only makes the channel exist.
+        // An exhaustive `match`, not a `_ => {}`: every variant added later
+        // is a compile error at this one site, which is the site that has to
+        // handle it. Phase 0 made the channel exist with every arm empty;
+        // the tab strip fills the first of them, and the three workstreams
+        // that follow fill the rest.
         on_command: Box::new({
-            let _st = Rc::clone(state);
+            let st = Rc::clone(state);
             move |c| match c {
-                SettingsCommand::ShowPage(_)
-                | SettingsCommand::SetPaused(_)
+                // Remembered, not acted on: the window has already switched
+                // itself by the time this arrives, and what the caller owns
+                // is where the NEXT open lands. Cheap enough to store
+                // unconditionally -- a page switch is a mouse click, not a
+                // keystroke.
+                SettingsCommand::ShowPage(p) => st.borrow_mut().settings_page = p,
+                SettingsCommand::SetPaused(_)
                 | SettingsCommand::SetAutostart(_)
                 | SettingsCommand::ReloadNow
                 | SettingsCommand::SetDarkMode(_)
@@ -1653,14 +1675,20 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
     // the second borrow panics inside an `extern "system"` wndproc, where a
     // panic aborts the process instead of unwinding, so it surfaces as
     // neither a panic nor a test failure.
-    let paths = {
+    let (paths, page) = {
         let s = state.borrow();
-        beckon_core::settings::Paths {
-            config: s.config.clone(),
-            log: s.log.clone(),
-        }
+        (
+            beckon_core::settings::Paths {
+                config: s.config.clone(),
+                log: s.log.clone(),
+            },
+            // Where the user left off, which is `Shortcuts` until they move.
+            // Read in the same borrow as the paths, and both are read BEFORE
+            // `swin::open` for the reason the comment above gives.
+            s.settings_page,
+        )
     };
-    if let Err(e) = swin::open(cb, &paths, beckon_core::settings::Page::Shortcuts) {
+    if let Err(e) = swin::open(cb, &paths, page) {
         eprintln!("beckon serve: cannot open settings: {e}");
         swin::error(&format!("Cannot open settings:\n\n{e}"));
         forget_settings(state);
