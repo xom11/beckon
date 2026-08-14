@@ -35,9 +35,14 @@ fn main() {
 #[cfg(windows)]
 fn embed_win32_resources() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        embed_resource::compile("examples.rc", embed_resource::NONE)
-            .manifest_optional()
-            .unwrap();
+        // `embed-resource` 2.x returns `()`; the `.manifest_optional()`
+        // builder is 3.x API. This file shipped with the 3.x form once and
+        // the macOS cross-check did not notice, because a build script is
+        // compiled for the HOST -- so `#[cfg(windows)]` is false here and the
+        // whole function is dead code on the machine that runs the gate.
+        // Anything inside it is only ever type-checked by a real Windows
+        // build.
+        embed_resource::compile("examples.rc", embed_resource::NONE);
     }
 }
 
