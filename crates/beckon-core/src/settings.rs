@@ -3260,23 +3260,94 @@ mod tests {
     /// nothing on screen about it. Written against `visible` as well as against
     /// the two conditions, because the defect was a disagreement between them:
     /// Save reachable where the warning was not.
+    ///
+    /// **REWRITTEN 2026-08-14: it could not fail.** The assertion was
+    /// `banner_shown(true, page) ^ warn_dot_shown(true, page)`, and
+    /// `warn_dot_shown` IS `external_change && !banner_shown(..)` -- so with
+    /// `external = true` the whole thing reduces to `B ^ !B`, true for any body
+    /// of `banner_shown` whatsoever, a body returning `false` on every door
+    /// included. That is precisely the state four documents cite this test as
+    /// ruling out. Writing the second surface as the exact complement of the
+    /// first is what makes them partition `external_change`; it is also what
+    /// makes any assertion phrased as a relation BETWEEN them vacuous, so this
+    /// asserts each against a constant instead.
     #[test]
     fn the_warning_is_on_screen_from_every_door() {
-        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+        // One row per door: what the banner does there, and what the dot does.
+        // Constants, not expressions over the functions under test.
+        let doors = [
+            (Page::Shortcuts, true, false),
+            (Page::Keyboard, false, true),
+            (Page::System, false, true),
+            (Page::About, false, true),
+        ];
+        // "Every door" is the claim, so the table has to BE every door, and
+        // the walk is what makes that true rather than asserted: `Page::next`
+        // visits each door once and returns home
+        // (`four_steps_forward_visit_every_door_and_come_home`), so walking
+        // the whole cycle and counting is a check a FIFTH door cannot slip
+        // past -- a fixed `for _ in 0..doors.len()` would have tested four of
+        // five and passed. The duplicate check is the other half: without it a
+        // table listing one door twice would have the right length and leave
+        // another with no row at all.
+        let mut walk = Page::default();
+        let mut doors_in_the_cycle = 0;
+        loop {
+            assert!(
+                doors.iter().any(|(p, _, _)| *p == walk),
+                "no row for {walk:?}, so this test does not cover every door"
+            );
+            walk = walk.next();
+            doors_in_the_cycle += 1;
+            assert!(
+                doors_in_the_cycle <= doors.len(),
+                "Page::next does not come home"
+            );
+            if walk == Page::default() {
+                break;
+            }
+        }
+        assert_eq!(
+            doors_in_the_cycle,
+            doors.len(),
+            "the table has {} rows for {doors_in_the_cycle} doors",
+            doors.len()
+        );
+        for (i, (p, _, _)) in doors.iter().enumerate() {
+            assert!(
+                !doors[..i].iter().any(|(q, _, _)| q == p),
+                "{p:?} is in the table twice, so some door has no row"
+            );
+        }
+        for (page, banner, dot) in doors {
             assert!(
                 DefaultButton::Save.visible(true, page),
                 "Save is chrome; if it is not on {page:?} this test measures nothing"
             );
-            assert!(
-                banner_shown(true, page) ^ warn_dot_shown(true, page),
-                "on {page:?} the file has moved and either nothing says so, or two \
-                 things do"
+            // The table's own shape, checked before it is used as an oracle:
+            // somebody is warning on every door, and never both at once.
+            assert!(banner || dot, "the table says {page:?} announces nothing");
+            assert!(!(banner && dot), "the table says {page:?} announces twice");
+
+            assert_eq!(
+                banner_shown(true, page),
+                banner,
+                "the file has moved: the banner is {} on {page:?}",
+                if banner { "missing" } else { "drawn" }
+            );
+            assert_eq!(
+                warn_dot_shown(true, page),
+                dot,
+                "the file has moved: the warn dot is {} on {page:?}",
+                if dot { "missing" } else { "drawn" }
             );
             assert!(
                 !banner_shown(false, page) && !warn_dot_shown(false, page),
                 "nothing has moved, so {page:?} must announce nothing"
             );
-            if banner_shown(true, page) {
+            // The banner is a sentence and two buttons; a banner without its
+            // answers is an announcement the user cannot act on.
+            if banner {
                 assert!(
                     DefaultButton::Reload.visible(true, page)
                         && DefaultButton::KeepMine.visible(true, page),

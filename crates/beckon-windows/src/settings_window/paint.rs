@@ -1932,16 +1932,41 @@ pub(super) unsafe fn tab_pill(
     // than drawn on it, so the whole 2 px stroke lands inside `rc` and none of
     // it is clipped: `NM_CUSTOMDRAW`'s `hdc` is clipped to this control.
     //
-    // `accent_on` on a lit pill, `accent` otherwise -- `BtnTier::Accent`'s
-    // own swap, and for its reason: `accent` on `accent_fill` is 1.00:1 in
-    // Light (identical hex) and 1.49:1 in Dark, so a ring in the accent
-    // colour is invisible on the one state whose fill IS that colour.
+    // **CORRECTED 2026-08-14: `accent` in every state, lit included, and the
+    // `accent_on` swap this used to make was a pair nothing measured.** The
+    // swap came from `BtnTier::Accent`, where it is right and for a reason
+    // that does not travel: that ring is inset 2 px INTO a control whose
+    // whole rect the tier has already filled with `accent_fill`, so it is
+    // genuinely accent-on-accent -- 1.000 in Light (identical hex), 1.489 in
+    // Dark -- and white is the only ink that survives there.
+    //
+    // This ring is never on that fill. `FillRect(&rc, strip)` at the top of
+    // this function paints the whole control; the pill is `rc` inset by
+    // `FOCUS_SLACK`; and the stroke reaches at most `scale(1) + scale(2)/2`
+    // in from `rc` -- 2 of 3 at 96 DPI, 2 of 3 at 120, 3 of 4 at 144, 4 of 6
+    // at 192, 5 of 7 at 240 -- so at every DPI it stops at least one device
+    // pixel short of the pill and its ground is the TROUGH in all three
+    // states. `accent_on` on `strip` measures **1.360** in Light: the lit
+    // pill's only keyboard indication was invisible, and no row in
+    // `theme::pairs` covered the combination, which is why every test stayed
+    // green. It measures 12.806 on `DARK.strip`, so a dark-mode screenshot
+    // would not have caught it either.
+    //
+    // `accent` on `strip` is **3.802 Light / 4.208 Dark**, past SC 1.4.11's
+    // 3.0 non-text floor in both themes and covered by `pairs()`'s "pill
+    // focus ring on strip" -- one row, because there is one ground. Figures
+    // re-derived with `beckon_core::theme::contrast`.
+    //
+    // It closes a high-contrast collision as well, by the same argument. Under
+    // HC `col` ignores the palette and returns the system index, so the ring
+    // was `COLOR_HIGHLIGHTTEXT` on a margin painted `COLOR_BTNFACE` -- and in
+    // the High Contrast White scheme those are both white. `COLOR_HIGHLIGHT`
+    // on `COLOR_BTNFACE` is the pairing selection already depends on being
+    // visible, in every scheme. This is the file's own "a fill and its ink
+    // must not share a `GetSysColor` index" rule, failing one index apart from
+    // where it is usually checked.
     if focused && ui_state & UISF_HIDEFOCUS == 0 {
-        let ring = if active {
-            cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
-        } else {
-            cache.col(|p| p.accent, COLOR_HIGHLIGHT)
-        };
+        let ring = cache.col(|p| p.accent, COLOR_HIGHLIGHT);
         let d = scale(1, dpi);
         let ring_rc = RECT {
             left: rc.left + d,

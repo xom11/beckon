@@ -2083,7 +2083,15 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 ///    `ShowWindow(SW_HIDE)` call.
 ///    So `GetFocus()` below typically already resolves to the window itself
 ///    -- `GetDlgCtrlID` reads back `0`, not `IDC_CLOSE` -- `is_push_button`
-///    on that id is false, and the match has nothing left to do. It stays
+///    on that id is false, and the match has nothing left to do. **That is a
+///    hole as well as a convenience, and only the door-change path fills it**:
+///    focus parked on the window makes Tab dead, because
+///    `IsDialogMessageW` starts its walk at `msg.hwnd` and
+///    `GetNextDlgTabItem` returns NULL for a starting point that is not a
+///    child. `show_page` follows this call with `focus_the_open_door`, which
+///    has an obvious place to send it; THIS caller does not, and widening the
+///    repair to grab focus off a legitimately parent-focused window would
+///    change behaviour on a path nobody has measured. It stays
 ///    written for whatever still resolves to a live push button whose
 ///    `visible()` disagrees: `Ok(close)` is the repair for that case, moving
 ///    focus onto the successor **this** caller names -- `IDC_CLOSE`, looked
@@ -2314,6 +2322,72 @@ unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page, su
     }
 }
 
+/// Put focus on `page`'s pill when the door change left it on the WINDOW
+/// itself.
+///
+/// **The gap `repair_hidden_button` structurally cannot close, new
+/// 2026-08-14.** Hiding the focused control hands focus to the parent -- the
+/// measured behaviour `repair_default_button`'s repair 1 is written around --
+/// and neither of that function's two arms can see the parent afterwards:
+/// `hidden_child(hwnd, hwnd)` is false because `IsChild` is false for a window
+/// against itself, and `GetDlgCtrlID(hwnd)` answers 0, which `is_push_button`
+/// rejects (`an_id_that_is_not_a_push_button_reads_as_home` and
+/// `the_window_itself_is_not_a_push_button` pin both ids). So it returns
+/// having moved nothing, focus stays on `hwnd`, and `IsDialogMessageW`'s Tab
+/// branch resolves through `GetNextDlgTabItem(h, msg.hwnd, ..)`, which is NULL
+/// unless `msg.hwnd` is `IsChild` of `h`: **Tab does nothing at all until the
+/// user clicks a control.** The one focused control that escaped this is the
+/// App combo, whose inner EDIT stays a child of the window, so `hidden_child`
+/// catches it and the repair reaches the successor by the ordinary route.
+///
+/// The same argument is already written down twice -- in
+/// `repair_default_button`'s "an earlier version of this fix parked focus on
+/// `hwnd`", which is where the `GetNextDlgTabItem` fact came from (caught in
+/// review there, not measured), and in `repair_hidden_button`'s
+/// `Err(_)` arm, which parks focus there deliberately and calls the dead Tab
+/// key the smaller of two defects. What was missing is that a door change
+/// reaches the same place without anyone choosing it.
+///
+/// **Why this is not a third arm inside `repair_hidden_button`.** Its other
+/// caller is `repair_default_button`, which runs after every `apply_state`
+/// push; a window legitimately holding its own focus there is a state nobody
+/// has measured, and grabbing focus back from it would change behaviour on a
+/// path this defect is not about. A door change has an answer that path does
+/// not: the pill the user just lit up, which is already `show_page`'s chosen
+/// successor and already argued for at length in `repair_hidden_button`.
+///
+/// **After `repair_hidden_button`, never before.** That function's own
+/// `SetFocus` is what normally lands focus somewhere legitimate, and its
+/// `Err(_)` fallback parks it on `hwnd` on purpose -- both leave this test
+/// answering correctly, since the fallback only fires when the pill could not
+/// be resolved and this looks up the same pill and does nothing when it cannot
+/// be found either.
+///
+/// **`== hwnd`, not "is not a child".** `GetFocus` answers for the whole
+/// thread and `serve` owns other windows on it (the tray's, plus whatever COM
+/// creates), so a null answer or another window's is none of this door's
+/// business -- the same reasoning `hidden_child`'s `IsChild` half already
+/// makes. Only focus parked on our own window is a state this switch created.
+///
+/// The ring needs nothing here: `repair_hidden_button` has already sent it to
+/// `HOME` if the button it named went behind the door, and a pill raises no
+/// `BN_SETFOCUS` to move it -- the pills carry no `BS_NOTIFY`, and `SetFocus`
+/// does not check an auto-radio. Same argument, same conclusion, as the pill
+/// successor's.
+///
+/// Reasoned from `IsDialogMessageW`'s and `GetNextDlgTabItem`'s documented
+/// behaviour, **not measured**: the run that confirms it is `Ctrl+2` from a
+/// keyboard-focused control on Shortcuts, then Tab, which must move focus to a
+/// control rather than doing nothing.
+unsafe fn focus_the_open_door(hwnd: HWND, page: Page) {
+    if GetFocus() != hwnd {
+        return;
+    }
+    if let Ok(pill) = GetDlgItem(Some(hwnd), tab_id_of(page)) {
+        let _ = SetFocus(Some(pill));
+    }
+}
+
 /// Swap which KIND of button `id` is, keeping every other `BS_` bit it has.
 ///
 /// Read-modify-write through `BS_TYPEMASK` rather than assigning the type on
@@ -2496,6 +2570,15 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 ///    window; `repair_hidden_button` spells out the whole argument, including
 ///    what Enter does from here.
 ///
+///    **`focus_the_open_door` immediately after it, and it is the other half
+///    of the same step.** Hiding the focused control does not merely fail to
+///    raise a notification -- it hands focus to the WINDOW, and neither of
+///    `repair_hidden_button`'s arms can see that (a window is not its own
+///    child, and its control id is 0). Focus left there makes Tab dead until
+///    the user clicks, because `IsDialogMessageW` walks from `msg.hwnd` and
+///    `GetNextDlgTabItem` refuses a starting point that is not a child. Only
+///    the App combo escaped, through its inner EDIT.
+///
 /// **The unchanged-page guard is not an optimisation.** `layout` is
 /// `SetWindowPos` on the populated App combo, the measured path that
 /// re-synchronises its edit field and discards what the user typed (see
@@ -2533,6 +2616,10 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
         // step 4 -- the one control on screen that the user was just looking
         // at and that Enter cannot turn into a command.
         repair_hidden_button(hwnd, external_change, page, tab_id_of(page));
+        // And the case that repair cannot see: user32 handed focus to the
+        // WINDOW when it hid the focused control, where Tab is dead. Same
+        // pill, same argument -- see `focus_the_open_door`.
+        focus_the_open_door(hwnd, page);
     }
     // `Ui::shown_page` records the page the CURRENT layout was computed for,
     // and this is that layout -- so `apply_state`'s guard does not run a
@@ -8077,5 +8164,46 @@ mod tests {
         assert_eq!(default_button_of(IDC_CAPS), DefaultButton::HOME);
         assert_eq!(default_button_of(-1), DefaultButton::HOME);
         assert_eq!(id_of_default_button(DefaultButton::HOME), IDC_APPLY);
+    }
+
+    /// Why `show_page` needs `focus_the_open_door` on top of
+    /// `repair_hidden_button`.
+    ///
+    /// Hiding the focused control hands focus to the WINDOW, and the repair's
+    /// button arm asks `is_push_button(GetDlgCtrlID(focus))` -- which is
+    /// `is_push_button(0)`, because a window that is nobody's child has no
+    /// control id. Its other arm cannot fire either (`IsChild` is false for a
+    /// window against itself), so the repair returns having moved nothing and
+    /// Tab is dead until the user clicks.
+    ///
+    /// Both halves are Win32 behaviour this host cannot run. The half that IS
+    /// testable is the id table's, and it is the half an edit could silently
+    /// change: put `0` in `PUSH_BUTTONS` -- as a sentinel, say -- and the
+    /// repair would start moving focus off a legitimately parent-focused
+    /// window on every `apply_state` push, which is exactly the widening
+    /// `focus_the_open_door` exists to avoid.
+    ///
+    /// The successor it sends focus to is pinned separately, by
+    /// `the_successor_a_door_names_is_its_own_pill`.
+    #[test]
+    fn the_window_itself_is_not_a_push_button() {
+        assert!(
+            !is_push_button(0),
+            "GetDlgCtrlID answers 0 for the parent window; if that id is a \
+             push button, `repair_hidden_button` starts repairing a window \
+             that holds its own focus legitimately"
+        );
+        for (id, page, _) in TABS {
+            assert_ne!(
+                id, 0,
+                "0 is the parent's own id; a pill carrying it is a successor \
+                 `GetDlgItem` can never resolve"
+            );
+            assert_eq!(
+                tab_id_of(page),
+                id,
+                "focus_the_open_door looks up tab_id_of"
+            );
+        }
     }
 }

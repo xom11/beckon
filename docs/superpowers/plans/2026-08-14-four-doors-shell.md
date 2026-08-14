@@ -588,7 +588,13 @@ nothing at all, so without one a keyboard-focused pill has no indication —
 which would be a regression from the default-drawn pills Task 3 shipped. It
 goes in the `FOCUS_SLACK` margin, which is what `layout.rs` already says that
 token is for, and it takes `BtnTier::Accent`'s ink swap (`accent_on` on a lit
-pill, because `accent` on `accent_fill` is 1.00:1 in Light). And a
+pill, because `accent` on `accent_fill` is 1.00:1 in Light). **That swap was
+wrong and was removed by Task 6's review** — the margin the ring is drawn in
+is TROUGH, not the pill's fill, so the ring's ground is `strip` in all three
+states and `accent_on` measures 1.360 against it in Light: invisible, and no
+`pairs()` row covered the pair. It is `accent` in every state now (3.802 /
+4.208 on `strip`). See `paint::tab_pill` and
+`theme::the_lit_pills_ring_is_measured_against_the_trough`. And a
 `PILL_RADIUS` of 8 rather than `BTN_RADIUS`'s 6 — the design's own pair, and
 a pill shares no edge with a push button.
 

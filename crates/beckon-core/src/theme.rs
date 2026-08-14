@@ -411,18 +411,29 @@ mod tests {
             ),
             // The pill's own focus ring, drawn in the `FOCUS_SLACK` margin
             // between the control's edge and the pill anyone sees. Non-text
-            // again, so 3.0 again -- and the same swap the label makes: on a
-            // LIT pill the ring is `accent_on`, not `accent`, because `accent`
-            // on `accent_fill` is 1.00:1 in Light (identical hex) and
-            // `paint::button`'s `Accent` tier already had to solve this.
-            // `accent_on` on `accent_fill` has its own 4.5 row above.
+            // again, so 3.0 again.
+            //
+            // **ONE row, for all three states -- CORRECTED 2026-08-14.** This
+            // was two rows, and it said that a LIT pill's ring is `accent_on`
+            // rather than `accent` because `accent` on `accent_fill` is 1.00:1
+            // in Light. Both halves of that are true of `paint::button`'s
+            // `Accent` tier, which insets its ring INTO a control already
+            // filled with `accent_fill`; neither is true here. `tab_pill`
+            // fills the whole control rect with `strip`, insets the pill by
+            // `FOCUS_SLACK`, and stops the ring's stroke a device pixel short
+            // of the pill at every DPI -- so the ring's ground is the TROUGH
+            // whether the pill is lit, hovered or at rest, and the `accent_on`
+            // that shipped measured **1.360** against it in Light. An
+            // invisible ring, uncovered by any row here, which is how it
+            // shipped green. See
+            // `the_lit_pills_ring_is_measured_against_the_trough`.
+            //
+            // The `strip_hover` row went with the swap for the same reason:
+            // the hover fill covers the PILL and never the margin, so it is
+            // not a ground this ink is ever on. (The warn dot's two rows above
+            // are the other way round -- the dot is drawn INSIDE the pill, so
+            // it does take the pill's own fill, hover included.)
             ("pill focus ring on strip", p.accent, p.strip, 3.0),
-            (
-                "pill focus ring on strip_hover",
-                p.accent,
-                p.strip_hover,
-                3.0,
-            ),
             // -- Exemptions. WCAG 2.1 SC 1.4.3 itself excepts "text ... that
             // is part of an inactive user interface component" from the 4.5
             // floor. These two rows are the disabled-state ink the review's
@@ -520,6 +531,41 @@ mod tests {
         // darker than the card in LIGHT.
         assert!(luminance(DARK.strip) > luminance(DARK.card));
         assert!(luminance(LIGHT.strip) < luminance(LIGHT.card));
+    }
+
+    /// Why `paint::tab_pill`'s focus ring is `accent` in every state, lit
+    /// included, and why the `accent_on` it shipped with read as sound.
+    ///
+    /// The ring is drawn in the `FOCUS_SLACK` margin, and that margin is
+    /// trough: the pill's own fill starts a device pixel further in, at every
+    /// DPI. So `strip` is the ring's ground in all three states -- and white
+    /// on the trough is invisible, while white on the FILL, the surface the
+    /// shipped comment named, is comfortably clear. That is the whole trap,
+    /// and both halves are pinned here so the swap cannot come back as a
+    /// plausible sentence: the number that makes it wrong and the number that
+    /// makes it sound like it might be right.
+    ///
+    /// `pairs()` cannot carry this. It asserts floors for pairs that ARE
+    /// drawn; the defect was a pair that was drawn and had no row, and the
+    /// only way to state that is to name the pair and its measurement here.
+    #[test]
+    fn the_lit_pills_ring_is_measured_against_the_trough() {
+        // The ink that shipped, on the ground it was actually on. Under the
+        // 3.0 non-text floor, and by a distance -- this is not a near miss.
+        assert!(contrast(LIGHT.accent_on, LIGHT.strip) < 3.0);
+        assert!((contrast(LIGHT.accent_on, LIGHT.strip) - 1.360).abs() < 0.001);
+        // The same ink on the ground the comment CLAIMED. Sound, and not
+        // where the ring is -- which is why the reasoning survived review.
+        assert!(contrast(LIGHT.accent_on, LIGHT.accent_fill) >= 4.5);
+        assert!(contrast(DARK.accent_on, DARK.accent_fill) >= 4.5);
+        // And why a screenshot would not have found it either: in Dark the
+        // wrong ink is the most legible thing on the strip.
+        assert!(contrast(DARK.accent_on, DARK.strip) > 10.0);
+        // The ink that ships instead, on the ground it is on. `pairs()` holds
+        // this too; it is repeated because this test is the one that says why
+        // that is a single row rather than one per state.
+        assert!(contrast(LIGHT.accent, LIGHT.strip) >= 3.0);
+        assert!(contrast(DARK.accent, DARK.strip) >= 3.0);
     }
 
     fn ti(hc: bool, light: Option<u32>) -> ThemeInputs {

@@ -30,9 +30,9 @@ Last updated: 2026-08-14, branch `four-doors-phase-0`.
 | The four pills are drawn by beckon, three states each | **done** | Task 6, `paint::tab_pill` — a SIBLING of `paint::button` with its own `NM_CUSTOMDRAW` arm, because the pills are absent from `PUSH_BUTTONS` and that dispatch is gated on `is_push_button`. Selected-ness from `is_checked` (an auto-radio's notification has no ticked bit); hover swaps the ink as well as the ground, because `text_muted` on `strip_hover` is 3.700 and fails 4.5 |
 | The pills sit in a **painted** trough | **changed** | Task 6 paints it (`paint::trough`, from `WM_PAINT`) — it had not been painted at all before, so the pills were sitting on `bg` and every `strip` contrast row described a surface nobody could see. **It spans the whole band; the mockup's hugs the four pills.** Closing that needs the run's width, which only `layout`'s placement loop computes, so it is a second shared geometry function beside `strip_rect` rather than a number invented in the painter. Deferred, argued at `paint::trough` |
 | Shortcuts pill carries a count badge | **done** | Task 6. A new `ControlState::binding_count`, **not** `items.len()` — that is filtered and exempts the selected row, and the badge is read from three pages with no filter box. It reaches the painter through a thread-local `Cell`, never through `UI` (a paint arrives while `UI` is borrowed) and never through the caption (`layout` sizes buttons from their caption, and `layout` on a data push is the data-loss call). `layout` reserves a **fixed** four-digit slot for the same reason |
-| Warn dot when the banner is up on another page | **done** | Task 6. A drawn GDI `Ellipse` in the pill's top-right corner, never `U+25CF`: a text face draws a missing glyph as a box. It costs no width, which is what keeps it off the `layout` path. `warn_dot_shown` is written as the exact complement of `banner_shown`, so the two partition `external_change` — that is what let the banner narrow back to Shortcuts, and `the_warning_is_on_screen_from_every_door` is the assertion that pays for it |
-| The pills carry a focus ring | **done** | Task 6, and it was not optional: `CDRF_SKIPDEFAULT` means comctl32 draws nothing, so without one a keyboard-focused pill had no indication at all. Drawn in the `FOCUS_SLACK` margin the token is named for; `accent_on` on a lit pill, because `accent` on `accent_fill` is 1.00:1 in Light |
-| `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1..4` | **done** | Task 5, `build_accelerators`. The review that followed moved the focus repair's target: a door change now leaves focus on the pill it just opened, not on `Close`, so Enter after `Ctrl+2` no longer closes the window (`repair_hidden_button`'s `successor`) |
+| Warn dot when the banner is up on another page | **done** | Task 6. A drawn GDI `Ellipse` in the pill's top-right corner, never `U+25CF`: a text face draws a missing glyph as a box. It costs no width, which is what keeps it off the `layout` path. `warn_dot_shown` is written as the exact complement of `banner_shown`, so the two partition `external_change` — that is what let the banner narrow back to Shortcuts, and `the_warning_is_on_screen_from_every_door` is the assertion that pays for it. **That assertion could not fail until Task 6's review**: written as `banner ^ dot` over a dot defined as `!banner`, it reduced to `B ^ !B` and passed for any `banner_shown` at all, a body returning `false` on every door included (falsified by doing exactly that: the old body passed, the new one fails). It now asserts per-page constants |
+| The pills carry a focus ring | **done** | Task 6, and it was not optional: `CDRF_SKIPDEFAULT` means comctl32 draws nothing, so without one a keyboard-focused pill had no indication at all. Drawn in the `FOCUS_SLACK` margin the token is named for, so its ground is the TROUGH in all three states — `accent` everywhere (3.802 Light / 4.208 Dark on `strip`). It shipped with `BtnTier::Accent`'s `accent_on` swap, which is right for a ring inset INTO an `accent_fill` control and wrong here: `accent_on` on `LIGHT.strip` is **1.360**, an invisible ring, and no `pairs()` row covered the pair. Fixed by Task 6's review |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1..4` | **done** | Task 5, `build_accelerators`. The review that followed moved the focus repair's target: a door change now leaves focus on the pill it just opened, not on `Close`, so Enter after `Ctrl+2` no longer closes the window (`repair_hidden_button`'s `successor`). **Task 6's review added the other half, `focus_the_open_door`**: hiding the focused control hands focus to the WINDOW, which `repair_hidden_button` cannot see (`IsChild` is false for a window against itself, and the parent's control id is 0), and focus left there makes Tab dead until the user clicks — `GetNextDlgTabItem` refuses a starting point that is not a child. Every control except the App combo, whose inner EDIT stays a child, reached that state |
 | The strip is ONE tab stop, Left/Right between pills | **done, free** | **measured with a control (G-S2), a14 2026-08-14**: `WS_TABSTOP` moves off A and onto B when B is checked, so user32 migrates it by itself. The first run of this gate could not say so — see the gates table |
 | **No `&` mnemonics on tab names** | **done** | and settled by counting: `About` has no free letter left, so four unique mnemonics do not exist |
 
@@ -102,7 +102,12 @@ made them urgent:
   **What must never come back is a door with `external_change` set and nothing
   on screen about it**, and that is now an assertion rather than a claim:
   `banner_shown` and `warn_dot_shown` partition `external_change`, pinned by
-  `the_warning_is_on_screen_from_every_door`. The warning is weaker on three
+  `the_warning_is_on_screen_from_every_door`. **It was a claim wearing an
+  assertion's clothes for one commit** — `banner ^ dot` over a dot *defined* as
+  `!banner` is `B ^ !B`, so the test passed for a `banner_shown` that showed
+  nothing anywhere. Rewritten against per-page constants, and falsified by
+  breaking `banner_shown` that exact way: the old body passes, the new one
+  fails on Shortcuts. The warning is weaker on three
   doors than a sentence and two buttons — that is the design's own trade
   (§2), not an accident.
 
@@ -143,7 +148,12 @@ G1's own scope); that the warn dot lands inside the pill's rounded corner
 rather than clipped by it (arithmetic at `paint::tab_pill`: dot centre 3.54
 from the arc centre, far edge 7.04 against a radius of 8); that the focus ring
 fits in the `FOCUS_SLACK` margin without being clipped by the control's own
-`hdc`; and that a full-width trough behind four left-aligned pills reads as a
+`hdc` — **and that it stays OUT of the pill, which is now load-bearing rather
+than cosmetic**, since it is why the ring's ground is `strip` and why its ink
+is `accent` (the stroke reaches `scale(1) + scale(2)/2` in from the control
+against a pill at `scale(3)`: 2 of 3 at 96 and 120 DPI, 3 of 4 at 144, 4 of 6
+at 192, 5 of 7 at 240 — arithmetic, not a photograph); and that a full-width
+trough behind four left-aligned pills reads as a
 strip rather than as a toolbar. G-S4 is the run that would answer the first
 three at once, and it needs a person at a14.
 
