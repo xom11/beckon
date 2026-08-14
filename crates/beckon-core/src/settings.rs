@@ -221,6 +221,22 @@ pub struct Detail {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlState {
     pub items: Vec<ListItem>,
+    /// How many bindings the FILE has, which is not how many `items` has.
+    ///
+    /// **The two are different on purpose and the difference is the reason
+    /// this field exists.** `items` is built from `Model::visible`, which is
+    /// filter-dependent and additionally exempts the selected row from the
+    /// filter (see `Model::visible`) -- so under a filter it is a count of
+    /// what is on screen. The Shortcuts pill's count badge is read from three
+    /// pages that have no filter box at all, where "the rows matching a filter
+    /// the user cannot see" is not a number that means anything. `IDC_LBL_COUNT`
+    /// keeps counting `items` and stays right about the list it sits under;
+    /// this one is right about the file.
+    ///
+    /// A row added and not yet saved counts. The badge follows the model
+    /// rather than the disk for the same reason the title bar's `*` does:
+    /// what the window is showing IS the pending file.
+    pub binding_count: usize,
     /// Which row is current, as an index into `items`. `detail` already
     /// says *whether* there is one, but the ListView needs to know *which*
     /// to put `LVIS_SELECTED` back on after it rebuilds -- and it must not
@@ -355,9 +371,9 @@ impl Page {
 /// exactly the measured defect `default_button` exists for, reached through a
 /// door instead of through a dismissal.
 ///
-/// **`page` is taken and ignored, and that is this pass's decision rather than
-/// a leftover.** Task 4 shipped `external_change && page == BANNER_PAGE`, which
-/// drew the announcement on Shortcuts alone -- and Save is chrome: on all four
+/// **The history matters because the condition has been here before and did
+/// not survive.** Task 4 shipped this exact body and it had to be widened the
+/// same day. Save is chrome: on all four
 /// pages, enabled from `apply_enabled` alone, the resting place of the default
 /// ring and the target of `Ctrl+S`. `apply_settings` writes unconditionally and
 /// there is no prompt anywhere, so **the banner being on screen WAS the whole
@@ -375,24 +391,50 @@ impl Page {
 /// stayed reachable, so the fix is a warning the user can see from where they
 /// are standing.
 ///
-/// **Task 6 narrows this again, and this is deliberately the wide version until
-/// it does.** The design's own answer (spec §5) is a warn dot on the Shortcuts
-/// pill: the announcement goes back to `BANNER_PAGE`, and the dot is what
-/// carries the fact to the other three doors. Until that dot exists there is
-/// nothing else to carry it. The cost of being wide is that Keyboard, System and
-/// About each spend a band of height on the banner in a state that is rare --
-/// a layout cost, not a correctness one, and the parameter is kept in the
-/// signature so Task 6 is one edit to this body and to nothing else.
-pub fn banner_shown(external_change: bool, _page: Page) -> bool {
-    external_change
+/// **NARROWED BACK 2026-08-14, Task 6, and the dot is what paid for it.** The
+/// paragraph above stood while this function ignored `page` and answered
+/// `external_change` on every door. That was the wide version, and it was
+/// explicitly a holding position: the announcement costs Keyboard, System and
+/// About a band of height each, in a state none of them is about. It could only
+/// narrow once something else carried the fact to those three doors, because
+/// what it was protecting against is Save being pressable where the warning is
+/// not. `warn_dot_shown` is that something, `paint::tab_pill` draws it, and the
+/// two now partition `external_change` between them -- pinned by
+/// `the_warning_is_on_screen_from_every_door`, which is the assertion that
+/// makes this narrowing safe rather than the comment claiming it does.
+///
+/// The protection is weaker in one honest respect and stronger in another. A
+/// dot says less than a sentence and two buttons; but it says it from all four
+/// doors at once, whereas the wide banner said it four times over and the
+/// design (§2) rejected that. Save stays pressable everywhere either way --
+/// `apply_settings` has no external-change guard and deliberately does not want
+/// one; see the `REVERTED 2026-08-14` note there.
+pub fn banner_shown(external_change: bool, page: Page) -> bool {
+    external_change && page == BANNER_PAGE
 }
 
-/// The door the external-change announcement is ABOUT.
+/// Does the Shortcuts pill carry its warn dot?
 ///
-/// Not currently where it is drawn -- `banner_shown` draws it on every page
-/// until Task 6 -- but the two are the same question again the moment that
-/// task lands, and this is the door its warn dot goes on: the file that moved
-/// is the shortcut table, so the pill that has to grow a dot is Shortcuts'.
+/// **The exact complement of `banner_shown` within `external_change`**, and
+/// written as that complement rather than as `page != BANNER_PAGE` so the two
+/// cannot drift into a state where the file has moved and nothing anywhere says
+/// so. That partition is what let `banner_shown` narrow at all, so it is the
+/// invariant `the_warning_is_on_screen_from_every_door` asserts directly.
+///
+/// It also means the dot is never drawn on a pill that is lit: the door the
+/// announcement is about is the door whose pill would carry it, and on that
+/// door the announcement itself is on screen. The painter therefore never has
+/// to put `warn` ink on `accent_fill` -- which is just as well, because it
+/// measures 1.212 in Light and no row in `theme::pairs` covers it.
+pub fn warn_dot_shown(external_change: bool, page: Page) -> bool {
+    external_change && !banner_shown(external_change, page)
+}
+
+/// The door the external-change announcement is ABOUT, and now also where it
+/// is drawn.
+///
+/// The file that moved is the shortcut table, so it is Shortcuts' pill that
+/// grows the warn dot on the other three doors.
 pub const BANNER_PAGE: Page = Page::Shortcuts;
 
 /// Where the App combo sits, in the window's client coordinates: left, top
@@ -1516,6 +1558,9 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
 
     ControlState {
         items,
+        // `m.rows`, never `items.len()` -- see the field's own doc. `vis` is
+        // already computed above and is the filtered set; this is the file.
+        binding_count: m.rows.len(),
         selected,
         detail,
         filter: m.filter().to_string(),
@@ -1741,6 +1786,10 @@ pub fn default_button(
 pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
     ControlState {
         items: Vec::new(),
+        // There is no model, so there is no count. The badge draws `0`, which
+        // is true of a file beckon cannot read: it has no bindings beckon can
+        // act on.
+        binding_count: 0,
         selected: None,
         detail: Some(Detail {
             combo: String::new(),
@@ -3159,59 +3208,123 @@ mod tests {
         }
     }
 
-    /// The banner's two follow `external_change` and nothing else, on every
-    /// door.
+    /// The banner's two are on screen exactly where the banner is, and the
+    /// default ring follows them there and only there.
     ///
-    /// **This test used to assert the opposite half** -- that
-    /// `visible(true, Page::Keyboard)` is `false` -- and that was the defect,
-    /// not the design. Save is chrome and `apply_settings` writes without a
-    /// prompt, so an announcement drawn on Shortcuts alone left three pages
-    /// where the file could be overwritten with nothing on screen saying it
-    /// had moved. Task 6's warn dot is what lets the drawing narrow again; the
-    /// assertion narrows with it.
+    /// **This assertion has now been written three ways in one day and this is
+    /// the third.** Task 4 shipped Shortcuts-only, which was the defect below;
+    /// the repair widened it to every door and this test asserted that; Task 6
+    /// narrows it back, because the warn dot now carries the fact to the three
+    /// doors the banner has left. What must never come back is a state with
+    /// `external_change` set and NOTHING on screen about it, and that is a
+    /// different assertion -- `the_warning_is_on_screen_from_every_door` --
+    /// deliberately not folded into this one.
     #[test]
-    fn the_banners_two_follow_the_change_on_every_door() {
+    fn the_banners_two_are_on_screen_only_on_the_door_they_are_about() {
         let busy = busy_state();
         for b in [DefaultButton::Reload, DefaultButton::KeepMine] {
+            assert!(
+                b.visible(true, BANNER_PAGE),
+                "{b:?} is hidden on its own door"
+            );
+            // The ring may rest on a banner button there, which is the other
+            // half of "it is on screen".
+            assert_eq!(default_button(b, &busy, true, BANNER_PAGE), b);
             for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
-                assert!(b.visible(true, page), "{b:?} is hidden on {page:?}");
                 assert!(!b.visible(false, page), "no change to announce on {page:?}");
-                // The ring may rest on a banner button from any door now,
-                // which is the other half of "it is on screen there".
-                assert_eq!(default_button(b, &busy, true, page), b);
                 assert_eq!(default_button(b, &busy, false, page), DefaultButton::Save);
+                if page != BANNER_PAGE {
+                    assert!(!b.visible(true, page), "{b:?} is drawn on {page:?}");
+                    assert_eq!(
+                        default_button(b, &busy, true, page),
+                        DefaultButton::Save,
+                        "Enter must not reach {b:?} from {page:?}"
+                    );
+                }
             }
         }
+        assert!(banner_shown(true, BANNER_PAGE));
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
-            assert!(banner_shown(true, page));
             assert!(!banner_shown(false, page));
         }
     }
 
     /// The regression the four doors opened, stated as the thing that closes
-    /// it: on every page Save is pressable, the announcement is drawn too.
+    /// it: Save is pressable from every door, so from every door SOMETHING has
+    /// to say the file moved.
     ///
-    /// Written as a pairing with `visible` rather than as a restatement of
-    /// `banner_shown`, because the defect was exactly a disagreement between
-    /// those two -- Save reachable where the warning was not.
+    /// **This is the assertion that pays for `banner_shown` being narrow.**
+    /// The banner and the warn dot partition `external_change` -- exactly one
+    /// of them is up on any door, never both, never neither -- so there is no
+    /// page from which `Ctrl+S` can overwrite an externally changed file with
+    /// nothing on screen about it. Written against `visible` as well as against
+    /// the two conditions, because the defect was a disagreement between them:
+    /// Save reachable where the warning was not.
     #[test]
-    fn save_is_never_pressable_where_the_announcement_is_not_drawn() {
+    fn the_warning_is_on_screen_from_every_door() {
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
             assert!(
                 DefaultButton::Save.visible(true, page),
                 "Save is chrome; if it is not on {page:?} this test measures nothing"
             );
             assert!(
-                banner_shown(true, page),
-                "Save can overwrite an externally changed file from {page:?} \
-                 with nothing on screen saying it moved"
+                banner_shown(true, page) ^ warn_dot_shown(true, page),
+                "on {page:?} the file has moved and either nothing says so, or two \
+                 things do"
             );
             assert!(
-                DefaultButton::Reload.visible(true, page)
-                    && DefaultButton::KeepMine.visible(true, page),
-                "the announcement is drawn on {page:?} without its two answers"
+                !banner_shown(false, page) && !warn_dot_shown(false, page),
+                "nothing has moved, so {page:?} must announce nothing"
             );
+            if banner_shown(true, page) {
+                assert!(
+                    DefaultButton::Reload.visible(true, page)
+                        && DefaultButton::KeepMine.visible(true, page),
+                    "the announcement is drawn on {page:?} without its two answers"
+                );
+            }
         }
+    }
+
+    /// The dot goes on a pill that is not lit, which is what keeps its ink off
+    /// `accent_fill`.
+    ///
+    /// `warn` on `accent_fill` measures 1.212 in Light and has no row in
+    /// `theme::pairs`, so a dot drawn on the ACTIVE Shortcuts pill would be a
+    /// contrast failure no test could see. It cannot happen, and this is why
+    /// rather than a comment saying so: the dot is up only where the banner is
+    /// not, and the banner is up exactly on the door whose pill is lit.
+    #[test]
+    fn the_dot_is_never_on_the_door_that_is_open() {
+        assert!(!warn_dot_shown(true, BANNER_PAGE));
+        for page in [Page::Keyboard, Page::System, Page::About] {
+            assert!(warn_dot_shown(true, page), "no dot on {page:?}");
+        }
+    }
+
+    /// The badge counts the file; `IDC_LBL_COUNT` counts the list. A filter
+    /// separates them, which is the whole reason the field exists.
+    #[test]
+    fn the_badge_counts_the_file_not_the_filtered_list() {
+        let mut m = model();
+        let all = m.rows.len();
+        assert!(
+            all >= 2,
+            "precondition: more than one row to filter down to"
+        );
+        // Filter to the first row's app, with nothing selected so `visible`
+        // has no exemption to grant either.
+        m.selected = None;
+        let app = m.rows[0].app.clone();
+        m.set_filter(&app);
+        let st = control_state(&m, &RuntimeStatus::default());
+        assert!(
+            st.items.len() < all,
+            "precondition: the filter has to actually hide something"
+        );
+        assert_eq!(st.binding_count, all, "the badge followed the filter");
+        // And the read-only projection has no file to count.
+        assert_eq!(unreadable_state(Vec::new()).binding_count, 0);
     }
 
     /// `BANNER_PAGE` is Task 6's target, and it has to name a door the strip

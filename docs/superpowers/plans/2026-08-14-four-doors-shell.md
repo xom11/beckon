@@ -549,14 +549,50 @@ table, the two direction ids it needs, and the cycle in core."
 - Modify: `crates/beckon-windows/src/settings_window/mod.rs` — `NM_CUSTOMDRAW` arm, the badge thread-local
 - Modify: `crates/beckon-core/src/settings.rs` — `ControlState::binding_count`
 
-- [ ] **Step 1: Read `paint::button` and the `IDC_CAPS` custom-draw arm**
+**Four files it also touched, none of them optional.** `paint.rs` gained
+`trough` and `WM_PAINT` gained the call: nothing had ever painted the strip's
+ground, so the pills were sitting on `bg` and every `strip` row in `pairs()`
+described a surface that was not on screen. Spec §6.2 names it (*"the sites
+will be `paint::tab_pill` and the trough fill in `WM_PAINT`"*); this file's
+list did not. `layout.rs` gained the badge's reserved slot, because a badge
+with no width drawn into a pill sized from its caption alone lands on the
+caption. `beckon-core/src/theme.rs` gained four `pairs()` rows — the dot and
+the ring, in both pill grounds. And `beckon-cli/src/serve.rs` had two comments
+whose reasoning rested on the banner being page-wide.
+
+**Every `mod.rs` line number in this task is stale by roughly a thousand
+lines** — Tasks 3, 4 and 5 landed between the plan being written and this
+task. Named symbols are stable and were used instead: `push_button_custom_draw`
+and `caps_custom_draw` for `:5233`/`:5241-5244`, `HIGH_CONTRAST` for
+`:4218-4232`, `CHIPS` / `CAP_FONT` / `SHOWN_NOTES` for the three thread-local
+precedents.
+
+- [x] **Step 1: Read `paint::button` and the `IDC_CAPS` custom-draw arm**
 
 `paint.rs` around `:1160-1280`, and `mod.rs:5233-5244`. The pill is a sibling
 of `button`, not a branch inside it.
 
-- [ ] **Step 2: Write `tab_pill`**
+Read, and all five "forced" claims verified against the source rather than
+taken: the pills really are absent from `PUSH_BUTTONS` (`mod.rs`'s nine-id
+array) and the existing custom-draw arm really is gated on `is_push_button`;
+the `suppressed()` gate really does sit after the three custom-draw arms;
+`caps_custom_draw` really does read `is_checked` and say why; `button` really
+does read `cache.theme()` and say why; and `pairs()` really has no
+`accent_on`-on-`accent` row.
 
-Three states. Active: `accent_fill` ground, `accent_on` ink. Inactive:
+- [x] **Step 2: Write `tab_pill`**
+
+Three states as specified. **Two things the plan did not name and the
+painter needs anyway.** A focus ring: `CDRF_SKIPDEFAULT` means comctl32 draws
+nothing at all, so without one a keyboard-focused pill has no indication —
+which would be a regression from the default-drawn pills Task 3 shipped. It
+goes in the `FOCUS_SLACK` margin, which is what `layout.rs` already says that
+token is for, and it takes `BtnTier::Accent`'s ink swap (`accent_on` on a lit
+pill, because `accent` on `accent_fill` is 1.00:1 in Light). And a
+`PILL_RADIUS` of 8 rather than `BTN_RADIUS`'s 6 — the design's own pair, and
+a pill shares no edge with a push button.
+
+Active: `accent_fill` ground, `accent_on` ink. Inactive:
 `strip` ground, `text_muted` ink. Hover: `strip_hover` ground, **`text`
 ink** — the ink swaps with the ground, because `text_muted` on `strip_hover`
 measures 3.700 / 4.304 and fails 4.5. (The figure was 4.015 in the first
@@ -579,14 +615,21 @@ Selected-ness comes from `is_checked(hwnd, id)`, **not** `CDIS_CHECKED` — the
 identical decision is documented and executed for `IDC_CAPS`
 (`mod.rs:4391-4397`, `:4404`).
 
-- [ ] **Step 3: Dispatch it**
+- [x] **Step 3: Dispatch it**
 
 A new `NM_CUSTOMDRAW` arm, placed **before** the `suppressed()` gate at
 `mod.rs:5244` and modelled on the `IDC_CAPS` arm — custom draw is pure
 painting and must not be gated on suppression. The existing dispatch at
 `:5233` is gated on `is_push_button` and will not match a pill.
 
-- [ ] **Step 4: The badge and the warn dot, through a thread-local**
+Done, as the fourth of four custom-draw arms ahead of the gate. It matches on
+`page_of_tab(idFrom)` rather than on four ids, so `TABS` stays the one table —
+and the door that pill opens is what the arm then hands the painter, which it
+needs: the dot is drawn on the Shortcuts pill while the user is standing
+somewhere else, so "which pill" and "which door is open" are two questions and
+the painter is given both.
+
+- [x] **Step 4: The badge and the warn dot, through a thread-local**
 
 Add `ControlState::binding_count` in core. **Not `items.len()`**:
 `control_state` builds `items` from `Model::visible()`, which is
@@ -611,11 +654,39 @@ The warn dot is a drawn GDI `Ellipse`, never the character `●`: a text face
 draws a missing glyph as a box, and an em-dash in `serve --log` already came
 back as `?"` once.
 
-- [ ] **Step 5: Gate**
+**Two corrections the plan's own rule forced, both about the same hazard.**
 
-All five, plus `cargo test -p beckon-core`.
+*The `Cell` stores `external_change`, not the dot's condition.* That condition
+is `warn_dot_shown(external, page)`, and `page` moves through `show_page`,
+which never calls `apply_state` — so a stored flag would go stale on exactly
+the keystroke it exists for. The painter reads `PAGE`, which is itself a
+paint-safe `Cell`, and asks core. That the repaint happens at all is
+`CheckRadioButton`'s doing: the condition changes exactly when
+`page == BANNER_PAGE` changes, which is exactly when the Shortcuts pill's own
+tick changes.
 
-- [ ] **Step 6: Commit**
+*The badge needs reserved WIDTH, not just a value.* `layout` sizes a pill as
+`tw(caption) + 2*(TAB_PAD_X + FOCUS_SLACK)`, so the content box is exactly the
+caption and there is no slack for a number beside it. The slot is therefore
+reserved in `layout` — but as a **constant** (`badge_slot_w`, measuring
+`"0000"` in the badge's own face), never as a function of the count, because a
+width that followed the data would put a data push on `layout`'s
+`SetWindowPos`. That is `ControlState::marked_count`'s own named-but-not-taken
+route — "reserving width for the widest caption at `layout` time" — taken here.
+The dot needed no such thing, which is why it is in the corner.
+
+- [x] **Step 5: Gate**
+
+All five, plus `cargo test -p beckon-core`. Both Windows targets falsified
+with an injected type error in `paint.rs` before being believed, and the
+workspace clippy falsified the same way in `settings.rs`. The macOS test flake
+landed on `beckon-cli --test check` and `--test cli_surface`: `left: None` for
+the exit status with empty stderr, i.e. the spawned `beckon` child killed by a
+signal. One direct exec of `target/debug/beckon` warms it and both pass; all
+eleven built test binaries run directly are green on the second pass (372
+tests, zero failures).
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/beckon-core/src/settings.rs \

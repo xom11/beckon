@@ -521,8 +521,12 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// need moving**, and no skip can close that one. Because this function leaves
 /// the combo alone from three of the four doors, every input it reads that
 /// moves while one of those doors is open makes the trip back a genuine
-/// placement -- the banner appearing (page-wide since 2026-08-14), a resize or
-/// a `WM_DPICHANGED` taken on another page, the list gaining its first row.
+/// placement -- a resize or a `WM_DPICHANGED` taken on another page, the list
+/// gaining its first row. (**CORRECTED 2026-08-14, Task 6:** this listed the
+/// banner appearing as a fourth, "page-wide since 2026-08-14". It was one for
+/// the hours `banner_shown` ignored the page; narrowed back to `BANNER_PAGE`,
+/// card 0 cannot gain height while another door is open. The other three are
+/// untouched and are why this paragraph stands.)
 /// `place_app_combo` is what those go through: it saves the edit's text and
 /// selection across the `SetWindowPos` and restores them if the control
 /// re-synchronised. It also covers the routes that never touched a door --
@@ -739,11 +743,11 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // half of the 6 px the strip appears to have. That 6 is `tok::GAP`, so
     // the strip's rhythm is the window's without a second token saying so.
     //
-    // **That is a promise the painter has not kept yet.** Nothing custom-draws
-    // a pill in this commit, so the theme fills each control edge to edge and
-    // the four appear to touch with no gap at all. `paint::tab_pill` is what
-    // turns the margin into the gap; until then this geometry is right and
-    // what it draws is not.
+    // **KEPT 2026-08-14, Task 6.** This paragraph read "that is a promise the
+    // painter has not kept yet"; `paint::tab_pill` now insets by exactly
+    // `tok::FOCUS_SLACK` on all four sides, fills the margin with the trough
+    // colour, and draws its focus ring in it -- which is what the token is
+    // named for.
     //
     // The row's height is read back OUT of the trough rather than scaled from
     // `TAB_VISUAL` directly, and the two are NOT the same number: at 144 DPI
@@ -767,11 +771,31 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     let tab_h = clamp(s(tok::TABSTRIP_H) - s(tok::TAB_PAD_Y) * 2);
     let tab_y = strip.top + s(tok::TAB_PAD_Y);
     let mut tab_x = strip.left;
-    for (id, _, caption) in TABS {
+    for (id, opens, caption) in TABS {
         // `tw`, so the pill is sized in the font it is drawn in, and through
         // `shown` like every other measured caption -- these four carry no
         // `&` today and the measurement does not depend on that staying true.
-        let tab_w = tw(caption) + (s(tok::TAB_PAD_X) + s(tok::FOCUS_SLACK)) * 2;
+        //
+        // The Shortcuts pill is wider by a FIXED badge slot, and fixed is the
+        // whole point: the count changes on every add and remove, and the only
+        // way to apply a new control width is this function, which is
+        // `SetWindowPos` on the populated App combo -- the measured data-loss
+        // call (`Ui::shown_external`). So the slot is reserved for
+        // `BADGE_SLOT`'s four digits once and never re-measured against the
+        // data. `paint::tab_pill` takes the same `badge_slot_w` off the right
+        // of its content box before centring the caption in what is left; two
+        // spellings of that width would drift into a caption drawn off-centre.
+        //
+        // It is reserved whether or not the file has any bindings. A slot that
+        // appeared with the first binding would move the other three pills
+        // sideways on a data push, which is the same forbidden call by another
+        // route.
+        let badge = if opens == BANNER_PAGE {
+            badge_slot_w(hwnd, dpi)
+        } else {
+            0
+        };
+        let tab_w = tw(caption) + badge + (s(tok::TAB_PAD_X) + s(tok::FOCUS_SLACK)) * 2;
         place(id, tab_x, tab_y, tab_w, tab_h);
         tab_x += tab_w;
     }

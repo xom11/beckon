@@ -27,8 +27,11 @@ Last updated: 2026-08-14, branch `four-doors-phase-0`.
 | Strip sits below the title bar, never inside the caption | **done** | and **verified free**: `chrome::nchittest` returns `HTCLIENT` below `TITLEBAR_H`, so no drag-zone arithmetic was needed |
 | Tokens `TABSTRIP_H 36`, `TAB_PAD_X 14`, `TAB_PAD_Y 2`, `TAB_VISUAL 26`, `FOCUS_SLACK 3` | **done** | `layout.rs` `mod tok` |
 | New palette tokens `strip` / `strip_hover` with `pairs()` rows | **changed** | done, but `LIGHT.strip_hover` moved `#CBD1DE` → `#C2C9D8`: the design's value measures **1.126** against the trough, under its own 1.2 floor |
-| Shortcuts pill carries a count badge | **open** | Task 6 |
-| Warn dot when the banner is up on another page | **open** | Task 6. **Until it lands the banner shows on every page** — see §6 below |
+| The four pills are drawn by beckon, three states each | **done** | Task 6, `paint::tab_pill` — a SIBLING of `paint::button` with its own `NM_CUSTOMDRAW` arm, because the pills are absent from `PUSH_BUTTONS` and that dispatch is gated on `is_push_button`. Selected-ness from `is_checked` (an auto-radio's notification has no ticked bit); hover swaps the ink as well as the ground, because `text_muted` on `strip_hover` is 3.700 and fails 4.5 |
+| The pills sit in a **painted** trough | **changed** | Task 6 paints it (`paint::trough`, from `WM_PAINT`) — it had not been painted at all before, so the pills were sitting on `bg` and every `strip` contrast row described a surface nobody could see. **It spans the whole band; the mockup's hugs the four pills.** Closing that needs the run's width, which only `layout`'s placement loop computes, so it is a second shared geometry function beside `strip_rect` rather than a number invented in the painter. Deferred, argued at `paint::trough` |
+| Shortcuts pill carries a count badge | **done** | Task 6. A new `ControlState::binding_count`, **not** `items.len()` — that is filtered and exempts the selected row, and the badge is read from three pages with no filter box. It reaches the painter through a thread-local `Cell`, never through `UI` (a paint arrives while `UI` is borrowed) and never through the caption (`layout` sizes buttons from their caption, and `layout` on a data push is the data-loss call). `layout` reserves a **fixed** four-digit slot for the same reason |
+| Warn dot when the banner is up on another page | **done** | Task 6. A drawn GDI `Ellipse` in the pill's top-right corner, never `U+25CF`: a text face draws a missing glyph as a box. It costs no width, which is what keeps it off the `layout` path. `warn_dot_shown` is written as the exact complement of `banner_shown`, so the two partition `external_change` — that is what let the banner narrow back to Shortcuts, and `the_warning_is_on_screen_from_every_door` is the assertion that pays for it |
+| The pills carry a focus ring | **done** | Task 6, and it was not optional: `CDRF_SKIPDEFAULT` means comctl32 draws nothing, so without one a keyboard-focused pill had no indication at all. Drawn in the `FOCUS_SLACK` margin the token is named for; `accent_on` on a lit pill, because `accent` on `accent_fill` is 1.00:1 in Light |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` / `Ctrl+1..4` | **done** | Task 5, `build_accelerators`. The review that followed moved the focus repair's target: a door change now leaves focus on the pill it just opened, not on `Close`, so Enter after `Ctrl+2` no longer closes the window (`repair_hidden_button`'s `successor`) |
 | The strip is ONE tab stop, Left/Right between pills | **done, free** | **measured with a control (G-S2), a14 2026-08-14**: `WS_TABSTOP` moves off A and onto B when B is checked, so user32 migrates it by itself. The first run of this gate could not say so — see the gates table |
 | **No `&` mnemonics on tab names** | **done** | and settled by counting: `About` has no free letter left, so four unique mnemonics do not exist |
@@ -89,9 +92,19 @@ made them urgent:
   whole config, because the filter matched the Shortcut column and every
   beckon chord contains `alt`. The filter now matches the app name only.
 - **The external-change protection was rebuilt** after Task 4 hid the banner
-  on three pages while Save stayed reachable. It now shows on **every** page
-  while `external_change` is true. That is wider than the design asks;
-  Task 6's warn dot is what narrows it back.
+  on three pages while Save stayed reachable, and has now been narrowed back.
+  The sequence is worth keeping because the condition has been written three
+  ways in a day: Shortcuts-only (Task 4, the defect — Save is chrome and
+  `apply_settings` writes without a prompt, so three doors could overwrite an
+  externally changed file with nothing on screen saying it moved), then every
+  page (the repair, deliberately wide), then Shortcuts-only again with the
+  warn dot carrying the fact to the other three (Task 6).
+  **What must never come back is a door with `external_change` set and nothing
+  on screen about it**, and that is now an assertion rather than a claim:
+  `banner_shown` and `warn_dot_shown` partition `external_change`, pinned by
+  `the_warning_is_on_screen_from_every_door`. The warning is weaker on three
+  doors than a sentence and two buttons — that is the design's own trade
+  (§2), not an accident.
 
 ## §7 The seven editing rules
 
@@ -119,6 +132,20 @@ typed text), **G-S4** (the strip under four high-contrast schemes), **G-S5**
 (frame metrics and the resize edge across the strip band), **G-S6** (does
 `place_app_combo`'s restore restore), **G-S7** (what `GetFocus` returns for the
 App combo).
+
+**What Task 6 shipped that no test on this host can see.** Everything the
+painter draws is pixels, and the two CI jobs that compile it cannot run it.
+Reasoned from documentation and from the three measured facts above, NOT
+measured: that the badge's reserved slot is wide enough for the face at
+144 DPI (the slot is `text_size` of `"0000"` in the Keycap font, and no string
+in this window has been through `GetTextExtentPoint32W` on hardware — gate
+G1's own scope); that the warn dot lands inside the pill's rounded corner
+rather than clipped by it (arithmetic at `paint::tab_pill`: dot centre 3.54
+from the arc centre, far edge 7.04 against a radius of 8); that the focus ring
+fits in the `FOCUS_SLACK` margin without being clipped by the control's own
+`hdc`; and that a full-width trough behind four left-aligned pills reads as a
+strip rather than as a toolbar. G-S4 is the run that would answer the first
+three at once, and it needs a person at a14.
 
 **A note on why the first G-S2 run was blind, since this table is what a
 reader trusts.** The probe created radio A with `WS_GROUP | WS_TABSTOP` and

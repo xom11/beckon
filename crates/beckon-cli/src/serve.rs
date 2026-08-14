@@ -1315,13 +1315,23 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// `aa9fbd6` put one in -- `save_press` refused the press once and switched the
 /// window to the door the banner was drawn on -- because Task 4 had made the
 /// announcement Shortcuts-only while Save stayed on all four pages. The
-/// protection is real and is still owed; what changed is where it is paid.
-/// `beckon_core::settings::banner_shown` now draws the announcement on EVERY
-/// page while `external_change` is set, so there is no page from which Save can
-/// be pressed with the warning off screen, and the funnel needs no opinion
-/// about which door is open. That is one page-switch route removed rather than
-/// one added, and the two defects the added route carried -- a switch that
-/// moves no focus, and a switch that changes card geometry -- go with it.
+/// protection is real and is still owed; what changed is where it is paid. It
+/// is paid in the WINDOW, by there being no door from which Save can be pressed
+/// with nothing on screen saying the file moved -- so the funnel needs no
+/// opinion about which door is open. That is one page-switch route removed
+/// rather than one added, and the two defects the added route carried -- a
+/// switch that moves no focus, and a switch that changes card geometry -- go
+/// with it.
+///
+/// **AMENDED 2026-08-14, Task 6**, because the mechanism changed under this
+/// paragraph and the conclusion did not. It read "`banner_shown` now draws the
+/// announcement on EVERY page", which was the wide holding position. The
+/// announcement is back on `BANNER_PAGE` alone, and what covers the other three
+/// doors is the warn dot on the Shortcuts pill: `banner_shown` and
+/// `warn_dot_shown` partition `external_change`, so exactly one of them is up
+/// on any door and never neither. `settings::the_warning_is_on_screen_from_
+/// every_door` is the assertion, and it is the reason this function still needs
+/// no guard.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let rendered = {
@@ -1661,11 +1671,13 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                         // written" -- a failed write, and a Save refused
                         // because the file had moved while the user was behind
                         // a door that hid the announcement (`save_press`,
-                        // `aa9fbd6`). That refusal is gone: the announcement is
-                        // drawn on every page now (`banner_shown`), so there is
-                        // no door to be behind and `apply_settings` writes or
-                        // fails. The test itself never depended on which, which
-                        // is why it is unchanged either time.
+                        // `aa9fbd6`). That refusal is gone and stayed gone:
+                        // the window guarantees the warning is on screen from
+                        // every door -- the banner on `BANNER_PAGE`, the
+                        // Shortcuts pill's warn dot on the other three -- so
+                        // there is no door to be behind and `apply_settings`
+                        // writes or fails. The test itself never depended on
+                        // which, which is why it is unchanged either time.
                         let still_dirty = st
                             .borrow()
                             .settings

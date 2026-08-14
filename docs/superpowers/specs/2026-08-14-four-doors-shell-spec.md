@@ -379,6 +379,17 @@ different on purpose and the pill's is the stable one.
 
 ### 6.1 A sibling painter
 
+**LANDED 2026-08-14 (Task 6), with three additions this section did not ask
+for and one deviation it did not foresee.** The additions: a focus ring, since
+`CDRF_SKIPDEFAULT` leaves comctl32 drawing nothing and a keyboard-focused pill
+would otherwise have no indication at all; `paint::trough`, because nothing had
+ever painted the strip's ground and §6.2's own note that the trough fill is a
+`WM_PAINT` site was not carried into the plan; and a reserved badge slot in
+`layout`, because a pill is sized to exactly its caption and a number drawn
+beside it has nowhere to go. The deviation is the trough's WIDTH — see §6.3.
+Every `mod.rs:` line below is stale by roughly a thousand lines; the named
+symbols are not.
+
 `paint::tab_pill`, modelled on `paint::button` but not part of it. It needs
 its own `NM_CUSTOMDRAW` arm in `WM_NOTIFY`, placed **before** the
 `suppressed()` gate at `mod.rs:5244` and modelled on the `IDC_CAPS` arm at
@@ -458,6 +469,25 @@ check against, which is how the five collisions happened. The consequence —
 the trough becomes invisible under HC, with only the active pill's
 `COLOR_HIGHLIGHT` distinguishing it — is accepted and must be checked by
 screenshot (§9 G-S4).
+
+Two more indices were spent by the two things §6.1 did not name. The warn dot
+is `COLOR_WINDOWTEXT`, paired against the inactive pill's `COLOR_BTNFACE` — not
+`COLOR_BTNTEXT`, which is the caption sitting beside it, and a warning drawn in
+the caption's own colour is not a warning. The focus ring is `COLOR_HIGHLIGHT`
+on an inactive pill and `COLOR_HIGHLIGHTTEXT` on the lit one, which is
+`BtnTier::Accent`'s existing pairing rather than a new one.
+
+**DEVIATION, recorded rather than settled: the trough spans the whole band.**
+The mockup's `.trough` is a shrink-to-fit flex item that hugs the four pills
+and reads as a segmented control; what landed fills `strip_rect`, which is
+inset by `tok::PAD` left and right like the cards. That is not a preference —
+`strip_rect` is the one function `layout` places the pills from and
+`compute_card_rects` reads the first card's `y` out of, and hugging the run
+needs the run's WIDTH, which only `layout`'s placement loop computes. Closing
+it means a second shared geometry function beside `strip_rect`, the shape
+`compute_card_rects` already sets, not a number invented in the painter.
+Deferred because nothing about the pills, the badge or the dot depends on which
+way it goes; argued at `paint::trough`.
 
 ---
 

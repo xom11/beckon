@@ -1567,6 +1567,426 @@ pub(super) unsafe fn toggle(
     }
 }
 
+/// The tab strip's trough: one rounded fill behind the four pills, drawn
+/// from the PARENT's `WM_PAINT`.
+///
+/// **It is not a card and must not go through `card`.** `card` fills with
+/// `p.card` and strokes a `card_border`; the trough is `p.strip` with no
+/// border at all, and `compute_card_rects` deliberately does not return its
+/// rect (see `strip_rect`, which is where the geometry lives). Sharing the
+/// painter would mean the two surfaces stopped being able to differ.
+///
+/// The pills sit on top and each one fills its whole control rect with the
+/// same `strip` before drawing anything (`tab_pill`), so the seam between the
+/// trough this draws and the margin a pill draws is invisible by
+/// construction rather than by the two rects lining up.
+///
+/// **`rc` is the whole band, so the trough runs the window's width. The
+/// mockup's does not, and that is a known deviation rather than an
+/// oversight.** `.trough` there is a shrink-to-fit flex item, i.e. it hugs
+/// the four pills and reads as a segmented control; this reads as a bar with
+/// four pills at its left. The caller passes `strip_rect`, which is the
+/// geometry `layout` places the pills from and `compute_card_rects` takes the
+/// first card's `y` out of -- one source, and the one whose left/right inset
+/// carries `strip_rect`'s own resize-edge argument. Hugging the run would
+/// need the run's WIDTH, which only the placement loop in `layout` computes,
+/// so closing this means a second shared geometry function beside
+/// `strip_rect` (the shape `compute_card_rects` already sets) rather than a
+/// number invented here. Deferred deliberately: it is a look, it is one
+/// function when someone decides it, and nothing about the pills, the badge
+/// or the dot depends on which way it goes.
+///
+/// **`COLOR_BTNFACE` under high contrast, and the consequence is accepted.**
+/// `accent_fill` is `COLOR_HIGHLIGHT` for the active pill, so the inactive
+/// family has to differ; `COLOR_WINDOW` collides with `card` at eight sites
+/// and would make the trough read as a card; and reaching for a ninth,
+/// otherwise-unused index would give it no sibling site to be checked
+/// against, which is exactly how the five invisible-text collisions on the
+/// last redesign happened. So under HC the trough vanishes into the window
+/// ground and only the active pill's `COLOR_HIGHLIGHT` distinguishes the
+/// strip. Spec 6.3, gate G-S4, to be confirmed by screenshot.
+pub(super) unsafe fn trough(hdc: HDC, rc: RECT, dpi: u32) {
+    if rc.right <= rc.left || rc.bottom <= rc.top {
+        return;
+    }
+    let fill = theme_col(|p| p.strip, COLOR_BTNFACE);
+    let br = theme_brush(fill);
+    // A pen of the fill colour, not `NULL_PEN`: `RoundRect` strokes its
+    // outline with the current pen, and the stock black one would draw a
+    // 1 px black frame around the trough in both themes.
+    let pen = CreatePen(PS_SOLID, 1, fill);
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    let prev_brush = SelectObject(hdc, HGDIOBJ(br.0));
+    let r = scale(tok::CARD_RADIUS, dpi) * 2;
+    let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
+
+/// The corner radius of a tab pill, at 96 DPI.
+///
+/// 8 rather than `BTN_RADIUS`'s 6, which is the design's own pair (mockup:
+/// `.trough{border-radius:10px}`, `.pill{border-radius:8px}`) sitting one
+/// step inside `tok::CARD_RADIUS`. A pill is a wider, shorter shape than a
+/// push button and shares no edge with one, so the two numbers never appear
+/// side by side.
+const PILL_RADIUS: i32 = 8;
+
+/// A tab pill's warn dot, at 96 DPI. The mockup's `.dot{width:7px}`.
+const PILL_DOT: i32 = 7;
+
+/// Paint one of the four tab pills: the trough behind it, the pill, its
+/// caption, the Shortcuts pill's count badge, its warn dot, and -- LAST --
+/// the focus ring.
+///
+/// **A SIBLING of `button`, not a branch inside it, and the dispatch proves
+/// it rather than the comment.** The pills are deliberately absent from
+/// `PUSH_BUTTONS` (see `TABS` for the two reasons: `set_button_type` would
+/// rewrite `BS_AUTORADIOBUTTON` into `BS_PUSHBUTTON` the first time the
+/// default ring moved, and every member has to name a `DefaultButton`), and
+/// `push_button_custom_draw`'s arm is gated on `is_push_button`, so a pill
+/// could never have reached `button` even if the two shapes had been close
+/// enough to share. They are not: a pill has no border, no tier, three
+/// states rather than four, a badge and a dot.
+///
+/// **`active` comes from `is_checked`, never from a bit on `nm`.** A check
+/// box's -- and an auto-radio's -- `NMCUSTOMDRAW` carries `CDIS_DISABLED` /
+/// `CDIS_FOCUS` / `CDIS_SELECTED` / `CDIS_HOT` and nothing that means
+/// "ticked"; `CDIS_SELECTED` means the mouse is DOWN on it. `caps_custom_draw`
+/// took the identical decision for `IDC_CAPS` and for the identical reason,
+/// and `BM_GETCHECK` answering an auto-radio 1/0 was measured on a14
+/// 2026-08-14 (gate G-S3) rather than assumed.
+///
+/// **Three states, and the ink swaps with the ground on the hover one.**
+/// Active is `accent_fill` under `accent_on`; inactive is `strip` under
+/// `text_muted`; hover is `strip_hover` under **`text`**. That last swap is
+/// load-bearing, not decorative: `text_muted` on `strip_hover` measures
+/// 3.700 Light / 4.304 Dark, so a hover that moved only the ground would drop
+/// the label under 4.5 in both themes. `Palette::strip_hover` carries the
+/// figures; `pairs()` carries the guard.
+///
+/// **The fill is `accent_fill` and never `accent`.** `accent_on` on
+/// `DARK.accent` measures 3.044, and no row in `theme::pairs` covers that
+/// combination -- so a pill filled with `accent` would carry text under the
+/// 4.5 floor with every test still green.
+///
+/// `CDIS_HOT` reaching a `BS_AUTORADIOBUTTON | BS_PUSHLIKE` at all is gate
+/// G2, **passed on a14 2026-08-14 under comctl32 6.16**, with a plain
+/// `BS_PUSHBUTTON` reporting hot in the same run as the control that makes
+/// a clean result mean anything (`examples/pill_probe.rs`).
+///
+/// **High contrast is read as `cache.theme()`, never `high_contrast()`** --
+/// `button`'s own rule and reason: that `Cell` refreshes only on
+/// `WM_SETTINGCHANGE(SPI_SETHIGHCONTRAST)`, while `WM_THEMECHANGED` alone
+/// already rebuilds `ThemeCache`, so a paint racing the two would see a stale
+/// value. Under HC the pill flattens to `Rectangle`, as six other sites in
+/// this file do -- a soft edge under a theme built on flat fills and hard
+/// borders reads as a rendering artefact rather than as a control.
+///
+/// **There is no disabled state and nothing disables a pill.** The strip is
+/// chrome: it is absent from `PAGE_CONTROLS`, `show_page_controls` never
+/// touches it, and no `enable` call in `apply_state` names a `IDC_TAB_*`. If
+/// one ever does, this function needs a `CDIS_DISABLED` arm and `pairs()`
+/// needs the row to go with it; today it would draw a live-looking pill.
+pub(super) unsafe fn tab_pill(
+    nm: &NMCUSTOMDRAW,
+    active: bool,
+    badge: Option<usize>,
+    warn: bool,
+    cache: &mut ThemeCache,
+    dpi: u32,
+) {
+    let hdc = nm.hdc;
+    let rc = nm.rc;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+    let hot = nm.uItemState.0 & CDIS_HOT.0 != 0;
+    let focused = nm.uItemState.0 & CDIS_FOCUS.0 != 0;
+
+    // The trough first, across the WHOLE control rect. `CDRF_SKIPDEFAULT`
+    // means nothing else ever paints these pixels, and the control is
+    // deliberately bigger than the pill: `layout` gives it `FOCUS_SLACK` of
+    // margin on all four sides, which is where the focus ring lives and
+    // which is also how two neighbouring pills -- placed with no gap between
+    // their controls -- come to look 6 px apart. That margin is trough, so
+    // this is the trough colour, not `bg`.
+    let strip = cache.col(|p| p.strip, COLOR_BTNFACE);
+    FillRect(hdc, &rc, cache.brush(strip));
+
+    let slack = scale(tok::FOCUS_SLACK, dpi);
+    let pill = RECT {
+        left: rc.left + slack,
+        top: rc.top + slack,
+        right: rc.right - slack,
+        bottom: rc.bottom - slack,
+    };
+
+    // `(fill, ink)`. Active outranks hover, which is why a lit pill does not
+    // change under the pointer: it is already the answer.
+    let (fill, ink) = if active {
+        (
+            cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT),
+            cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT),
+        )
+    } else if hot {
+        (
+            cache.col(|p| p.strip_hover, COLOR_BTNFACE),
+            cache.col(|p| p.text, COLOR_BTNTEXT),
+        )
+    } else {
+        // Ground and ink are both the resting pair, and the fill is drawn
+        // even though it equals the `FillRect` above: an inactive pill leaving
+        // its interior to that fill would be right today and wrong the moment
+        // the trough and the resting pill stop being the same token.
+        (strip, cache.col(|p| p.text_muted, COLOR_BTNTEXT))
+    };
+
+    let brush = CreateSolidBrush(fill);
+    // The outline pen is the fill colour, so a pill draws as one shape rather
+    // than as a ring around one -- `toggle`'s track and `BtnTier::Accent`
+    // both make the same choice, and for the same reason: there is no border
+    // token in this design's pill.
+    let pen = CreatePen(PS_SOLID, 1, fill);
+    let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    if hc {
+        let _ = Rectangle(hdc, pill.left, pill.top, pill.right, pill.bottom);
+    } else {
+        let r = scale(PILL_RADIUS, dpi) * 2;
+        let _ = RoundRect(hdc, pill.left, pill.top, pill.right, pill.bottom, r, r);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+
+    // The content box: the pill less its own left/right padding. The badge
+    // takes a FIXED slot off the right of it -- fixed, because `layout` sized
+    // this control with the same slot reserved and neither of them may vary
+    // with the count. A slot that grew with the number would make the pill's
+    // width a function of the data, and the only way to apply a new width is
+    // `layout`, which is `SetWindowPos` on the populated App combo: the
+    // measured data-loss call (`Ui::shown_external`). `badge_slot_w` is the
+    // one arithmetic both sides run.
+    let pad = scale(tok::TAB_PAD_X, dpi);
+    let parent = GetParent(nm.hdr.hwndFrom).unwrap_or(nm.hdr.hwndFrom);
+    let slot = if badge.is_some() {
+        badge_slot_w(parent, dpi)
+    } else {
+        0
+    };
+    let content = RECT {
+        left: pill.left + pad,
+        top: pill.top,
+        right: pill.right - pad,
+        bottom: pill.bottom,
+    };
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, ink);
+    let ui_state = SendMessageW(
+        nm.hdr.hwndFrom,
+        WM_QUERYUISTATE,
+        Some(WPARAM(0)),
+        Some(LPARAM(0)),
+    )
+    .0 as u32;
+    let mut flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+    if ui_state & UISF_HIDEACCEL != 0 {
+        flags |= DT_HIDEPREFIX;
+    }
+    // The caption from the control, one string, no second field -- `button`'s
+    // rule. It carries no `&` today (see `mod cap`: four unique mnemonics do
+    // not exist), and the prefix handling above does not depend on that
+    // staying true.
+    let font = HFONT(
+        SendMessageW(
+            nm.hdr.hwndFrom,
+            WM_GETFONT,
+            Some(WPARAM(0)),
+            Some(LPARAM(0)),
+        )
+        .0 as *mut core::ffi::c_void,
+    );
+    let prev_font = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    let mut caption_rc = RECT {
+        right: content.right - slot,
+        ..content
+    };
+    let mut t = wide(&text_of(nm.hdr.hwndFrom));
+    let n = t.len() - 1;
+    DrawTextW(hdc, &mut t[..n], &mut caption_rc, flags);
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+
+    // The badge, in the slot, in the window's one small face. Same ink as the
+    // caption: the mockup dims it with `opacity:.75`, which GDI text has no
+    // equivalent for, and a fifth colour would need its own `pairs()` row
+    // against all three grounds for a purely decorative tint. The size step
+    // (Keycap 11 against Body 14) is what separates the number from the word.
+    //
+    // **`cap_font()`, and that is what makes the slot honest**: `badge_slot_w`
+    // measures in the same handle, so the reserved width and the drawn width
+    // are the same measurement rather than two that agree today. See
+    // `role_of`'s `Hold` chip arm for the same rule stated once already.
+    if let Some(count) = badge {
+        let bf = cap_font().unwrap_or(font);
+        let prev = if bf.is_invalid() {
+            HGDIOBJ::default()
+        } else {
+            SelectObject(hdc, HGDIOBJ(bf.0))
+        };
+        let mut badge_rc = RECT {
+            left: content.right - slot,
+            ..content
+        };
+        let mut b = wide(&count.to_string());
+        let bn = b.len() - 1;
+        DrawTextW(
+            hdc,
+            &mut b[..bn],
+            &mut badge_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        if !prev.is_invalid() {
+            SelectObject(hdc, prev);
+        }
+    }
+
+    // The warn dot, in the pill's top-right corner.
+    //
+    // **A drawn `Ellipse`, never the character U+25CF.** This window carries a
+    // text face, not a symbol one, and a face without the glyph draws a box --
+    // which reads as a rendering bug rather than as a warning. beckon has been
+    // here once already: an em-dash written to `serve --log` came back as
+    // `?"` under Windows PowerShell 5.1's ANSI default.
+    //
+    // **It costs no width, and that is the point of putting it in the
+    // corner.** The dot appears and disappears with `external_change` -- a
+    // data push -- so a dot that took horizontal room would make the pill's
+    // width data-dependent, and applying a new width means `layout`. The
+    // corner is empty: the caption is centred in a box already inset by
+    // `TAB_PAD_X`, so the nearest ink is `pad - PILL_DOT - 2*inset` away.
+    //
+    // It fits INSIDE the rounded corner rather than being clipped by it. At
+    // 96 DPI the arc's centre is `PILL_RADIUS` (8) in from each edge and the
+    // dot's is 5.5 in from each, so the dot's centre is 3.54 from the arc's
+    // centre and its far edge 7.04 -- inside 8, with the margin shrinking to
+    // nothing only if `PILL_DOT` grows past 9.
+    //
+    // Never drawn on a lit pill, and that is structural: `warn_dot_shown` is
+    // the complement of `banner_shown` within `external_change`, so the door
+    // whose pill would carry a dot is the door showing the banner instead.
+    // `warn` on `accent_fill` measures 1.212 in Light and has no `pairs()`
+    // row; `settings::the_dot_is_never_on_the_door_that_is_open` is what keeps
+    // it that way. On `strip` it is 4.609 / 7.857 and on `strip_hover`
+    // 3.772 / 6.457, both past SC 1.4.11's 3.0 non-text floor.
+    if warn {
+        let d = scale(PILL_DOT, dpi);
+        let inset = scale(2, dpi);
+        let x = pill.right - inset - d;
+        let y = pill.top + inset;
+        // `COLOR_WINDOWTEXT` under high contrast: the pill's own ground is
+        // `COLOR_BTNFACE` there (inactive, which is the only state a dot is
+        // drawn in), and `COLOR_BTNTEXT` is already the caption beside it --
+        // a warning that draws in the caption's colour is not a warning. The
+        // two indices are a matched system pair, per this file's rule that
+        // fill and ink never share one.
+        let c = cache.col(|p| p.warn, COLOR_WINDOWTEXT);
+        let dot_brush = CreateSolidBrush(c);
+        let dot_pen = CreatePen(PS_SOLID, 1, c);
+        let pb = SelectObject(hdc, HGDIOBJ(dot_brush.0));
+        let pp = SelectObject(hdc, HGDIOBJ(dot_pen.0));
+        let _ = Ellipse(hdc, x, y, x + d, y + d);
+        if !pp.is_invalid() {
+            SelectObject(hdc, pp);
+        }
+        if !pb.is_invalid() {
+            SelectObject(hdc, pb);
+        }
+        let _ = DeleteObject(HGDIOBJ(dot_pen.0));
+        let _ = DeleteObject(HGDIOBJ(dot_brush.0));
+    }
+
+    // The focus ring, LAST, per `button`'s rule -- so it never fights the
+    // caption, the badge or the dot for the same pixels.
+    //
+    // **Drawn in the `FOCUS_SLACK` margin, which is what the token is named
+    // for.** `button` insets its ring INTO the control because it has margin
+    // on every side to shrink into; a pill has none -- its content box is
+    // exactly its caption -- so the ring goes outside the pill instead, in the
+    // 3 px `layout` left around it. Inset by 1 from the control rect rather
+    // than drawn on it, so the whole 2 px stroke lands inside `rc` and none of
+    // it is clipped: `NM_CUSTOMDRAW`'s `hdc` is clipped to this control.
+    //
+    // `accent_on` on a lit pill, `accent` otherwise -- `BtnTier::Accent`'s
+    // own swap, and for its reason: `accent` on `accent_fill` is 1.00:1 in
+    // Light (identical hex) and 1.49:1 in Dark, so a ring in the accent
+    // colour is invisible on the one state whose fill IS that colour.
+    if focused && ui_state & UISF_HIDEFOCUS == 0 {
+        let ring = if active {
+            cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT)
+        } else {
+            cache.col(|p| p.accent, COLOR_HIGHLIGHT)
+        };
+        let d = scale(1, dpi);
+        let ring_rc = RECT {
+            left: rc.left + d,
+            top: rc.top + d,
+            right: rc.right - d,
+            bottom: rc.bottom - d,
+        };
+        let ring_pen = CreatePen(PS_SOLID, scale(2, dpi), ring);
+        let null_brush = GetStockObject(NULL_BRUSH);
+        let pp = SelectObject(hdc, HGDIOBJ(ring_pen.0));
+        let pb = SelectObject(hdc, null_brush);
+        if hc {
+            let _ = Rectangle(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+            );
+        } else {
+            // The ring's rect is `FOCUS_SLACK - 1` px outside the pill's on
+            // every side, so its radius is the pill's plus that -- derived,
+            // not chosen, or the ring's arcs stop being concentric with the
+            // corners they trace.
+            let r = scale(PILL_RADIUS + tok::FOCUS_SLACK - 1, dpi) * 2;
+            let _ = RoundRect(
+                hdc,
+                ring_rc.left,
+                ring_rc.top,
+                ring_rc.right,
+                ring_rc.bottom,
+                r,
+                r,
+            );
+        }
+        if !pp.is_invalid() {
+            SelectObject(hdc, pp);
+        }
+        if !pb.is_invalid() {
+            SelectObject(hdc, pb);
+        }
+        let _ = DeleteObject(HGDIOBJ(ring_pen.0));
+    }
+}
+
 /// A rounded 1 px border around `ctl`'s own rect, stroked from the PARENT.
 ///
 /// **`IDC_APP` and `IDC_FILTER` are never owner-drawn**, and this function

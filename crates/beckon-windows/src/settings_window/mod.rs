@@ -74,10 +74,14 @@
 //! inputs (`Ui::shown_external` lists them) and skips the App combo whenever
 //! another door is open, so any input that moves while the user is behind
 //! Keyboard, System or About leaves the combo genuinely stale and the trip back
-//! genuinely has to place it. Making `banner_shown` page-wide added one such
-//! input; a resize taken on another door, a `WM_DPICHANGED` there and the list
-//! gaining its first row were all already there, and `WM_SIZE` on Shortcuts
-//! itself never went through the doors at all. `place_app_combo` is what makes
+//! genuinely has to place it. A resize taken on another door, a
+//! `WM_DPICHANGED` there and the list gaining its first row are all such
+//! inputs, and `WM_SIZE` on Shortcuts itself never went through the doors at
+//! all. (**CORRECTED 2026-08-14, Task 6:** this named the banner as a fourth.
+//! It was one while `banner_shown` ignored the page; narrowed back to
+//! `BANNER_PAGE`, card 0 cannot gain height while the user is behind another
+//! door, so it no longer is. The other three are untouched and are why the
+//! rule stands.) `place_app_combo` is what makes
 //! the necessary placement survivable: it saves the edit's text and selection
 //! across the one `SetWindowPos` and puts them back if the control rewrote
 //! them. So the rule for this call site now has three parts -- do not place
@@ -147,8 +151,8 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    banner_shown, combo_needs_placing, default_button, ComboSpot, ControlState, DefaultButton,
-    FlagTone, ListItem, Mark, Note, Page, Paths, SettingsCommand,
+    banner_shown, combo_needs_placing, default_button, warn_dot_shown, ComboSpot, ControlState,
+    DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths, SettingsCommand, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -449,6 +453,22 @@ const TABS: [(i32, Page, &str); 4] = [
 fn page_of_tab(id: i32) -> Option<Page> {
     TABS.iter().find(|(t, _, _)| *t == id).map(|(_, p, _)| *p)
 }
+
+/// The widest count the Shortcuts pill's badge reserves room for, as the
+/// string that gets MEASURED rather than as a number of digits.
+///
+/// **Zeros, not nines, and the difference is not zero.** The face is
+/// proportional; `0` is the widest digit in most UI faces and never narrower
+/// than `9`, so measuring `0000` cannot under-reserve where `9999` might.
+///
+/// Four digits is the reservation, not the limit. A fifth digit draws into
+/// the pill's own `TAB_PAD_X` padding, which is 14 px against a digit of
+/// roughly 6 -- so a config with 10 000 bindings looks slightly tight and one
+/// with 100 000 clips. That is the right way round: the alternative is a pill
+/// whose width follows the data, and the only way to apply a new width is
+/// `layout`, which is `SetWindowPos` on the populated App combo -- the
+/// measured data-loss call. See `badge_slot_w`.
+const BADGE_SLOT: &str = "0000";
 
 /// The pill that stands for a door.
 ///
@@ -1739,12 +1759,18 @@ fn set_text(h: HWND, s: &str) {
 /// ones that are: `layout` skips the App combo entirely while another door is
 /// open (`if shortcuts`), so every input `layout` reads that moves while the
 /// user is behind Keyboard, System or About leaves the combo genuinely stale,
-/// and the trip back has to place it. The banner is one such input and is the
-/// one this task added -- `banner_shown` is page-wide now, so the announcement
-/// can appear while the user is elsewhere, card 0 gains height, card 2 moves
-/// down, `want_app.y` differs, and the placement runs. A resize on another
-/// door, a `WM_DPICHANGED` there, and the list gaining its first row all reach
-/// it the same way, so this is not a doors defect wearing a doors fix.
+/// and the trip back has to place it. A resize on another door, a
+/// `WM_DPICHANGED` there, and the list gaining its first row all reach it that
+/// way, so this is not a doors defect wearing a doors fix.
+///
+/// **CORRECTED 2026-08-14, Task 6.** This named the banner as a fourth such
+/// input, and while `banner_shown` ignored the page it was one: the
+/// announcement could appear while the user was elsewhere, card 0 gained
+/// height, card 2 moved down and `want_app.y` differed. Narrowed back to
+/// `BANNER_PAGE`, card 0 stays zero-height on the other three doors and the
+/// banner can only move while Shortcuts is the door open -- which is a
+/// `WM_SIZE`-shaped path, not a doors-shaped one. The other three inputs are
+/// unchanged and this function is still needed for them.
 ///
 /// And a placement is the measured data-loss call: a populated `CBS_DROPDOWN`
 /// answers a resize by re-synchronising its edit to the closest catalogue entry
@@ -3169,10 +3195,12 @@ unsafe fn build_children(hwnd: HWND) {
     // So the named fallback (`BS_PUSHBUTTON + BS_NOTIFY`, a `BN_SETFOCUS` arm
     // and `TrackMouseEvent`) is not needed and should not be built.
     //
-    // Nothing draws a pill yet: `push_button_custom_draw`'s dispatch is gated
-    // on `is_push_button`, which these deliberately are not, so until
-    // `paint::tab_pill` and its own `NM_CUSTOMDRAW` arm land the four render
-    // as ordinary themed push buttons, one of them stuck down.
+    // **`paint::tab_pill` draws them, through its own `WM_NOTIFY` arm.** That
+    // arm is a sibling of `push_button_custom_draw`'s rather than a widening
+    // of it, because the latter is gated on `is_push_button` and these
+    // deliberately are not -- the same absence from `PUSH_BUTTONS` this
+    // comment's own paragraph above is about. Landed in Task 6; before it the
+    // four rendered as ordinary themed push buttons, one of them stuck down.
     //
     // The `AUTO` is doing real work: it clears the sibling pills on a click
     // and it makes Left/Right inside the group select as they move. What it
@@ -4056,6 +4084,34 @@ unsafe fn text_size(hwnd: HWND, font: HFONT, dpi: u32, s: &str) -> (i32, i32) {
     }
 }
 
+/// How much width the Shortcuts pill sets aside for its count badge,
+/// including the gap that separates it from the caption.
+///
+/// **ONE arithmetic, two callers, and they are on opposite sides of the same
+/// pixel.** `layout` adds this to that pill's width; `paint::tab_pill` takes
+/// it off the right of the content box before centring the caption in what is
+/// left. Two spellings that agreed on the day they were written would drift
+/// into a caption drawn off-centre or a badge drawn over it, and neither is
+/// visible from a non-Windows host.
+///
+/// **Constant, never a function of the count**, which is the property the
+/// whole badge design rests on: `layout` sizes controls, `layout` is
+/// `SetWindowPos` on the populated App combo, and that is the measured
+/// data-loss call (`Ui::shown_external`). A badge slot that grew with the
+/// number would put a data push on that path. `ControlState::marked_count`'s
+/// doc names this same route -- "reserving width for the widest caption at
+/// `layout` time" -- as the one open way to have a live count without calling
+/// `layout`; this is that route, taken.
+///
+/// `cap_font()`, not `Role::Body`: the badge draws in the window's one small
+/// face and is measured in the same handle it is drawn in. The fallback is
+/// the estimate `text_size` already makes when it cannot get a DC, which is
+/// deliberately generous -- too wide costs a gap, too narrow clips.
+unsafe fn badge_slot_w(hwnd: HWND, dpi: u32) -> i32 {
+    let font = cap_font().unwrap_or_else(|| HFONT(GetStockObject(DEFAULT_GUI_FONT).0));
+    scale(tok::GAP, dpi) + text_size(hwnd, font, dpi, BADGE_SLOT).0
+}
+
 /// How one run of keycaps is drawn.
 ///
 /// **Two styles, ONE painter.** The Shortcut column and the seven toggle
@@ -4817,12 +4873,12 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             enable(hwnd, id, st.editable && st.caps_checked);
         }
 
-        // `banner_shown`, not `external_change` on its own -- even though the
-        // two currently agree. The function is where the condition is allowed
-        // to change: it draws the announcement on every door until Task 6 puts
-        // a warn dot on the Shortcuts pill, and then narrows to that pill's own
-        // page. Reading the flag here would be one of five sites that has to be
-        // found and edited on that day, and the one whose omission is silent.
+        // `banner_shown`, not `external_change` on its own. The function is
+        // where the condition is allowed to change, and it just did: Task 6
+        // narrowed it back to `BANNER_PAGE` now that the Shortcuts pill carries
+        // a warn dot on the other three doors. Reading the flag here would have
+        // been one of five sites to find and edit that day, and the one whose
+        // omission is silent.
         //
         // One function, five readers: this, `show_page_controls`, `layout`'s
         // card 0, `compute_card_rects`, and core's `DefaultButton::visible` for
@@ -4830,6 +4886,16 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // the measured defect `default_button` exists for.
         let page = PAGE.with(|p| p.get());
         let banner_on = banner_shown(external_change, page);
+        // The pill's two values, pushed through a `Cell` rather than through
+        // `UI` or through a caption -- `PILL_BADGE` carries both reasons. The
+        // count is the FILE's, never `st.items.len()`, which is filtered and
+        // exempts the selected row; the badge is read from three pages that
+        // have no filter box.
+        //
+        // `external_change` is stored rather than the dot's own condition,
+        // because that condition also depends on the page and the page moves
+        // through `show_page`, which never calls this function.
+        set_pill_badge(hwnd, st.binding_count, external_change);
         show(banner, banner_on);
         show(reload, banner_on);
         show(keep, banner_on);
@@ -5329,6 +5395,71 @@ fn set_cap_font(f: HFONT) {
     CAP_FONT.with(|c| c.set(f.0 as isize));
 }
 
+/// What the Shortcuts pill draws besides its caption: how many bindings the
+/// FILE has, and whether the config moved on disk underneath the window.
+///
+/// **A `Cell`, for `CAP_FONT`'s reason, and this is the third time that
+/// reason has decided a design here.** `paint::tab_pill` runs inside a paint,
+/// and a paint reaches this window while `UI` is already borrowed -- measured
+/// on a14, where every subitem-1 notification exited at `try_borrow` and the
+/// Shortcut column silently drew as plain text. `CHIPS`, `CAP_FONT` and
+/// `SHOWN_NOTES` are the three precedents; this is the fourth.
+///
+/// **Neither value may ride in the pill's CAPTION**, which is the other way
+/// they could have reached the painter. `layout` sizes every button from
+/// `text_size` of its own caption, so a caption that carried the count would
+/// make the count a `layout` input -- and `layout` on a data push is
+/// `SetWindowPos` on the populated App combo, the measured data-loss call.
+/// `cap::STOP` is the same decision already taken once, for `Record`.
+///
+/// **`external` is stored, not `warn`.** The dot's condition is
+/// `warn_dot_shown(external, page)` and `page` moves through `show_page`,
+/// which does not call `apply_state` at all -- so a stored `warn` would go
+/// stale on the very keystroke it exists for. The painter reads `PAGE`, which
+/// is itself a paint-safe `Cell`, and asks core. That the repaint happens is
+/// separate and is `CheckRadioButton`'s doing: `warn_dot_shown` changes
+/// exactly when `page == BANNER_PAGE` does, which is exactly when the
+/// Shortcuts pill's own tick changes, and changing a radio's tick invalidates
+/// it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PillBadge {
+    count: usize,
+    external: bool,
+}
+
+thread_local! {
+    static PILL_BADGE: std::cell::Cell<PillBadge> = const {
+        std::cell::Cell::new(PillBadge {
+            count: 0,
+            external: false,
+        })
+    };
+}
+
+/// Push the badge count and the external-change flag, and repaint the
+/// Shortcuts pill -- but only when one of them actually moved.
+///
+/// **The guard is `set_chip`'s, and it is not an optimisation.**
+/// `apply_state` runs on every keystroke; an unconditional `InvalidateRect`
+/// would repaint a pill nobody is looking at once per character typed into
+/// the App field.
+///
+/// Safe to call from inside `apply_state`: `InvalidateRect` only marks the
+/// control dirty, and the `WM_PAINT` (and the `NM_CUSTOMDRAW` it sends back
+/// here) arrives later, from the message loop.
+fn set_pill_badge(parent: HWND, count: usize, external: bool) {
+    let want = PillBadge { count, external };
+    if PILL_BADGE.with(|c| c.get()) == want {
+        return;
+    }
+    PILL_BADGE.with(|c| c.set(want));
+    if let Ok(h) = unsafe { GetDlgItem(Some(parent), IDC_TAB_SHORTCUTS) } {
+        unsafe {
+            let _ = InvalidateRect(Some(h), None, false);
+        }
+    }
+}
+
 fn cap_font() -> Option<HFONT> {
     let v = CAP_FONT.with(|c| c.get());
     if v == 0 {
@@ -5485,6 +5616,51 @@ unsafe fn caps_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     let enabled = cd.uItemState.0 & CDIS_DISABLED.0 == 0;
     let focused = cd.uItemState.0 & CDIS_FOCUS.0 != 0;
     PAINT_THEME.with(|c| toggle(cd, on, enabled, focused, &mut c.borrow_mut(), dpi));
+    CDRF_SKIPDEFAULT as isize
+}
+
+/// Paint one of the four tab pills, by reading off the `NMCUSTOMDRAW` the
+/// three things `paint::tab_pill` cannot ask for itself.
+///
+/// The same shape `push_button_custom_draw` and `caps_custom_draw` use one
+/// and two functions up: one notification in, one full repaint out,
+/// `CDRF_SKIPDEFAULT` on the way back.
+///
+/// **`is_checked`, not `CDIS_CHECKED`** -- there is no such bit. See
+/// `paint::tab_pill`'s own doc, and `caps_custom_draw` for the identical
+/// decision taken for `IDC_CAPS`.
+///
+/// **The badge and the dot come from `PILL_BADGE` and `PAGE`, never from
+/// `UI`.** Both are `Cell`s, and a paint reaches this window while `UI` is
+/// already borrowed. The dot's condition is asked of core rather than spelled
+/// here, so it stays the exact complement of `banner_shown` -- which is what
+/// makes narrowing that function safe.
+unsafe fn tab_pill_custom_draw(hwnd: HWND, opens: Page, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    if cd.dwDrawStage != CDDS_PREPAINT {
+        return CDRF_DODEFAULT as isize;
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let id = cd.hdr.idFrom as i32;
+    let active = is_checked(hwnd, id);
+    let st = PILL_BADGE.with(|c| c.get());
+    // `opens` is the door THIS PILL leads to; `PAGE` is the door currently
+    // open. They are different questions and the dot needs both -- it is drawn
+    // on the Shortcuts pill (`opens`) while the user is standing somewhere
+    // else (`PAGE`).
+    //
+    // Only that one pill carries either, and only it has the slot `layout`
+    // reserved for a badge -- so `None` here is what keeps the other three
+    // centring their captions across the full content box.
+    let (badge, warn) = if opens == BANNER_PAGE {
+        (
+            Some(st.count),
+            warn_dot_shown(st.external, PAGE.with(|p| p.get())),
+        )
+    } else {
+        (None, false)
+    };
+    PAINT_THEME.with(|c| tab_pill(cd, active, badge, warn, &mut c.borrow_mut(), dpi));
     CDRF_SKIPDEFAULT as isize
 }
 
@@ -6072,6 +6248,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         card(hdc, rc, dpi);
                     }
                 }
+                // The tab strip's trough, in the same layer as the cards and
+                // for the same reason: it is the window's own background under
+                // four child controls that paint themselves afterwards. It is
+                // NOT one of the four rects above -- `compute_card_rects`
+                // deliberately does not return it, because it is not a card
+                // and `card` would give it a border and the wrong fill.
+                //
+                // `strip_rect` is the one source of that geometry, the same
+                // function `layout` places the pills from and
+                // `compute_card_rects` reads the first card's `y` out of.
+                //
+                // Outside the `PAINT_THEME.with` block below, exactly like the
+                // card loop: `trough` reads the theme through `theme_col` /
+                // `theme_brush`, each of which takes its own borrow, and a
+                // nested second borrow of that `RefCell` panics.
+                {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    let mut rc = RECT::default();
+                    if GetClientRect(hwnd, &mut rc).is_ok() {
+                        trough(hdc, strip_rect(rc, dpi), dpi);
+                    }
+                }
                 // ONE borrow, taken and dropped on this line -- `chrome::paint`
                 // below must not run with `UI` still borrowed, on the same
                 // rule every other arm in this function follows.
@@ -6321,6 +6519,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // answered before `suppressed()` too.
                 if nm.idFrom == IDC_CAPS as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(caps_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                }
+                // The four tab pills (Task 6). A SIBLING arm rather than a
+                // widening of the push-button one above: the pills are
+                // deliberately absent from `PUSH_BUTTONS` -- see `TABS` for
+                // both reasons -- so `is_push_button` does not match them and
+                // must not be taught to. `paint::tab_pill` is likewise a
+                // sibling of `paint::button` and not a branch inside it.
+                //
+                // Before `suppressed()`, on the same rule as the three arms
+                // above: custom draw is pure painting, it reaches no callback
+                // and it cannot recurse into `apply_state`, so the guard's
+                // reason does not apply. Falling through while suppressed
+                // would draw the pills as ordinary themed push buttons for
+                // that frame -- a visible flicker of a different control.
+                if nm.code == NM_CUSTOMDRAW {
+                    if let Some(opens) = page_of_tab(nm.idFrom as i32) {
+                        return LRESULT(tab_pill_custom_draw(
+                            hwnd,
+                            opens,
+                            lp.0 as *const NMCUSTOMDRAW,
+                        ));
+                    }
                 }
                 if suppressed() {
                     return LRESULT(0);
@@ -7687,6 +7907,46 @@ mod tests {
             "the old successor was safe to press, not free of the ring -- if \
              this ever stops holding, re-read why the door change stopped \
              using it"
+        );
+    }
+
+    /// The badge slot is reserved on exactly the pill that draws a badge.
+    ///
+    /// **Two functions decide that independently and they must not disagree.**
+    /// `layout` adds `badge_slot_w` to a pill's width when its `TABS` entry
+    /// opens `BANNER_PAGE`; `tab_pill_custom_draw` passes `Some(count)` under
+    /// the identical test. A slot reserved on a pill that draws no badge is a
+    /// caption pushed left of centre for good; a badge drawn into a pill with
+    /// no slot lands on top of the caption. Neither is visible from a
+    /// non-Windows host, and both are one edited constant away.
+    ///
+    /// It also pins that there IS one -- `BANNER_PAGE` has to name a door the
+    /// strip really has, or the badge is reserved and drawn nowhere -- and
+    /// that `BADGE_SLOT` measures to something. An empty slot string would
+    /// leave `badge_slot_w` at one `tok::GAP`, which is a badge drawn over the
+    /// caption rather than beside it.
+    #[test]
+    fn the_badge_slot_is_reserved_on_the_pill_that_draws_it() {
+        let carriers: Vec<i32> = TABS
+            .iter()
+            .filter(|(_, page, _)| *page == BANNER_PAGE)
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert_eq!(
+            carriers,
+            vec![IDC_TAB_SHORTCUTS],
+            "the badge and its reserved slot are decided by `opens == \
+             BANNER_PAGE` in two places; exactly one pill must answer it"
+        );
+        assert!(
+            !BADGE_SLOT.is_empty() && BADGE_SLOT.chars().all(|c| c.is_ascii_digit()),
+            "the slot is reserved by MEASURING this string in the badge's own \
+             face, so it has to be digits and it has to be some"
+        );
+        assert!(
+            BADGE_SLOT.len() >= 4,
+            "four digits is the reservation; fewer starts clipping counts a \
+             real config can reach"
         );
     }
 

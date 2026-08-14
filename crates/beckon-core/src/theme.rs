@@ -377,6 +377,52 @@ mod tests {
             // and no row in this table covers that pair, so the failure
             // would ship unseen.
             ("active pill fill on strip", p.accent_fill, p.strip, 1.2),
+            // The Shortcuts pill's warn dot -- a drawn `Ellipse`, never the
+            // character U+25CF, because this window carries a text face and a
+            // missing glyph draws as a box. It says the config file moved on
+            // disk while the user is behind one of the other three doors.
+            //
+            // **3.0, not the 4.5 the four `IDC_NOTES` dots above carry, and
+            // that is a floor chosen rather than a floor dodged.** Those four
+            // sit in a line of prose on a card and were given the text floor
+            // they already clear. This one is a standalone non-text indicator,
+            // which is WCAG 2.1 SC 1.4.11's 3.0. It matters because the ink is
+            // shared: `warn` measures 4.609 / 7.857 at rest on `strip` --
+            // comfortably past 4.5 -- and 3.772 / 6.457 on `strip_hover`, so
+            // holding the hover state to 4.5 would mean moving `LIGHT.warn`,
+            // which is also the warn pill's and the warn note dot's ink. The
+            // hover ground is the binding one in both themes because
+            // `strip_hover` is the darker of the two in Light and the lighter
+            // in Dark, i.e. it moves toward the ink either way.
+            //
+            // There is deliberately no `warn on accent_fill` row: the dot is
+            // never drawn on a lit pill. `warn_dot_shown` is the complement of
+            // `banner_shown` within `external_change`, so the door whose pill
+            // would carry the dot is exactly the door showing the banner
+            // instead -- pinned by `settings::the_dot_is_never_on_the_door_
+            // that_is_open`. That pair measures 1.212 in Light, so the
+            // structure is what keeps it off screen, not this table.
+            ("warn dot on strip (SC 1.4.11)", p.warn, p.strip, 3.0),
+            (
+                "warn dot on strip_hover (SC 1.4.11)",
+                p.warn,
+                p.strip_hover,
+                3.0,
+            ),
+            // The pill's own focus ring, drawn in the `FOCUS_SLACK` margin
+            // between the control's edge and the pill anyone sees. Non-text
+            // again, so 3.0 again -- and the same swap the label makes: on a
+            // LIT pill the ring is `accent_on`, not `accent`, because `accent`
+            // on `accent_fill` is 1.00:1 in Light (identical hex) and
+            // `paint::button`'s `Accent` tier already had to solve this.
+            // `accent_on` on `accent_fill` has its own 4.5 row above.
+            ("pill focus ring on strip", p.accent, p.strip, 3.0),
+            (
+                "pill focus ring on strip_hover",
+                p.accent,
+                p.strip_hover,
+                3.0,
+            ),
             // -- Exemptions. WCAG 2.1 SC 1.4.3 itself excepts "text ... that
             // is part of an inactive user interface component" from the 4.5
             // floor. These two rows are the disabled-state ink the review's
