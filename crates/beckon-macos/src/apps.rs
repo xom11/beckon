@@ -15,6 +15,7 @@
 //!   4. Installed app — `CFBundleIdentifier` exact match.
 //!   5. Installed app — name substring (alphabetical-first wins, like rofi).
 
+use beckon_core::certainty::{Certainty, NameReport};
 use objc2::rc::Retained;
 use objc2::Message;
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
@@ -53,6 +54,21 @@ impl MatchType {
             MatchType::InstalledName => "installed app name (exact)",
             MatchType::InstalledBundleId => "installed app CFBundleIdentifier",
             MatchType::InstalledNameSubstring => "installed app name substring",
+        }
+    }
+
+    /// How sure this tier is, in the cross-OS vocabulary.
+    ///
+    /// Exhaustive with no wildcard arm on purpose: a new `MatchType` variant
+    /// must fail to compile here rather than default quietly into `Exact`.
+    pub fn certainty(self) -> beckon_core::certainty::Certainty {
+        use beckon_core::certainty::Certainty;
+        match self {
+            MatchType::RunningName => Certainty::Exact,
+            MatchType::RunningBundleId => Certainty::Exact,
+            MatchType::InstalledName => Certainty::Exact,
+            MatchType::InstalledBundleId => Certainty::Exact,
+            MatchType::InstalledNameSubstring => Certainty::Guess,
         }
     }
 }
@@ -252,29 +268,108 @@ pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<Reso
     resolve_inner(id, &refs, installed_apps, bundle_path_for)
 }
 
-/// Does anything on this machine answer to `id`? Resolves against both
-/// snapshots the caller already holds, which is what lets `check --resolve`
-/// pay for one `installed_apps()` scan per file instead of one per binding —
-/// `resolve` re-walks `/Applications` on every call.
+/// What a keypress costs when a name matched only by substring and exactly one
+/// app answered it.
+const GUESS_LONE: &str = "substring match, so an app installed later can quietly take this name";
+
+/// What a miss means on macOS.
+const MISS_CONSEQUENCE: &str = "no match; this key will error and launch nothing";
+
+/// The report for one already-resolved name.
 ///
-/// No bundle path is looked up: the answer is a yes/no, and `bundle_path_for`
-/// is an NSWorkspace round trip on every running match.
-pub(crate) fn resolves_in(
-    id: &str,
-    running: &[RunningAppInfo],
-    installed: &[InstalledAppInfo],
-) -> bool {
-    let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
-    resolve_inner(id, &refs, || installed.to_vec(), |_| None).is_some()
+/// `installed` is passed so a guess can name its rivals. It is empty when the
+/// match came from the running tiers, which is correct: those are exact, and
+/// an exact match has no rivals worth printing.
+fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> NameReport {
+    let certainty = m.match_type.certainty();
+    let (consequence, suggestions) = if certainty == Certainty::Guess {
+        let needle = normalize(id);
+        let mut others: Vec<String> = installed
+            .iter()
+            .filter(|a| normalize(&a.name).contains(&needle) && a.bundle_id != m.bundle_id)
+            .map(|a| a.name.clone())
+            .collect();
+        others.sort();
+        // Several candidates is a different hazard from one, and the worse of
+        // the two: the winner is whichever sorts first, so which app the key
+        // opens is a property of the catalog rather than of the config, and
+        // one install can reverse it.
+        let sentence = if others.is_empty() {
+            GUESS_LONE.to_string()
+        } else {
+            format!(
+                "substring match with {} candidates; \"{}\" wins only because it sorts first",
+                others.len() + 1,
+                m.display_name
+            )
+        };
+        others.truncate(3);
+        (sentence, others)
+    } else {
+        (String::new(), Vec::new())
+    };
+    NameReport {
+        id: id.to_string(),
+        certainty,
+        target: Some(m.bundle_id.clone()),
+        tier: Some(m.match_type.describe()),
+        consequence,
+        suggestions,
+    }
 }
 
-/// Pure resolution against caller-supplied snapshots. Closures isolate the
-/// two NSWorkspace-touching operations (installed scan, bundle path lookup)
-/// so tests can pass stubs.
-pub(crate) fn resolve_inner(
-    id: &str,
+/// One `NameReport` per name, in the order given, against caller-supplied
+/// snapshots. `installed_loader` runs at most once for the whole batch, and
+/// not at all when every name resolves from the running tiers.
+pub(crate) fn resolve_reports_in(
+    names: &[&str],
     running: &[RunningRef<'_>],
     installed_loader: impl FnOnce() -> Vec<InstalledAppInfo>,
+) -> Vec<NameReport> {
+    let mut loader = Some(installed_loader);
+    let mut installed: Option<Vec<InstalledAppInfo>> = None;
+    let mut out = Vec::with_capacity(names.len());
+
+    for id in names {
+        // `|_| None` for the bundle path: the report names the bundle id and
+        // never the path, and `bundle_path_for` is an NSWorkspace round trip
+        // on every running match.
+        if let Some(m) = resolve_running_in(id, running, |_| None) {
+            out.push(report_for(id, &m, &[]));
+            continue;
+        }
+        if installed.is_none() {
+            let load = loader.take().expect("loader is taken at most once");
+            installed = Some(load());
+        }
+        let inst = installed.as_deref().expect("loaded on the line above");
+        match resolve_installed_in(id, inst) {
+            Some(m) => out.push(report_for(id, &m, inst)),
+            None => out.push(NameReport {
+                id: (*id).to_string(),
+                certainty: Certainty::NoMatch,
+                target: None,
+                tier: None,
+                consequence: MISS_CONSEQUENCE.to_string(),
+                suggestions: Vec::new(),
+            }),
+        }
+    }
+    out
+}
+
+/// One `NameReport` per name, against this machine.
+pub fn resolve_reports(names: &[&str]) -> Vec<NameReport> {
+    let running = running_apps();
+    let refs: Vec<RunningRef<'_>> = running.iter().map(RunningRef::from).collect();
+    resolve_reports_in(names, &refs, installed_apps)
+}
+
+/// The two running-app tiers, split out so a batch caller can run them
+/// without holding an installed-app scan.
+pub(crate) fn resolve_running_in(
+    id: &str,
+    running: &[RunningRef<'_>],
     bundle_path_for: impl Fn(&str) -> Option<PathBuf>,
 ) -> Option<ResolvedMatch> {
     let needle = normalize(id);
@@ -295,8 +390,16 @@ pub(crate) fn resolve_inner(
             match_type: MatchType::RunningBundleId,
         });
     }
+    None
+}
 
-    let installed = installed_loader();
+/// The three installed-app tiers, against a caller-supplied catalog.
+pub(crate) fn resolve_installed_in(
+    id: &str,
+    installed: &[InstalledAppInfo],
+) -> Option<ResolvedMatch> {
+    let needle = normalize(id);
+
     if let Some(app) = installed.iter().find(|a| normalize(&a.name) == needle) {
         return Some(ResolvedMatch {
             bundle_id: app.bundle_id.clone(),
@@ -325,6 +428,21 @@ pub(crate) fn resolve_inner(
         bundle_path: Some(app.bundle_path.clone()),
         match_type: MatchType::InstalledNameSubstring,
     })
+}
+
+/// Pure resolution against caller-supplied snapshots. Closures isolate the
+/// two NSWorkspace-touching operations (installed scan, bundle path lookup)
+/// so tests can pass stubs.
+pub(crate) fn resolve_inner(
+    id: &str,
+    running: &[RunningRef<'_>],
+    installed_loader: impl FnOnce() -> Vec<InstalledAppInfo>,
+    bundle_path_for: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<ResolvedMatch> {
+    if let Some(m) = resolve_running_in(id, running, bundle_path_for) {
+        return Some(m);
+    }
+    resolve_installed_in(id, &installed_loader())
 }
 
 /// Substring matches across installed apps, sorted by bundle id. Used by
@@ -372,6 +490,14 @@ mod tests {
         installed: Vec<InstalledAppInfo>,
     ) -> Option<ResolvedMatch> {
         resolve_inner(id, running, move || installed, |_| None)
+    }
+
+    fn reports_test(
+        names: &[&str],
+        running: &[RunningRef],
+        installed: Vec<InstalledAppInfo>,
+    ) -> Vec<beckon_core::certainty::NameReport> {
+        resolve_reports_in(names, running, move || installed)
     }
 
     // ---------- normalize ----------
@@ -532,5 +658,149 @@ mod tests {
             called.get(),
             "installed_loader should run when running miss"
         );
+    }
+
+    // ---------- certainty ----------
+
+    /// Exactly one tier is a guess. Listed rather than looped so that adding a
+    /// `MatchType` variant fails to compile in `certainty()` itself — the
+    /// wildcard-free match there is the real guard; this pins its answer.
+    #[test]
+    fn only_the_substring_tier_is_a_guess() {
+        use beckon_core::certainty::Certainty;
+        assert_eq!(MatchType::RunningName.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::RunningBundleId.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::InstalledName.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::InstalledBundleId.certainty(), Certainty::Exact);
+        assert_eq!(
+            MatchType::InstalledNameSubstring.certainty(),
+            Certainty::Guess
+        );
+    }
+
+    // ---------- reports ----------
+
+    #[test]
+    fn every_name_gets_one_report_in_the_order_asked() {
+        let reports = reports_test(
+            &["Claude", "nope-zzz", "Brave Browser"],
+            &[],
+            vec![
+                installed("com.anthropic.claude", "Claude"),
+                installed("com.brave.Browser", "Brave Browser"),
+            ],
+        );
+        let ids: Vec<&str> = reports.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["Claude", "nope-zzz", "Brave Browser"]);
+    }
+
+    #[test]
+    fn an_exact_name_has_nothing_to_warn_about() {
+        use beckon_core::certainty::Certainty;
+        let reports = reports_test(
+            &["Claude"],
+            &[],
+            vec![installed("com.anthropic.claude", "Claude")],
+        );
+        let r = &reports[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.target.as_deref(), Some("com.anthropic.claude"));
+        assert_eq!(r.tier, Some("installed app name (exact)"));
+        assert!(r.consequence.is_empty());
+        assert!(r.suggestions.is_empty());
+    }
+
+    /// A running app grades `Exact` too. `Finder` lives in
+    /// /System/Library/CoreServices, which `installed_apps()` does not walk,
+    /// so the running tier is the only thing that finds it — and it is an
+    /// exact name match, not a guess.
+    #[test]
+    fn a_running_only_app_is_exact_not_a_guess() {
+        use beckon_core::certainty::Certainty;
+        let running = vec![rref("com.apple.finder", "Finder")];
+        let reports = reports_test(&["Finder"], &running, Vec::new());
+        assert_eq!(reports[0].certainty, Certainty::Exact);
+        assert_eq!(reports[0].tier, Some("running app localizedName (exact)"));
+    }
+
+    /// One candidate: the hazard is that a future install can take the name.
+    #[test]
+    fn a_lone_substring_match_says_a_new_install_could_take_it() {
+        use beckon_core::certainty::Certainty;
+        let reports = reports_test(
+            &["brave"],
+            &[],
+            vec![installed("com.brave.Browser", "Brave Browser")],
+        );
+        let r = &reports[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert_eq!(r.tier, Some("installed app name substring"));
+        assert!(r.suggestions.is_empty(), "{:?}", r.suggestions);
+        assert!(
+            r.consequence.contains("install"),
+            "consequence was {:?}",
+            r.consequence
+        );
+    }
+
+    /// Several candidates is the worse case and must read differently: the
+    /// winner is decided by sort order, so which app the key opens is a
+    /// property of the catalog, not of the config. Measured on another
+    /// machine before `desktop::scan()` was sorted: 20 runs split 12/8
+    /// between two entries.
+    #[test]
+    fn several_substring_candidates_name_the_winner_and_the_runners_up() {
+        use beckon_core::certainty::Certainty;
+        let reports = reports_test(
+            &["brave"],
+            &[],
+            vec![
+                installed("com.brave.Browser", "Brave Browser"),
+                installed("com.brave.Browser.beta", "Brave Browser Beta"),
+            ],
+        );
+        let r = &reports[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert_eq!(r.target.as_deref(), Some("com.brave.Browser"));
+        assert!(
+            r.consequence.contains('2'),
+            "the count must be in the sentence: {:?}",
+            r.consequence
+        );
+        assert_eq!(r.suggestions, vec!["Brave Browser Beta".to_string()]);
+    }
+
+    /// A total miss has no suggestions to give and must not invent any: the
+    /// substring tier IS the last tier, so nothing matched by any measure
+    /// this crate owns.
+    #[test]
+    fn a_total_miss_carries_no_target_no_tier_and_no_suggestions() {
+        use beckon_core::certainty::Certainty;
+        let reports = reports_test(
+            &["zalo"],
+            &[],
+            vec![installed("com.apple.finder", "Finder")],
+        );
+        let r = &reports[0];
+        assert_eq!(r.certainty, Certainty::NoMatch);
+        assert_eq!(r.target, None);
+        assert_eq!(r.tier, None);
+        assert!(r.suggestions.is_empty());
+        assert!(!r.consequence.is_empty());
+    }
+
+    /// The catalog is walked once for the whole batch, not once per name.
+    /// `installed_apps()` reads three roots and one Info.plist per bundle;
+    /// an eighteen-binding file is ordinary.
+    #[test]
+    fn the_installed_catalog_is_loaded_at_most_once_for_a_batch() {
+        use std::cell::Cell;
+        let calls = Cell::new(0usize);
+        let reports = resolve_reports_in(&["a-zzz", "b-zzz", "c-zzz"], &[], || {
+            calls.set(calls.get() + 1);
+            Vec::new()
+        });
+        assert_eq!(reports.len(), 3);
+        assert_eq!(calls.get(), 1);
     }
 }
