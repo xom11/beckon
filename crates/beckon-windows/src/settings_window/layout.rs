@@ -4,6 +4,12 @@
 //! populated App combo, which is the measured data-loss path. Nothing may add
 //! a new call site for it on a keystroke path.
 //!
+//! That call is now made only when the combo is not already where this pass
+//! would put it (`combo_needs_placing`) -- so "nothing may add a new call
+//! site" has a second reading it did not have before: an unguarded
+//! `place_h(ui.app, ..)` would not merely be one more call site, it would
+//! reinstate the unconditional one this file just stopped making.
+//!
 //! Task 8 turns the flat bands into cards. `compute_card_rects` is the ONE
 //! place that decides where the four cards sit and how tall each is; `layout`
 //! places every control `tok::CARD_PAD` inside whichever card rect it belongs
@@ -497,6 +503,15 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// unmeasured (spec §10 open question 2). The strip and the command bar are
 /// chrome and are placed on every page.
 ///
+/// **And that skip covers only the outward half of the trip.** Every switch
+/// back INTO Shortcuts runs this function with `shortcuts` true, on a combo
+/// that in the ordinary case has not moved a pixel -- and the placement is a
+/// real resize even so, because the `cy` handed to a combo is its DROPPED
+/// height while its window rect holds its closed one, so the request can
+/// never equal the current state. The return trip is closed by
+/// `combo_needs_placing`, at the `place_h` itself: the control is asked where
+/// it is, and the call is not made when it is already there.
+///
 /// **The LIST is the one thing that flexes.** See `compute_card_rects`'s
 /// own comment on why, and on `editor_min`/`room`/`y.min(kb_y)` — that
 /// arithmetic lives there now, not here; this function only reads
@@ -612,17 +627,51 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // there.
     let text_h = text_size(hwnd, ui.fonts.get(Role::Body), dpi, "Ag").1;
     let field_h = (text_h + s(10)).min(ctl);
-    let mut arc = RECT::default();
-    let combo_h = if GetWindowRect(ui.app, &mut arc).is_ok() {
+    // ONE `GetWindowRect` on the App combo, read for two different questions:
+    // how tall the theme made it (`combo_h`, just below) and whether it is
+    // already exactly where this pass would put it (`app_seen`, further
+    // down). Asking twice would be two answers to one question, and the
+    // second answer is the one that decides whether the measured data-loss
+    // call runs.
+    let app_rect = {
+        let mut r = RECT::default();
+        if GetWindowRect(ui.app, &mut r).is_ok() {
+            Some(r)
+        } else {
+            None
+        }
+    };
+    let combo_h = app_rect.and_then(|arc| {
         let ah = arc.bottom - arc.top;
         if ah > 0 && ah < ctl && ah >= text_h + s(2) {
             Some(ah)
         } else {
             None
         }
-    } else {
-        None
-    };
+    });
+    // The same rect in CLIENT coordinates, which is what every rect this
+    // function computes is in. `GetWindowRect` answers in screen
+    // coordinates, so the conversion is not optional and its failure means
+    // "unknown", which `combo_needs_placing` reads as "place it".
+    //
+    // Only the top-left is converted: `ScreenToClient` is a translation, so
+    // the width is the same number in both spaces and a second call would be
+    // a second chance to fail for no extra fact.
+    let app_seen = app_rect.and_then(|r| {
+        let mut tl = POINT {
+            x: r.left,
+            y: r.top,
+        };
+        if ScreenToClient(hwnd, &mut tl).as_bool() {
+            Some(ComboSpot {
+                x: tl.x,
+                y: tl.y,
+                cx: r.right - r.left,
+            })
+        } else {
+            None
+        }
+    });
     // Both EDITs take the combo's height, so the three fields in this window
     // are one box repeated. A single-line EDIT top-aligns its text -- Win32
     // gives it no vertical centring at all -- so it is centred in its band
@@ -883,7 +932,35 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // Line 1: App, full width.
         let mut ly = grp_y + s(24);
         place(IDC_LBL_APP, ins_x, ly, lw_lbl, ctl);
-        place_h(ui.app, fld_x, ly + edit_dy, fld_w, field_h * 9);
+        // **Skipped when the combo is already exactly here, and that is the
+        // other half of the `if shortcuts` above.** That guard is
+        // one-directional: it keeps the combo out of reach while another door
+        // is open, and then every switch BACK through this door placed it
+        // again -- on a combo that had not moved a pixel, which is the same
+        // resize the a14 measurement pinned (nothing in the layout had moved
+        // and typing was still lost). `combo_needs_placing` carries the whole
+        // argument, including why the `cy` below is not what to change and why
+        // this settles the return trip without waiting on spec 10 open
+        // question 1.
+        //
+        // `field_h * 9` is the DROPPED height, and is left exactly as it was.
+        // It is also why the height is absent from `ComboSpot`: it is the one
+        // component `GetWindowRect` can never report back.
+        //
+        // Not applied to `ui.combo` or `IDC_TAP` below. Both are
+        // `CBS_DROPDOWNLIST`, which has no edit child for a resize to
+        // re-synchronise, so there is no data to lose there and no second
+        // measured hazard to guard -- and an unnecessary guard on the two
+        // harmless controls would make the one on the dangerous control look
+        // like tidiness.
+        let want_app = ComboSpot {
+            x: fld_x,
+            y: ly + edit_dy,
+            cx: fld_w,
+        };
+        if combo_needs_placing(want_app, app_seen) {
+            place_h(ui.app, want_app.x, want_app.y, want_app.cx, field_h * 9);
+        }
         ly += ctl + gap;
 
         // Line 2: the shortcut. Chips left, then the key list, then the two

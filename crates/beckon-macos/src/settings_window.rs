@@ -540,6 +540,24 @@ pub fn post_catalog(names: Vec<String>) {
     with_cb(|cb| (cb.on_catalog)(names));
 }
 
+/// Open a door from outside the window's own event handling.
+///
+/// **Accepted and ignored, the same way `open` ignores the page it is
+/// handed**, and for the same reason: this signature is shared, not
+/// per-platform. macOS has no tab strip, so there is no door to open — and
+/// nothing to open one FOR, because the banner it exists to reveal is drawn
+/// here on `external_change` alone (`apply_state`), whatever page the caller
+/// thinks it is on.
+///
+/// It is unreachable today rather than merely harmless: nothing on macOS
+/// raises `SettingsCommand::ShowPage`, so `ServeState::settings_page` never
+/// leaves `Shortcuts`, so `save_press` never returns the arm that calls this.
+/// It exists so `apply_settings` has one shape on both platforms instead of a
+/// `cfg` around the one branch that must not go quiet.
+pub fn switch_to_page(page: Page) {
+    let _ = page;
+}
+
 /// What the user chose when asked about unsaved edits on close.
 ///
 /// Mirrors `beckon_windows::shell::SaveChoice`. Three answers and not two:

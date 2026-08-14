@@ -314,6 +314,18 @@ struct ServeState {
     /// `open_settings`; both are gated `any(windows, macos)`, and macOS
     /// currently discards the page it is handed, so this is live on Windows
     /// and merely honest on macOS.
+    ///
+    /// **It is also the CURRENT door while the window is open, not only the
+    /// last one**, and `apply_settings` depends on that: `ShowPage` is raised
+    /// on every switch that really moves (`show_page` returns `false`
+    /// otherwise), and `open` is handed this same value, so the two agree
+    /// from the moment the window exists. That is what lets Save ask "is the
+    /// external-change banner reachable from where the user is standing?"
+    /// without the window having to answer.
+    ///
+    /// `apply_settings` is therefore its second writer, and it has to be:
+    /// the switch it makes goes through `swin::switch_to_page`, which cannot
+    /// raise `ShowPage` from inside a callback -- see its doc.
     settings_page: beckon_core::settings::Page,
 }
 
@@ -1283,8 +1295,53 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// on the rename and the 1 Hz tick reloads within a second. A shortcut path
 /// here would buy under a second at the cost of a second code path, and the
 /// watcher would run anyway.
+///
+/// **This function is the ONE funnel every Save goes through**, which is why
+/// the external-change guard is here and not on the button. There are two
+/// routes to it and only one is a button: `on_apply` (the Save press and the
+/// `Ctrl+S` accelerator pointed at it), and `on_close_request`'s
+/// `SaveChoice::Save` -- the prompt raised on the way out, which reaches this
+/// without going near `IDC_APPLY`. A guard on the button would have covered
+/// the first and left the second overwriting the file exactly as before.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
+    use beckon_core::settings::SavePress;
+
+    // The two facts the decision needs, read under a borrow that is dropped
+    // on this line -- `swin::switch_to_page` below re-enters `ServeState`
+    // through the window's own callbacks, and a second borrow taken across
+    // that `extern "system"` boundary aborts the process rather than
+    // unwinding.
+    //
+    // Ahead of the `settings.as_ref()` check below, and that costs nothing:
+    // the read-only window cannot reach this arm at all. `external_change` is
+    // set in exactly one place, `settings_saw_external_change`, which hands a
+    // model-less window to `settings_retry_unreadable` and returns before the
+    // flag -- and every other writer of the flag clears it.
+    let (external, page) = {
+        let s = state.borrow();
+        (s.external_change, s.settings_page)
+    };
+    if let SavePress::ShowTheBanner(door) = beckon_core::settings::save_press(external, page) {
+        // Recorded HERE rather than left to `SettingsCommand::ShowPage`,
+        // because the window cannot raise that from inside a callback --
+        // `with_cb` takes the callbacks out for the duration, so a command
+        // raised from within one is silently dropped
+        // (`settings_window::switch_to_page` carries the whole reason).
+        // Without this line `settings_page` would keep naming the door the
+        // user has just been moved off, and the SECOND Save would be refused
+        // too -- for ever.
+        //
+        // Its own statement, so the `RefMut` temporary is dropped at the
+        // semicolon and no borrow is alive across the switch.
+        state.borrow_mut().settings_page = door;
+        swin::switch_to_page(door);
+        // No `refresh_settings`: nothing about the model changed, and
+        // `switch_to_page` has already laid the window out and invalidated
+        // it. Pushing again would only re-run `layout`.
+        return;
+    }
+
     let rendered = {
         let s = state.borrow();
         let Some(model) = s.settings.as_ref() else {
@@ -1616,6 +1673,17 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                         // apply_settings clears `dirty` by reseeding the
                         // model, so a still-dirty model means it failed and
                         // the user's edits are only in memory.
+                        //
+                        // **There are now two ways for it not to have
+                        // written**, and this test covers the second without
+                        // being changed: a failed write, and a Save refused
+                        // because the file moved on disk while the user was
+                        // behind a door that hides the announcement
+                        // (`save_press`). In that case the window has just
+                        // been switched to the door the banner is on, so
+                        // staying open is exactly right -- the close is
+                        // cancelled and the question the user still has to
+                        // answer is in front of them.
                         let still_dirty = st
                             .borrow()
                             .settings

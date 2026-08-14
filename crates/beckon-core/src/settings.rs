@@ -320,8 +320,132 @@ pub enum Page {
 /// behind; what this function answers is only where the announcement is
 /// drawn. The design's warn dot on the Shortcuts pill is how the fact stays
 /// visible from the other three pages.
+///
+/// **A fifth reader, and the one that makes the gap between those two
+/// sentences safe:** `save_press`. Until the warn dot exists there is nothing
+/// on the other three pages saying the file moved, while Save is on all four
+/// of them -- so the answer is not only to show the fact somewhere else, it is
+/// that Save refuses to write from a page this function returns `false` for.
 pub fn banner_shown(external_change: bool, page: Page) -> bool {
-    external_change && page == Page::Shortcuts
+    external_change && page == BANNER_PAGE
+}
+
+/// The door the external-change announcement is drawn on.
+///
+/// Named rather than written into `banner_shown` as a literal, because
+/// `save_press` has to send the user THERE and the two must not be able to
+/// name different doors.
+pub const BANNER_PAGE: Page = Page::Shortcuts;
+
+/// What pressing Save does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavePress {
+    /// Write the model to disk.
+    Write,
+    /// Do not write. Open this door first -- it is the one the announcement
+    /// and its two answers are on.
+    ShowTheBanner(Page),
+}
+
+/// What pressing Save does when the file has moved under the window's own
+/// edits.
+///
+/// **The banner being on screen WAS the whole protection, and the four doors
+/// took it away.** `apply_settings` writes the file unconditionally and
+/// clears `external_change`; there is no prompt anywhere and there never
+/// was one. What stopped somebody overwriting a file that changed under them
+/// is that they were looking at the announcement when they pressed Save.
+/// `banner_shown` is `BANNER_PAGE`-only while `external_change` is
+/// window-wide, and Save is chrome -- placed on every page, enabled from
+/// `apply_enabled` alone, the resting place of the default ring, and the
+/// target of `Ctrl+S`. So from Keyboard, System or About the file was
+/// overwritten silently, with the warning about it three doors away.
+///
+/// So Save refuses ONCE and opens the announcement's door instead. The next
+/// press writes, because by then the banner is on screen with its two
+/// answers -- `Reload from disk` and `Keep mine` -- under the user's hand.
+/// That restores the pre-four-doors rule rather than inventing a new one:
+/// nothing here makes an externally changed file unsaveable, it makes the
+/// warning unmissable again.
+///
+/// **Not "grey Save out".** `apply_enabled` is `dirty && no errors`, and a
+/// button greyed on three pages with nothing saying why is the same silence
+/// in a costume. The refusal has to be the thing that shows the reason,
+/// which means it has to be a press that visibly does something.
+///
+/// **Not a dialog either.** A modal can only tell the user to go and find
+/// the banner; opening the door puts the banner and both its buttons in
+/// front of them, one press instead of three.
+///
+/// The design's own answer for cross-page visibility is a warn dot on the
+/// Shortcuts pill, which is not built. This is not a stand-in for it and is
+/// not retired by it: a dot is a notice, this is a guard.
+///
+/// Spelled through `banner_shown` rather than `page != BANNER_PAGE`, so a
+/// second page ever showing the announcement moves both together.
+pub fn save_press(external_change: bool, page: Page) -> SavePress {
+    if external_change && !banner_shown(external_change, page) {
+        SavePress::ShowTheBanner(BANNER_PAGE)
+    } else {
+        SavePress::Write
+    }
+}
+
+/// Where the App combo sits, in the window's client coordinates: left, top
+/// and WIDTH.
+///
+/// **There is no height, and its absence is the design.** `GetWindowRect` on
+/// a closed `CBS_DROPDOWN` reports the CLOSED height, while `layout` asks for
+/// the DROPPED one (`field_h * 9`) -- about nine times larger. The two can
+/// never agree, so a height carried here could only ever force a placement
+/// that is not needed. It is also the component comctl32 v6 ignores outright:
+/// `CB_SETMINVISIBLE(8)`, sent once at creation, is what decides how tall the
+/// list opens, and the `cy` argument stopped deciding it (`build_children`,
+/// in the Windows crate, records that).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComboSpot {
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+}
+
+/// Must `layout` call `SetWindowPos` on the App combo this pass?
+///
+/// **The one call in this window that can destroy data.** A populated
+/// `CBS_DROPDOWN` answers a resize by re-synchronising its edit field to the
+/// closest matching catalogue entry and selecting the whole string, so the
+/// next keystroke replaces what the user typed -- measured on a14, comctl32
+/// 6.16, 121 items. The four-doors landing stopped `layout` placing the combo
+/// while another door is open. That guard is ONE-DIRECTIONAL: every switch
+/// back INTO Shortcuts still ran the placement, on a combo that had not
+/// moved a pixel.
+///
+/// **And that return trip really is a resize, every time.** `layout` passes
+/// `field_h * 9` as `cy` while the combo's window rect holds its closed
+/// height, so the size the OS is asked for never equals the size the OS
+/// currently reports and nothing upstream can elide the call. The `cy` is
+/// deliberate and is not what to change -- a combo's height argument sizes
+/// its dropped list, not its closed box. What changes is that the call does
+/// not happen.
+///
+/// **This does not depend on spec §10 open question 1** -- whether
+/// `SetWindowPos` with an unchanged rect re-syncs a populated combo anyway.
+/// That answer would decide whether an `SWP_NOSIZE | SWP_NOMOVE`
+/// short-circuit inside the call is safe. Not making the call is safe under
+/// either answer, which is why the fix is spelled this way round.
+///
+/// `seen` is where the OS says the control is now, and `None` means the
+/// question could not be asked -- which places, never skips.
+///
+/// **`seen` being the OS's own answer is what makes this safe across window
+/// lifetimes.** A remembered rect would not be: the settings window opens and
+/// closes many times on one thread and Windows recycles handles, so a memory
+/// could authorise a skip for a control that no longer exists. Asking the
+/// control cannot: a freshly created child sits at `CreateWindowExW`'s
+/// `0, 0, 10, 10` (`child`, in the Windows crate), which no computed
+/// placement matches, so the first pass after any reopen places the combo.
+pub fn combo_needs_placing(want: ComboSpot, seen: Option<ComboSpot>) -> bool {
+    seen != Some(want)
 }
 
 /// Where the two files this window talks about live.
@@ -3043,6 +3167,112 @@ mod tests {
         assert!(banner_shown(true, Page::Shortcuts));
         assert!(!banner_shown(true, Page::About));
         assert!(!banner_shown(false, Page::Shortcuts));
+    }
+
+    /// The regression the four doors opened: Save is chrome, the banner is
+    /// not, so from three of the four pages Save wrote over a file that had
+    /// moved while the only warning about it was behind a door.
+    ///
+    /// The pairing with `visible` is the point of the test rather than
+    /// decoration: it asserts that on exactly the pages where Save is
+    /// pressable and `Reload`/`Keep mine` are NOT drawn, the press is
+    /// refused.
+    #[test]
+    fn save_refuses_from_a_page_that_hides_the_announcement() {
+        for page in [Page::Keyboard, Page::System, Page::About] {
+            assert!(
+                !DefaultButton::Reload.visible(true, page),
+                "{page:?} draws the banner after all -- this test is measuring the wrong thing"
+            );
+            assert!(
+                DefaultButton::Save.visible(true, page),
+                "Save is chrome; if it is not on {page:?} there is nothing to guard"
+            );
+            assert_eq!(
+                save_press(true, page),
+                SavePress::ShowTheBanner(BANNER_PAGE),
+                "Save overwrote an externally changed file from {page:?}"
+            );
+        }
+    }
+
+    /// The other half, and the reason this is a guard and not a ban: with the
+    /// announcement on screen the press goes straight through, so the second
+    /// press after being sent to `BANNER_PAGE` saves.
+    #[test]
+    fn save_writes_wherever_the_announcement_is_answerable() {
+        assert_eq!(save_press(true, BANNER_PAGE), SavePress::Write);
+        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert_eq!(
+                save_press(false, page),
+                SavePress::Write,
+                "nothing changed on disk, so {page:?} has nothing to answer"
+            );
+        }
+    }
+
+    /// The door Save sends the user to has to be the door the banner is
+    /// actually drawn on, or the guard becomes a dead end -- the press would
+    /// be refused for ever, since the page it lands on still hides the
+    /// answers.
+    #[test]
+    fn the_door_save_opens_is_the_one_with_the_answers() {
+        let SavePress::ShowTheBanner(door) = save_press(true, Page::About) else {
+            panic!("expected a refusal");
+        };
+        assert!(banner_shown(true, door));
+        assert_eq!(save_press(true, door), SavePress::Write);
+    }
+
+    /// The return trip into Shortcuts is a placement on a combo that has not
+    /// moved, and a placement is the measured data-loss call.
+    #[test]
+    fn a_combo_already_where_it_belongs_is_not_placed_again() {
+        let want = ComboSpot {
+            x: 140,
+            y: 300,
+            cx: 420,
+        };
+        assert!(!combo_needs_placing(want, Some(want)));
+    }
+
+    /// Each of the three components on its own has to force the placement, or
+    /// a real move would be skipped and the control would be left behind.
+    #[test]
+    fn a_combo_that_moved_or_resized_is_placed() {
+        let want = ComboSpot {
+            x: 140,
+            y: 300,
+            cx: 420,
+        };
+        for seen in [
+            ComboSpot { x: 141, ..want },
+            ComboSpot { y: 301, ..want },
+            ComboSpot { cx: 421, ..want },
+        ] {
+            assert!(
+                combo_needs_placing(want, Some(seen)),
+                "{seen:?} is not {want:?} and must be placed"
+            );
+        }
+    }
+
+    /// Two states that are not "already correct" and must never be read as
+    /// one: a position that could not be read at all, and the `0, 0, 10, 10`
+    /// every child is created at -- which is what the first pass after the
+    /// window is reopened sees.
+    #[test]
+    fn an_unreadable_or_freshly_created_combo_is_placed() {
+        let want = ComboSpot {
+            x: 140,
+            y: 300,
+            cx: 420,
+        };
+        assert!(combo_needs_placing(want, None));
+        assert!(combo_needs_placing(
+            want,
+            Some(ComboSpot { x: 0, y: 0, cx: 10 })
+        ));
     }
 
     /// The command bar is chrome, and `HOME` above all: `default_button`'s

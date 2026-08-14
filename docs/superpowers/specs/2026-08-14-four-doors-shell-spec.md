@@ -261,6 +261,21 @@ property (`layout.rs:165-168`).
    `external_change && page == Page::Shortcuts`. `external_change` stays a
    window-wide fact — the design's warn dot on the Shortcuts pill is how it
    stays visible from the other three pages.
+
+   **INCOMPLETE, corrected 2026-08-14 after Task 4 landed.** That is the whole
+   of what this item said, and it is only half the consequence. Making the
+   *announcement* Shortcuts-only while `external_change` stays window-wide
+   silently made Save — which is chrome, enabled from `apply_enabled` alone,
+   the default ring's resting place and `Ctrl+S`'s target — able to overwrite
+   an externally changed file from three pages with nothing on screen saying
+   so. `apply_settings` (`serve.rs`) writes unconditionally and there is no
+   prompt anywhere: **the banner being on screen WAS the whole protection.**
+   The warn dot is a notice and does not close this, so the guard cannot wait
+   for Task 6: `beckon_core::settings::save_press` refuses the press once and
+   opens `BANNER_PAGE` instead, which puts `Reload from disk` and `Keep mine`
+   under the user's hand; the next press writes. It is enforced in
+   `apply_settings` rather than on the button because the close prompt's
+   `SaveChoice::Save` reaches the same write without going near `IDC_APPLY`.
 4. **`Ui` gains `shown_page`**, beside `shown_external` and `shown_empty`, and
    the `layout` guard at `mod.rs:3789-3796` gains that term. Without it a
    page switch through `apply_state` would leave the previous page's geometry
@@ -461,7 +476,7 @@ in place**.
 |---|---|---|
 | G2 | Does `CDIS_HOT` reach a `BS_PUSHLIKE` auto-radio's `NM_CUSTOMDRAW`? The whole control choice rests on it | an ordinary `BS_PUSHBUTTON` in the same run, which is known to get it (`mod.rs:4356-4366`) |
 | G3 | `GetClientRect` and `GetWindowRect` logged side by side | already built: `settings_probe.rs:781-862` prints both with a MATCH verdict. Reading says they are equal; this confirms it |
-| G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with the skip disabled, which must lose the text |
+| G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with the skip disabled, which must lose the text. **There are TWO skips and the round trip needs both** — `if shortcuts` in `layout` on the way out, `combo_needs_placing` on the way back (§10 item 1) — so disable them one at a time: with only the second removed the text is lost on the way back, which is the half Task 4 shipped |
 | G-S2 | Does user32 migrate `WS_TABSTOP` onto the checked radio? Read all four pills' styles back with `GetWindowLongW` | the same read before any pill is checked |
 | G-S3 | Does `is_checked` report a `BS_AUTORADIOBUTTON` correctly? | `CheckRadioButton` a known pill, then read all four |
 | G-S4 | The strip under each of the four shipped HC schemes | the same screenshot in ordinary dark, where the trough is known to be visible |
@@ -484,6 +499,20 @@ re-scope it rather than inherit it.
    in `place_h` would defuse most of §4.2 cheaply. The a14 measurement was a
    real resize; the no-op case is unmeasured. `examples/combo_probe.rs` would
    settle it.
+
+   **No longer blocking, 2026-08-14.** §4.2's guard turned out to be
+   one-directional — it keeps the combo out of reach on the way OUT of
+   Shortcuts, and every switch back IN placed it again. Worse, that placement
+   is a *genuine* resize every time rather than only when the geometry drifted:
+   `layout` passes `field_h * 9` as `cy` (a combo's height argument sizes its
+   dropped list, not its closed box), while `GetWindowRect` reports the closed
+   height, so the request can never equal the current state and nothing
+   upstream can elide it. The return trip is closed by
+   `beckon_core::settings::combo_needs_placing`, which asks the control where
+   it is and **does not make the call** when the answer is "already there" —
+   deliberately phrased that way round so it is correct under either answer to
+   this question. What the answer would still buy is the general case (a
+   `place_h` on any combo, any pass); what it can no longer buy is this defect.
 2. What `SetWindowPos` does to a **hidden** populated combo — relevant if the
    skip in §4.2 is ever weakened.
 3. Whether the trough runs edge to edge or is inset by `PAD`. This spec says

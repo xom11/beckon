@@ -50,6 +50,21 @@
 //! `handle_command`'s pill arm already takes `CMD_FROM_ACCELERATOR` so that
 //! task is one line there.
 //!
+//! **CORRECTED 2026-08-14: that guard is ONE-DIRECTIONAL, and on its own it
+//! left half the round trip unfixed.** Skipping the band keeps the combo out
+//! of reach on the way OUT; every switch back IN still placed it -- and that
+//! placement was a genuine resize every single time, not only when the
+//! geometry had drifted, because `layout` passes `field_h * 9` (the DROPPED
+//! height) while the combo's window rect holds its closed height, so the two
+//! can never match and nothing upstream can elide the call. That is the same
+//! mechanism the a14 measurement pinned: nothing in the layout had moved and
+//! the typing was still lost. The second half is
+//! `beckon_core::settings::combo_needs_placing`, which asks the control where
+//! it is and does not call `SetWindowPos` when the answer is "already
+//! there" -- deliberately spelled as "do not make the call" rather than as a
+//! `SWP_NOSIZE` short-circuit, so it does not depend on spec 10 open
+//! question 1.
+//!
 //! **The App field's text is still read from the message loop, one keystroke
 //! behind the notification that reported it** — see `WM_APP_EDITED`. It is
 //! deferred debt rather than settled design: with the layout defect fixed the
@@ -113,8 +128,8 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    banner_shown, default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note,
-    Page, Paths, SettingsCommand,
+    banner_shown, combo_needs_placing, default_button, ComboSpot, ControlState, DefaultButton,
+    FlagTone, ListItem, Mark, Note, Page, Paths, SettingsCommand,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -1350,6 +1365,17 @@ struct Ui {
     /// populated App combo, on more data pushes than these three fields
     /// already allow -- trading a cosmetic stale margin for a re-entry into
     /// the measured data-loss path above.
+    ///
+    /// **`layout` running is no longer the same event as the combo being
+    /// resized**, since `combo_needs_placing`: a `layout` whose geometry comes
+    /// out identical now makes no `SetWindowPos` on the combo at all. That
+    /// weakens nothing here -- every push this guard suppresses is one whose
+    /// geometry the guard cannot know is unchanged, and the three fields are
+    /// still what keep `layout` off the keystroke path -- but it is why the
+    /// "run `layout` more often" trade above is now *cheaper* than the
+    /// paragraph makes it sound. Do not take that as permission to reopen it
+    /// without measuring: the argument for the gutter is that it is a margin
+    /// and never a clipped column, and that has not changed either.
     shown_external: Option<bool>,
     /// Whether the list was EMPTY when the current layout was computed, for
     /// the same reason `shown_external` exists: it is the fourth of `layout`'s
@@ -2258,6 +2284,33 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
         }
     });
     true
+}
+
+/// Open a door from OUTSIDE the window's own message handling.
+///
+/// The one caller is `serve`'s Save. Pressing it while the file has changed
+/// under the window's own edits refuses the write and sends the user to the
+/// door the announcement is drawn on, so the two answers to it -- `Reload
+/// from disk` and `Keep mine` -- are under their hand instead of three doors
+/// away. The decision and the whole of its reasoning are
+/// `beckon_core::settings::save_press`; this is only the arm that moves the
+/// window.
+///
+/// **It deliberately does NOT raise `SettingsCommand::ShowPage`, and that is
+/// not an omission.** `with_cb` is take-then-run: it moves the callbacks OUT
+/// of the `RefCell` for the duration of the call, so any `with_cb` reached
+/// from inside a callback finds the slot empty and silently does nothing.
+/// This function is always reached from inside one (Save is a callback), so a
+/// command raised here would be dropped without a trace -- and
+/// `ServeState::settings_page` would go on naming the door the user is no
+/// longer behind, after which the next Save would be refused again, for ever.
+/// The caller asked for the switch and is the one that records it.
+///
+/// Silent when no window is open: there is then nobody to show a door to.
+pub fn switch_to_page(page: Page) {
+    if let Some(h) = hwnd() {
+        show_page(h, page);
+    }
 }
 
 // ---------------------------------------------------------------------------
