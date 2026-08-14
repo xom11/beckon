@@ -43,29 +43,23 @@ fn embed_win32_resources() {
         // own `DllGetVersion` reported comctl32 **5.82.10586**, which is why
         // every NM_CUSTOMDRAW count was zero.
         //
-        // `compile_for` names the targets explicitly. Every example that opens
-        // a window belongs in this list; one that does not will silently
-        // measure v5 again.
+        // `compile_for` is also wrong: it emits `cargo:rustc-link-arg-bin=`
+        // per name, so naming the examples there fails the build outright
+        // ("does not have a bin target with the name `pill_probe`"). That one
+        // at least announces itself.
+        //
+        // `compile_for_examples` emits `cargo:rustc-link-arg-examples`, which
+        // is the directive that actually reaches an example target, and it
+        // needs no list -- so an example added later cannot be forgotten and
+        // silently measure v5.
         //
         // (`embed-resource` 2.x returns `()`; the `.manifest_optional()`
         // builder is 3.x. This file shipped with the 3.x form once and the
         // macOS cross-check said nothing, because a build script is compiled
         // for the HOST -- `#[cfg(windows)]` is dead code on the gate machine,
         // so anything inside it is only ever type-checked by a real Windows
-        // build.)
-        embed_resource::compile_for(
-            "examples.rc",
-            [
-                "pill_probe",
-                "settings_probe",
-                "combo_probe",
-                "caps_probe",
-                "caps_live",
-                "customdraw_probe",
-                "showhide_probe",
-            ],
-            embed_resource::NONE,
-        );
+        // build. All three mistakes here were found by running it.)
+        embed_resource::compile_for_examples("examples.rc", embed_resource::NONE);
     }
 }
 
