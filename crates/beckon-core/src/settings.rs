@@ -1622,6 +1622,163 @@ fn is_snippet(line: &str) -> bool {
     line.starts_with('|') || line.chars().next().is_some_and(|c| c.is_ascii_digit())
 }
 
+// ---------------------------------------------------------------------------
+// Control ids
+// ---------------------------------------------------------------------------
+
+/// Every dialog control id the settings window uses, on every platform that
+/// has one, in one place.
+///
+/// **This is documentation with a test attached, not the definition.** The
+/// Windows module keeps its own `const IDC_… : i32`, and a `#[test]` there
+/// compares the two. Making this the definition would put a Win32 concept in
+/// the crate whose whole purpose is to be free of one.
+///
+/// It lives here so `ids_are_unique` and `retired_ids_stay_retired` run on
+/// **all three** CI jobs rather than only the Windows one -- the same reason
+/// `ControlState` and `DefaultButton` are here. The failure it guards is not
+/// hypothetical: `layout` resolves controls through `GetDlgItem`, which maps
+/// a duplicated id to the first match, so the second control is created,
+/// never placed, and left at the origin. That shipped once already (three
+/// labels sharing `-1`), and two drafts of the Four Doors design each claimed
+/// 1060-1069 for a different page.
+///
+/// **Ranges are disjoint by page**, and a page's controls never appear on
+/// another page:
+///
+/// | Range | Owner |
+/// |---|---|
+/// | 1001-1039 | the pre-Four-Doors window |
+/// | 1040-1049 | shell: the tab strip and the command bar |
+/// | 1050-1059 | Shortcuts (reserved; the page reuses its existing ids) |
+/// | 1060-1069 | Keyboard |
+/// | 1070-1099 | System |
+/// | 1100-1119 | About |
+pub const CONTROL_IDS: &[(&str, i32)] = &[
+    // -- the pre-Four-Doors window -----------------------------------------
+    ("LIST", 1001),
+    ("COMBO", 1002),
+    ("APP", 1003),
+    ("NOTES", 1004),
+    ("ADD", 1005),
+    ("REMOVE", 1006),
+    // `APPLY` and `CLOSE` keep their ids after auto-save deletes both
+    // buttons: the probe hard-codes them, and a different control answering
+    // 1007 would make it report a confident wrong result.
+    ("APPLY", 1007),
+    ("CAPS", 1008),
+    ("OPENFILE", 1012),
+    ("CLOSE", 1013),
+    ("BANNER", 1014),
+    ("RELOAD", 1015),
+    ("KEEPMINE", 1016),
+    ("LBL_SHORTCUT", 1017),
+    ("LBL_APP", 1018),
+    ("GRP_KEYBOARD", 1019),
+    ("LBL_SECTION", 1020),
+    ("FILTER", 1021),
+    ("HOLD_CTRL", 1022),
+    ("HOLD_WIN", 1023),
+    ("HOLD_ALT", 1024),
+    ("TAP", 1025),
+    ("LBL_HOLD", 1026),
+    ("LBL_TAP", 1027),
+    ("MOD_CTRL", 1028),
+    ("MOD_WIN", 1029),
+    ("MOD_ALT", 1030),
+    ("MOD_SHIFT", 1031),
+    ("RECORD", 1032),
+    ("RESET", 1033),
+    ("GRP_EDITOR", 1034),
+    ("LBL_COUNT", 1035),
+    // -- shell: the tab strip and the command bar --------------------------
+    ("TAB_SHORTCUTS", 1040),
+    ("TAB_KEYBOARD", 1041),
+    ("TAB_SYSTEM", 1042),
+    ("TAB_ABOUT", 1043),
+    ("SERVICE_LINE", 1044),
+    ("SAVED", 1045),
+    ("UNDO", 1046),
+    // -- Keyboard ----------------------------------------------------------
+    ("CAPS_SHORTHAND", 1060),
+    ("TROUBLE_HEAD", 1061),
+    ("TROUBLE_BODY", 1062),
+    // -- System ------------------------------------------------------------
+    ("PAUSE", 1070),
+    ("AUTOSTART", 1071),
+    // NOT `RELOAD` (1015): that is the banner's "reload from disk", which
+    // answers a different question from the tray's own reload.
+    ("SYS_RELOAD", 1072),
+    ("DARK", 1073),
+    ("OPACITY", 1074),
+    ("OPACITY_VALUE", 1075),
+    ("CONFIG_NAME", 1076),
+    ("CONFIG_DIR", 1077),
+    ("CONFIG_OPEN", 1078),
+    ("CONFIG_SHOW", 1079),
+    ("LOG_NAME", 1080),
+    ("LOG_SIZE", 1081),
+    ("LOG_OPEN", 1082),
+    ("LOG_SHOW", 1083),
+    // -- About -------------------------------------------------------------
+    ("ABOUT_MARK", 1100),
+    ("ABOUT_NAME", 1101),
+    ("ABOUT_BUILD_LABEL", 1102),
+    ("ABOUT_BUILD_VALUE", 1103),
+    ("ABOUT_BUILD_COPY", 1104),
+    ("ABOUT_LOCATION_LABEL", 1105),
+    ("ABOUT_LOCATION_VALUE", 1106),
+    ("ABOUT_LOCATION_COPY", 1107),
+    ("ABOUT_LICENCE_LABEL", 1108),
+    ("ABOUT_LICENCE_VALUE", 1109),
+    ("ABOUT_LICENCE_COPY", 1110),
+    ("ABOUT_DISCLOSURE", 1111),
+    ("ABOUT_GITHUB", 1112),
+    ("ABOUT_RELEASES", 1113),
+    ("ABOUT_BUG", 1114),
+];
+
+/// Ids that were used, are not any more, and must never be reused.
+///
+/// 1009-1011 were the three `Tapping Caps alone` radios. A probe built
+/// against an older binary would find a control it thinks it recognises.
+pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011];
+
+/// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
+///
+/// It drives ANOTHER process across a process boundary, so it cannot link
+/// this crate and cannot be recompiled into agreement: these fifteen are
+/// fixed points, and `probe_pinned_ids_have_not_moved` is what says so out
+/// loud.
+///
+/// Fifteen, not the thirteen the spec enumerates. The spec's evidence for
+/// the pinned range is `settings_probe.rs:229-242`, and two more `const IDC_`
+/// declarations sit outside that span: `IDC_TAP 1025` at line 249, which
+/// `measure_geometry` reads style bits and item count from, and
+/// `IDC_NOTES 1004` at line 1294, which `dump` reads to say whether an event
+/// landed. Both go through `dlg_item(…).unwrap_or_default()`, so a renumber
+/// would not fail there -- it would print an empty reading as a real one.
+/// Counted from the probe rather than from the spec:
+/// `grep -c "const IDC_" crates/beckon-windows/examples/settings_probe.rs`
+/// is 15.
+pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
+    ("LIST", 1001),
+    ("COMBO", 1002),
+    ("APP", 1003),
+    ("NOTES", 1004),
+    ("ADD", 1005),
+    ("REMOVE", 1006),
+    ("APPLY", 1007),
+    ("CAPS", 1008),
+    ("OPENFILE", 1012),
+    ("CLOSE", 1013),
+    ("TAP", 1025),
+    ("MOD_CTRL", 1028),
+    ("MOD_WIN", 1029),
+    ("MOD_ALT", 1030),
+    ("MOD_SHIFT", 1031),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3406,5 +3563,51 @@ mod tests {
             split_app_cell("Key In Use Manager"),
             ("Key In Use Manager", None)
         );
+    }
+
+    // ---------- control ids ----------
+
+    #[test]
+    fn ids_are_unique() {
+        let mut seen: Vec<(&str, i32)> = Vec::new();
+        for (name, id) in CONTROL_IDS {
+            if let Some((other, _)) = seen.iter().find(|(_, v)| v == id) {
+                panic!(
+                    "control id {id} is claimed by both `{other}` and \
+                     `{name}`. `layout` positions controls through \
+                     `GetDlgItem`, which resolves a duplicate to the FIRST \
+                     match -- so one of these is placed and the other is \
+                     silently left at the origin."
+                );
+            }
+            seen.push((name, *id));
+        }
+    }
+
+    #[test]
+    fn retired_ids_stay_retired() {
+        for id in RETIRED_IDS {
+            if let Some((name, _)) = CONTROL_IDS.iter().find(|(_, v)| v == id) {
+                panic!(
+                    "`{name}` reclaims retired id {id}. A probe built against \
+                     an older binary would find a control it thinks it \
+                     recognises."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn probe_pinned_ids_have_not_moved() {
+        for (name, id) in PROBE_PINNED_IDS {
+            let found = CONTROL_IDS.iter().find(|(n, _)| n == name);
+            assert_eq!(
+                found.map(|(_, v)| *v),
+                Some(*id),
+                "`crates/beckon-windows/examples/settings_probe.rs` \
+                 hard-codes {id} for `{name}` and drives another process, so \
+                 it cannot be recompiled into agreement"
+            );
+        }
     }
 }
