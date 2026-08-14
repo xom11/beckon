@@ -40,9 +40,15 @@
 //! the same call site.** `layout` places only the CURRENT page's controls, so
 //! a switch away from Shortcuts never reaches the App combo at all -- which
 //! is a correctness requirement rather than an optimisation, because
-//! `Ctrl+1`..`Ctrl+4` are accelerators and `TranslateAcceleratorW` runs
-//! before `IsDialogMessageW` and moves no focus, so the combo would otherwise
-//! be resized while focused, populated and holding half-typed text.
+//! `Ctrl+1`..`Ctrl+4` BECOME accelerators in Task 5 and
+//! `TranslateAcceleratorW` runs before `IsDialogMessageW` and moves no focus,
+//! so the combo would otherwise be resized while focused, populated and
+//! holding half-typed text. The future tense is the honest one and this
+//! sentence used to be written in the present: `build_accelerators` holds
+//! `Ctrl+S` and nothing else today, so the only switch that exists yet is a
+//! pill click or an arrow key, both of which move focus onto the pill first.
+//! `handle_command`'s pill arm already takes `CMD_FROM_ACCELERATOR` so that
+//! task is one line there.
 //!
 //! **The App field's text is still read from the message loop, one keystroke
 //! behind the notification that reported it** — see `WM_APP_EDITED`. It is
@@ -1975,13 +1981,51 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 }
 
 /// The half of `repair_default_button` that needs no `ControlState`: move
-/// focus and the ring off a button that is not on screen.
+/// focus off any control that is not on screen, and the ring off a BUTTON
+/// that is not.
 ///
 /// **`show_page` has no `ControlState` and does not need one.** Nothing calls
 /// `apply_state` on a tab click -- there is no model change to push -- and a
 /// page switch cannot change whether a button is ENABLED, only whether it is
 /// drawn. `DefaultButton::visible` is exactly that question, and the
 /// enablement half runs on the next push as usual.
+///
+/// **The focus test is TWO tests, and the wider one is the reason this
+/// function is not about buttons.** The ring can only rest on one of the nine
+/// `PUSH_BUTTONS`, so the ring half below asks `DefaultButton::visible`; focus
+/// can rest on any control the window owns, and `IDC_APP`, `IDC_FILTER`,
+/// `IDC_COMBO` and `IDC_LIST` are none of the nine. So `hidden_child` asks the
+/// screen instead of the model: focus on a control this window has just
+/// hidden is repaired whatever kind of control it is. Left to the button test
+/// alone, a switch taken while the App combo held focus would leave `GetFocus`
+/// on an off-screen COMBOBOX -- keystrokes into a field nobody can see, no
+/// `CBN_KILLFOCUS`, so no `commit_fields`, so text in no model and on no
+/// screen.
+///
+/// **Fixed before it can fire, deliberately.** Every switch that exists today
+/// arrives as a pill click or an arrow key, and both move focus onto the pill
+/// BEFORE `show_page` hides anything -- so the control being hidden is never
+/// the focused one and this arm cannot be reached. `Ctrl+Tab` / `Ctrl+1`..`4`
+/// (Task 5) are what make it reachable: `TranslateAcceleratorW` runs before
+/// `IsDialogMessageW` and moves no focus at all, which is the same property
+/// that makes them the sharp case for `layout` (module header). A repair
+/// added with the keystroke would be a repair written under the pressure of
+/// the defect it prevents.
+///
+/// The two tests agree at both call sites and neither is redundant for that
+/// reason: `apply_state` pushes the banner's visibility and `show_page` calls
+/// `show_page_controls` before either reaches here, so the screen and
+/// `DefaultButton::visible` already say the same thing about a button. The
+/// button test stays because it is the ring's own predicate, tested in core on
+/// all three CI jobs, and because a future caller that repairs before pushing
+/// visibility still gets the ring right.
+///
+/// **The focus move can now raise a notification that carries data**, which
+/// the button-only version could not: `IDC_APP` losing focus fires
+/// `CBN_KILLFOCUS`, whose arm calls `commit_fields`. That is the correct
+/// answer rather than a side effect -- it is exactly what tabbing away from
+/// the field does, and it is why the text survives the switch instead of
+/// being stranded in a hidden control.
 ///
 /// The ring falls back to `HOME` rather than following focus onto
 /// `IDC_CLOSE`. That looks like a disagreement with repair 2 above and is
@@ -1993,7 +2037,9 @@ unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page) {
     let focus = GetFocus();
     if !focus.is_invalid() {
         let fid = GetDlgCtrlID(focus);
-        if is_push_button(fid) && !default_button_of(fid).visible(external_change, page) {
+        if hidden_child(hwnd, focus)
+            || (is_push_button(fid) && !default_button_of(fid).visible(external_change, page))
+        {
             match GetDlgItem(Some(hwnd), IDC_CLOSE) {
                 Ok(close) => {
                     let _ = SetFocus(Some(close));
@@ -2057,6 +2103,24 @@ fn show(h: HWND, on: bool) {
     }
 }
 
+/// Is `h` a control of `parent`'s that `show(h, false)` has taken off screen?
+///
+/// **The control's OWN `WS_VISIBLE` bit, not `IsWindowVisible`**, which
+/// answers for the whole ancestor chain and so folds in a second question --
+/// whether the window itself is on screen -- that the one caller has no
+/// opinion about. `paint::field_border` wants the chain and uses the other
+/// call; this wants "did this window hide it", which is exactly the bit
+/// `show` writes.
+///
+/// **`IsChild` is the other half and is not defensive.** `GetFocus` answers
+/// for the whole THREAD, and `serve` owns another window on it (the tray's,
+/// plus whatever COM creates), so without it a hidden window that is none of
+/// this window's business would be read as a hidden control of ours and pull
+/// focus away from it.
+unsafe fn hidden_child(parent: HWND, h: HWND) -> bool {
+    IsChild(parent, h).as_bool() && (GetWindowLongW(h, GWL_STYLE) as u32) & WS_VISIBLE.0 == 0
+}
+
 thread_local! {
     /// What `IDC_NOTES` is currently showing, one severity-tagged line per
     /// entry -- `paint::draw_notes`'s own input, and the paint-side mirror
@@ -2092,6 +2156,33 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 }
 
 /// Move to another door. Returns whether the door actually changed.
+///
+/// **A door is an exit path, so `end_capture` runs before any of the five
+/// steps below.** It was not on the list of them, and the omission was a
+/// swallowed keyboard: `Record` reads `Stop` while a capture is armed, `Stop`
+/// IS `IDC_RECORD`, and `IDC_RECORD` is a Shortcuts-page control that step 3
+/// hides. The hook swallows the KEYBOARD only, so the mouse reaches the pills
+/// freely; none of spec F.4's three focus layers fires for a child-to-child
+/// focus move inside one window, which is exactly what a pill click is. The
+/// result was a hook still armed with its only visible way out off screen,
+/// and the 10 s watchdog is a weak bound on that -- `CAPTURE_TIMEOUT_MS`
+/// bounds SILENCE, and `on_capture` re-arms the timer for every outcome the
+/// hook posts, so a held modifier or a refused chord keeps the clock running
+/// and the keyboard swallowed. Worse than swallowed: a chord completed on
+/// another page still runs `Outcome::Captured`, which writes the five
+/// controls and ends in `push_shortcut` -- so the recording finishes into the
+/// model from a page that shows nothing about it.
+///
+/// Here rather than in `handle_command`'s pill arm because this function is
+/// the one funnel every door change goes through -- the arm, and `Ctrl+Tab` /
+/// `Ctrl+1`..`4` when Task 5 adds them. `end_capture` is idempotent, so the
+/// overwhelmingly common switch, with nothing armed, costs a cleared flag and
+/// a `KillTimer` that fails.
+///
+/// **After the unchanged-door guard, not before it.** Clicking the pill you
+/// are already behind changes nothing and hides nothing, and `Stop` is still
+/// on screen; cancelling a recording there would be this function inventing a
+/// second way to stop one.
 ///
 /// Five steps, and the order of the middle three is the whole of the
 /// function:
@@ -2138,6 +2229,12 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
     if PAGE.with(|p| p.get()) == page {
         return false;
     }
+    // Before anything is hidden, and before `PAGE` moves: the teardown writes
+    // `Record`'s caption and re-enables the five typed-path controls, and
+    // those are the outgoing page's, so it runs while they are still the ones
+    // on screen. It takes and drops its own `UI` borrows, so it is safe ahead
+    // of the read below -- see the doc.
+    unsafe { end_capture(hwnd) };
     PAGE.with(|p| p.set(page));
     // ONE borrow, taken and dropped on this line: everything below sends or
     // re-enters this wndproc, and a second `RefCell` borrow across an
@@ -6327,10 +6424,15 @@ fn push_shortcut(hwnd: HWND, combo: HWND) {
 //    thread's message loop, so a modal dialog or a synchronous scan starves
 //    it exactly as a slow callback would -- and Windows unhooks a callback
 //    that overruns `LowLevelHooksTimeout` silently.
-// 3. **There is no path where the window dies with the hook armed.**
-//    `end_capture` is idempotent and every route out of this window calls it
-//    first: the `Stop` button, all three of spec F.4's focus layers, the
-//    watchdog, `WM_CLOSE` (before the save prompt) and `WM_DESTROY`.
+// 3. **There is no path where the window dies with the hook armed, and none
+//    where `Stop` goes off screen with it armed either.** `end_capture` is
+//    idempotent and every route out of this window calls it first: the `Stop`
+//    button, all three of spec F.4's focus layers, the watchdog, `WM_CLOSE`
+//    (before the save prompt), `WM_DESTROY` -- and, since the tab strip, a
+//    page switch. The second clause is the one the strip added: `Stop` is
+//    `IDC_RECORD`, a Shortcuts-page control, so a door is an exit path even
+//    though the window survives it. `show_page` is where that call lives, and
+//    its doc says why it is not in `handle_command`'s pill arm.
 
 /// The notes strip's content while a capture is live: the partial combo,
 /// then the hint -- each a `Note` so `paint::draw_notes` draws it exactly
@@ -7129,6 +7231,54 @@ mod tests {
         assert!(!is_push_button(IDC_HOLD_WIN));
         assert!(!is_push_button(IDC_HOLD_ALT));
         assert!(!is_push_button(IDC_LIST));
+    }
+
+    /// Which door a control lives behind, or `None` for the chrome that is
+    /// drawn on every page. Test-local: `show_page_controls` walks
+    /// `PAGE_CONTROLS` once for the whole table rather than asking per
+    /// control, and a second reader in the shipping window would be a second
+    /// spelling of what that loop already does.
+    fn page_of_control(id: i32) -> Option<Page> {
+        PAGE_CONTROLS
+            .iter()
+            .find(|(c, _)| *c == id)
+            .map(|(_, p)| *p)
+    }
+
+    /// Why `repair_hidden_button` asks the SCREEN as well as
+    /// `DefaultButton::visible`.
+    ///
+    /// Each of these can hold keyboard focus, each is behind the Shortcuts
+    /// door, and none is one of the nine `PUSH_BUTTONS` -- so a test on
+    /// buttons alone cannot reach any of them, and a switch taken with focus
+    /// on one would leave `GetFocus` on an off-screen control. On `IDC_APP`
+    /// that is not merely invisible typing: no `CBN_KILLFOCUS` means no
+    /// `commit_fields`, so the text reaches no model either.
+    #[test]
+    fn the_focusable_controls_a_door_hides_are_not_push_buttons() {
+        for id in [IDC_APP, IDC_FILTER, IDC_COMBO, IDC_LIST] {
+            assert!(
+                !is_push_button(id),
+                "control {id} is a push button, so this test no longer says \
+                 anything about the gap `hidden_child` closes"
+            );
+            assert_eq!(
+                page_of_control(id),
+                Some(Page::Shortcuts),
+                "control {id} is not behind a door, so a switch cannot hide it"
+            );
+        }
+    }
+
+    /// Why `show_page` calls `end_capture`.
+    ///
+    /// `Stop` is not a control of its own: it is `IDC_RECORD` wearing another
+    /// caption, and `IDC_RECORD` is behind the Shortcuts door. So a switch
+    /// takes the only visible way to end a recording off the screen while the
+    /// `WH_KEYBOARD_LL` hook is still swallowing every keystroke.
+    #[test]
+    fn stop_is_behind_the_shortcuts_door() {
+        assert_eq!(page_of_control(IDC_RECORD), Some(Page::Shortcuts));
     }
 
     /// The seam between `Ui::defid` (a control id) and the pure decision (an
