@@ -45,7 +45,7 @@
 //! what is drawn. `examples/settings_probe.rs` is the only thing that can
 //! answer that, and it has to run in an Aqua session.
 
-use beckon_core::settings::{Callbacks, ControlState, Mark};
+use beckon_core::settings::{Callbacks, ControlState, Mark, Page, Paths};
 use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, ComboView};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
@@ -612,7 +612,7 @@ pub fn error(body: &str) {
 }
 
 /// Open the settings window.
-pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
+pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Err("the settings window must be opened on the main thread".into());
     };
@@ -620,6 +620,10 @@ pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
         open_existing();
         return Ok(());
     }
+
+    // Same as the Windows side: accepted and ignored. macOS has no tab strip
+    // and this signature is shared, not per-platform.
+    let _ = page;
 
     let target: Retained<Target> = unsafe { msg_send![Target::alloc(mtm), init] };
 
@@ -821,7 +825,10 @@ pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
         )
     };
     unsafe {
-        window.setTitle(&NSString::from_str(&format!("beckon - {config_path}")));
+        window.setTitle(&NSString::from_str(&format!(
+            "beckon - {}",
+            paths.config.display()
+        )));
         window.setContentView(Some(&root));
         window.center();
         // Save rests here, but the ring migrates to whichever push button

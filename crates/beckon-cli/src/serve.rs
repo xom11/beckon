@@ -208,11 +208,13 @@ struct ServeState {
     /// not a request to un-pause.
     paused: bool,
     /// Where stderr went, when it went to a file. `None` leaves the menu's
-    /// "Open log" greyed out rather than lying. Set on every platform
-    /// (`cmd_serve_app` takes it unconditionally) but only read by the
-    /// Windows-only tray menu below, so non-Windows builds see it as
-    /// write-only.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    /// "Open log" greyed out rather than lying, and is what the settings
+    /// window's `Paths::log` carries so the System page can omit the row
+    /// instead of showing a path that does not exist. Set on every platform
+    /// (`cmd_serve_app` takes it unconditionally) but read only by the
+    /// Windows-only tray menu below and by `open_settings`, which the two
+    /// windowed platforms share -- so a Linux build sees it as write-only.
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
     log: Option<PathBuf>,
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
@@ -1617,11 +1619,26 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         }),
     };
 
-    // The path is what names the window (`beckon - shortcuts.toml`) and what
-    // its `Open config file` tooltip shows. Handed over once, at open: it is
-    // `ServeState::config`, which nothing can repoint while the window is up.
-    let path = state.borrow().config.clone();
-    if let Err(e) = swin::open(cb, &path.to_string_lossy()) {
+    // The paths are what name the window (`beckon - shortcuts.toml`) and what
+    // the System page's two file rows show. Handed over once, at open:
+    // `ServeState::config` is what nothing can repoint while the window is
+    // up, and `log` is `None` exactly when `serve` was started without
+    // `--log`.
+    //
+    // The borrow is scoped and dropped before `swin::open`, which re-enters
+    // `ServeState` through the callbacks above. A live `borrow()` across that
+    // is the failure `settings_window::layout`'s `LayoutHandles` documents:
+    // the second borrow panics inside an `extern "system"` wndproc, where a
+    // panic aborts the process instead of unwinding, so it surfaces as
+    // neither a panic nor a test failure.
+    let paths = {
+        let s = state.borrow();
+        beckon_core::settings::Paths {
+            config: s.config.clone(),
+            log: s.log.clone(),
+        }
+    };
+    if let Err(e) = swin::open(cb, &paths, beckon_core::settings::Page::Shortcuts) {
         eprintln!("beckon serve: cannot open settings: {e}");
         swin::error(&format!("Cannot open settings:\n\n{e}"));
         forget_settings(state);

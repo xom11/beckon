@@ -303,6 +303,18 @@ pub enum Page {
     About,
 }
 
+/// Where the two files this window talks about live.
+///
+/// `log` is `None` when `serve` was started without `--log`. The System page
+/// omits the row rather than showing a path that does not exist -- the same
+/// reasoning the tray menu uses for `Start with Windows` under
+/// `beckon.exe serve`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    pub config: std::path::PathBuf,
+    pub log: Option<std::path::PathBuf>,
+}
+
 /// A file or a URL the window can ask the caller to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {

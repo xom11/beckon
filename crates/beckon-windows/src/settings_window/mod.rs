@@ -98,7 +98,7 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note,
+    default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -520,8 +520,8 @@ fn shown(caption: &str) -> String {
 /// from the right by every taskbar and Alt-Tab label there is -- i.e. it
 /// loses precisely the file name it was there to show. The path goes in the
 /// `Open config file` tooltip instead, where there is room for it.
-fn title_base(config_path: &str) -> String {
-    match std::path::Path::new(config_path).file_name() {
+fn title_base(config: &std::path::Path) -> String {
+    match config.file_name() {
         Some(f) => format!("beckon - {}", f.to_string_lossy()),
         None => "beckon".to_string(),
     }
@@ -1191,7 +1191,7 @@ struct Capture {
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
     static CB: RefCell<Option<Callbacks>> = const { RefCell::new(None) };
-    /// The config path, handed over by `open` and consumed by
+    /// The config and log paths, handed over by `open` and read by
     /// `build_children` inside `WM_CREATE`. Same shape as `CB` for the same
     /// reason: `CreateWindowExW` calls the wndproc before it returns, so
     /// there is no window handle to hang an argument on yet.
@@ -1200,8 +1200,18 @@ thread_local! {
     /// and not in `ControlState`: `serve` opens the window against
     /// `ServeState::config` and nothing can repoint that while it is open,
     /// so making it ride on every keystroke's push would be paying per
-    /// keystroke for a fact that is fixed at creation.
-    static CFG: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// keystroke for a fact that is fixed at creation. `build_children`
+    /// therefore reads it rather than taking it, and `WM_DESTROY` clears
+    /// it: the log path has to outlive creation for the System page's file
+    /// rows, which is the whole reason this holds a `Paths` and not a
+    /// config path on its own.
+    static CFG: RefCell<Option<Paths>> = const { RefCell::new(None) };
+    /// The door `open` was asked for.
+    ///
+    /// Accepted and stored; nothing reads it yet, because there is nothing
+    /// to switch. Storing it now is what lets the tab-strip workstream be a
+    /// change to one module instead of a change to four crates.
+    static PAGE: std::cell::Cell<Page> = const { std::cell::Cell::new(Page::Shortcuts) };
 }
 
 /// The window's handle, or `None` when it is closed.
@@ -1692,11 +1702,17 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 
 /// Open the window, or raise it if it is already open.
 ///
-/// `config_path` is the file the caller's callbacks read and write. It names
+/// `paths.config` is the file the caller's callbacks read and write. It names
 /// the window (`beckon - <file name>`) and fills the `Open config file`
 /// tooltip; it is taken ONCE, here, because it cannot change while the
-/// window is open.
-pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
+/// window is open. `paths.log` rides along for the same reason and is
+/// `None` when `serve` was started without `--log`.
+///
+/// `page` is the door to land on. It is stored and read nowhere yet: there
+/// is nothing to switch until the tab strip exists, and taking it now is
+/// what keeps that workstream a change to one module rather than to four
+/// crates.
+pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     if let Some(h) = hwnd() {
         unsafe {
             let _ = SetForegroundWindow(h);
@@ -1706,7 +1722,8 @@ pub fn open(cb: Callbacks, config_path: &str) -> Result<(), String> {
         return Ok(());
     }
     CB.with(|c| *c.borrow_mut() = Some(cb));
-    CFG.with(|c| *c.borrow_mut() = Some(config_path.to_string()));
+    CFG.with(|c| *c.borrow_mut() = Some(paths.clone()));
+    PAGE.with(|p| p.set(page));
     unsafe { create() }
 }
 
@@ -1814,10 +1831,11 @@ unsafe fn create() -> Result<(), String> {
     // Named at birth rather than on the first `apply_state`, so the window
     // never flashes a bare `beckon` in the taskbar before the first push.
     // The borrow is dropped on this line: `CreateWindowExW` runs the wndproc
-    // -- and therefore `build_children`, which takes `CFG` -- before it
+    // -- and therefore `build_children`, which reads `CFG` too -- before it
     // returns.
     let title = wide(&title_base(
-        &CFG.with(|c| c.borrow().clone()).unwrap_or_default(),
+        &CFG.with(|c| c.borrow().as_ref().map(|p| p.config.clone()))
+            .unwrap_or_default(),
     ));
 
     let hwnd = CreateWindowExW(
@@ -2806,8 +2824,10 @@ unsafe fn build_children(hwnd: HWND) {
     // the one part that identifies the file -- and a title bar has no
     // tooltip of its own, so the button that opens the file is where the
     // answer to "which file?" belongs.
-    let path = CFG.with(|c| c.borrow_mut().take()).unwrap_or_default();
-    let mut tip_text = wide(&path);
+    let path = CFG
+        .with(|c| c.borrow().as_ref().map(|p| p.config.clone()))
+        .unwrap_or_default();
+    let mut tip_text = wide(&path.to_string_lossy());
     add_tooltip(hwnd, openfile, &mut tip_text);
 
     UI.with(|u| {
@@ -6314,6 +6334,7 @@ pub fn error(body: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     // Nearly everything in this file needs a live window, and a window on a
     // CI agent is a different question from a window on a desktop -- which
@@ -6353,17 +6374,25 @@ mod tests {
 
     #[test]
     fn title_base_is_the_file_name_only() {
+        // `Path::new` at every call: `title_base` takes a `&Path` now that
+        // `open` takes a `Paths`. The cases are the same ones, and the
+        // function still asks `Path::file_name` the same question.
         assert_eq!(
-            title_base(r"C:\Users\a\AppData\Roaming\beckon\shortcuts.toml"),
+            title_base(Path::new(
+                r"C:\Users\a\AppData\Roaming\beckon\shortcuts.toml"
+            )),
             "beckon - shortcuts.toml"
         );
         // Forward slashes are separators on Windows too, and `serve` is
         // perfectly reachable with a path typed that way.
         assert_eq!(
-            title_base("C:/cfg/shortcuts.toml"),
+            title_base(Path::new("C:/cfg/shortcuts.toml")),
             "beckon - shortcuts.toml"
         );
-        assert_eq!(title_base("shortcuts.toml"), "beckon - shortcuts.toml");
+        assert_eq!(
+            title_base(Path::new("shortcuts.toml")),
+            "beckon - shortcuts.toml"
+        );
     }
 
     #[test]
@@ -6372,10 +6401,10 @@ mod tests {
         // format string would otherwise put an empty name after the
         // separator -- a title bar reading `beckon - ` looks like the window
         // failed to load something.
-        assert_eq!(title_base(""), "beckon");
-        assert_eq!(title_base(r"C:\"), "beckon");
-        assert_eq!(title_base(".."), "beckon");
-        assert_eq!(title_base(r"C:\cfg\.."), "beckon");
+        assert_eq!(title_base(Path::new("")), "beckon");
+        assert_eq!(title_base(Path::new(r"C:\")), "beckon");
+        assert_eq!(title_base(Path::new("..")), "beckon");
+        assert_eq!(title_base(Path::new(r"C:\cfg\..")), "beckon");
     }
 
     #[test]

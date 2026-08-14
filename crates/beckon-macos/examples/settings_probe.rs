@@ -192,7 +192,11 @@ caps_hold = "ctrl+super+alt"
             on_command: Box::new(|c| println!("command {c:?}")),
         };
 
-        if let Err(e) = win::open(cb, "settings_probe (nothing is written)") {
+        let paths = beckon_core::settings::Paths {
+            config: "settings_probe (nothing is written)".into(),
+            log: None,
+        };
+        if let Err(e) = win::open(cb, &paths, beckon_core::settings::Page::Shortcuts) {
             eprintln!("open failed: {e}");
             std::process::exit(1);
         }
