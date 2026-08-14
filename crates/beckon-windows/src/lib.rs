@@ -10,6 +10,22 @@
 //!   5c. nothing else exists        -> minimize current window
 //!
 //! Z-order from EnumWindows is front-to-back (MRU) -> no state file needed.
+//!
+//! **Every `mod` below must carry `#[cfg(target_os = "windows")]`, without
+//! exception.** The `windows` crate is a target-gated dependency, so off
+//! Windows the name `windows` does not exist and any module that reaches for
+//! it fails to resolve. This crate is a plain, unconditional workspace
+//! member, and a bare `cargo build` at the workspace root builds every member
+//! on every OS -- that is exactly what `rustPlatform.buildRustPackage` does,
+//! so a missing guard here breaks `nix build` on Linux and takes NixOS hosts
+//! down with it. `beckon-cli`'s target-gated dependency on this crate does
+//! not help: workspace membership, not the dependency edge, is what pulls it
+//! into the build.
+//!
+//! CI cannot be relied on to notice. `.github/workflows/ci.yml` passes
+//! `--exclude beckon-windows` on the Linux and macOS jobs, so the only thing
+//! that compiles this crate off Windows is the extra unexcluded workspace
+//! check that job runs -- keep it.
 
 #[cfg(not(target_os = "windows"))]
 use beckon_core::BackendError;
@@ -29,7 +45,7 @@ pub mod hotkey;
 pub mod logfile;
 #[cfg(target_os = "windows")]
 pub mod settings_window;
-
+#[cfg(target_os = "windows")]
 pub mod shell;
 #[cfg(target_os = "windows")]
 pub mod window_ops;

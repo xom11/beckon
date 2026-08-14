@@ -40,6 +40,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace ${{ matrix.exclude_flags }} --all-targets
+      - name: the whole workspace still compiles, unexcluded
+        # Runs where nix builds beckon, and nowhere else. Every step around
+        # this one passes `--exclude`, so no job in this file ever compiled
+        # `beckon-macos` or `beckon-windows` off its own OS -- and a bare
+        # `cargo build` at the workspace root does. `nix/package.nix` is
+        # exactly that build: `rustPlatform.buildRustPackage` runs cargo at
+        # the root with no `-p` and no excludes, so every workspace member is
+        # compiled for the host.
+        #
+        # Measured at v0.9.3: `beckon-windows/src/lib.rs` declared `pub mod
+        # shell;` with no `#[cfg(target_os = "windows")]`, all three jobs here
+        # were green, and `nix build` failed with four E0433s for the
+        # target-gated `windows` crate -- taking down every NixOS and nix-
+        # darwin host that carries beckon as a flake input.
+        #
+        # Windows is deliberately left out: nothing builds beckon with nix
+        # there (scoop packages the `release.yml` artefact), so the same rule
+        # would only add an unmeasured leg to the one job that must stay
+        # trustworthy.
+        #
+        # `check` rather than `build`: E0433 is a name-resolution error, so
+        # metadata-only catches the whole class at a fraction of the time.
+        # `--all-targets` because examples are workspace targets too and carry
+        # their own guards.
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
+        run: cargo check --workspace --all-targets
       - name: Test
         run: cargo test --workspace ${{ matrix.exclude_flags }}
       - name: manifest reached the binary
