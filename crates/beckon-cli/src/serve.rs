@@ -1378,6 +1378,8 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn open_settings(state: &Rc<RefCell<ServeState>>) {
+    use beckon_core::settings::SettingsCommand;
+
     // Already open: raise it, do not build a second model.
     if swin::is_open() {
         let _ = swin::open_existing();
@@ -1591,6 +1593,26 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                     }
                     SaveChoice::Cancel => false,
                 }
+            }
+        }),
+        // An exhaustive `match` with empty arms, not a `_ => {}`: every
+        // variant added later is a compile error at this one site, which is
+        // the site that has to handle it. The four workstreams that follow
+        // fill these in; Phase 0 only makes the channel exist.
+        on_command: Box::new({
+            let _st = Rc::clone(state);
+            move |c| match c {
+                SettingsCommand::ShowPage(_)
+                | SettingsCommand::SetPaused(_)
+                | SettingsCommand::SetAutostart(_)
+                | SettingsCommand::ReloadNow
+                | SettingsCommand::SetDarkMode(_)
+                | SettingsCommand::SetOpacity(_)
+                | SettingsCommand::SetCapsShorthand(_)
+                | SettingsCommand::Open(_)
+                | SettingsCommand::Reveal(_)
+                | SettingsCommand::Copy(_)
+                | SettingsCommand::Undo => {}
             }
         }),
     };

@@ -289,6 +289,70 @@ pub struct ControlState {
     pub editable: bool,
 }
 
+/// Which door the window is showing.
+///
+/// In core, not in the Windows crate, so `DefaultButton::visible(external,
+/// page)` stays testable on all three CI jobs -- which is the stated reason
+/// `DefaultButton` is in core at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Page {
+    #[default]
+    Shortcuts,
+    Keyboard,
+    System,
+    About,
+}
+
+/// A file or a URL the window can ask the caller to open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Config,
+    Log,
+    Github,
+    Releases,
+    BugReport,
+}
+
+/// A row on About whose value can be copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Build,
+    Location,
+    Licence,
+}
+
+/// Everything the window can ask the caller to DO that is not an edit to a
+/// binding.
+///
+/// **One `Callbacks` field rather than eleven.**
+/// `beckon-macos/examples/settings_probe.rs` builds `Callbacks` as a complete
+/// literal with no `..`, and CI clippies it `--all-targets` on macos-latest --
+/// so every added field is a hard E0063 on a job that has nothing to do with
+/// the feature. That is a real cost paid by a real job, not a hypothetical.
+///
+/// `Copy + Eq` and no variant carries a `String`, so a caller can match, log
+/// and test one without cloning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsCommand {
+    /// The user moved to another door. The caller stores it, so the next
+    /// open lands where they left off.
+    ShowPage(Page),
+    SetPaused(bool),
+    SetAutostart(bool),
+    /// The System page's Reload -- the tray's own, NOT the banner's
+    /// "reload from disk", which is `on_reload_from_disk` and answers a
+    /// different question.
+    ReloadNow,
+    SetDarkMode(bool),
+    /// 85..=100. The window clamps before sending; the caller may assume it.
+    SetOpacity(u8),
+    SetCapsShorthand(bool),
+    Open(Target),
+    Reveal(Target),
+    Copy(Field),
+    Undo,
+}
+
 /// Everything a settings window reports back. The caller owns all policy:
 /// what an edit means, whether a close is allowed, what Save writes.
 ///
@@ -343,6 +407,9 @@ pub struct Callbacks {
     pub on_keep_mine: Box<dyn FnMut()>,
     /// `true` if the window may close. The caller shows any save prompt.
     pub on_close_request: Box<dyn FnMut() -> bool>,
+    /// Everything that is not an edit to a binding. See `SettingsCommand`
+    /// for why this is one field and not eleven.
+    pub on_command: Box<dyn FnMut(SettingsCommand)>,
 }
 
 impl Model {

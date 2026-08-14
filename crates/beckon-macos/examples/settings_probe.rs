@@ -189,6 +189,7 @@ caps_hold = "ctrl+super+alt"
                 println!("close requested; probe always allows it");
                 std::process::exit(0);
             }),
+            on_command: Box::new(|c| println!("command {c:?}")),
         };
 
         if let Err(e) = win::open(cb, "settings_probe (nothing is written)") {
