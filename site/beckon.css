@@ -52,13 +52,107 @@
      has to win over the OS preference. */
   color-scheme: light dark;
 
-  /* ---- the ground, and the ink on it. Theme axis; the skins tint --bg only.
-          Warm, never pure #FFF: a white canvas plus a blue accent is the exact
-          stock look this page is not. ---- */
-  --bg:          #F4F3F0;
-  --bg-raised:   #EAE9E4;
-  --surface:     #FFFFFF;   /* a card, a door body, a popover */
-  --surface-2:   #F8F7F5;   /* a toolbar or headerbar sitting on a card */
+  /* ---- the ground, and the ink on it.
+     Warm, never pure #FFF: a white canvas plus a blue accent is the exact
+     stock look this page is not.
+
+     EVERY GROUND VALUE IS ONE COLOUR MIXED INTO ONE NEUTRAL, and that shape is
+     what keeps the two axes from colliding. `--os-tint` is set by the machine
+     (§1f) and by nothing else; the neutral it lands in, and how much of it
+     lands, are set by the theme (here, and restated in both §1b blocks) and by
+     nothing else. `:root[data-theme="dark"]` and `:root[data-os="macos"]` both
+     score (0,2,0), so a token either of them BOTH set would be decided by
+     source order — §1b's comment says that has to stay unrepresentable, and
+     splitting the colour from the mix is how it does.
+
+     `in oklab`, not the `in srgb` used everywhere else in this file: srgb mixes
+     a mid-chroma hue toward a near-black neutral through a muddy grey, which is
+     exactly the path every dark-theme value below takes. Every other color-mix
+     here mixes two colours of similar lightness, where the two spaces agree. */
+  --os-tint:     #7C5CC4;   /* mac #7C5CC4 · win #2A5FC8 · lin #1E8794 — §1f */
+
+  /* HOW MUCH OF THAT COLOUR REACHES THE PAGE, per machine, and it exists
+     because the three hues are not equally loud at equal mix. What the eye
+     reads as "how coloured is this" is the CHANNEL SPREAD, not the distance
+     from neutral, and at one flat percentage the Windows blue came out at a
+     spread of 43 against the macOS violet's 27 — half again as loud, and its
+     gutter read as a printed stripe down each side of the page rather than as
+     a room. Linux stays at 1: its tint is the least chromatic of the three, so
+     matching spreads would mean darkening it past both others, and a flat,
+     barely-tinted ground is Adwaita anyway.
+     Where that lands, measured at --ground-deep as (distance/spread):
+       light   mac 53/27   win 48/30   lin 62/22
+       dark    mac 63/30   win 40/32   lin 51/28 */
+  --tint-scale:  1;         /* mac 1 · win .72 · lin 1 — §1f */
+
+  --bg:          color-mix(in oklab, var(--os-tint) calc( 6% * var(--tint-scale)), #F4F3F0);
+  /* EXACTLY --bg's PERCENTAGE, and that is a contrast constraint rather than a
+     taste one. This is the fill behind an inline <code> chip, and a chip
+     inside a `.lead` puts --fg-dim on it — the tightest pair on the page, at
+     5.44:1 before any of this existed. At 11% it measured 4.78:1: still AA,
+     and 12% of the headroom spent on a fill nobody looks at. Tint the paper;
+     do not tint the paper twice. */
+  --bg-raised:   color-mix(in oklab, var(--os-tint) calc( 6% * var(--tint-scale)), #EAE9E4);
+  --surface:     color-mix(in oklab, var(--os-tint) calc( 3% * var(--tint-scale)), #FFFFFF);   /* a card, a door body, a popover */
+  --surface-2:   color-mix(in oklab, var(--os-tint) calc( 5% * var(--tint-scale)), #F8F7F5);   /* a toolbar or headerbar sitting on a card */
+
+  /* The two rungs above --bg. They are the DESK the page's column sits on, not
+     decoration: see §1f for what draws them and why the page has earned the
+     right to tint this much of itself. */
+  --ground:      color-mix(in oklab, var(--os-tint) calc(15% * var(--tint-scale)), #F4F3F0);
+  --ground-deep: color-mix(in oklab, var(--os-tint) calc(26% * var(--tint-scale)), #F4F3F0);
+
+  /* The seam: what a section's own top edge does, and the page's only vertical
+     event. It is a TRANSLUCENT wash rather than a fill, which is the whole
+     trick — an opaque band would paint over the gutters for its height and
+     punch a hole in the desk, so this darkens the gutter and the paper by the
+     same amount and the two structures compose instead of fighting.
+
+     LONG AND WEAK, NOT SHORT AND STRONG, and that was measured by looking. The
+     first cut ran 9% over 300px and Windows held a flat plate for its first
+     76px; at 1:1 both read as a horizontal BAND with a visible lower edge, and
+     where a band crossed a gutter the two stacked into a dark corner block, so
+     the page picked up a faint plaid. 5% over 460px has no edge to see. The
+     rule of thumb this leaves: the seam must be longer than the eye can hold
+     as an edge, which is well past the ~104px of section padding it sits in.
+
+     `in srgb`, unlike every other mix in this block: these are mixes toward
+     `transparent`, where oklab buys nothing, and it matches --mat-fill, the
+     one idiom in this file already proven to composite correctly. */
+  --seam-img:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--os-tint) calc(5% * var(--tint-scale)), transparent) 0,
+      color-mix(in srgb, var(--os-tint) 0%, transparent) 460px);
+
+  /* One gutter: the space outside the reading column on ONE side. Zero at
+     --maxw and below, 720px at 2560. Every stop in --ground-img is written
+     against it, so the desk is anchored to the page's own measure at every
+     width instead of to a hand-picked pixel. */
+  --gut:         calc(50% - var(--maxw) / 2);
+  /* macOS's shape, and it is the bare default for the same reason every form
+     token's is: `data-os` is written by the inline script in <head>, so a
+     reader with JS off has no skin at all and gets this block. §1f carries the
+     other two and does not restate this one.
+
+     THE SOFT INNER EDGE COLLAPSES WITH THE GUTTER, which is what the min() is
+     for and it is not a flourish. A fixed `--gut + 130px` keeps ramping after
+     the gutter has run out: at a 1120px viewport --gut is 0, so the ground
+     still reached 130px into a column whose text starts at 28, and the first
+     glyph of a line sat on it — measured 4.83:1 there against 5.03 at 1440,
+     from a layer that is supposed to be outside the reading area entirely.
+     Below --maxw every stop collapses to 0 or below and this whole layer
+     flattens to --bg, which is the right answer for a page with no margins to
+     spare. Note that the stops go NEGATIVE under --maxw rather than clamping;
+     that is fine, the gradient line simply extends past the box. */
+  --ground-img:
+    linear-gradient(90deg,
+      var(--ground-deep) 0,
+      var(--ground)      calc(var(--gut) * .5),
+      var(--bg)          min(calc(var(--gut) * 1.8), calc(var(--gut) + 130px)),
+      var(--bg)          calc(100% - min(calc(var(--gut) * 1.8), calc(var(--gut) + 130px))),
+      var(--ground)      calc(100% - var(--gut) * .5),
+      var(--ground-deep) 100%);
+
   --fg:          #16161A;
   --fg-dim:      #5C5C66;
   --rule:        rgba(18, 18, 24, .12);
@@ -247,7 +341,17 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+    /* Same shape as §1a, deeper neutrals and MORE of the tint. A dark ground
+       carries far less apparent chroma than a light one at the same mix — 6%
+       of the macOS violet moves #F4F3F0 by 11/255, and moves #131316 by 3 —
+       so the percentages rise rather than the page going quietly neutral in
+       dark, which is the state most readers of a developer page are in. */
+    --bg: color-mix(in oklab, var(--os-tint) calc( 9% * var(--tint-scale)), #131316);
+    --bg-raised: color-mix(in oklab, var(--os-tint) calc( 9% * var(--tint-scale)), #1C1C21);
+    --surface: color-mix(in oklab, var(--os-tint) calc( 8% * var(--tint-scale)), #1E1E23);
+    --surface-2: color-mix(in oklab, var(--os-tint) calc(10% * var(--tint-scale)), #26262C);
+    --ground: color-mix(in oklab, var(--os-tint) calc(20% * var(--tint-scale)), #131316);
+    --ground-deep: color-mix(in oklab, var(--os-tint) calc(32% * var(--tint-scale)), #131316);
     --fg: #EDEDEA; --fg-dim: #9A9AA4;
     --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
     --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
@@ -263,7 +367,14 @@
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #131316; --bg-raised: #1C1C21; --surface: #1E1E23; --surface-2: #26262C;
+  /* Byte-identical to the block above, for the reason stated above it: the
+     explicit toggle has to win over a light OS preference too. */
+  --bg: color-mix(in oklab, var(--os-tint) calc( 9% * var(--tint-scale)), #131316);
+  --bg-raised: color-mix(in oklab, var(--os-tint) calc( 9% * var(--tint-scale)), #1C1C21);
+  --surface: color-mix(in oklab, var(--os-tint) calc( 8% * var(--tint-scale)), #1E1E23);
+  --surface-2: color-mix(in oklab, var(--os-tint) calc(10% * var(--tint-scale)), #26262C);
+  --ground: color-mix(in oklab, var(--os-tint) calc(20% * var(--tint-scale)), #131316);
+  --ground-deep: color-mix(in oklab, var(--os-tint) calc(32% * var(--tint-scale)), #131316);
   --fg: #EDEDEA; --fg-dim: #9A9AA4;
   --rule: rgba(255, 255, 255, .11); --rule-hard: rgba(255, 255, 255, .20);
   --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
@@ -414,6 +525,142 @@
 }
 
 
+/* --- 1f. the ground, per machine -----------------------------------------
+   THE PAGE'S COLUMN IS A WINDOW AND THE SPACE AROUND IT IS THE DESKTOP. That
+   is the whole idea, and it is the one arrangement that carries a machine's
+   colour at EVERY scroll position by construction rather than by covering the
+   part of the page someone remembered to cover: the gutters run the full
+   3800px of the document because they are made of the document's own margins.
+
+   WHY THIS IS ALLOWED TO BE COLOURED AT ALL, given §1a rations --accent to
+   four small things on Adwaita's and Fluent's own advice: this is not the
+   accent and it is not chrome. It is the wallpaper, and tinting a whole shell
+   from the wallpaper is what both of those design languages actually do —
+   Mica on Windows is a desaturated sample of the desktop picture, and macOS
+   pulls wallpaper colour through every translucent surface it has. The rule
+   about accent is about a colour that means "this is interactive". This one
+   means "this is the machine you are on", which is the page's thesis.
+
+   §1c's comment says colour is deliberately not restated in a skin block, and
+   that stands: §1c is the FORM axis and the tokens it carries are all form.
+   This is a separate block for a separate axis, and it sets exactly one colour
+   plus the shape that colour is poured into.
+
+   IT MUST STAY BELOW §1c. check-site.sh's check 9 reads each skin by scanning
+   for the first line starting `:root[data-os=` that names the OS and stopping
+   at that block's brace — so a block of this shape ABOVE §1c would become the
+   one it audits, and every form token would report as missing. Verified by
+   running it, not by reading the awk.
+
+   ADWAITA IS THE ODD ONE OUT ON PURPOSE. GNOME does not tint its shell from
+   the wallpaper — it ships a fixed neutral and puts hairlines between regions
+   — so Linux gets the flattest ground of the three and the only hard edge. A
+   Linux skin that dissolved into a soft violet-style wash would be a costume
+   of the wrong desktop, and the difference between the three grounds is
+   supposed to be legible as a difference in KIND, not only in hue.
+
+   NOTHING HERE IS POSITIONED. Every rung is a background-image on an element
+   the page already lays out, so none of it can widen the page — the failure
+   an earlier attempt at this shipped, where absolutely-positioned boxes with
+   negative insets put a horizontal scrollbar on all eleven widths from 390 to
+   1512 and check-site.sh, which opens no browser, saw nothing wrong. */
+
+/* Its --ground-img is the bare :root default in §1a; only the tint is here, so
+   the shape is written once. */
+:root[data-os="macos"] { --os-tint: #7C5CC4; }
+
+/* The coldest and deepest of the three, matching a sky that bottoms out at
+   #0A1E4A. */
+:root[data-os="windows"] {
+  --os-tint: #2A5FC8;
+  --tint-scale: .72;
+  /* A PLATE AT THE EDGE, then a long release. Mica really is a flat wallpaper
+     tint held across a whole surface rather than a fade, so the outer fifth of
+     the gutter holds one value — that flat is the Windows tell — and then it
+     goes soft, because the hard version of this shipped first and read as a
+     printed stripe down each side of the page at 1440. The step that survives
+     is at the screen edge, where there is nothing for it to band against.
+     Its seam is the shared one in §1a. An earlier cut gave Windows a stepped
+     seam of its own on the same "Fluent has edges" reasoning; it banded, and
+     it was wrong on the facts as well — Fluent steps between a CARD and its
+     background, not across the desktop, which is what this is. */
+  --ground-img:
+    linear-gradient(90deg,
+      var(--ground-deep) 0,
+      var(--ground-deep) calc(var(--gut) * .2),
+      var(--ground)      calc(var(--gut) * .66),
+      var(--bg)          min(calc(var(--gut) * 1.7), calc(var(--gut) + 120px)),
+      var(--bg)          calc(100% - min(calc(var(--gut) * 1.7), calc(var(--gut) + 120px))),
+      var(--ground)      calc(100% - var(--gut) * .66),
+      var(--ground-deep) calc(100% - var(--gut) * .2),
+      var(--ground-deep) 100%);
+}
+
+/* TWO RUNGS, NOT THREE — and a soft edge like the others, which took three
+ * tries to arrive at because the doctrine pointed the wrong way.
+ *
+ * WHAT WAS TRIED AND DROPPED, in order, all judged at 1:1 rather than argued:
+ *   1. A 1px hairline on the measure, on the argument that GNOME rules a
+ *      sidebar off from its content pane. True inside a window a few hundred
+ *      pixels tall, false down 3800px of document. It was the loudest mark on
+ *      the page — in #faq the two wires outweighed the section's own rules and
+ *      its h2, and a separator has to be quieter than the fields it separates.
+ *      Worse, being on `body` it ran BEHIND everything and so read as running
+ *      THROUGH it: at 1440 the right-hand wire crossed the KEYS panel and the
+ *      desk in #how, which is the signature of a rendering artifact. It also
+ *      crossed every section border-top, growing a small plus at each seam,
+ *      and it simply stopped at the end of the document with no terminus.
+ *   2. Quieting it — --rule-hard to --rule. Fixed dark only. The mark was
+ *      wrong, not its weight.
+ *   3. Deleting the stroke and keeping a flat plate with a hard-ish edge,
+ *      Adwaita's other device ("a one-step background change", §1c). At window
+ *      scale that edge is a boundary; at page height and 900px tall it is a
+ *      BAND down the side of the screen, which is the same defect one step
+ *      quieter.
+ *
+ * So the edge is soft here too. What makes this skin the flat one instead is
+ * that it has TWO COLOURS where the others have three: macOS and Windows run
+ * bg → ground → deep, Linux runs bg → deep with no waypoint between. Fewer
+ * levels is exactly what §1c already says about Adwaita, where --elev-1 is
+ * `none`, and unlike an edge treatment it cannot turn into a stripe.
+ *
+ * Note what that is NOT: a first attempt at "fewer levels" dropped the deep
+ * rung instead of the middle one, so Linux topped out at --ground and the
+ * outermost pixel of its page sat 36/255 from neutral against macOS's 53 —
+ * the flattest skin had quietly become the faintest one, which is a different
+ * claim and a worse page. Dropping the MIDDLE rung keeps the depth and spends
+ * one fewer step reaching it. The other two tells are the hue and the fact
+ * that Linux is the only skin with no seam at all. */
+:root[data-os="linux"] {
+  /* MUCH LIGHTER AND MORE CHROMATIC THAN ITS OWN SKY, which looks wrong
+     written down and is what the measurements forced. Two passes:
+     #23616A, the sky's own mid-stop, put the dark ground 35/255 from neutral
+     against macOS's 63 — a tint darker than the neutral it is mixed into
+     cannot lift it, so the one machine whose ground is meant to read as teal
+     read as grey. #2A7580 fixed the distance (44) and not the colour: channel
+     spread was still 9 at --ground in light, i.e. grey with a rumour of green.
+     This is the third value and the first that reads as teal in both themes.
+     The desk's sky is untouched — §4 is not part of this. */
+  --os-tint: #1E8794;
+  --ground-img:
+    linear-gradient(90deg,
+      var(--ground-deep) 0,
+      var(--ground-deep) calc(var(--gut) * .3),
+      var(--bg)          min(calc(var(--gut) * 1.75), calc(var(--gut) + 125px)),
+      var(--bg)          calc(100% - min(calc(var(--gut) * 1.75), calc(var(--gut) + 125px))),
+      var(--ground-deep) calc(100% - var(--gut) * .3),
+      var(--ground-deep) 100%);
+  /* NO SEAM, and that is the skin rather than an omission. Adwaita separates
+     regions with a hairline and a one-step change of fill; it has no soft
+     falloff anywhere, and §1c already refuses --elev-1 for the same reason.
+     The 1px rule between sections is the whole device on GNOME, and it is
+     already there — the border-top in §3. Linux's structure comes from the
+     hard-edged gutter plate above instead, which is why that one is the only
+     one of the three with a stroke in it. */
+  --seam-img: none;
+}
+
+
 /* --- 2. shell ------------------------------------------------------------- */
 
 * { box-sizing: border-box; }
@@ -445,7 +692,18 @@ html { scroll-behavior: smooth; }
 
 body {
   margin: 0;
-  background: var(--bg);        /* explicit, never transparent */
+  /* Explicit, never transparent — and now the page's ground rather than a
+     flat fill. It is on <body> because body's border box IS the document,
+     which is what makes `--gut` resolve against the full width and the
+     gutters run the whole scroll; the colour underneath propagates to the
+     canvas, so overscroll is the same ground rather than white. The gradient
+     is horizontal ONLY, and that is a decision: a vertical ramp over a 3800px
+     document moves about 2/255 per screen, so it is invisible at any one
+     scroll position — the same arithmetic that makes a blurred gradient a
+     waste. A horizontal one is viewport-scale by construction and needs no
+     `background-attachment: fixed`, which iOS Safari silently ignores. */
+  background-color: var(--bg);
+  background-image: var(--ground-img);
   color: var(--fg);
   font-family: var(--sans);
   font-size: 17px;
@@ -612,10 +870,24 @@ a:hover { text-decoration-color: currentColor; }
   box-shadow: var(--mat-rim-press);
 }
 
+/* THE PAGE SETTLES ONTO THE DESK. A flat translucent wash, not a fill, for the
+   same reason the seam is one: it has to darken the gutters and the column
+   together or the desk stops at the last section. Flat rather than a ramp
+   because it is the one rung all three machines draw the same way — a footer
+   is a region, and every one of the three fills a region flat.
+
+   6%, NOT THE 10% THIS SHIPPED AT FIRST. The footer is the one place on the
+   page where --fg-dim sits on the DEEPEST paper, so it sets the contrast floor
+   for the whole design: at 10% the licence links measured 4.84:1 on macOS
+   light — AA, and below the 5.44:1 the page held before any of this. The
+   ground is not worth a reader's eyesight, and 6% is visibly the same idea. */
 footer {
   border-top: 1px solid var(--rule);
   padding-block: 30px 40px;
   color: var(--fg-dim); font-size: 14px;
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--os-tint) calc(6% * var(--tint-scale)), transparent) 0,
+    color-mix(in srgb, var(--os-tint) calc(6% * var(--tint-scale)), transparent) 100%);
 }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 22px; }
 footer a { padding: 4px 0; }
@@ -625,7 +897,19 @@ footer a { padding: 4px 0; }
 
 /* One rule sets the vertical rhythm for every section, including the install
    panels, which are <section> too. */
-main > section { padding-block: var(--section-y); }
+main > section {
+  padding-block: var(--section-y);
+  /* The sections are sheets stacked on the desk, and each one catches the
+     shadow of the sheet above it. This is the page's only vertical event and
+     it is deliberately a boundary treatment rather than a fill: filling
+     alternate sections gives rhythm and says nothing about the machine, which
+     is why that version was dropped. Here the depth, the hardness and the
+     reach are the skin's (§1f), and on GNOME there is none at all.
+     `no-repeat` matters — a 300px gradient over an 800px section would
+     otherwise tile into four horizons. */
+  background-image: var(--seam-img);
+  background-repeat: no-repeat;
+}
 main > section + section { border-top: 1px solid var(--rule); }
 .panels section { padding-block: 0; }
 
