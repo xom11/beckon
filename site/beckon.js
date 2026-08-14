@@ -323,9 +323,11 @@
    * for them on a timer, and a window that rearranges itself with no visible
    * cause is the "it just jumped" complaint this exists to answer.
    *
-   * BOTTOM RIGHT, over the wallpaper, out of the cascade's way: windows run
-   * top-left to bottom-right and slot 4's corner is the one place on the desk
-   * they never all reach at once.
+   * ON THE BAR'S RAIL, right-hand end, centred on the bar's own centre line —
+   * the strip below `.desk-wins`, which is the one part of the desk no window
+   * can be dragged or resized onto. It used to float in the bottom-right
+   * corner of the work area, which the cascade never reaches but a reader's
+   * own mouse can. `--bar-mid` in beckon.css holds the line.
    *
    * It prints `Caps + <letter>`, which is the gesture the hero's chord rows
    * teach, not the raw chord — the whole page's claim is that Caps Lock stands
@@ -334,8 +336,33 @@
    *
    * BUILT HERE, NEVER IN THE MARKUP, like `.win-grip`: without this file
    * nothing can press anything, so a keycap sitting on a JS-off desk would be
-   * announcing a gesture that page cannot answer. */
-  function keyHud(host, letter) {
+   * announcing a gesture that page cannot answer.
+   *
+   * THE CAP GOES UP FIRST AND THE DESK ANSWERS A BEAT LATER. The two used to
+   * happen in the same frame, which reads as one event with two halves — and
+   * the entire job of this cap is to say WHY the desk moved, which is a claim
+   * about order. A cause that arrives with its effect is not read as a cause.
+   *
+   * `KEY_LEAD_MS` is deliberately near the floor of what a reader can separate:
+   * far enough that the order is felt, short enough that nobody reads it as the
+   * page being slow. It is the same shape as the real thing — a machine lights
+   * its indicator off the keystroke and gets round to moving the window after.
+   *
+   * IT IS PAIRED WITH THE `.09s` FADE-IN in beckon.css and neither number means
+   * much alone: the cap finishes arriving as the desk starts moving, so the
+   * thing doing the causing is fully on screen before the thing being caused
+   * stirs. Raising the lead without raising that fade just adds dead air. The
+   * fade-OUT stays slow, which is what an OSD on all three of these machines
+   * does. */
+  var KEY_LEAD_MS = 90;    /* cap first, desk this much later */
+  var KEY_HOLD_MS = 1000;  /* and the cap stays up this long once it is there */
+
+  function keyHud(host, letter, then) {
+    /* A press still owing its desk change is settled NOW, before this one is
+       drawn. Two presses inside the lead window would otherwise resolve out of
+       order, and the later one would be painted over by the earlier one. */
+    keyHudSettle(host);
+
     var hud = host._hud;
     if (!hud) {
       hud = el('div', 'desk-key');
@@ -356,7 +383,39 @@
     void hud.offsetWidth;
     hud.classList.add('is-on');
     clearTimeout(host._hudOff);
-    host._hudOff = setTimeout(function () { hud.classList.remove('is-on'); }, 1400);
+    host._hudOff = setTimeout(function () { hud.classList.remove('is-on'); }, KEY_HOLD_MS);
+
+    if (!then) return;
+    host._hudThen = then;
+    host._hudLead = setTimeout(function () { keyHudSettle(host); }, KEY_LEAD_MS);
+  }
+
+  /* Pay whatever the last press still owes, now. Idempotent, and it takes the
+     debt off the books BEFORE running it: `keyHud` opens by settling, so a
+     `then` that ever reached a press would otherwise re-enter this with its own
+     entry still pending and run it twice. Nothing passes such a `then` today —
+     the ordering is what keeps that from being a thing to remember. */
+  function keyHudSettle(host) {
+    var then = host._hudThen;
+    keyHudDrop(host);
+    if (then) then();
+  }
+
+  function keyHudDrop(host) {
+    if (host._hudLead) { clearTimeout(host._hudLead); host._hudLead = null; }
+    host._hudThen = null;
+  }
+
+  /* Withdraw the cap, and the press behind it.
+     DROPPED, NOT SETTLED, and that is the whole reason this is a function
+     rather than one line at each call site. Every caller here has just redrawn
+     the desk itself, so a deferred render still holding the press's own
+     snapshot would repaint the desk that press left rather than the one now on
+     screen — an OS switch would land back on the previous machine's layout. */
+  function keyHudClear(host) {
+    keyHudDrop(host);
+    clearTimeout(host._hudOff);
+    if (host._hud) host._hud.classList.remove('is-on');
   }
 
   /* Hang a class on a node for one animation's length.
@@ -843,8 +902,10 @@
       host.querySelector('.desk-wins').replaceChildren();
       renderDesk(host, desk);
       /* A new machine has not been pressed on yet, so the cap from the last one
-         must not still be sitting in the corner claiming otherwise. */
-      if (host._hud) host._hud.classList.remove('is-on');
+         must not still be sitting on the bar claiming otherwise — nor may the
+         desk change that cap was still leading, which belongs to the machine
+         just discarded. */
+      keyHudClear(host);
     }
 
     /* `ok` is "the gesture was made" — a real chord, a held Caps Lock, or a
@@ -856,25 +917,37 @@
       if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
-      /* `r.born` is set by the launch branch and by no other, so this is the
+      /* THE KEY, THEN THE ANSWER. Everything that is about the gesture runs
+         now; everything that is about what beckon DID with it is handed to
+         `keyHud` and runs a beat later. `r` is captured rather than re-read
+         from `desk`, so if a second press arrives inside that beat the first
+         one still settles onto its own snapshot before the second draws.
+
+         `r.born` is set by the launch branch and by no other, so this is the
          one call site on the hero that can open a window rather than move one.
          `act` below never passes it: no mouse gesture launches anything, and
          closing an app and pressing its key again is a launch that comes back
          through here. */
-      renderDesk(host, desk, r.born);
-      keyHud(host, app.label);
+      keyHud(host, app.label, function () {
+        renderDesk(host, r.desk, r.born);
+        if (steps) steps.textContent = deskSay(r);
+      });
       if (ui) ui.flash(app.key);
       /* Only the LAST cap of each chord is rewritten — the letter. The
          modifiers are never touched: "one letter, whatever your modifier is"
          is the sentence these rows are drawing. */
       letters.forEach(function (l) { l.textContent = app.label; });
-      if (steps) steps.textContent = deskSay(r);
       return true;
     }
 
     /* The mouse's own transcript replaces the keyboard's, because both describe
-       the same desk and only one of them can be true at a time. */
+       the same desk and only one of them can be true at a time.
+       A press still inside its lead is DROPPED rather than settled: `desk` was
+       updated the moment that key was pressed, so `next` already contains what
+       it did, and the full redraw below draws it. Settling instead would repaint
+       the pre-drag desk on top of the drag. */
     function act(next, kind, name) {
+      keyHudDrop(host);
       desk = next;
       renderDesk(host, desk);
       if (steps) steps.textContent = deskSayWindow(kind, name);
@@ -927,8 +1000,10 @@
       flashFor(wins, 'is-cut');
       /* The key cap belongs to the press, not to the setup, so a cut clears it:
          leaving `Caps T` on screen next to a desk that has just been rebuilt
-         claims the reader pressed something to get here. */
-      if (host._hud) host._hud.classList.remove('is-on');
+         claims the reader pressed something to get here. The desk change that
+         cap was leading goes with it — this scene is what is on screen now, and
+         a press from the previous one must not land on top of it. */
+      keyHudClear(host);
       mark('is-on', step);
       mark('is-hit', null);
 
@@ -981,15 +1056,21 @@
       if (!ok) { if (ui) ui.miss(); return false; }
       var r = deskPress(desk, key);
       desk = r.desk;
-      renderDesk(host, desk, r.born);          /* set by the launch branch only */
-      keyHud(host, app.label);                 /* the tour presses for the reader */
+      /* The cap now, the answer a beat later — see `keyHud`. It matters more
+         here than on the hero: the tour presses for the reader, so there is no
+         finger on a key to supply the cause, and the cap IS the cause.
+         The row that lights up and the readout under the desk are both answers
+         to the press, so they go with the desk rather than with the cap. */
+      keyHud(host, app.label, function () {
+        renderDesk(host, r.desk, r.born);      /* born is set by the launch branch only */
+        mark('is-on', null);
+        mark('is-hit', r.step);
+        /* The branch's NAME, the same word the row that just lit up prints. It
+           used to read "Step 5a", which named nothing a reader could match to
+           anything on screen. */
+        readout(out, deskStepName(r.step), deskSay(r));
+      });
       if (ui) ui.flash(app.key);
-      mark('is-on', null);
-      mark('is-hit', r.step);
-      /* The branch's NAME, the same word the row that just lit up prints. It
-         used to read "Step 5a", which named nothing a reader could match to
-         anything on screen. */
-      readout(out, deskStepName(r.step), deskSay(r));
       return true;
     }
 
@@ -1022,8 +1103,11 @@
 
     /* A mouse gesture lights no row, because none of the five rows is about the
        mouse: unmarking is the honest thing for the table to do while the
-       readout explains what just happened instead. */
+       readout explains what just happened instead.
+       A press still inside its lead is dropped rather than settled, for the
+       reason the hero's `act` gives. */
     function act(next, kind, name) {
+      keyHudDrop(host);
       desk = next;
       renderDesk(host, desk);
       mark('is-on', null);

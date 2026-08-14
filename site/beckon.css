@@ -208,6 +208,27 @@
                                 It is the desk's WORK AREA that it defines — see
                                 `.desk-wins` in §4 — not just where a maximised
                                 window stops; §4 sets it per OS */
+  --bar-mid:     0px;        /* where that bar's CENTRE LINE is, measured up
+                                from the desk's bottom edge. `.desk-key` in §4
+                                is the only thing that reads it: whatever is
+                                drawn ON the bar's line rather than above it
+                                wants this and not `--bar-h`.
+
+                                IT IS A FLAT `0px` HERE AND A FORMULA PER OS,
+                                and that is not a style choice. `--bar-h / 2`
+                                is the right answer for both bars that sit on
+                                the desk's bottom edge, so writing it once here
+                                looked like the tidy version — and it measured
+                                dead. A `var()` inside a custom property is
+                                substituted where that property is DECLARED,
+                                not where it is used, so this line would have
+                                frozen the `0px` two lines up and shipped every
+                                Windows and Linux cap half its own height below
+                                the taskbar. Measured: centre 14.5px low at
+                                807px of desk, on the machines that were the
+                                whole point. macOS survived only because its
+                                own declaration sits beside its own `--bar-h`.
+                                §4 sets all three */
   --dock-icon:   clamp(13px, 2.2cqw, 26px);  /* one dock tile. Read by the macOS
                                 `--bar-h`, which is that pill's own height, so
                                 the two cannot drift; §4 */
@@ -998,29 +1019,64 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * them on a timer, and a desk that rearranges itself with no visible cause is
  * the "it just jumped" reading this exists to close.
  *
- * BOTTOM RIGHT because the cascade runs top-left to bottom-right and stops at
- * slot 4 — that corner is the one piece of wallpaper no window reaches. Above
- * the bar by `--bar-h`, so it sits in the work area with the windows rather
- * than over the dock.
+ * ON THE BAR'S OWN RAIL, right-hand end. `--bar-mid` is where that bar's centre
+ * line is and `translateY(50%)` puts the cap's centre on it, so the two read as
+ * one row. It used to float `--bar-h + 3.5%` up, which lined it up with nothing:
+ * measured on the 807px desk, its centre sat 44.5 / 44.1 / 43.4px above the
+ * bar's on the three machines. It is 0.0 on all three now.
+ *
+ * The right-hand end is where both full-width bars keep their status area, so
+ * the cap lands where a real machine already puts the thing it is announcing.
+ *
+ * IT IS ALSO THE ONE STRIP NO WINDOW CAN REACH, which the old corner was not.
+ * That corner was picked because the cascade stops at slot 4 — true of the
+ * cascade, but this desk is draggable and resizable, so a reader could park a
+ * window on the cap. `.desk-wins` stops at `--bar-h`; nothing above can cover
+ * anything down here.
  *
  * It prints `Caps + <letter>`, the gesture the chord rows one screen up teach,
  * rather than the real chord: those rows say Caps Lock stands in for the
  * reader's own modifier, and this is that same sentence in the same words.
  *
- * z-index 45: over every window (a window's is `open windows - MRU index`, so
- * at most six) and under the bar's 50, because a key cap floating over the dock
- * would read as being part of it. */
+ * REVERSED: z-index 55, OVER the bar's 50. The old note here said 45 for the
+ * opposite reason — "a key cap floating over the dock would read as being part
+ * of it" — and on Windows and Linux being part of it is now the whole point.
+ * On macOS the Dock is a centred pill the cap never crosses, so the number
+ * changes nothing there.
+ *
+ * `transform` holds the centring and `translate` holds the entrance. The two
+ * are separate properties and compose, which is what lets one of them animate
+ * while the other stays put — the same split, for the same reason, as
+ * `.dock-app.is-launching` further down. */
 .desk-key {
   position: absolute;
-  right: 3.5%; bottom: calc(var(--bar-h) + 3.5%);
-  z-index: 45;
+  right: 3.5%; bottom: var(--bar-mid);
+  transform: translateY(50%);
+  z-index: 55;
   display: flex; align-items: center;
   gap: 4px;
   gap: clamp(3px, .7cqw, 8px);
   opacity: 0; translate: 0 30%;
   transition: opacity .18s ease, translate .18s ease;
 }
-.desk-key.is-on { opacity: 1; translate: 0 0; }
+/* IN FAST, OUT SLOW, and the fast half is a number with a job.
+ *
+ * A transition is declared by the style being moved TO, so the base rule above
+ * times the cap leaving and this one times it arriving. `.09s` is paired with
+ * `KEY_LEAD_MS` in beckon.js, which holds the desk back 90ms: the cap finishes
+ * arriving exactly as the windows start moving, so the reader sees a cause
+ * complete itself and then an effect. At the old .18s — the same as the exit —
+ * the cap was still half transparent when the desk answered, and two things
+ * fading into each other is the single event this pair exists to take apart.
+ *
+ * The exit is deliberately NOT matched to it. Every OSD on all three of these
+ * machines snaps on and drifts off, and a cap that vanished as fast as it
+ * arrived would pull the eye back to a corner where nothing is happening. */
+.desk-key.is-on {
+  opacity: 1; translate: 0 0;
+  transition-duration: .09s;
+  transition-timing-function: ease-out;
+}
 
 /* Dark and translucent on all three machines, like every OSD is: the three
    wallpapers are a purple gradient, a blue radial and a teal one, and a light
@@ -1047,6 +1103,40 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   color: rgba(244, 245, 248, .72);
   text-shadow: 0 1px 3px rgba(0, 0, 0, .5);
 }
+
+/* --- and on the two machines where the rail is a full-width strip, the cap
+ * takes its height from the strip rather than from the desk.
+ *
+ * IT DOES NOT FIT OTHERWISE. Measured at the 807px desk: the cap is 27.4px
+ * against a 29.0px Windows taskbar and a 27.4px Linux panel — it fills the
+ * panel exactly, which draws a pill welded into the bar rather than one sitting
+ * in it. `--bar-h` minus an inset leaves 3.7px of bar visible above and below at
+ * that width, and stays proportional at every other one.
+ *
+ * macOS is deliberately NOT in this list. Its Dock is a centred floating pill
+ * and the cap sits beside it over bare wallpaper, so it is a sibling of the
+ * pill, not an item inside it — and shrinking it there would make the two
+ * pills on one rail disagree about their own height.
+ *
+ * The type grows at 1.25cqw, which is `.dock-app`'s rate rather than the cap's
+ * old 1.5cqw: the cap now shares a bar with those icons, and two things on one
+ * strip that scale at different rates only look right at one desk width.
+ *
+ * The height is spelled out twice rather than held in a local custom property,
+ * for two reasons that agree. check-site.sh requires every token to be defined
+ * on bare `:root`, and this is a one-rule expression, not a token — and a token
+ * for it could not be declared at `:root` anyway, because `var(--bar-h)` would
+ * substitute the `0px` there. That is the trap the `--bar-mid` note in §1
+ * describes, and this pass shipped it once already. */
+.desk[data-os="windows"] .desk-cap,
+.desk[data-os="linux"]   .desk-cap {
+  min-width: calc(var(--bar-h) - clamp(5px, .9cqw, 9px));
+  height:    calc(var(--bar-h) - clamp(5px, .9cqw, 9px));
+  padding-inline: clamp(4px, .75cqw, 9px);
+  font-size: clamp(8.5px, 1.25cqw, 13px);
+}
+.desk[data-os="windows"] .desk-plus,
+.desk[data-os="linux"]   .desk-plus { font-size: clamp(8px, 1.05cqw, 11px); }
 
 /* --- a window the reader is holding ---
  *
@@ -1540,6 +1630,14 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    rule below read back, so changing one means changing this. */
 .desk[data-os="macos"] {
   --bar-h: calc(var(--dock-icon) + 12px + 1.97cqw);
+  /* The one bar that does not sit on the desk's bottom edge, so the `--bar-h/2`
+     the other two use would miss its centre by the 1.97cqw it floats clear by.
+     Written as `--bar-h` minus half the pill rather than as the gap plus half
+     the pill — the same number, but derived from the line above instead of
+     restating `1.97cqw` a third time in this file. The pill's own height is
+     `--dock-icon + 12px`, which is the `.desk-bar` rule below read back, so
+     that half of it is already load-bearing. */
+  --bar-mid: calc(var(--bar-h) - (var(--dock-icon) + 12px) / 2);
 }
 .desk[data-os="macos"] .desk-bar {
   left: 50%; bottom: 3.5%; transform: translateX(-50%);
@@ -1547,9 +1645,16 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   background: rgba(255, 255, 255, .26);
   backdrop-filter: blur(6px);
 }
+/* Both of the two bars below own the desk's bottom edge, so their centre line
+   is simply half their height. Each writes that out beside its own `--bar-h`
+   rather than sharing one declaration in §1, because here is where
+   `var(--bar-h)` resolves to this bar's height — see the `--bar-mid` note in §1
+   for what the shared version measured. */
+
 /* Windows: a full-width bar, icons centred. */
 .desk[data-os="windows"] {
   --bar-h: clamp(20px, 3.6cqw, 38px);
+  --bar-mid: calc(var(--bar-h) / 2);
 }
 .desk[data-os="windows"] .desk-bar {
   left: 0; right: 0; bottom: 0; height: 22px;
@@ -1563,6 +1668,7 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    waybar strip along the top, because this column used to draw sway. */
 .desk[data-os="linux"] {
   --bar-h: clamp(19px, 3.4cqw, 36px);
+  --bar-mid: calc(var(--bar-h) / 2);
 }
 .desk[data-os="linux"] .desk-bar {
   left: 0; right: 0; bottom: 0; height: var(--bar-h);
@@ -1933,7 +2039,16 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   padding-top: 0;
   padding-bottom: 11px;
 }
-.how-table tbody th { color: var(--fg-dim); width: 42%; }
+/* 44%, AND THE TWO PERCENT MATTER — they are what lets the desk beside this
+   table be wider at all. Measured by cloning each cell's ink into a nowrap
+   span: column one wants 212.3px and column two 266.5px, so the table's real
+   floor is 479px, not the "about 560px" estimated in the media query at the
+   foot of this file. But at 42% the SPLIT ran out before the table did — the
+   slack was 16px on the left against 49px on the right, so squeezing the table
+   wrapped "focused, more windows" while the right column still had room to
+   spare, and every row jumped from 52.5px to 80.1px at once. 44% evens the two
+   margins out and takes the wrap floor down with it. */
+.how-table tbody th { color: var(--fg-dim); width: 44%; }
 .how-table tbody td { font-weight: 400; }
 
 /* THE TWO GROUP HEADINGS ARE GONE. They read "You are somewhere else" and "You
@@ -2330,13 +2445,60 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* The table and the desk sit side by side only where both stay legible. The
    widest row is "Focused, one window, another app open" plus "switch back to
-   the app you came from", which needs about 560px of table. */
+   the app you came from", which needs about 560px of table.
+
+   THAT 560 IS AN ESTIMATE AND IT IS HIGH — see the note on `tbody th`, where
+   the two columns measure 212.3px and 266.5px of ink, a 479px floor. It is
+   left standing because it is what this breakpoint was chosen against and the
+   breakpoint has not moved; the block below is where the measurement is
+   spent. */
 @media (min-width: 1041px) {
   .how-grid {
     grid-template-columns: minmax(0, 1.04fr) minmax(0, .96fr);
     gap: 44px;
     align-items: start;
   }
+}
+
+/* --- and once the page has stopped growing, the example takes the wider half.
+ *
+ * `--maxw` is 1120px, so at that viewport and at every one above it the grid's
+ * content box is a constant 1064px. THAT is why this is a second breakpoint
+ * rather than an edit to the one above: a fixed ratio only has a fixed outcome
+ * over a fixed width, and between 1041 and 1120 the grid is still growing, so
+ * the same ratio would squeeze the table further at every step down. Below
+ * 1120 the table is the tighter of the two and keeps the wider column.
+ *
+ * The desk goes 489.6 -> 537.6 wide, and the table 544.4 -> 500.4 — which is
+ * 20px clear of the 479px floor and 8px clear of what column one needs at 44%.
+ * Everything on the desk scales with it, so this is the only lever that makes
+ * the example easier to watch without redrawing anything on it. */
+@media (min-width: 1120px) {
+  .how-grid {
+    grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+    gap: 40px;
+  }
+  /* THE DESK'S BOTTOM EDGE LANDS ON THE TABLE'S LAST RULE.
+   *
+   * Widening the desk makes it taller — it is a 16/9 box — so at 537.6 wide it
+   * is 302.4 tall against a table of 286.7, and top-aligned it would hang below
+   * the list with its readout hanging further. Lifting the column by exactly
+   * the difference puts both blocks in one band, so they read as one exhibit
+   * rather than as a list with a picture beside it.
+   *
+   * 16px IS THAT DIFFERENCE, MEASURED, and it is a constant for the same reason
+   * the ratio above is: over this whole range the grid's content box does not
+   * move, and the table's height is five rows of fixed type that never wrap.
+   *
+   * IT CANNOT REACH THE LEAD. There is 30px of clear space between that
+   * paragraph's box and the top of the grid, measured at 1512x982; 16 of it is
+   * spent here and 14 is left. Anything that makes the lead taller — a third
+   * line at some width, a longer sentence — eats that 14 before it eats this.
+   *
+   * This reverses nothing above it: the `thead` still has no top padding, so on
+   * the LEFT the table's first ink is still flush with the top of its own grid
+   * track. What has changed is that the desk no longer starts on that line. */
+  .how-demo { margin-top: -16px; }
 }
 
 @media (max-width: 1040px) {
