@@ -18,12 +18,17 @@ if [[ -z "$BECKON_BIN" ]]; then
 fi
 
 # Each entry: name|binding|app
+#
+# Ctrl + Super + Alt, the same chord as every other example, written in the
+# order the three keys sit in on the bottom row. GTK parses the modifiers as a
+# set, so the order here is for the reader; `<Control>` and `<Primary>` are the
+# same key and GNOME's own defaults use `<Control>`.
 ENTRIES=(
-    "beckon-terminal|<Super>t|kitty"
-    "beckon-chrome|<Super>c|Google Chrome"
-    "beckon-code|<Super>v|Visual Studio Code"
-    "beckon-files|<Super>f|Files"
-    "beckon-spotify|<Super>s|Spotify"
+    "beckon-terminal|<Control><Super><Alt>t|kitty"
+    "beckon-chrome|<Control><Super><Alt>c|Google Chrome"
+    "beckon-code|<Control><Super><Alt>v|Visual Studio Code"
+    "beckon-files|<Control><Super><Alt>f|Files"
+    "beckon-spotify|<Control><Super><Alt>s|Spotify"
 )
 
 # Build the path list gsettings expects. Each binding lives at

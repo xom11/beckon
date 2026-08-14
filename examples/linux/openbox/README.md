@@ -4,6 +4,11 @@ These are EWMH-compliant minimal X11 window managers. beckon talks to
 all of them through `_NET_CLIENT_LIST_STACKING` + `_NET_ACTIVE_WINDOW`
 atoms — no WM-specific code path.
 
+All three bind `Ctrl + Super + Alt` + a letter, the same chord as every
+other example. Each spells it differently: openbox writes `C-W-A-`,
+awesome and fluxbox both use X11's own names, where `Mod4` is Super and
+`Mod1` is Alt.
+
 ## Install (openbox)
 
 ```sh
@@ -23,11 +28,11 @@ openbox --reconfigure
 Bindings live in your Lua config (`~/.config/awesome/rc.lua`). Add:
 
 ```lua
-awful.key({ "Mod4" }, "t", function () awful.spawn("beckon kitty") end),
-awful.key({ "Mod4" }, "c", function () awful.spawn({"beckon", "Google Chrome"}) end),
-awful.key({ "Mod4" }, "v", function () awful.spawn({"beckon", "Visual Studio Code"}) end),
-awful.key({ "Mod4" }, "f", function () awful.spawn("beckon Files") end),
-awful.key({ "Mod4" }, "s", function () awful.spawn("beckon Spotify") end),
+awful.key({ "Control", "Mod4", "Mod1" }, "t", function () awful.spawn("beckon kitty") end),
+awful.key({ "Control", "Mod4", "Mod1" }, "c", function () awful.spawn({"beckon", "Google Chrome"}) end),
+awful.key({ "Control", "Mod4", "Mod1" }, "v", function () awful.spawn({"beckon", "Visual Studio Code"}) end),
+awful.key({ "Control", "Mod4", "Mod1" }, "f", function () awful.spawn("beckon Files") end),
+awful.key({ "Control", "Mod4", "Mod1" }, "s", function () awful.spawn("beckon Spotify") end),
 ```
 
 Plug those into your `globalkeys` table. Reload with `Mod4+Ctrl+r`.
@@ -37,11 +42,11 @@ Plug those into your `globalkeys` table. Reload with `Mod4+Ctrl+r`.
 Add to `~/.fluxbox/keys`:
 
 ```
-Mod4 t     :Exec beckon kitty
-Mod4 c     :Exec beckon "Google Chrome"
-Mod4 v     :Exec beckon "Visual Studio Code"
-Mod4 f     :Exec beckon Files
-Mod4 s     :Exec beckon Spotify
+Control Mod4 Mod1 t     :Exec beckon kitty
+Control Mod4 Mod1 c     :Exec beckon "Google Chrome"
+Control Mod4 Mod1 v     :Exec beckon "Visual Studio Code"
+Control Mod4 Mod1 f     :Exec beckon Files
+Control Mod4 Mod1 s     :Exec beckon Spotify
 ```
 
 Reload: `Reconfigure` from the root menu, or `Restart`.

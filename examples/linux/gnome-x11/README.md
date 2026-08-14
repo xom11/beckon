@@ -36,7 +36,7 @@ the per-path `reset` if you have other custom shortcuts to preserve.)
 2. Fill in:
    - **Name**: `beckon Chrome`
    - **Command**: `beckon "Google Chrome"` (or the absolute path printed by `which beckon`)
-   - **Shortcut**: press `Super+C`
+   - **Shortcut**: hold `Ctrl + Super + Alt` and press `C`
 3. Repeat for each app you want a hotkey for.
 
 Names must match what `beckon installed` reports. Run that first.

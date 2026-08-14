@@ -706,9 +706,8 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .mods { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; justify-items: center; }
 .mods li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .mod-os { font-size: 14px; min-width: 68px; text-align: right; color: var(--fg-dim); }
-/* `.mod-note` went with the three notes it styled — see the comment over
-   `.hero-chords` in index.html for what they said and what the page lost by not
-   saying it. A row is now three things: the machine, the gesture, the chord. */
+/* A row is three things: the machine, the gesture, the chord. `.mod-note` was
+   a fourth, and it is gone. */
 
 /* The one `=` on the page, and it is not a plus sign: it separates two whole
    chords rather than two keys, and what it claims is that they are the same
@@ -728,6 +727,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
  * was the page translating a thing the reader is looking at into words. The
  * Windows and Linux rows keep `Ctrl` and `Alt` as words for the same reason
  * inverted: those keys are etched as words on every keyboard either OS ships on.
+ *
+ * The row is then ordered BY POSITION ON THE KEYBOARD, not by how the chord is
+ * said — ⌃ ⌥ ⌘ on a Mac, Ctrl / Super / Alt on a PC. See the note over
+ * `.hero-chords` in index.html.
  *
  * TWO TECHNIQUES, AND THE SPLIT IS DELIBERATE.
  *

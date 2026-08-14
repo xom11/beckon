@@ -634,15 +634,13 @@
   /* THESE ARE THE CHORD ROWS READ BACK, in words, and the two must not drift:
      the row draws the keys and this sentence names them, about six lines apart
      on screen. So it is spelled out rather than glyphed — a hint that printed
-     ⌘ would be repeating the picture instead of captioning it — and Linux says
-     three modifiers here because the row now shows three.
-     "Hyper (Cmd Ctrl Alt)" went with the row's own note: the page no longer
-     uses the word anywhere, and a hint that introduced a term nothing else
-     defines was the sentence doing the introducing. */
+     ⌘ would be repeating the picture instead of captioning it — and each one
+     lists its modifiers in the row's own order, which is the order the keys sit
+     in under the reader's hand. */
   var CHORD_OF = {
-    macos: 'Command, Control and Option',
+    macos: 'Control, Option and Command',
     windows: 'Ctrl, the Windows key and Alt',
-    linux: 'Super, Alt and Ctrl'
+    linux: 'Ctrl, Super and Alt'
   };
   function hintAsk(os) {
     return 'Caps Lock stands in for ' + (CHORD_OF[os] || CHORD_OF.linux) +

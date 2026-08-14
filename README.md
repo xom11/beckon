@@ -221,9 +221,11 @@ Each letter names the app, which is the whole point of binding by letter
 rather than by modifier. Five different kinds of program, so the set is
 useful on a machine that has none of your other habits.
 
-Modifier defaults: `Super` on Linux, Hyper (`cmd+ctrl+alt`) on macOS,
-`Ctrl+Win+Alt` on Windows. Replace the Names with whatever
-`beckon installed` reports on your machine.
+Modifier defaults are the same three keys on every OS, written left to
+right as they sit under your hand: `Ctrl+Super+Alt` on Linux,
+`Control+Option+Command` — Hyper — on macOS, `Ctrl+Win+Alt` on Windows.
+Replace the Names with whatever `beckon installed` reports on your
+machine.
 
 **Three of these are named differently per OS, and that is the point of
 `beckon installed`.** The examples use the Name each system actually

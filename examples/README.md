@@ -77,13 +77,19 @@ the letter, not the modifier:
 The file manager is the one every desktop ships and no two agree on the
 name of, which is exactly the case `beckon search files` exists for.
 
-Modifier keys vary because each OS picks something idiomatic:
+The modifier is the same three keys everywhere — the ones either side of
+the space bar, listed left to right as they sit under your hand:
 
 | OS | Modifier |
 |---|---|
-| Linux | `Super` (Mod4 — the Windows key) |
-| macOS | Hyper (`cmd + ctrl + alt`) |
+| Linux | `Ctrl + Super + Alt` (Super is Mod4, the Windows key) |
+| macOS | `Control + Option + Command` — the chord usually called Hyper |
 | Windows | `Ctrl + Win + Alt` |
+
+Three modifiers rather than one because a bare `Super` collides with
+whatever your desktop already binds, and each desktop binds a different
+set. Nothing in beckon depends on the choice: on Linux the compositor
+owns the binding and these files are yours to edit.
 
 ## Discovering ids on your machine
 
