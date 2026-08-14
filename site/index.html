@@ -445,18 +445,14 @@
                routes here. tools/check-site.sh no longer lists `how-press` among
                the controls that must ship hidden, because there is no longer a
                control to ship. -->
+          <!-- THERE IS NO PAUSE/PLAY BUTTON, and there was one for about an
+               hour. It went because the loop is the default state now: the
+               section plays on its own, a row click aims it at one branch, and
+               the loop holds by itself while the pointer or the keyboard is
+               inside the picture. A button that says "Pause" beside something
+               that already stops when you reach for it is a control explaining
+               a behaviour rather than providing one. -->
           <div class="readout" id="how-readout" hidden></div>
-
-          <!-- The tour's Pause/Play. Ships hidden and beckon.js fills it, for
-               the same reason every other control here does: with JS off there
-               is no tour, so a Pause button would be a control that silently
-               does nothing.
-
-               It exists because the tour now runs for readers who ask for
-               reduced motion too, which makes WCAG 2.2.2's "mechanism to pause"
-               something the page has to actually provide rather than something
-               a stray `pointerdown` happened to do. -->
-          <div class="demo-tour" id="how-tour" hidden></div>
 
           <!-- The JS-OFF transcript, and beckon.js hides it the moment the
                readout is live. With JS off this paragraph is the only words this

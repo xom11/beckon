@@ -485,27 +485,6 @@
     }
   }
 
-  /* The tour's Pause/Play. Returns a `set(paused)` the tour calls whenever it
-     changes state for any reason, so the button can never disagree with what
-     the desk is doing — including when a reader takes over by clicking a row.
-     NO `aria-pressed`: the label already carries the state, and a button that
-     says "Play" while reporting pressed=false is two answers to one question. */
-  function buildTour(hostEl, onToggle) {
-    if (!hostEl) return null;
-    var b = el('button', 'ghost', 'Pause');
-    b.type = 'button';
-    b.addEventListener('click', onToggle);
-    hostEl.appendChild(b);
-    hostEl.hidden = false;
-    return {
-      set: function (paused) {
-        b.textContent = paused ? 'Play' : 'Pause';
-        b.setAttribute('aria-label', paused
-          ? 'Play the walk through the five branches'
-          : 'Pause the walk through the five branches');
-      }
-    };
-  }
 
   /* Window elements are POOLED BY ID and never rebuilt, because the movement is
      the point: a replaced node has no previous transform for the transition in
@@ -1091,15 +1070,20 @@
     var desk = null;
     var ui = null;
 
-    /* THE READER-HAS-TAKEN-OVER HOOK, and `takeover` starts as a NO-OP rather
-       than as null on purpose. `onOs` at the foot of this closure calls its
-       callback SYNCHRONOUSLY the moment it is registered, and it runs BEFORE
-       the tour IIFE that assigns the real `pause` here — so a direct reference
-       would throw a ReferenceError out of the outermost IIFE and take the
-       keyboard router and the HUD down with it. `inTour` is how the two shared
-       entry points below tell the tour's own calls from a reader's. */
+    /* TWO HOOKS THE TOUR INSTALLS LATER, and both start harmless on purpose.
+       `onOs` at the foot of this closure calls its callback SYNCHRONOUSLY the
+       moment it is registered, and it runs BEFORE the tour IIFE that fills
+       these in — so a direct reference would throw a ReferenceError out of the
+       outermost IIFE and take the keyboard router and the HUD down with it.
+
+       `takeover` is "the reader is working the desk, hold the loop"; `inTour`
+       is how the shared entry points tell the tour's own calls from a reader's.
+       `pickStep` is what a row click does: with the tour running it re-aims the
+       loop, and without it (which cannot happen today, but the row buttons are
+       wired before the tour exists) it falls back to just setting the scene. */
     var inTour = false;
     var takeover = function () {};
+    var pickStep = null;
 
     function mark(cls, step) {
       rows.forEach(function (r) {
@@ -1228,7 +1212,15 @@
       b.type = 'button';
       b.setAttribute('aria-label', 'Set the desk up: ' + th.textContent.trim());
       th.replaceChildren(b);
-      r.addEventListener('click', function () { scene(step); });
+      /* A ROW CLICK RE-AIMS THE LOOP; it used to only set the scene up.
+         That was the defect: the row's whole content is "when X, beckon does
+         Y", and clicking it produced X and then waited for the reader to
+         supply a keystroke they had no reason to know about — so the one thing
+         the row promises, Y, never happened. Now the loop narrows to that
+         branch and repeats it, press and all. */
+      r.addEventListener('click', function () {
+        if (pickStep) pickStep(step); else scene(step);
+      });
     });
     /* Only now is any of the row a target, so only now may it look like one. */
     table.classList.add('is-live');
@@ -1364,9 +1356,27 @@
          looks like, performed as stage machinery. `onOs` builds the Launch
          scene on arrival and `phase` starts at 'press', so the machinery has
          already happened before anyone is looking. */
-      var at = 0, phase = 'press', paused = false, started = false;
+      var at = 0, phase = 'press', started = false;
       var timer = null, onScreen = false, pending = [];
-      var tourUi = null;
+
+      /* `only` is the whole of the row-click feature: null means walk all five
+         in the table's order, a step id means repeat that one branch until the
+         reader says otherwise. Clicking the same row again clears it — which is
+         the only way back to all five, and it is why the row that is looping
+         keeps its mark rather than handing it back. */
+      var only = null;
+      function list() { return only ? [only] : STEPS; }
+
+      /* HOLDING IS NOT PAUSING. The demo is a real desk — draggable, resizable,
+         with working title-bar buttons — and a loop that rebuilds it every five
+         seconds would snatch it back mid-gesture. So the loop holds while the
+         reader is in the picture and picks up shortly after they leave.
+         It replaced a Pause/Play button, which is the same idea with a control
+         in front of it; the reader asked for the button gone and for the demo
+         to be playing by default. */
+      var holding = false, idle = null;
+      var IDLE_BACK = 6000;  /* after a touch or a keystroke, with no hover to
+                                tell us when the reader is done */
 
       /* EVERY TIMER THE TOUR SETS GOES THROUGH HERE, because a turn now has
          timers inside it — the scene lands mid-seam, the cue lands after that —
@@ -1381,7 +1391,7 @@
       }
 
       function queue(ms) {
-        if (paused || !onScreen || timer) return;
+        if (holding || !onScreen || timer) return;
         timer = setTimeout(tick, ms);
       }
 
@@ -1411,8 +1421,10 @@
 
       function tick() {
         timer = null;
-        if (paused) return;
-        var step = STEPS[at];
+        if (holding) return;
+        var steps = list();
+        if (at >= steps.length) at = 0;
+        var step = steps[at];
         if (phase === 'seam') {
           /* The desk sinks, the new scene is built at the bottom of the dip
              where the swap cannot be read as an outcome, and the cue follows it
@@ -1426,59 +1438,65 @@
           queue(SEAM + BEATS[step][0]);
         } else {
           drive(function () { press(deskSceneKey(step), true); });
-          at = (at + 1) % STEPS.length;
+          at = (at + 1) % list().length;
           phase = 'seam';
           queue(BEATS[step][1] - SEAM - BEATS[step][0]);
         }
       }
 
-      function pause() {
-        if (paused) return;
-        paused = true;
+      function hold() {
+        holding = true;
         clear();
-        /* Hand the table's marks back to their reader-driven meaning. */
-        table.classList.toggle('is-touring', false);
-        if (tourUi) tourUi.set(true);
+        if (idle) { clearTimeout(idle); idle = null; }
       }
 
-      /* Resume at the START of a turn, never mid-sentence: a tour that picked
-         up at "press" would fire a key on a desk the reader has since
+      /* Always back at the START of a turn, never mid-sentence: a loop that
+         picked up at "press" would fire a key on a desk the reader has since
          rearranged, and the readout would answer a question nobody asked. */
-      function play() {
-        if (!paused) return;
-        paused = false;
-        phase = 'seam';
-        table.classList.toggle('is-touring', true);
-        if (tourUi) tourUi.set(false);
-        queue(RESUME);
+      function release(ms) {
+        if (idle) { clearTimeout(idle); idle = null; }
+        idle = setTimeout(function () {
+          idle = null;
+          if (!holding) return;
+          holding = false;
+          phase = 'seam';
+          queue(200);
+        }, ms);
       }
 
-      tourUi = buildTour(document.getElementById('how-tour'), function () {
-        if (paused) play(); else pause();
-      });
-      takeover = pause;
+      /* A row click narrows the loop to that branch — or widens it again if the
+         branch it names is the one already looping. `at` is set so that
+         clearing the narrowing carries on from where the reader was rather than
+         jumping back to the top of the table. */
+      pickStep = function (step) {
+        only = (only === step) ? null : step;
+        at = only ? 0 : Math.max(0, STEPS.indexOf(step));
+        holding = false;
+        if (idle) { clearTimeout(idle); idle = null; }
+        clear();
+        phase = 'seam';
+        queue(120);   /* near-immediate: they just asked for this branch */
+      };
 
-      /* Capture-phase, so it lands before the control's own handler moves
-         anything. The table is a sibling of the demo, not a child, so it needs
-         its own listener.
-         THE GUARD IS LOAD-BEARING: the Pause button lives INSIDE `#how-demo`,
-         so without it a click on Play would pause on `pointerdown` and then
-         un-pause on `click`, and the button could never pause anything.
-         THERE IS NO `document` KEYDOWN LISTENER ANY MORE. There used to be, and
-         it killed the tour permanently for any key pressed anywhere on the page
-         — a Tab in the nav, before the reader had ever scrolled this far, left
+      /* THE READER IS IN THE PICTURE, SO THE LOOP WAITS. Hover covers a mouse,
+         `focusin` covers a keyboard, and `pointerdown` + a timer covers touch,
+         where there is no hover to tell us when they are done.
+         The TABLE gets no such listener: clicking a row is how the loop is
+         aimed, not an interruption of it.
+         THERE IS NO `document` KEYDOWN LISTENER. There used to be, and it
+         killed the tour permanently for any key pressed anywhere on the page —
+         a Tab in the nav, before the reader had ever scrolled this far, left
          #how frozen with nothing to say why. Presses that actually reach this
          demo go through `press()`, which calls `takeover()` itself, and only
-         after the hit/miss gate: a bare `t` that this demo rejects changes
-         nothing on screen and so must not stop anything either. */
-      function readerTook(e) {
-        if (tourHost && tourHost.contains(e.target)) return;
-        pause();
-      }
-      var tourHost = document.getElementById('how-tour');
+         after the hit/miss gate: a bare `t` this demo rejects changes nothing
+         on screen and so must not stop anything either. */
+      takeover = function () { hold(); release(IDLE_BACK); };
       table.classList.add('is-touring');
-      demo.addEventListener('pointerdown', readerTook, true);
-      table.addEventListener('pointerdown', readerTook, true);
+      demo.addEventListener('pointerenter', hold);
+      demo.addEventListener('pointerleave', function () { release(600); });
+      demo.addEventListener('focusin', hold);
+      demo.addEventListener('focusout', function () { release(600); });
+      demo.addEventListener('pointerdown', function () { hold(); release(IDLE_BACK); }, true);
 
       /* The sentence that used to be prepended here — "It walks the five rows
          on its own, and stops for good the moment you touch it." — is gone with
@@ -1500,7 +1518,7 @@
       new IntersectionObserver(function (entries) {
         onScreen = entries[0].isIntersecting;
         if (!onScreen) { clear(); return; }
-        if (paused) return;
+        if (holding) return;
         if (!started) { started = true; queue(ARRIVE); }
         else { phase = 'seam'; queue(RESUME); }
       }, { threshold: 0 }).observe(demo);

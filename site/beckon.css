@@ -1953,20 +1953,15 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .readout-say { margin: 0; min-width: 0; font-size: 15px; }
 
-/* The tour's own Pause/Play, under the readout and hard right — out of the
-   reading path, next to the thing it controls.
- *
- * WHY THERE IS A BUTTON AT ALL. The tour is auto-updating content, so WCAG
- * 2.2.2 wants a mechanism to pause it, and the three listeners that used to
- * serve as one do not: `pointerdown` never fires for a trackpad scroll past the
- * section, and the `document` keydown listener was measured killing the tour
- * for good when a reader pressed Tab anywhere on the page — before they had
- * ever scrolled to #how. That listener is gone; this is its replacement, and
- * unlike it this one is reversible.
- *
- * It ships `hidden` and beckon.js un-hides it, like every other JS-only
- * control on this page: without JS there is no tour to pause. */
-.demo-tour { display: flex; justify-content: flex-end; margin-top: 10px; }
+/* `.demo-tour` — a Pause/Play button under the readout — lived here briefly and
+   is gone. The loop is the section's resting state now: it plays on arrival, a
+   row click aims it at one branch, and it holds on its own while the pointer or
+   the keyboard is inside `#how-demo`. The mechanism WCAG 2.2.2 asks for is that
+   hold rather than a button, which is the same trade a carousel makes when it
+   stops on hover. If a visible control is ever wanted again, this rule and a
+   `buildTour` helper beside `flashFor` are what it took; both are in the
+   history at 9477e61, and the id it needed back in `check-site.sh`'s CTLS list
+   is `how-tour`. */
 
 /* The transcript. Not sr-only: it is the sentence the demo is making, and a
    reader who never looks at the stage should still get it. Left-aligned with
