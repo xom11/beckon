@@ -36,6 +36,36 @@ Last updated: 2026-08-14, branch `four-doors-phase-0`.
 | The strip is ONE tab stop, Left/Right between pills | **done, free** | **measured with a control (G-S2), a14 2026-08-14**: `WS_TABSTOP` moves off A and onto B when B is checked, so user32 migrates it by itself. The first run of this gate could not say so — see the gates table |
 | **No `&` mnemonics on tab names** | **done** | and settled by counting: `About` has no free letter left, so four unique mnemonics do not exist |
 
+## The window as photographed, 2026-08-14
+
+`../measurements/2026-08-14-four-doors-shell-a14-dark.png` — a14, dark, the
+real binary at `1020x900`, which is `680x600` scaled by 1.5 at 144 DPI. That
+one number confirms Task 8 landed.
+
+**What the photograph confirms:** the four pills, the painted trough, the
+active pill on `accent_fill`, the `18` badge on Shortcuts, and the window at
+its new width.
+
+**What the photograph shows still wrong**, all of it Shortcuts-page work that
+is honestly marked *open* below, listed here because a reader comparing the
+window to the mockup will see these first:
+
+1. **The `App` / `Shortcut` column headers are still there.** Design §3.1
+   deletes them — "keycap chips look like keys and app names look like app
+   names".
+2. **The editor still says `No shortcut selected`** and still labels its
+   fields `App` and `Shortcut`. Design §3.1 deletes both.
+3. **`Reset` has not become `Revert`.**
+4. **The count appears twice** — `18` on the pill and `· 18 bindings` beside
+   the card heading. §2 moved it to the pill so it reads from all four pages;
+   the heading copy is what should go.
+5. **`Save` and `Close` are still there**, correctly: auto-save is §6 and has
+   not started.
+6. **A card-sized void sits between the editor and the command bar.** That is
+   the keyboard card's reserved height on a page that does not draw it —
+   Task 7 raised it, decided not to re-stack, and this is what that decision
+   looks like. It is the largest visual difference from the mockup.
+
 ## §3.1 Shortcuts page
 
 | Design says | Status |
