@@ -65,6 +65,15 @@ outstanding; do it from that plan.
   `check-resolve`. Never write under `/Users/lenamkhanh/Documents/dev/beckon`
   itself; other sessions share it.
 - **Commit messages carry no `Co-Authored-By` line.**
+- **Run `cargo fmt --all` before every commit — the code blocks in this plan
+  are NOT rustfmt-normalised.** Two of them were transcribed faithfully into
+  Task 3 and broke the `rustfmt` CI job: a `const` the author split across two
+  lines that fits on one, and a signature one character over the 100-column
+  limit. rustfmt does **not** evaluate `cfg` when it walks the module tree
+  (measured, and recorded in `CLAUDE.md` as a refutation of the opposite
+  belief), so a `#[cfg(target_os = "windows")]`-gated file is not exempt on a
+  Linux runner. Let rustfmt decide the layout rather than hand-editing to
+  match; CI compares against what rustfmt computes.
 
 ### Behaviour that is pinned by a test and must survive
 
@@ -1009,8 +1018,7 @@ module:
 ```rust
 /// What a keypress costs when a name matched only by substring and exactly one
 /// entry answered it.
-const GUESS_LONE: &str =
-    "substring match, so an app installed later can quietly take this name";
+const GUESS_LONE: &str = "substring match, so an app installed later can quietly take this name";
 
 /// What a miss means on Linux. Not "nothing happens": `target_classes` falls
 /// back to the raw id as a window class, and that comparison is equality — so
