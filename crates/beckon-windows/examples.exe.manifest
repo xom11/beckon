@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity type="win32" name="beckon.probe" version="1.0.0.0" processorArchitecture="*"/>
+
+  <!-- Visual styles. Without this the process loads comctl32 v5 and every
+       control renders in the Windows 2000 style: raised 3D bevels, sunken
+       bitmap checkboxes, an etched group box, a ListView header drawn as a
+       push button. LVS_EX_DOUBLEBUFFER is also a v6-only flag and is
+       silently ignored without it. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32"
+                        name="Microsoft.Windows.Common-Controls"
+                        version="6.0.0.0"
+                        processorArchitecture="*"
+                        publicKeyToken="6595b64144ccf1df"
+                        language="*"/>
+    </dependentAssembly>
+  </dependency>
+
+  <!-- beckon runs at normal integrity by design. The Caps hook's UIPI gap
+       is documented, not worked around. -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <!-- Windows 10 and 11 share this GUID. Declaring it turns off the
+       version-lie shim; beckon calls neither GetVersionEx nor
+       VerifyVersionInfo, which Step 2 verifies. -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- ORDER IS LOAD-BEARING, per Microsoft's own documentation: older
+           Windows reads dpiAware and ignores dpiAwareness; newer Windows
+           lets dpiAwareness win. Swapping these two is claimed to silently
+           lose per-monitor-v2 on Windows 10. Documented, not measured:
+           nobody in this chain has a Windows machine, so this has not been
+           tried against real hardware; see Task 10 in
+           docs/superpowers/plans/2026-08-11-settings-window-landing-1.md
+           for the pass that owes it a control run before anyone trusts it
+           fully. -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <!-- Opts every MAX_PATH-limited Win32 call beckon makes (.lnk parsing,
+           AppsFolder enumeration, the log flag) out of the 260-character ceiling,
+           for the user who installs under a long Start Menu or profile path. -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <!-- Inert today: beckon calls no `*A` API, no `MultiByteToWideChar` and
+           no `CP_ACP`; every string on the hot path is already UTF-16 via
+           the `W` APIs. Declared anyway so it stays correct by construction
+           if an `*A` call is ever added, instead of silently defaulting to
+           the legacy system codepage on a non-English Windows install. -->
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

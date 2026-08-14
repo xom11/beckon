@@ -81,3 +81,10 @@ tempfile = "3"
 [target.'cfg(target_os = "windows")'.dev-dependencies.windows]
 version = "0.61"
 features = ["Win32_System_Memory"]
+
+# Windows-only, and only to give the EXAMPLES a manifest -- see build.rs. The
+# target gate matches beckon-cli's: `embed-resource` shells out to a resource
+# compiler that a macOS host does not have, and the local Windows gate
+# cross-checks a -gnu target where it would also fail.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "2"
