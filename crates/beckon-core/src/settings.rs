@@ -1830,16 +1830,40 @@ pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011];
 /// fixed points, and `probe_pinned_ids_have_not_moved` is what says so out
 /// loud.
 ///
-/// Fifteen, not the thirteen the spec enumerates. The spec's evidence for
-/// the pinned range is `settings_probe.rs:229-242`, and two more `const IDC_`
-/// declarations sit outside that span: `IDC_TAP 1025` at line 249, which
-/// `measure_geometry` reads style bits and item count from, and
-/// `IDC_NOTES 1004` at line 1294, which `dump` reads to say whether an event
-/// landed. Both go through `dlg_item(…).unwrap_or_default()`, so a renumber
-/// would not fail there -- it would print an empty reading as a real one.
-/// Counted from the probe rather than from the spec:
+/// Fifteen, and the spec's three **pinned** rows
+/// (`docs/superpowers/specs/2026-08-14-four-doors-phase-0-spec.md:141-145`
+/// -- 1001-1008, 1012/1013, 1028-1031) account for only fourteen of them.
+/// The fifteenth is `IDC_TAP 1025`, which that same table files under
+/// `1014-1027 | in use, unpinned` at spec line 144 while
+/// `settings_probe.rs:249` hard-codes it regardless. Counted from the probe
+/// rather than from the spec:
 /// `grep -c "const IDC_" crates/beckon-windows/examples/settings_probe.rs`
 /// is 15.
+///
+/// The spec's 1001-1008 row cites `settings_probe.rs:229-242` as its
+/// evidence -- evidence for that row alone, not for the pinned set, since
+/// 1012/1013 and 1028-1031 are pinned by separate rows. Seven of the fifteen
+/// declarations fall inside that span; the other eight do not, and two of
+/// those eight are the ones worth spelling out, because **they fail
+/// differently and neither failure is loud.**
+///
+/// `IDC_NOTES 1004` is declared at `settings_probe.rs:1303` and read at 1308
+/// as `dlg_item(h, IDC_NOTES).map(ctl_text).unwrap_or_default()`. A renumber
+/// does not fail there at all: `dump` prints `notes:` with nothing after it,
+/// which is indistinguishable from a model that genuinely has no notes, so
+/// the run reads clean while the one control that says whether an event
+/// landed is no longer being read.
+///
+/// `IDC_TAP 1025` does **not** go through `unwrap_or_default`.
+/// `settings_probe.rs:940` reads it under
+/// `if let Some(ctl) = dlg_item(parent, IDC_TAP)`, and the `else` arm at 986
+/// prints `COMBOBOX IDC_TAP:     MISSING`. So a renumber does say something
+/// -- and what it says is that a control which is on screen is absent. That
+/// is worth pinning for the opposite reason to `IDC_NOTES`: a confident false
+/// negative sends the next session hunting a control that was never lost, and
+/// the hardware to check it against is scarce -- an SSH shell on a14 lands in
+/// session 0 with no desktop, so every probe run costs a scheduled task in
+/// session 1 (see the live-Windows-tests note in `CLAUDE.md`).
 pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
     ("LIST", 1001),
     ("COMBO", 1002),

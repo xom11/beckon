@@ -1017,7 +1017,8 @@ OS metadata on every call.
 
   **The filter box is a view, and the mapping is the feature.** `IDC_FILTER`
   (1021, cue banner `Filter`, no label) matches case-insensitively against
-  both columns. It lives in `Model`, not in `Ui`, because
+  the **app column only** (`crates/beckon-core/src/settings.rs:544`; see the
+  correction below). It lives in `Model`, not in `Ui`, because
   `Model::remove_pressed`, `marked_count`, `ControlState::selected` and
   `remove_enabled` all depend on what is visible — decisions that belong in
   the crate all three CI jobs compile. **`ListItem` carries its model row,
@@ -1025,6 +1026,29 @@ OS metadata on every call.
   `on_mark`** — those callbacks take model indices, and a ListView only ever
   knows view positions. Without that, one filtered keystroke ticks one
   binding and deletes another.
+
+  **CORRECTED 2026-08-14 (`8d03d56`): the filter matched BOTH columns until
+  this branch.** That is where the feature started, and the argument for it
+  was that both columns is the rule `beckon search` already uses, so the
+  program would have no third matching dialect. What falsified it: **every
+  beckon chord contains `alt`**, so a filter of `a` — a plausible first
+  keystroke of "brave" — matched every row while the box looked as though it
+  had narrowed the list, and `Remove` takes the ticked rows. Measured with
+  four bindings (`Brave` / `Kitty` / `Firefox` / `Discord`, all
+  `ctrl+alt+<key>`) and filter `a`: `visible` returned all four, so ticking
+  what was on screen and pressing Remove deleted the whole table. It now
+  matches the app name only, pinned by
+  `the_filter_does_not_match_the_shortcut_column`. The two dialects differ on
+  purpose: `search`'s worst outcome is a long list, this window's is a
+  deleted binding.
+
+  **What that gives up is real, and is pinned rather than left to be
+  rediscovered.** The window can no longer answer "what already owns this
+  chord?" by filtering — that is what
+  `filtering_by_a_key_name_finds_nothing` asserts. If it bites, the way back
+  is to match the chord's **key** (`f2`, `b`) — the half a person searches
+  for, and the half that is not `alt` on every row — and never the whole
+  chord as a substring again.
 
   Two rules keep it safe, and both are functions rather than discipline.
   **Remove never deletes a row you cannot see:** ticks survive being

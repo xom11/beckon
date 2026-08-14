@@ -211,10 +211,32 @@ struct ServeState {
     /// "Open log" greyed out rather than lying, and is what the settings
     /// window's `Paths::log` carries so the System page can omit the row
     /// instead of showing a path that does not exist. Set on every platform
-    /// (`cmd_serve_app` takes it unconditionally) but read only by the
-    /// Windows-only tray menu below and by `open_settings`, which the two
-    /// windowed platforms share -- so a Linux build sees it as write-only.
-    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
+    /// that compiles this module (`cmd_serve_app` takes it unconditionally)
+    /// and read on both of them: by the Windows-only tray menu below, and by
+    /// `open_settings`, which the two windowed platforms share.
+    ///
+    /// **CORRECTED 2026-08-14: no build of this struct sees the field as
+    /// write-only.** The paragraph above used to end "-- so a Linux build
+    /// sees it as write-only", and the field carried
+    /// `#[cfg_attr(not(any(target_os = "windows", target_os = "macos")),
+    /// allow(dead_code))]` to match. The shape looked right because every
+    /// neighbouring field here really is write-only somewhere and carries
+    /// the same attribute one platform narrower -- `keyboard` above is read
+    /// only by `sync_caps_hook`, and that read sits under
+    /// `#[cfg(target_os = "windows")]`, so on macOS the field genuinely is
+    /// written and never read. `log` is not in that position, on either
+    /// count. `lib.rs:12-13` is
+    /// `#[cfg(any(target_os = "macos", target_os = "windows"))] mod serve;`,
+    /// so a Linux build never compiles `ServeState` at all and the
+    /// `not(any(..))` predicate was unsatisfiable everywhere the field
+    /// exists; and `open_settings` is gated `any(windows, macos)` and reads
+    /// `s.log` when it builds `Paths`, so the field is live on both
+    /// platforms that do compile it. Falsified by deleting the attribute and
+    /// running `cargo clippy -p beckon-cli --all-targets -- -D warnings` on
+    /// macOS, which stays clean. That covers the macOS arm only -- there is
+    /// no Windows host here -- but the Windows arm is the one with the extra
+    /// reads (`install_tray_menu`, below), so it cannot be the arm that
+    /// warns.
     log: Option<PathBuf>,
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
