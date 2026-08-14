@@ -5,17 +5,28 @@
 //! Algorithm steps mirror `i3ipc.rs`:
 //!   3.  not running                 → `dispatch exec <Exec>` from .desktop
 //!   4.  running, not focused        → `dispatch focuswindow address:0xN`
-//!   5a. focused, app has more wins  → cycle to next-most-recent same-app window
-//!   5b. focused, only one window    → toggle to MRU other-app window
+//!   5a. focused, app has more wins  → rotate the address-ordered ring
+//!   5b. focused, only one window    → toggle to the most-recent other app
 //!   5c. focused, nothing else       → hide via movetoworkspacesilent special:beckon
 //!
 //! Window identity: Hyprland exposes `class` for both Wayland (= app_id) and
 //! XWayland (= WM_CLASS) clients, so a single field is enough — no fallback
 //! chain like sway/i3.
 //!
-//! Cycle order uses `focusHistoryID` (0 = most-recent). With two windows of
-//! the same app this gives a clean A↔B toggle on repeated invocations,
-//! matching the practical behaviour of `i3ipc.rs`.
+//! `focusHistoryID` (0 = focused) feeds `WindowSnapshot::recency`, which
+//! drives steps 4 and 5b. It deliberately does **not** drive step 5a: focusing
+//! a window promotes it to 0 and demotes the one just left, so a recency ring
+//! is a 2-cycle and windows 3..N are unreachable. `algorithm::decide` rotates
+//! an address-ordered ring instead — see the comment there.
+//!
+//! Unlike every other Linux backend, this one passes `previous_app = None` to
+//! `decide`. `$XDG_RUNTIME_DIR/beckon-mru` exists because the sway tree
+//! carries no focus history; Hyprland's `focusHistoryID` is real MRU and
+//! tracks focus changes beckon never saw (mouse clicks, native binds), so
+//! consulting a file that only records beckon's own actions can only make
+//! step 5b less accurate. Measured on Hyprland 0.56.0: focusing a window with
+//! `hyprctl dispatch focuswindow`, i.e. outside beckon entirely, reorders
+//! `focusHistoryID` immediately.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -28,9 +39,19 @@ use serde::Deserialize;
 use crate::algorithm::{decide, Decision, WindowSnapshot};
 
 /// Special workspace name beckon parks the focused window on for step 5c.
-/// A single shared name is fine: re-invoking `beckon <id>` finds the window
-/// in `j/clients`, sees it's not focused, and brings it back via
-/// `dispatch focuswindow` (Hyprland surfaces the special workspace).
+///
+/// Coming back out is beckon's job, not the compositor's. `dispatch
+/// focuswindow` on a parked window makes Hyprland *show* the special
+/// workspace as an overlay (`Actions::focus` → `changeWorkspace` →
+/// `setSpecialWorkspace`) but never re-parents it, so the window keeps
+/// belonging to `special:beckon`: the moment focus moves elsewhere it
+/// disappears again, and `movetoworkspace`, `movefocus` and the user's own
+/// `$mod+1..4` all behave as if it no longer exists. sway does not have this
+/// problem because `focus` on a scratchpad container runs
+/// `root_scratchpad_show`, which detaches it and adds it to the workspace the
+/// user is looking at. `unpark_if_needed` is beckon's equivalent — without it
+/// hide is a one-way door, and the *second* hide is a silent no-op because
+/// the window is already on the destination workspace.
 const HIDE_WORKSPACE: &str = "special:beckon";
 
 pub struct HyprlandBackend;
@@ -44,6 +65,14 @@ impl HyprlandBackend {
     }
 }
 
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Workspace {
+    #[serde(default)]
+    pub(crate) id: i64,
+    #[serde(default)]
+    pub(crate) name: String,
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 pub(crate) struct Client {
     pub(crate) address: String,
@@ -52,6 +81,19 @@ pub(crate) struct Client {
     pub(crate) title: String,
     #[serde(rename = "focusHistoryID", default)]
     pub(crate) focus_history_id: i32,
+    /// Where the window lives. Only the name is load-bearing, and only to
+    /// spot beckon's own parking workspace — see `unpark_if_needed`.
+    #[serde(default)]
+    pub(crate) workspace: Workspace,
+    /// Hyprland sets this on windows it is deliberately keeping off screen
+    /// (terminal swallowing). Note this is NOT how an inactive group tab is
+    /// reported — measured on 0.56.0, a backgrounded tab is
+    /// `hidden=false, visible=false`, which is why the filter below tests
+    /// `hidden` and must never test `visible`: filtering on `visible` would
+    /// hide every group tab but the front one and break step 5a cycling
+    /// through a tabbed group.
+    #[serde(default)]
+    pub(crate) hidden: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,12 +146,38 @@ fn send(cmd: &str) -> Result<String> {
 
 fn list_clients() -> Result<Vec<Client>> {
     let raw = send("j/clients")?;
-    parse_clients(&raw)
+    Ok(parse_clients(&raw)?
+        .into_iter()
+        .filter(is_beckonable)
+        .collect())
+}
+
+/// Windows beckon is willing to focus, cycle to, or toggle back to.
+///
+/// Every other Linux backend filters its enumeration and each learned to the
+/// hard way: `x11.rs` drops panels by `_NET_WM_WINDOW_TYPE` and `kde.rs`
+/// drops `skipTaskbar`, both because step 5b toggling to a window the
+/// compositor then refuses to focus makes beckon report success while
+/// nothing moves. This backend filtered nothing at all.
+///
+/// Deliberately narrow: only a window Hyprland is actively keeping off
+/// screen, or one with no class to match against in the first place. In
+/// particular an inactive group tab stays in — see `Client::hidden`.
+fn is_beckonable(c: &Client) -> bool {
+    !c.hidden && !c.class.trim().is_empty()
 }
 
 fn active_address() -> Result<Option<String>> {
     let raw = send("j/activewindow")?;
     parse_active(&raw)
+}
+
+/// The workspace the focused monitor is showing. Only consulted on the
+/// restore path, so the ordinary focus hot path still costs the same two
+/// queries it always did.
+fn active_workspace_id() -> Result<i64> {
+    let raw = send("j/activeworkspace")?;
+    parse_active_workspace(&raw)
 }
 
 pub(crate) fn parse_clients(raw: &str) -> Result<Vec<Client>> {
@@ -137,6 +205,56 @@ pub(crate) fn parse_active(raw: &str) -> Result<Option<String>> {
     }
 }
 
+pub(crate) fn parse_active_workspace(raw: &str) -> Result<i64> {
+    let trimmed = raw.trim();
+    let ws: Workspace = serde_json::from_str(trimmed).map_err(|e| {
+        BackendError::Ipc(format!(
+            "parse j/activeworkspace: {} (raw: {:.200})",
+            e, trimmed
+        ))
+    })?;
+    Ok(ws.id)
+}
+
+/// Move a window off beckon's parking workspace before focusing it.
+///
+/// Returns the command that has to run first, or `None` when the window is
+/// somewhere ordinary. Split out from the IPC so the decision is testable
+/// without a live compositor.
+///
+/// Only `special:beckon` is unparked. A user's own special workspace
+/// (`special:magic`, a scratchpad they set up in their config) is where they
+/// deliberately put that window, so beckon shows it as an overlay the way
+/// Hyprland does and leaves it where it found it.
+pub(crate) fn unpark_command(clients: &[Client], addr: &str, active_ws: i64) -> Option<String> {
+    let parked = clients
+        .iter()
+        .any(|c| c.address == addr && c.workspace.name == HIDE_WORKSPACE);
+    if !parked {
+        return None;
+    }
+    Some(format!(
+        "dispatch movetoworkspacesilent {},address:{}",
+        active_ws, addr
+    ))
+}
+
+/// Focus a window, first returning it to the user's workspace if beckon had
+/// parked it. `movetoworkspacesilent` does not move focus, so the
+/// `focuswindow` that follows is still what actually raises it.
+fn focus_window(clients: &[Client], addr: &str) -> Result<()> {
+    let needs_unpark = clients
+        .iter()
+        .any(|c| c.address == addr && c.workspace.name == HIDE_WORKSPACE);
+    if needs_unpark {
+        let ws = active_workspace_id()?;
+        if let Some(cmd) = unpark_command(clients, addr, ws) {
+            dispatch(&cmd)?;
+        }
+    }
+    dispatch(&format!("dispatch focuswindow address:{}", addr))
+}
+
 /// Send a dispatch command and treat any non-`ok` body as a failure.
 fn dispatch(cmd: &str) -> Result<()> {
     let resp = send(cmd)?;
@@ -148,12 +266,6 @@ fn dispatch(cmd: &str) -> Result<()> {
         "command `{}` returned `{}`",
         cmd, trimmed
     )))
-}
-
-fn persist_previous(app: Option<&str>) {
-    if let Some(a) = app {
-        crate::state::write_previous(a);
-    }
 }
 
 fn snapshots_from(clients: &[Client]) -> Vec<WindowSnapshot> {
@@ -168,17 +280,6 @@ impl Backend for HyprlandBackend {
         let clients = list_clients()?;
         let active = active_address()?;
 
-        // Capture the class focused before this invocation so we can store it
-        // as the new "previous" once we change focus. State file is shared
-        // with the i3ipc backend (same XDG runtime path) — harmless because
-        // a user runs only one compositor at a time.
-        let pre_focused_class = active
-            .as_deref()
-            .and_then(|addr| clients.iter().find(|c| c.address == addr))
-            .map(|c| c.class.clone());
-
-        let previous_app = crate::state::read_previous();
-
         let entry = crate::desktop::resolve(id);
         // Hyprland's `class` comes from the Wayland `app_id` for native
         // clients and from `WM_CLASS` for XWayland ones, so the same
@@ -187,12 +288,10 @@ impl Backend for HyprlandBackend {
         let target = crate::desktop::target_classes(entry.as_ref(), id);
 
         let snapshots = snapshots_from(&clients);
-        let decision = decide(
-            &snapshots,
-            active.as_deref(),
-            target,
-            previous_app.as_deref(),
-        );
+        // `previous_app = None` on purpose: `focusHistoryID` already carries
+        // real MRU, including focus changes beckon never made. See the
+        // module docs.
+        let decision = decide(&snapshots, active.as_deref(), target, None);
 
         let action = match decision {
             Decision::Launch => {
@@ -214,15 +313,15 @@ impl Backend for HyprlandBackend {
                 BeckonAction::Launched
             }
             Decision::Focus(addr) => {
-                dispatch(&format!("dispatch focuswindow address:{}", addr))?;
+                focus_window(&clients, &addr)?;
                 BeckonAction::Focused
             }
             Decision::Cycle(addr) => {
-                dispatch(&format!("dispatch focuswindow address:{}", addr))?;
+                focus_window(&clients, &addr)?;
                 BeckonAction::Cycled
             }
             Decision::ToggleBack(addr) => {
-                dispatch(&format!("dispatch focuswindow address:{}", addr))?;
+                focus_window(&clients, &addr)?;
                 BeckonAction::ToggledBack
             }
             Decision::Hide(addr) => {
@@ -234,7 +333,6 @@ impl Backend for HyprlandBackend {
             }
         };
 
-        persist_previous(pre_focused_class.as_deref());
         Ok(action)
     }
 
@@ -284,6 +382,21 @@ mod tests {
             class: class.to_string(),
             title: format!("{} window", class),
             focus_history_id: fhid,
+            workspace: Workspace {
+                id: 1,
+                name: "1".to_string(),
+            },
+            hidden: false,
+        }
+    }
+
+    fn parked(addr: &str, class: &str, fhid: i32) -> Client {
+        Client {
+            workspace: Workspace {
+                id: -99,
+                name: HIDE_WORKSPACE.to_string(),
+            },
+            ..client(addr, class, fhid)
         }
     }
 
@@ -306,7 +419,120 @@ mod tests {
         assert_eq!(snaps[1].recency, 3);
     }
 
+    // ----------------- is_beckonable() -----------------
+
+    #[test]
+    fn beckonable_accepts_an_ordinary_window() {
+        assert!(is_beckonable(&client("0xA", "kitty", 0)));
+    }
+
+    #[test]
+    fn beckonable_rejects_hidden_and_classless_windows() {
+        let mut h = client("0xA", "kitty", 0);
+        h.hidden = true;
+        assert!(!is_beckonable(&h), "a swallowed window is not a target");
+
+        assert!(!is_beckonable(&client("0xB", "", 0)));
+        assert!(!is_beckonable(&client("0xC", "   ", 0)));
+    }
+
+    #[test]
+    fn beckonable_keeps_a_backgrounded_group_tab() {
+        // Measured on Hyprland 0.56.0: the tab of a group that is not on top
+        // reports `hidden=false, visible=false`. It must stay in the list or
+        // step 5a can never cycle into it. This test exists to fail if
+        // anyone extends the filter to `visible`.
+        let raw = r#"[{
+            "address":"0x1","class":"foot","title":"t","focusHistoryID":1,
+            "hidden":false,"visible":false,"grouped":["0x1","0x2"],
+            "workspace":{"id":1,"name":"1"}
+        }]"#;
+        let parsed = parse_clients(raw).unwrap();
+        assert!(is_beckonable(&parsed[0]));
+    }
+
+    #[test]
+    fn beckonable_keeps_a_parked_window() {
+        // A window beckon hid must remain findable, or the next press
+        // launches a duplicate instead of bringing it back.
+        assert!(is_beckonable(&parked("0xA", "kitty", 2)));
+    }
+
+    // ----------------- unpark_command() -----------------
+
+    #[test]
+    fn unpark_returns_none_for_an_ordinary_window() {
+        let clients = vec![client("0xA", "kitty", 0)];
+        assert_eq!(unpark_command(&clients, "0xA", 3), None);
+    }
+
+    #[test]
+    fn unpark_moves_a_parked_window_to_the_live_workspace() {
+        let clients = vec![parked("0xA", "kitty", 1)];
+        assert_eq!(
+            unpark_command(&clients, "0xA", 3).as_deref(),
+            Some("dispatch movetoworkspacesilent 3,address:0xA")
+        );
+    }
+
+    #[test]
+    fn unpark_leaves_a_users_own_special_workspace_alone() {
+        // `special:magic` is where the user put it on purpose. Showing it as
+        // an overlay is Hyprland's behaviour and beckon should not override
+        // the placement.
+        let mut c = client("0xA", "kitty", 1);
+        c.workspace = Workspace {
+            id: -7,
+            name: "special:magic".to_string(),
+        };
+        assert_eq!(unpark_command(&[c], "0xA", 3), None);
+    }
+
+    #[test]
+    fn unpark_ignores_an_address_that_is_not_in_the_list() {
+        let clients = vec![parked("0xA", "kitty", 1)];
+        assert_eq!(unpark_command(&clients, "0xZ", 3), None);
+    }
+
+    // ----------------- parse_active_workspace -----------------
+
+    #[test]
+    fn parse_active_workspace_reads_the_id() {
+        assert_eq!(
+            parse_active_workspace(r#"{"id":2,"name":"2","monitor":"HDMI-A-1"}"#).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn parse_active_workspace_rejects_garbage() {
+        assert!(matches!(
+            parse_active_workspace("not json").unwrap_err(),
+            BackendError::Ipc(_)
+        ));
+    }
+
     // ----------------- parse_clients / parse_active -----------------
+
+    #[test]
+    fn parse_clients_reads_workspace_and_hidden() {
+        let raw = r#"[
+            {"address":"0x1","class":"kitty","workspace":{"id":-99,"name":"special:beckon"},"hidden":false},
+            {"address":"0x2","class":"foot","workspace":{"id":1,"name":"1"},"hidden":true}
+        ]"#;
+        let parsed = parse_clients(raw).unwrap();
+        assert_eq!(parsed[0].workspace.name, "special:beckon");
+        assert_eq!(parsed[0].workspace.id, -99);
+        assert!(!parsed[0].hidden);
+        assert!(parsed[1].hidden);
+    }
+
+    #[test]
+    fn parse_clients_defaults_workspace_when_absent() {
+        let parsed = parse_clients(r#"[{"address":"0x1","class":"kitty"}]"#).unwrap();
+        assert_eq!(parsed[0].workspace.name, "");
+        assert!(!parsed[0].hidden);
+    }
 
     #[test]
     fn parse_clients_basic() {

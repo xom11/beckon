@@ -9,7 +9,11 @@
 //!     `dispatch movetoworkspacesilent <ws>,address:0xN`,
 //!     `dispatch exec <cmdline>`)
 //!   - ✅ algorithm wiring: launch / focus / cycle / toggle / hide
-//!   - ✅ MRU state file integration for step 5b
+//!   - ✅ that step 5b follows `focusHistoryID` and that the shared MRU state
+//!     file is neither read nor written by this backend
+//!   - ✅ unparking: a window in `special:beckon` is moved back to the live
+//!     workspace before it is focused, and a workspace beckon did not create
+//!     is left alone
 //!   - ✅ .desktop resolution feeding the right target into the algorithm
 //!   - ❌ rendering and real focus changes (requires a live compositor —
 //!     out of reach on this Ubuntu 26.04 host because Hyprland 0.53.3
@@ -55,20 +59,52 @@ impl FakeClient {
         }
     }
 
+    /// Park this window where step 5c puts it.
+    fn parked(mut self) -> Self {
+        self.workspace = HIDE_WORKSPACE.to_string();
+        self
+    }
+
+    /// Put this window on a special workspace the *user* set up, which beckon
+    /// must leave alone.
+    fn on_workspace(mut self, ws: &str) -> Self {
+        self.workspace = ws.to_string();
+        self
+    }
+
+    /// Hyprland numbers special workspaces negatively. The exact value is
+    /// arbitrary — beckon only ever matches on the name — but emitting a
+    /// plausible one keeps the fixture honest.
+    fn workspace_id(&self) -> i64 {
+        if self.workspace.starts_with("special:") {
+            -99
+        } else {
+            self.workspace.parse().unwrap_or(1)
+        }
+    }
+
     /// Encode as the JSON object Hyprland's `j/clients` returns. Only the
     /// fields beckon actually reads are populated; everything else is left
     /// off and serde defaults handle it. Hand-written so the test crate
     /// doesn't need a serde dep.
     fn to_json(&self) -> String {
         format!(
-            r#"{{"address":"{}","class":"{}","title":"{}","focusHistoryID":{}}}"#,
+            r#"{{"address":"{}","class":"{}","title":"{}","focusHistoryID":{},"workspace":{{"id":{},"name":"{}"}},"hidden":false}}"#,
             json_escape(&self.address),
             json_escape(&self.class),
             json_escape(&self.title),
-            self.fhid
+            self.fhid,
+            self.workspace_id(),
+            json_escape(&self.workspace),
         )
     }
 }
+
+/// Must match `HIDE_WORKSPACE` in `crates/beckon-linux/src/hyprland.rs`. The
+/// two cannot share a constant — that one is private to a crate this test
+/// does not link — so a rename there has to be mirrored here, and the
+/// `focusing_a_parked_window_*` tests are what will notice.
+const HIDE_WORKSPACE: &str = "special:beckon";
 
 fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -78,6 +114,9 @@ fn json_escape(s: &str) -> String {
 struct State {
     clients: Vec<FakeClient>,
     active: Option<String>,
+    /// What `j/activeworkspace` reports — the workspace an unparked window
+    /// should be returned to. `Default` gives 0; tests that care set it.
+    active_workspace: i64,
     /// Mutating commands beckon issued, in order. Queries (`j/clients`,
     /// `j/activewindow`, `version`) are excluded so test assertions stay
     /// focused on the actions that change compositor state.
@@ -103,6 +142,12 @@ impl State {
                 };
             }
             "version" => return "ok".into(),
+            "j/activeworkspace" => {
+                return format!(
+                    r#"{{"id":{},"name":"{}"}}"#,
+                    self.active_workspace, self.active_workspace
+                );
+            }
             _ => {}
         }
 
@@ -440,29 +485,98 @@ fn toggle_back_when_only_one_target_window_picks_other_by_fhid() {
 }
 
 #[test]
-fn toggle_back_uses_mru_state_file_when_present() {
+fn toggle_back_ignores_the_mru_file_and_follows_focus_history() {
+    // Every other Linux backend would honour the state file here. Hyprland
+    // must not: `focusHistoryID` is real MRU and records focus changes beckon
+    // never made (mouse clicks, native binds), while the file only ever
+    // records beckon's own. A stale file is therefore strictly worse
+    // information, so `hyprland.rs` passes `previous_app = None`.
+    //
+    // This test used to be `toggle_back_uses_mru_state_file_when_present` and
+    // asserted the opposite. Same fixture, inverted expectation, deliberately.
     let mut state = State::default();
     state.clients = vec![
         FakeClient::new("0xA", "claude", 0),
-        FakeClient::new("0xB", "kitty", 5),   // older
-        FakeClient::new("0xC", "firefox", 1), // newer
+        FakeClient::new("0xB", "kitty", 5), // older in focus history
+        FakeClient::new("0xC", "firefox", 1), // newer in focus history
     ];
     state.active = Some("0xA".into());
     let srv = FakeServer::start(state);
     write_claude_desktop(&srv, "/bin/true");
-    // Saved "previous" was kitty — must beat firefox even though firefox is
-    // more recent in the focus history.
+    // A stale file naming kitty. It must lose to what the compositor knows.
     srv.write_mru("kitty");
 
     let out = srv.run_beckon(&["claude"]);
-    ok_output(&out, "beckon claude (toggle MRU)");
+    ok_output(&out, "beckon claude (toggle by focus history)");
 
     let snap = srv.snapshot();
     assert_eq!(
         snap.active.as_deref(),
-        Some("0xB"),
-        "expected MRU previous (kitty) to win"
+        Some("0xC"),
+        "expected the genuinely most-recent other app (firefox) to win over \
+         the stale MRU file (kitty)"
     );
+}
+
+#[test]
+fn focusing_a_parked_window_returns_it_to_the_live_workspace_first() {
+    // The bug this pins: `dispatch focuswindow` on a window sitting in
+    // `special:beckon` makes Hyprland show that workspace as an overlay but
+    // never re-parents the window, so it vanishes again the moment focus
+    // moves on and no ordinary gesture can reach it. Measured on 0.56.0.
+    // Order matters as much as the presence of the move: focus must land
+    // after the window is somewhere the user can see.
+    let mut state = State::default();
+    state.clients = vec![
+        FakeClient::new("0xA", "claude", 1).parked(),
+        FakeClient::new("0xB", "kitty", 0),
+    ];
+    state.active = Some("0xB".into());
+    state.active_workspace = 3;
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (unpark)");
+
+    let snap = srv.snapshot();
+    assert_eq!(
+        snap.dispatches,
+        vec![
+            "dispatch movetoworkspacesilent 3,address:0xA".to_string(),
+            "dispatch focuswindow address:0xA".to_string(),
+        ],
+        "expected the window to be moved to the live workspace before focus"
+    );
+    assert_eq!(snap.workspace_of("0xA"), Some("3"));
+    assert_eq!(snap.active.as_deref(), Some("0xA"));
+}
+
+#[test]
+fn focusing_a_window_on_a_users_own_special_workspace_leaves_it_there() {
+    // `special:magic` is a scratchpad the user configured. Dragging it onto
+    // the current workspace would be beckon overriding a placement it did not
+    // make; showing it as an overlay is what Hyprland itself does.
+    let mut state = State::default();
+    state.clients = vec![
+        FakeClient::new("0xA", "claude", 1).on_workspace("special:magic"),
+        FakeClient::new("0xB", "kitty", 0),
+    ];
+    state.active = Some("0xB".into());
+    state.active_workspace = 1;
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (foreign special workspace)");
+
+    let snap = srv.snapshot();
+    assert_eq!(
+        snap.dispatches,
+        vec!["dispatch focuswindow address:0xA".to_string()],
+        "expected no move for a special workspace beckon did not create"
+    );
+    assert_eq!(snap.workspace_of("0xA"), Some("special:magic"));
 }
 
 #[test]
@@ -489,9 +603,16 @@ fn hide_when_only_target_window_exists_moves_to_special_workspace() {
 }
 
 #[test]
-fn beckon_persists_pre_focused_class_into_mru_file() {
-    // After a focus change, the previously-focused app's class should land
-    // in the MRU file so the next invocation can use it for step 5b.
+fn hyprland_neither_reads_nor_writes_the_mru_file() {
+    // The state file exists for backends whose window enumeration carries no
+    // focus history (the sway tree). Hyprland has `focusHistoryID`, so this
+    // backend opted out of the file entirely — and writing one anyway would
+    // leave a stale entry behind for whichever backend reads it next, since
+    // every Linux backend shares the one path.
+    //
+    // This test used to be `beckon_persists_pre_focused_class_into_mru_file`
+    // and asserted the write. Inverted deliberately, not deleted, so the
+    // opt-out is pinned rather than merely untested.
     let mut state = State::default();
     state.clients = vec![
         FakeClient::new("0xA", "kitty", 0),
@@ -502,12 +623,12 @@ fn beckon_persists_pre_focused_class_into_mru_file() {
     write_claude_desktop(&srv, "/bin/true");
 
     let out = srv.run_beckon(&["claude"]);
-    ok_output(&out, "beckon claude (mru persist)");
+    ok_output(&out, "beckon claude (no mru)");
 
     assert_eq!(
-        srv.read_mru().as_deref(),
-        Some("kitty"),
-        "expected pre-focused class kitty to be persisted to MRU file"
+        srv.read_mru(),
+        None,
+        "the Hyprland backend must not write $XDG_RUNTIME_DIR/beckon-mru"
     );
 }
 
