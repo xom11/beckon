@@ -136,14 +136,10 @@ pub(super) mod tok {
     pub const TABSTRIP_H: i32 = TAB_VISUAL + 2 * TAB_PAD_Y + 2 * FOCUS_SLACK;
     /// A pill's inner padding, left and right.
     ///
-    /// The one token in this group with no reader yet: the band this landed
-    /// with is empty, and the pills that spend it come next. It sits here
-    /// anyway because it is one of the five numbers the spec (§2.1) fixes
-    /// together, and splitting a token set across two commits is how it stops
-    /// being reviewable as one. **Delete the `allow` with the first reader**
-    /// -- it is scoped to this constant precisely so that it expires rather
-    /// than blanketing the module.
-    #[allow(dead_code)]
+    /// It carried an `#[allow(dead_code)]` for exactly one commit -- the band
+    /// landed empty, and this was the one token of the five with no reader.
+    /// The pills spend it now (`layout`'s band 0), so the `allow` is gone
+    /// rather than left blanketing a token that has a reader again.
     pub const TAB_PAD_X: i32 = 14;
 }
 
@@ -594,6 +590,56 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // control below is placed `card_pad` inside whichever of these it
     // belongs to.
     let [card0, card1, card2, card3] = compute_card_rects(hwnd, &ui, dpi);
+
+    // -- Band 0: the tab strip, above card 0 and outside all four of them.
+    // The trough is not a card, which is why `compute_card_rects` does not
+    // return it and `strip_rect` is its own function.
+    //
+    // **A pill's CONTROL is meant to be bigger than the pill anyone sees.**
+    // It carries `tok::FOCUS_SLACK` of margin on all four sides, and the
+    // painter is to inset by the same amount -- which is what makes
+    // `TABSTRIP_H`'s sum come out (`TAB_VISUAL + 2*TAB_PAD_Y +
+    // 2*FOCUS_SLACK`) and why two neighbouring pills are placed with no gap
+    // between them: their controls touch, and each one's own margin draws
+    // half of the 6 px the strip appears to have. That 6 is `tok::GAP`, so
+    // the strip's rhythm is the window's without a second token saying so.
+    //
+    // **That is a promise the painter has not kept yet.** Nothing custom-draws
+    // a pill in this commit, so the theme fills each control edge to edge and
+    // the four appear to touch with no gap at all. `paint::tab_pill` is what
+    // turns the margin into the gap; until then this geometry is right and
+    // what it draws is not.
+    //
+    // The row's height is read back OUT of the trough rather than scaled from
+    // `TAB_VISUAL` directly, and the two are NOT the same number: at 144 DPI
+    // `s(36) - 2*s(2)` is 48 while `s(26) + 2*s(3)` is 47, because `s(3)`
+    // truncates 4.5 to 4 and the band pays that twice. Deriving from the
+    // trough puts the rounding error inside the pill, where the painter's
+    // inset absorbs it; deriving from `TAB_VISUAL` would leave a 1 px seam
+    // under the row at 150 %, which reads as a paint bug rather than as
+    // integer division.
+    //
+    // Nothing clamps the run to the trough's right edge. The four captions
+    // would have to measure 504 px between them to overflow it at
+    // `MIN_WIDTH` -- 660 less `2*PAD` is 640, less the
+    // `4 * (2*TAB_PAD_X + 2*FOCUS_SLACK)` = 136 px of padding they carry --
+    // and four one-word captions at Body size are not within reach of that.
+    // The padding half of that is exact; the caption half is unmeasured, here
+    // as everywhere in this function (no string in this window has been
+    // through `GetTextExtentPoint32W` on hardware -- gate G1). Read it as
+    // arithmetic with a large margin, not as a checked fit.
+    let strip = strip_rect(rc, dpi);
+    let tab_h = clamp(s(tok::TABSTRIP_H) - s(tok::TAB_PAD_Y) * 2);
+    let tab_y = strip.top + s(tok::TAB_PAD_Y);
+    let mut tab_x = strip.left;
+    for (id, _, caption) in TABS {
+        // `tw`, so the pill is sized in the font it is drawn in, and through
+        // `shown` like every other measured caption -- these four carry no
+        // `&` today and the measurement does not depend on that staying true.
+        let tab_w = tw(caption) + (s(tok::TAB_PAD_X) + s(tok::FOCUS_SLACK)) * 2;
+        place(id, tab_x, tab_y, tab_w, tab_h);
+        tab_x += tab_w;
+    }
 
     // -- Card 0: the banner. Contributes NO height when hidden.
     if ui.external_change {

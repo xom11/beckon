@@ -99,6 +99,7 @@ use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
     default_button, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths,
+    SettingsCommand,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -366,6 +367,55 @@ fn is_push_button(id: i32) -> bool {
     PUSH_BUTTONS.contains(&id)
 }
 
+/// The tab strip: each pill's control id, the door it opens, and its caption,
+/// in the order they are created, drawn and Tab-navigated.
+///
+/// **One table, four readers**, for the reason `mod cap` gives for being one
+/// table: `build_children` creates the four from it, `layout` places them from
+/// it, `page_of_tab` turns a `WM_COMMAND` back into a door with it, and the
+/// test below pins `tab_id_of` against it. The alternative is four lists that
+/// agree on the day they are written, which is the shape `ids.rs`'s `MINE`
+/// has -- and `MINE` needed a test reading the source to stay honest.
+///
+/// **The pills are deliberately absent from `PUSH_BUTTONS`.** Membership would
+/// put them through `set_button_type`, a read-modify-write of
+/// `BS_TYPEMASK_BITS` that would rewrite `BS_AUTORADIOBUTTON` (9) into
+/// `BS_PUSHBUTTON` (0) the first time the default ring moved; and
+/// `every_push_button_round_trips_through_the_default_button_enum` requires
+/// every member to name a `DefaultButton`, which a tab must never be -- Enter
+/// on a focused pill must not press it as if it were a command.
+const TABS: [(i32, Page, &str); 4] = [
+    (IDC_TAB_SHORTCUTS, Page::Shortcuts, cap::TAB_SHORTCUTS),
+    (IDC_TAB_KEYBOARD, Page::Keyboard, cap::TAB_KEYBOARD),
+    (IDC_TAB_SYSTEM, Page::System, cap::TAB_SYSTEM),
+    (IDC_TAB_ABOUT, Page::About, cap::TAB_ABOUT),
+];
+
+/// Which door this pill opens, or `None` for every other control in the
+/// window.
+///
+/// `handle_command` tests membership with this rather than listing the four
+/// ids in its own pattern -- the shape `is_push_button` already establishes,
+/// and the reason `TABS` is one table.
+fn page_of_tab(id: i32) -> Option<Page> {
+    TABS.iter().find(|(t, _, _)| *t == id).map(|(_, p, _)| *p)
+}
+
+/// The pill that stands for a door.
+///
+/// An exhaustive `match` rather than a lookup in `TABS`, so a fifth `Page`
+/// is a compile error here instead of a silent fallback at the one call that
+/// decides which pill is lit. That it agrees with `TABS` is a test, since
+/// nothing else can check two spellings of the same fact.
+fn tab_id_of(page: Page) -> i32 {
+    match page {
+        Page::Shortcuts => IDC_TAB_SHORTCUTS,
+        Page::Keyboard => IDC_TAB_KEYBOARD,
+        Page::System => IDC_TAB_SYSTEM,
+        Page::About => IDC_TAB_ABOUT,
+    }
+}
+
 /// Every operable control's caption, with its mnemonic.
 ///
 /// **One table, because two call sites read it**: `build_children` creates
@@ -419,6 +469,11 @@ fn is_push_button(id: i32) -> bool {
 /// case, and `Shift`'s `s` is Save's. The four sit between two `WS_TABSTOP`
 /// controls on one line, which is one Tab each; a duplicate letter would
 /// have cost the keyboard route on Save or on the Caps row to save that.
+///
+/// **The four tab pills carry none either, and there is no arrangement of
+/// this table under which they could.** Spelled out at `cap::TAB_SHORTCUTS`:
+/// the letters left over do not stretch to four unique ones, so the strip's
+/// keyboard route is `Ctrl+1`..`Ctrl+4` rather than `Alt`-anything.
 mod cap {
     pub const ADD: &str = "&Add";
     pub const REMOVE: &str = "Re&move";
@@ -482,6 +537,32 @@ mod cap {
     /// before writing it, and says there why.
     pub const EDITOR_NONE: &str = "No shortcut selected";
     pub const EDITOR_UNNAMED: &str = "Editing this shortcut";
+    /// The four tab pills, in strip order. Read through `TABS`, which pairs
+    /// each with its control id and its `Page`; they are here rather than
+    /// inline in that table so this module stays what its own header says it
+    /// is -- every operable caption, in one place, because `build_children`
+    /// creates the control with it and `layout` measures it to size the
+    /// control's box.
+    ///
+    /// **No `&` on any of the four, and that is arithmetic rather than
+    /// taste.** The collision table above has `A M U C O S E R K T W L D`
+    /// spoken for, leaving `{B,F,G,H,I,J,N,P,Q,V,X,Y,Z}`. Against that set
+    /// `Shortcuts` can take only `h`, `System` only `y`, `About` only `b`,
+    /// and `Keyboard` only `y` or `b` -- so `System` takes `y`, `Keyboard` is
+    /// forced onto `b`, and `About` is left with nothing at all. Four unique
+    /// mnemonics do not exist, which settles the question by counting rather
+    /// than by taste (spec 3.3). `Ctrl+1`..`Ctrl+4` is the keyboard route
+    /// instead.
+    ///
+    /// One of these repeats a string: `IDC_LBL_SECTION`'s caption is also
+    /// `Shortcuts`, written as a literal at its creation and measured as one
+    /// in `layout`. Two controls that happen to be named the same thing, not
+    /// one caption used twice -- the heading names the card, the pill names
+    /// the door, and either could be renamed without the other.
+    pub const TAB_SHORTCUTS: &str = "Shortcuts";
+    pub const TAB_KEYBOARD: &str = "Keyboard";
+    pub const TAB_SYSTEM: &str = "System";
+    pub const TAB_ABOUT: &str = "About";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -1351,11 +1432,14 @@ thread_local! {
     /// rows, which is the whole reason this holds a `Paths` and not a
     /// config path on its own.
     static CFG: RefCell<Option<Paths>> = const { RefCell::new(None) };
-    /// The door `open` was asked for.
+    /// The door the window is showing. Seeded by `open`, moved only by
+    /// `show_page`.
     ///
-    /// Accepted and stored; nothing reads it yet, because there is nothing
-    /// to switch. Storing it now is what lets the tab-strip workstream be a
-    /// change to one module instead of a change to four crates.
+    /// **A `Cell`, not a field of `Ui`, and that is the point of it.**
+    /// Reading it takes no `RefCell` borrow, so `layout` -- and through it
+    /// `compute_card_rects`, which is documented never to touch `UI` -- can
+    /// consult the current page without becoming the second borrow that
+    /// aborts the process across an `extern "system"` boundary.
     static PAGE: std::cell::Cell<Page> = const { std::cell::Cell::new(Page::Shortcuts) };
 }
 
@@ -1841,6 +1925,48 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
     set_text(notes_hwnd, &plain);
 }
 
+/// Move to another door. Returns whether the door actually changed.
+///
+/// **A stub, knowingly, and this is the whole of what it does today**: it
+/// records the page, lights the pill and re-runs `layout`. Nothing is hidden
+/// and nothing is shown, so the four pills currently switch nothing but
+/// themselves and every page's controls stay on screen together. Page
+/// switching proper -- hiding the outgoing page, showing the incoming one,
+/// `repair_default_button` afterwards because hiding a control raises no
+/// focus notification, and the per-page skip that keeps `layout` away from
+/// the App combo -- belongs here and is the next task.
+///
+/// **The unchanged-page guard is not an optimisation.** `layout` is
+/// `SetWindowPos` on the populated App combo, the measured path that
+/// re-synchronises its edit field and discards what the user typed (see
+/// `Ui::shown_external`), so clicking the pill you are already on, or
+/// pressing its accelerator, must not reach it. `set_default_id` guards
+/// itself the same way and for a smaller reason.
+///
+/// It also means a caller cannot use this to establish an INITIAL page: at
+/// creation `PAGE` already holds the door `open` asked for, so a call naming
+/// that door does nothing. Whatever hides the off-page controls at build
+/// time has to do it directly.
+///
+/// `layout` directly, the way `WM_SIZE` does, never through `apply_state`:
+/// nothing calls `apply_state` on a tab click and there is no model change to
+/// push.
+///
+/// `CheckRadioButton` even though a mouse click has already moved the tick --
+/// the `AUTO` in `BS_AUTORADIOBUTTON` only fires for a click, and the
+/// accelerator route moves nothing at all.
+fn show_page(hwnd: HWND, page: Page) -> bool {
+    if PAGE.with(|p| p.get()) == page {
+        return false;
+    }
+    PAGE.with(|p| p.set(page));
+    unsafe {
+        let _ = CheckRadioButton(hwnd, IDC_TAB_SHORTCUTS, IDC_TAB_ABOUT, tab_id_of(page));
+        layout(hwnd);
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // Creation
 // ---------------------------------------------------------------------------
@@ -1853,10 +1979,15 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 /// window is open. `paths.log` rides along for the same reason and is
 /// `None` when `serve` was started without `--log`.
 ///
-/// `page` is the door to land on. It is stored and read nowhere yet: there
-/// is nothing to switch until the tab strip exists, and taking it now is
-/// what keeps that workstream a change to one module rather than to four
-/// crates.
+/// `page` is the door to land on: it is stored in `PAGE`, and
+/// `build_children` lights the matching pill before any other control
+/// exists. **CORRECTED 2026-08-14** -- this used to read "stored and read
+/// nowhere yet: there is nothing to switch until the tab strip exists", which
+/// was true for exactly as long as it took the strip to land.
+///
+/// What it does NOT do yet is decide which controls are shown: every page's
+/// controls are still created and placed together, so landing on `Keyboard`
+/// currently lights the second pill and shows the same window.
 pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     if let Some(h) = hwnd() {
         unsafe {
@@ -2436,14 +2567,97 @@ unsafe fn build_children(hwnd: HWND) {
     let fonts = build_fonts(hwnd, dpi);
     set_cap_font(fonts.get(Role::Keycap));
 
+    // -- Band 0: the tab strip. FIRST, and that is one decision rather than
+    // two. Creation order is Tab order (this function's own doc), the strip
+    // is the top band, so it leads -- and because nothing is created ahead of
+    // them the four pills are the head of the sibling chain, which is what
+    // makes them a group without anyone writing `WS_GROUP` on the first one.
+    // The group's closing boundary is on the banner below.
+    //
+    // **`BS_AUTORADIOBUTTON | BS_PUSHLIKE`, not `BS_OWNERDRAW`**, and both
+    // halves of that refusal are already written down in this file for other
+    // controls. Owner-draw never receives `ODS_HOTLIGHT` -- see
+    // `push_button_custom_draw`, "the one bit a REAL `WM_DRAWITEM` never
+    // carries for a classic push button", which is why all nine push buttons
+    // stayed on `NM_CUSTOMDRAW` rather than becoming genuinely owner-draw --
+    // so an owner-draw pill could not have a hover state, and hover is one of
+    // the three states the design gives a pill. And it kills `BM_GETCHECK`,
+    // which is the whole reason `WM_CHIP_STATE` had to be invented for the
+    // seven chips, while a pill's whole job is to say which door is open.
+    //
+    // Nothing draws a pill yet: `push_button_custom_draw`'s dispatch is gated
+    // on `is_push_button`, which these deliberately are not, so until
+    // `paint::tab_pill` and its own `NM_CUSTOMDRAW` arm land the four render
+    // as ordinary themed push buttons, one of them stuck down.
+    //
+    // The `AUTO` is doing real work: it clears the sibling pills on a click
+    // and it makes Left/Right inside the group select as they move. What it
+    // does NOT do is move on an accelerator, which is why `show_page` ticks
+    // the pill itself rather than trusting the click path.
+    //
+    // `WS_TABSTOP` on all four, which may or may not be what Tab ends up
+    // seeing. In a real dialog user32 migrates the style onto whichever radio
+    // is checked, so a group is ONE tab stop; nothing in this tree has ever
+    // exercised a radio group -- the three that existed were retired -- so
+    // whether it does that for hand-created controls is unsettled and is gate
+    // G-S2. Setting it on all four is the safe end of that: worst case Tab
+    // visits four stops instead of one, where the other way round would leave
+    // a pill unreachable from the keyboard.
+    //
+    // No `&` on any of the four captions -- `mod cap` writes out why four
+    // unique mnemonics do not exist.
+    for (id, _, caption) in TABS {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE((BS_AUTORADIOBUTTON | BS_PUSHLIKE) as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
+    // The door `open` was asked for, lit before any other control exists.
+    //
+    // **`CheckRadioButton`, never this file's `check()`.** `check` falls
+    // through to `BM_SETCHECK`, which sets one button's state and clears no
+    // sibling -- so seeding through it would leave two pills lit the first
+    // time the window opened on a page other than Shortcuts, and the
+    // auto-radio would not correct it until the user clicked. The first/last
+    // pair below is why `ids.rs` keeps these four ids contiguous.
+    let _ = CheckRadioButton(
+        hwnd,
+        IDC_TAB_SHORTCUTS,
+        IDC_TAB_ABOUT,
+        tab_id_of(PAGE.with(|p| p.get())),
+    );
+
     // -- Band 1: the external-change banner. Hidden until `apply_state`
     // says the file moved; `layout` gives it no height at all while it is
     // hidden, so the bands below close up rather than leaving a gap.
+    //
+    // **`WS_GROUP` closes the tab strip's group**, and it is here rather than
+    // anywhere else because this is the control created immediately after the
+    // last pill. Both an auto-radio group and `IsDialogMessageW`'s arrow-key
+    // group run until the NEXT control carrying `WS_GROUP`, so without a
+    // boundary Left/Right would walk out of the strip into the banner, the
+    // filter EDIT and the ListView, and the auto-radio's clear-siblings pass
+    // would reach past the strip as well. Until this landed, `IDC_OPENFILE`
+    // was the file's only `WS_GROUP`.
+    //
+    // **The boundary is the style bit, not the control**, and that
+    // distinction is load-bearing here because this control is HIDDEN at rest
+    // -- `show(banner, false)` runs below, once its two buttons exist. The
+    // group walk tests `WS_GROUP` before it tests visibility, so a hidden
+    // terminator still terminates. That is how `GetNextDlgGroupItem` reads,
+    // and it is NOT something this branch has run on hardware. If the arrow
+    // keys are ever seen to escape the strip, suspect this first;
+    // `IDC_LBL_SECTION` -- always visible -- is the fallback boundary, at the
+    // cost of taking the banner's two buttons into the strip's group.
     let banner = child(
         hwnd,
         w!("STATIC"),
         "This file changed on disk.",
-        SS_CENTERIMAGE_STYLE,
+        SS_CENTERIMAGE_STYLE | WS_GROUP,
         IDC_BANNER,
         &fonts,
     );
@@ -6256,6 +6470,39 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // let a double-click Add twice, or a repaint Save. Only a real click
         // and the accelerator's own code get through.
         (_, c) if is_push_button(id) && c != BN_CLICKED && c != CMD_FROM_ACCELERATOR => {}
+        // ---- The tab strip. One arm for all four pills; which door a pill
+        // opens is `TABS`'s answer, never a second list written here.
+        //
+        // Three codes, and none of them is padding. A BUTTON with no
+        // `BS_NOTIFY` says exactly `BN_CLICKED` and `BN_DOUBLECLICKED` --
+        // `is_chip_click`'s pair, and the seven chips are why that is written
+        // down: the second click of a double-click arrives as
+        // `BN_DOUBLECLICKED` INSTEAD of a second `BN_CLICKED`, so an arm that
+        // took only the one code would drop it. Here that would mean a
+        // double-click on a pill switching once and then appearing not to.
+        // (Switching twice is not a risk: `show_page` returns on an unchanged
+        // door.) `CMD_FROM_ACCELERATOR` is what `Ctrl+1`..`Ctrl+4` arrive as
+        // once `build_accelerators` names these ids -- taken now so that is a
+        // one-line change there rather than a key that silently does nothing,
+        // which is the same failure mode spec 4.4 warns about for `Ctrl+Tab`.
+        //
+        // A mouse click has already moved the tick before this runs, because
+        // the pills are auto-radios. `show_page` ticks anyway; see its doc.
+        //
+        // `SettingsCommand::ShowPage` is raised only when the door really
+        // moved -- the caller stores it so the next `open` lands where the
+        // user left off, and "the user moved to another door" should not be
+        // reported for a click on the door they are already behind.
+        (_, c)
+            if page_of_tab(id).is_some()
+                && (c == BN_CLICKED || c == BN_DOUBLECLICKED || c == CMD_FROM_ACCELERATOR) =>
+        {
+            if let Some(page) = page_of_tab(id) {
+                if show_page(hwnd, page) {
+                    with_cb(|cb| (cb.on_command)(SettingsCommand::ShowPage(page)));
+                }
+            }
+        }
         // The five controls that spell one shortcut, in the two
         // notifications that mean the user changed one: a check box reports
         // `BN_CLICKED`, the key list reports `CBN_SELCHANGE`.
@@ -6659,6 +6906,56 @@ mod tests {
                 "{b:?} maps to an id `handle_command` does not treat as a \
                  push button, so its ring would never move"
             );
+        }
+    }
+
+    /// The strip's ids have to be a contiguous ascending run, because
+    /// `build_children` and `show_page` both tick a pill with
+    /// `CheckRadioButton(hwnd, IDC_TAB_SHORTCUTS, IDC_TAB_ABOUT, id)` -- a
+    /// call that takes a FIRST and a LAST id and clears everything between
+    /// them. A gap would put ids the strip does not own inside that range; a
+    /// re-order would make the pair name the wrong ends. Neither is visible
+    /// from the constants themselves.
+    ///
+    /// It also pins `tab_id_of` -- an exhaustive `match`, so that a fifth
+    /// `Page` is a compile error -- against `TABS`, which is the same fact
+    /// spelled a second way and therefore the one that can drift.
+    #[test]
+    fn the_tab_ids_are_contiguous_and_agree_with_tab_id_of() {
+        for (i, (id, page, _)) in TABS.iter().enumerate() {
+            assert_eq!(
+                *id,
+                IDC_TAB_SHORTCUTS + i as i32,
+                "pill {i} breaks the contiguous run CheckRadioButton needs"
+            );
+            assert_eq!(tab_id_of(*page), *id, "tab_id_of disagrees with TABS");
+            assert_eq!(page_of_tab(*id), Some(*page));
+        }
+        assert_eq!(
+            TABS[TABS.len() - 1].0,
+            IDC_TAB_ABOUT,
+            "the last pill is what `CheckRadioButton` is handed as its last id"
+        );
+        // Nothing else answers. `handle_command`'s tab arm is a membership
+        // test on this function, so an id that matched by accident would
+        // switch pages on a click meant for another control.
+        assert_eq!(page_of_tab(IDC_APPLY), None);
+        assert_eq!(page_of_tab(IDC_CAPS), None);
+        assert_eq!(page_of_tab(0), None);
+    }
+
+    /// A pill must never be a push button, and there are two independent
+    /// reasons -- `set_button_type` would rewrite `BS_AUTORADIOBUTTON` into
+    /// `BS_PUSHBUTTON` through `BS_TYPEMASK_BITS` the first time the default
+    /// ring moved, and
+    /// `every_push_button_round_trips_through_the_default_button_enum`
+    /// requires every member of `PUSH_BUTTONS` to name a `DefaultButton`,
+    /// which would make Enter on a focused pill press it as a command.
+    #[test]
+    fn a_tab_pill_is_never_a_push_button() {
+        for (id, _, _) in TABS {
+            assert!(!is_push_button(id), "pill {id} is in PUSH_BUTTONS");
+            assert_eq!(default_button_of(id), DefaultButton::HOME);
         }
     }
 

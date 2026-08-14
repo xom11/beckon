@@ -93,6 +93,27 @@ pub(super) const IDC_GRP_EDITOR: i32 = 1034;
 /// honest reading of a number sitting on top of the list it describes.
 pub(super) const IDC_LBL_COUNT: i32 = 1035;
 
+/// The four tab pills, in strip order.
+///
+/// **Not chosen here.** Phase 0 fixed them, and the reason they are 1040
+/// rather than 1036 is `CONTROL_IDS`' range table: 1001-1039 belongs to the
+/// pre-Four-Doors window and 1040-1049 to the shell. Those ranges exist
+/// because two drafts of the Four Doors design each claimed 1060-1069 for a
+/// different page.
+///
+/// **Contiguous and ascending, and that is load-bearing rather than tidy.**
+/// `build_children` and `show_page` tick a pill with
+/// `CheckRadioButton(hwnd, IDC_TAB_SHORTCUTS, IDC_TAB_ABOUT, id)`, which takes
+/// a FIRST and a LAST id and clears everything between them -- so a gap here
+/// would hand that call a range covering an id the strip does not own, and a
+/// re-order would make the range name the wrong pair.
+/// `the_tab_ids_are_contiguous_and_agree_with_tab_id_of` in `mod.rs` is the
+/// guard, since nothing about the ids themselves says so.
+pub(super) const IDC_TAB_SHORTCUTS: i32 = 1040;
+pub(super) const IDC_TAB_KEYBOARD: i32 = 1041;
+pub(super) const IDC_TAB_SYSTEM: i32 = 1042;
+pub(super) const IDC_TAB_ABOUT: i32 = 1043;
+
 #[cfg(test)]
 mod tests {
     use beckon_core::settings::{CONTROL_IDS, RETIRED_IDS};
@@ -142,6 +163,10 @@ mod tests {
         ("RESET", super::IDC_RESET),
         ("GRP_EDITOR", super::IDC_GRP_EDITOR),
         ("LBL_COUNT", super::IDC_LBL_COUNT),
+        ("TAB_SHORTCUTS", super::IDC_TAB_SHORTCUTS),
+        ("TAB_KEYBOARD", super::IDC_TAB_KEYBOARD),
+        ("TAB_SYSTEM", super::IDC_TAB_SYSTEM),
+        ("TAB_ABOUT", super::IDC_TAB_ABOUT),
     ];
 
     /// The net under `MINE`. It reads this file's own source -- the same
