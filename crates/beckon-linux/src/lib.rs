@@ -111,30 +111,23 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
-/// Which of `names` no installed `.desktop` entry answers to, for
-/// `beckon check --resolve`.
+/// One resolution report per name, for `beckon check --resolve`.
 ///
 /// A batch rather than a loop over `desktop::resolve_detailed`, which re-runs
 /// `scan()` — every `applications/` directory in `$XDG_DATA_DIRS`, recursively
-/// — on every call. A shortcuts file with eighteen bindings is an ordinary
-/// one.
+/// — on every call.
 ///
 /// Takes no backend: this is the resolution half of step 2, and `.desktop`
 /// files are on disk whether or not a compositor is running.
 #[cfg(target_os = "linux")]
-pub fn unresolved_names<'a>(names: &[&'a str]) -> Result<Vec<&'a str>> {
-    let entries = desktop::scan();
-    Ok(names
-        .iter()
-        .copied()
-        .filter(|n| desktop::resolve_detailed_in(&entries, n).is_none())
-        .collect())
+pub fn resolve_reports(names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Ok(desktop::resolve_reports(names))
 }
 
 /// Returns an error rather than an empty vector: an empty one reads as
 /// "every name resolved", which is the one answer this cannot know.
 #[cfg(not(target_os = "linux"))]
-pub fn unresolved_names<'a>(_names: &[&'a str]) -> Result<Vec<&'a str>> {
+pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
     Err(BackendError::UnsupportedEnvironment(
         "beckon-linux only compiles on Linux".to_string(),
     ))

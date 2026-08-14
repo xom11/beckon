@@ -5,6 +5,7 @@
 //! Field-code stripping in Exec follows the XDG Desktop Entry Spec:
 //! `%f %F %u %U %d %D %n %N %i %c %k %v %m` are removed; `%%` becomes `%`.
 
+use beckon_core::certainty::{Certainty, NameReport};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -111,6 +112,21 @@ impl MatchType {
             MatchType::Filename => ".desktop filename",
             MatchType::StartupWmClass => "StartupWMClass=",
             MatchType::NameSubstring => "Name= substring (alphabetical first wins)",
+        }
+    }
+
+    /// How sure this tier is, in the cross-OS vocabulary.
+    ///
+    /// Exhaustive with no wildcard arm on purpose. `Filename` and
+    /// `StartupWmClass` are byte-exact comparisons against the raw id, so
+    /// they are `Exact` despite being weaker tiers than `NameExact`.
+    pub fn certainty(self) -> beckon_core::certainty::Certainty {
+        use beckon_core::certainty::Certainty;
+        match self {
+            MatchType::NameExact => Certainty::Exact,
+            MatchType::Filename => Certainty::Exact,
+            MatchType::StartupWmClass => Certainty::Exact,
+            MatchType::NameSubstring => Certainty::Guess,
         }
     }
 }
@@ -367,6 +383,82 @@ fn system_app_dirs() -> Vec<PathBuf> {
         .filter(|p| p.is_absolute())
         .map(|d| d.join("applications"))
         .collect()
+}
+
+/// What a keypress costs when a name matched only by substring and exactly one
+/// entry answered it.
+const GUESS_LONE: &str = "substring match, so an app installed later can quietly take this name";
+
+/// What a miss means on Linux. Not "nothing happens": `target_classes` falls
+/// back to the raw id as a window class, and that comparison is equality — so
+/// an ad-hoc app with no `.desktop` file is still focusable.
+const MISS_CONSEQUENCE: &str =
+    "no .desktop entry; focus still works if a window's class equals this id, launch will fail";
+
+fn report_for(id: &str, m: &ResolvedMatch, entries: &[DesktopEntry]) -> NameReport {
+    let certainty = m.match_type.certainty();
+    let (consequence, suggestions) = if certainty == Certainty::Guess {
+        let needle = normalize(id);
+        // Deliberately not `name_substring_matches`: that one calls `scan()`
+        // itself, which would walk every XDG applications directory again,
+        // once per name.
+        let mut others: Vec<String> = entries
+            .iter()
+            .filter(|e| normalize(&e.name).contains(&needle) && e.id != m.entry.id)
+            .map(|e| e.name.clone())
+            .collect();
+        others.sort();
+        // The multi-candidate sentence exists because the winner is decided by
+        // sort order over `.desktop` ids: which app the key opens is a
+        // property of the catalog, not of the config, and one install can
+        // reverse it. Before `scan()` sorted its output the same keypress
+        // resolved two different ways across runs.
+        let sentence = if others.is_empty() {
+            GUESS_LONE.to_string()
+        } else {
+            format!(
+                "substring match with {} candidates; \"{}\" wins only because it sorts first",
+                others.len() + 1,
+                m.entry.name
+            )
+        };
+        others.truncate(3);
+        (sentence, others)
+    } else {
+        (String::new(), Vec::new())
+    };
+    NameReport {
+        id: id.to_string(),
+        certainty,
+        target: Some(m.entry.id.clone()),
+        tier: Some(m.match_type.describe()),
+        consequence,
+        suggestions,
+    }
+}
+
+/// One `NameReport` per name, in the order given, against a caller-supplied
+/// entry list.
+pub fn resolve_reports_in(names: &[&str], entries: &[DesktopEntry]) -> Vec<NameReport> {
+    names
+        .iter()
+        .map(|id| match resolve_detailed_in(entries, id) {
+            Some(m) => report_for(id, &m, entries),
+            None => NameReport {
+                id: (*id).to_string(),
+                certainty: Certainty::NoMatch,
+                target: None,
+                tier: None,
+                consequence: MISS_CONSEQUENCE.to_string(),
+                suggestions: Vec::new(),
+            },
+        })
+        .collect()
+}
+
+/// One `NameReport` per name, against this machine, with a single `scan()`.
+pub fn resolve_reports(names: &[&str]) -> Vec<NameReport> {
+    resolve_reports_in(names, &scan())
 }
 
 #[cfg(test)]
@@ -683,5 +775,90 @@ mod tests {
     #[test]
     fn resolve_empty_entries_returns_none() {
         assert!(resolve_detailed_in(&[], "anything").is_none());
+    }
+
+    // ---------- certainty ----------
+
+    /// Exactly one tier is a guess. `Filename` and `StartupWmClass` are
+    /// byte-exact comparisons against the raw id.
+    #[test]
+    fn only_the_substring_tier_is_a_guess() {
+        use beckon_core::certainty::Certainty;
+        assert_eq!(MatchType::NameExact.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::Filename.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::StartupWmClass.certainty(), Certainty::Exact);
+        assert_eq!(MatchType::NameSubstring.certainty(), Certainty::Guess);
+    }
+
+    // ---------- reports ----------
+
+    #[test]
+    fn every_name_gets_one_report_in_the_order_asked() {
+        let entries = vec![entry("kitty", "kitty"), entry("brave", "Brave")];
+        let reports = resolve_reports_in(&["Brave", "kitty", "nope-zzz"], &entries);
+        let ids: Vec<&str> = reports.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["Brave", "kitty", "nope-zzz"]);
+    }
+
+    #[test]
+    fn an_exact_name_reports_the_desktop_id_as_its_target() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![entry("org.telegram.desktop", "Telegram")];
+        let r = &resolve_reports_in(&["Telegram"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.target.as_deref(), Some("org.telegram.desktop"));
+        assert_eq!(r.tier, Some("Name= exact (case-insensitive)"));
+        assert!(r.consequence.is_empty());
+    }
+
+    /// The ids matter: tier 4 sorts candidates by `id`, so `brave-beta` would
+    /// win over `brave-browser` and invert these assertions. Name them so the
+    /// intended winner sorts first.
+    #[test]
+    fn several_substring_candidates_name_the_winner_and_the_runners_up() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![
+            entry("brave-browser", "Brave Web Browser"),
+            entry("brave-browser-beta", "Brave Web Browser Beta"),
+        ];
+        let r = &resolve_reports_in(&["brave"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert_eq!(r.tier, Some("Name= substring (alphabetical first wins)"));
+        assert!(r.consequence.contains('2'), "{:?}", r.consequence);
+        assert_eq!(r.suggestions, vec!["Brave Web Browser Beta".to_string()]);
+    }
+
+    #[test]
+    fn a_lone_substring_match_says_a_new_install_could_take_it() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![entry("brave-browser", "Brave Web Browser")];
+        let r = &resolve_reports_in(&["brave"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert!(r.suggestions.is_empty());
+        assert!(r.consequence.contains("install"), "{:?}", r.consequence);
+    }
+
+    /// A miss on Linux is not fatal: the raw id becomes the window class and
+    /// `Target::matches` is equality, so an ad-hoc app with no `.desktop`
+    /// file is still focusable. Saying "this key does nothing" would be wrong.
+    #[test]
+    fn a_miss_says_focus_can_still_work_and_launch_cannot() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![entry("kitty", "kitty")];
+        let r = &resolve_reports_in(&["some-adhoc-app"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::NoMatch);
+        assert_eq!(r.target, None);
+        assert!(r.consequence.contains("focus"), "{}", r.consequence);
+        assert!(r.consequence.contains("launch"), "{}", r.consequence);
+    }
+
+    #[test]
+    fn a_startup_wm_class_hit_is_exact() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![entry_with_wm("debian-xterm", "XTerm session", "XTerm")];
+        let r = &resolve_reports_in(&["XTerm"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.tier, Some("StartupWMClass="));
+        assert_eq!(r.target.as_deref(), Some("debian-xterm"));
     }
 }
