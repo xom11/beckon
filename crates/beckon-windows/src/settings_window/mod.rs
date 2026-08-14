@@ -1314,12 +1314,27 @@ struct Ui {
     /// `WM_DESTROY`. Which control uses which is `role_of`'s answer, never
     /// a decision taken at a call site.
     fonts: Fonts,
-    /// `Ctrl+S`, and nothing else -- Enter and Esc are the dialog manager's
-    /// (`DM_GETDEFID` and `IDCANCEL`), not this table's. Created in
-    /// `build_children` and destroyed in `WM_DESTROY`: an accelerator table
-    /// is a system resource with the same lifetime discipline as the
-    /// `HFONT`s beside it, and Landing 1 had to close a one-per-open leak of
-    /// those already.
+    /// Seven entries: `Ctrl+S` -> Save, `Ctrl+Tab` / `Ctrl+Shift+Tab`, and
+    /// `Ctrl+1`..`Ctrl+4`. `build_accelerators` is the table and the reason
+    /// for each one.
+    ///
+    /// **CORRECTED 2026-08-14: this read "`Ctrl+S`, and nothing else".** True
+    /// until the tab strip's six keys landed, and the correction is worth
+    /// making rather than deleting: this sentence sits on the FIELD, so it is
+    /// the one a reader meets first, and it was the last place in the file
+    /// still saying the window answers a single accelerator.
+    ///
+    /// Enter and Esc really are absent, and that half stands: both are the
+    /// dialog manager's already (`DM_GETDEFID` and `IDCANCEL`), and an entry
+    /// here would only race `IsDialogMessageW` for keys it routes correctly.
+    /// `Ctrl+Tab` is the exception that had to be taken off it -- the
+    /// `VK_TAB` branch is not documented to consult Ctrl, so leaving it there
+    /// moves focus one control and reads as nothing happening.
+    ///
+    /// Created in `build_children` and destroyed in `WM_DESTROY`: an
+    /// accelerator table is a system resource with the same lifetime
+    /// discipline as the `HFONT`s beside it, and Landing 1 had to close a
+    /// one-per-open leak of those already.
     accel: HACCEL,
     /// Which button Enter presses, and therefore which one wears the ring.
     /// `IDC_APPLY` at rest; `set_default_id` moves it to whichever push
@@ -2045,9 +2060,11 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 ///    on that id is false, and the match has nothing left to do. It stays
 ///    written for whatever still resolves to a live push button whose
 ///    `visible()` disagrees: `Ok(close)` is the repair for that case, moving
-///    focus onto `IDC_CLOSE` -- looked up with `GetDlgItem` -- **not onto
-///    the window itself.** The `Err(_)` arm below is not dead code either:
-///    `GetDlgItem` failing to resolve `IDC_CLOSE` is reached in practice,
+///    focus onto the successor **this** caller names -- `IDC_CLOSE`, looked
+///    up with `GetDlgItem` -- **not onto the window itself.** The successor
+///    is an argument because `show_page` has a better one; see
+///    `repair_hidden_button`. The `Err(_)` arm below is not dead code either:
+///    `GetDlgItem` failing to resolve it is reached in practice,
 ///    not just a defensive branch that never fires, so it falls back to
 ///    `hwnd` rather than leave focus wherever the failed lookup found it.
 ///    An earlier version of this fix parked focus on `hwnd` on the theory that
@@ -2090,7 +2107,11 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
     // return, and if it left the ring alone the button is on screen and the
     // enablement pass runs exactly as it did before pages existed.
     let page = PAGE.with(|p| p.get());
-    repair_hidden_button(hwnd, external_change, page);
+    // `IDC_CLOSE` is this caller's successor: a control went out of reach
+    // under the focus and there is no obvious place for it to go, which is
+    // the situation the fallback was written for. A door change is not that
+    // situation and names its own -- see `repair_hidden_button`.
+    repair_hidden_button(hwnd, external_change, page, IDC_CLOSE);
     let cur = UI
         .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
         .unwrap_or(IDC_APPLY);
@@ -2103,6 +2124,62 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 /// The half of `repair_default_button` that needs no `ControlState`: move
 /// focus off any control that is not on screen, and the ring off a BUTTON
 /// that is not.
+///
+/// **`successor` is the caller's answer, not this function's -- new
+/// 2026-08-14, and it is a fix.** Where focus should GO when it has to move is
+/// a question the two callers answer differently, and answering it here for
+/// both of them was a defect. `repair_default_button` fires when a control
+/// went out of reach under the focus with no obvious replacement, so it names
+/// `IDC_CLOSE`: always present, always enabled even in the read-only state,
+/// and safe under a stray Space because it routes through `on_close_request`.
+///
+/// **A door change HAS an obvious successor, and it is the pill for the door
+/// just opened.** `show_page` names that instead, for three reasons:
+///
+/// - it is where the user's attention already is -- they pressed `Ctrl+2`,
+///   and that pill is the thing that lit up;
+/// - it keeps Left/Right browsing the strip, which is what someone who just
+///   changed doors is most likely to do next. (Tab keeps working too: the
+///   pill is checked by step 2 before this runs, and G-S2 measured that
+///   user32 puts `WS_TABSTOP` on the checked radio.)
+/// - and **it cannot press anything.** A pill is not in `PUSH_BUTTONS` and is
+///   not a command at all, where `IDC_CLOSE` under the same finger asks to
+///   close the window. That was the defect: `IDC_CLOSE` IS a push button, so
+///   the ring followed focus onto it (`BN_SETFOCUS` -> `set_default_id`, the
+///   same rule every Tab step obeys), and Enter straight after `Ctrl+2`
+///   closed the window the user had just started browsing.
+///
+/// The focus move onto a pill cannot open a door: `SetFocus` does not check
+/// an auto-radio -- a click does, and so does `IsDialogMessageW`'s own
+/// arrow-key walk, neither of which is happening here -- and `CheckRadioButton`
+/// has already ticked this one at `show_page`'s step 2 in any case. So there
+/// is no `BN_CLICKED`, no re-entry into `show_page`, and nothing for the
+/// unchanged-door guard to catch.
+///
+/// **What Enter does with a pill focused, settled here rather than left to be
+/// found out: it Saves.** A pill is a radio button, so it answers
+/// `WM_GETDLGCODE` without `DLGC_DEFPUSHBUTTON` and `IsDialogMessageW` falls
+/// through to `DM_GETDEFID` -- and the pills carry no `BS_NOTIFY`, so no
+/// `BN_SETFOCUS` arrives to move the ring onto them. The ring is therefore at
+/// `HOME` by the time this returns, on either route into the `SetFocus`: it
+/// was already there (focus had left the last push button, and `BN_KILLFOCUS`
+/// restores Save), or the `visible` test at the bottom sends it there because
+/// the button it named is behind the door that just closed. Enter saves, a
+/// Save with nothing to save is disabled, and the dialog manager does not
+/// dispatch to a disabled control -- `DefaultButton::HOME`'s own argument,
+/// unchanged.
+///
+/// That settles **half** of spec 10 open question 4. The half it settles is
+/// what Enter on a pill means today; the half it does not is what
+/// `Ui::defid` rests on once auto-save deletes Save, when `DM_GETDEFID` would
+/// name a button that no longer exists. This repair makes a focused pill
+/// commoner, so it sharpens that question rather than answering it, and the
+/// auto-save workstream still owns it.
+///
+/// Reasoned from `IsDialogMessageW`'s documented order and this window's own
+/// `DM_GETDEFID` arm, **not measured**: the run that would confirm it is
+/// `Ctrl+2` then Enter with the config dirty, which must write the file and
+/// leave the window open.
 ///
 /// **`show_page` has no `ControlState` and does not need one.** Nothing calls
 /// `apply_state` on a tab click -- there is no model change to push -- and a
@@ -2164,35 +2241,38 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 /// the field does, and it is why the text survives the switch instead of
 /// being stranded in a hidden control.
 ///
-/// The ring falls back to `HOME` rather than following focus onto
-/// `IDC_CLOSE`. That looks like a disagreement with repair 2 above and is
+/// The ring falls back to `HOME` rather than following focus onto the
+/// successor. That looks like a disagreement with repair 2 above and is
 /// not: `SetFocus` on a push button raises `BN_SETFOCUS`, `handle_command`
 /// answers it with `set_default_id(hwnd, id)`, and that has already happened
 /// by the time the `visible` test below runs -- so the fallback fires only
 /// when focus did NOT land on a push button, which is the case `HOME` is for.
-unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page) {
+/// Both successors are now live examples of the two halves: `IDC_CLOSE` takes
+/// the ring with it, a pill leaves it at `HOME`.
+unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page, successor: i32) {
     let focus = GetFocus();
     if !focus.is_invalid() {
         let fid = GetDlgCtrlID(focus);
         if hidden_child(hwnd, focus)
             || (is_push_button(fid) && !default_button_of(fid).visible(external_change, page))
         {
-            match GetDlgItem(Some(hwnd), IDC_CLOSE) {
-                Ok(close) => {
-                    let _ = SetFocus(Some(close));
+            match GetDlgItem(Some(hwnd), successor) {
+                Ok(next) => {
+                    let _ = SetFocus(Some(next));
                 }
                 Err(_) => {
-                    // Not dead code: `IDC_CLOSE` is created unconditionally
-                    // in `build_children`, but this arm is reached in
-                    // practice, not merely a defensive branch that never
-                    // fires -- see `repair_default_button`'s doc comment.
-                    // Fall back to the window itself rather than leave focus
-                    // stranded on a vanished control -- a dead Tab key is a
-                    // smaller defect than Space reaching a hidden button.
+                    // Not dead code: both successors are created
+                    // unconditionally in `build_children`, but this arm is
+                    // reached in practice, not merely a defensive branch that
+                    // never fires -- see `repair_default_button`'s doc
+                    // comment. Fall back to the window itself rather than
+                    // leave focus stranded on a vanished control -- a dead Tab
+                    // key is a smaller defect than Space reaching a hidden
+                    // button.
                     if beckon_core::verbose() {
                         eprintln!(
-                            "verbose: settings window: GetDlgItem(IDC_CLOSE) \
-                             failed while moving focus off a hidden button"
+                            "verbose: settings window: GetDlgItem({successor}) \
+                             failed while moving focus off a hidden control"
                         );
                     }
                     let _ = SetFocus(Some(hwnd));
@@ -2381,6 +2461,15 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 ///    rather than before it, because `ShowWindow(SW_HIDE)` on the focused
 ///    control is what usually moves focus in the first place.
 ///
+///    **The successor it is handed is this door's own pill, never
+///    `IDC_CLOSE`.** The pill is the one control this switch is guaranteed
+///    not to have hidden -- the strip is chrome, so it is absent from
+///    `PAGE_CONTROLS` and `show_page_controls` never touches it -- it is what
+///    the user just lit up, and Enter on it cannot press a command. Sending
+///    focus to the exit instead put Enter one keystroke from closing the
+///    window; `repair_hidden_button` spells out the whole argument, including
+///    what Enter does from here.
+///
 /// **The unchanged-page guard is not an optimisation.** `layout` is
 /// `SetWindowPos` on the populated App combo, the measured path that
 /// re-synchronises its edit field and discards what the user typed (see
@@ -2414,7 +2503,10 @@ fn show_page(hwnd: HWND, page: Page) -> bool {
         show_page_controls(hwnd, page, external_change);
         layout(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, true);
-        repair_hidden_button(hwnd, external_change, page);
+        // The successor is this door's pill, ticked at step 2 and placed at
+        // step 4 -- the one control on screen that the user was just looking
+        // at and that Enter cannot turn into a command.
+        repair_hidden_button(hwnd, external_change, page, tab_id_of(page));
     }
     // `Ui::shown_page` records the page the CURRENT layout was computed for,
     // and this is that layout -- so `apply_state`'s guard does not run a
@@ -3088,28 +3180,33 @@ unsafe fn build_children(hwnd: HWND) {
     // `Ctrl+Tab` are exactly that -- which is why `show_page` ticks the pill
     // itself rather than trusting the click path.
     //
-    // `WS_TABSTOP` on all four, which may or may not be what Tab ends up
-    // seeing. In a real dialog user32 migrates the style onto whichever radio
-    // is checked, so a group is ONE tab stop; nothing in this tree has ever
-    // exercised a radio group -- the three that existed were retired -- so
-    // whether it does that for hand-created controls is gate G-S2.
+    // `WS_TABSTOP` on all four, which is not what Tab ends up seeing. In a
+    // real dialog user32 migrates the style onto whichever radio is checked,
+    // so a group is ONE tab stop; nothing in this tree had ever exercised a
+    // radio group -- the three that existed were retired -- so whether it does
+    // that for hand-created controls was gate G-S2.
     //
-    // **G-S2 was run on a14 2026-08-14 (`examples/pill_probe.rs`) and it did
-    // not answer.** It read back `WS_TABSTOP=true WS_GROUP=true` on the
-    // checked radio and `false false` on its sibling -- which is exactly how
-    // the probe CREATED them (`pill_probe.rs:113-131`: radio A gets
+    // **G-S2 PASSED on the re-run, a14 2026-08-14
+    // (`examples/pill_probe.rs`): it migrates.** `[A checked] A:
+    // WS_TABSTOP=true B: false`, then `[B checked] A: false B: true` -- the
+    // bits followed the check. **Do not add code to migrate the style by hand
+    // now that this is known**: it would be a second writer on a value user32
+    // owns.
+    //
+    // The FIRST run of that gate answered nothing, and it is recorded because
+    // it looked like a pass. It read back `WS_TABSTOP=true WS_GROUP=true` on
+    // the checked radio and `false false` on its sibling -- which is exactly
+    // how the probe CREATED them (`pill_probe.rs:113-131`: radio A gets
     // `WS_GROUP | WS_TABSTOP`, radio B gets `WINDOW_STYLE(0)`), and the radio
     // it checked was A. Migration and a total no-op produce that same
-    // readback, so the run distinguishes nothing: the probe's own missing
-    // control, in the file that opens by insisting every gate needs one. It
-    // now checks radio B as well, which is the reading that separates them.
+    // readback: the probe's own missing control, in the file that opens by
+    // insisting every gate needs one. It now checks radio B as well, and only
+    // the CHANGE between the two readings is the evidence above.
     //
-    // **Nothing here changes either way, which is why this is a note and not
-    // a defect.** Setting the bit on all four is the safe end: worst case Tab
-    // visits four stops instead of one, where the other way round would leave
-    // a pill unreachable from the keyboard. Do not add code to migrate the
-    // style by hand on the strength of the answer -- if user32 does it, the
-    // hand-maintenance is a second writer on a value user32 owns.
+    // Nothing here changes either way, which is why a blind gate was a note
+    // and not a defect. Setting the bit on all four is the safe end: worst
+    // case Tab visits four stops instead of one, where the other way round
+    // would leave a pill unreachable from the keyboard.
     //
     // No `&` on any of the four captions -- `mod cap` writes out why four
     // unique mnemonics do not exist.
@@ -7558,6 +7655,39 @@ mod tests {
     #[test]
     fn stop_is_behind_the_shortcuts_door() {
         assert_eq!(page_of_control(IDC_RECORD), Some(Page::Shortcuts));
+    }
+
+    /// Why `show_page` may hand its own pill to `repair_hidden_button` as the
+    /// successor, and why `IDC_CLOSE` was the wrong one to inherit.
+    ///
+    /// A door change moves focus off whatever it has just hidden, so the
+    /// place it moves focus TO has to survive that same switch: a successor
+    /// behind a door could be the very control being hidden. The strip is
+    /// chrome -- absent from `PAGE_CONTROLS`, so `show_page_controls` never
+    /// touches it -- and that is what this pins.
+    ///
+    /// The second half is the contrast at the bottom. `IDC_CLOSE` survives
+    /// the switch too, so (a) alone does not separate the two; what does is
+    /// that it is a push button, so the ring follows focus onto it and Enter
+    /// one keystroke after `Ctrl+2` closed the window. The pills' side of
+    /// that is `a_tab_pill_is_never_a_push_button`.
+    #[test]
+    fn the_successor_a_door_names_is_its_own_pill() {
+        for (id, page, _) in TABS {
+            assert_eq!(tab_id_of(page), id, "show_page passes tab_id_of(page)");
+            assert_eq!(
+                page_of_control(id),
+                None,
+                "pill {id} is behind a door, so the switch that names it as a \
+                 successor could be hiding the control it moves focus to"
+            );
+        }
+        assert!(
+            is_push_button(IDC_CLOSE),
+            "the old successor was safe to press, not free of the ring -- if \
+             this ever stops holding, re-read why the door change stopped \
+             using it"
+        );
     }
 
     /// `Ctrl+1`..`Ctrl+4` are built by walking `TABS` and adding `i` to

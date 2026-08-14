@@ -28,9 +28,11 @@
 //!
 //!   - Does user32 migrate `WS_TABSTOP` onto the checked radio and off its
 //!     siblings? (Spec G-S2: decides whether "the strip is ONE tab stop" is
-//!     free or hand-maintained.) **This one needed a control of its own and
-//!     did not have it on the 2026-08-14 run** -- see the correction at that
-//!     section.
+//!     free or hand-maintained.) **It does** -- `[A checked] A: true B: false`,
+//!     `[B checked] A: false B: true`, a14 2026-08-14. That answer is from the
+//!     RE-RUN: this one needed a control of its own and did not have it the
+//!     first time, so the first result was the creation styles read back. See
+//!     the correction at that section.
 //!   - Does `is_checked`'s `BM_GETCHECK` answer a `BS_AUTORADIOBUTTON`
 //!     correctly? (Spec G-S3.)
 //!

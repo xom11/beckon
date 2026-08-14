@@ -314,13 +314,17 @@ Within the strip, Left/Right move between pills and the auto-radio group
 selects as it moves. Whether user32 migrates `WS_TABSTOP` onto the checked
 radio (making "the strip is ONE tab stop" free rather than hand-maintained) is
 **not settled by reading** — nothing in this tree exercises a radio group, the
-three that existed were retired. See §9 G-S2, **which was run on a14
-2026-08-14 and still did not settle it**: the probe read the styles back with
-the one radio that was *created* carrying `WS_TABSTOP` also being the checked
-one, so migration and a no-op produce the identical readback. It is unchanged
-either way — all four pills carry `WS_TABSTOP`, worst case Tab visits four
-stops instead of one — so nothing waits on the answer, and no code may be
-written to migrate the style by hand on the strength of it.
+three that existed were retired.
+
+**SETTLED ON HARDWARE 2026-08-14: it does.** This paragraph read "See §9 G-S2,
+which was run on a14 2026-08-14 and still did not settle it" — true of the
+first run, whose readback was just the creation styles. The corrected probe
+checks the other radio and reads a second time, and the bits moved:
+`[A checked] A: WS_TABSTOP=true B: false`, `[B checked] A: false B: true`. So
+the strip is ONE tab stop for free. Nothing waited on the answer — all four
+pills carry `WS_TABSTOP`, worst case Tab would have visited four stops instead
+of one — and **no code may be written to migrate the style by hand now that it
+is known**, because that would be a second writer on a value user32 owns.
 
 **Two things the table brings with it, and both had to exist before it.** An
 accelerator MOVES NO FOCUS, so `Ctrl+1`..`4` taken while the App combo holds
@@ -517,7 +521,7 @@ in place**.
 | G-S1 | Does a tab switch preserve text typed into the App combo? Type, switch, switch back | the same sequence with each guard disabled in turn, which must lose the text. **There are THREE guards and the round trip needs all of them** — `if shortcuts` in `layout` on the way out, `combo_needs_placing` on the way back, and `place_app_combo`'s save/restore for the trip back that really did move the combo. Disable them one at a time: with only the second removed the text is lost on the way back, which is the half Task 4 shipped; with only the third removed it survives the plain round trip and is lost by the round trip taken **while the external-change banner appears on the other page**, which is the run to script |
 | G-S7 | What does `GetFocus()` return with the App combo focused, and does `hidden_child` recognise it once the combo is hidden? Focus `IDC_APP`, read `GetFocus`, read `GetDlgCtrlID` on it, `SW_HIDE` the combo, then read `GetWindowLongW(GWL_STYLE)` **and** `IsWindowVisible` on the same handle | the same four reads on `IDC_FILTER`, a plain EDIT with no inner child, where the two answers must agree. The expected split is the whole point: on the combo's inner EDIT the style bit stays set and `IsWindowVisible` goes false, which is why the repair shipped one commit reading the wrong one |
 | G-S6 | Does `place_app_combo`'s restore actually restore? Type into App, resize the window so `want_app` moves, read the field back | the same resize with the restore removed, which must show a catalogue entry. This is the only evidence that `CB_GETEDITSEL`/`CB_SETEDITSEL` round-trip the selection and that `WM_SETTEXT` does not itself provoke a second re-sync — both are reasoned from documentation here, neither is measured |
-| G-S2 | **RUN a14 2026-08-14 AND STILL OPEN** — the run answered nothing, and the reason is worth more than the gate. Does user32 migrate `WS_TABSTOP` onto the checked radio? Read all four pills' styles back with `GetWindowLongW`. It read `WS_TABSTOP=true WS_GROUP=true` on the checked radio and `false false` on its sibling — **which is exactly how the probe created them** (`pill_probe.rs:113-131`: A with `WS_GROUP \| WS_TABSTOP`, B with `WINDOW_STYLE(0)`), and A was the radio it checked. Migration and a total no-op are indistinguishable in that readback. Nothing waits on the answer (see §4.4), so this is a note, not a blocker | **the missing one, and its absence is the finding.** "The same read before any pill is checked" was the control this row asked for and the probe did not take. It now checks radio B and reads a second time: only the CHANGE between the two readings is evidence |
+| G-S2 | **PASSED ON THE RE-RUN, a14 2026-08-14** — and the first run is worth more than the gate. Does user32 migrate `WS_TABSTOP` onto the checked radio? The corrected probe reads `[A checked] A: WS_TABSTOP=true B: false` and `[B checked] A: false B: true`, so the bits follow the check and the strip is one tab stop for free. The **first** run read `WS_TABSTOP=true WS_GROUP=true` on the checked radio and `false false` on its sibling — **which is exactly how the probe created them** (`pill_probe.rs:113-131`: A with `WS_GROUP \| WS_TABSTOP`, B with `WINDOW_STYLE(0)`), and A was the radio it checked, so migration and a total no-op were indistinguishable. Nothing waited on the answer (see §4.4), which is why a blind gate here was a note rather than a shipped defect | **it was missing, and its absence was the finding.** "The same read before any pill is checked" was the control this row asked for and the first probe did not take. It now checks radio B and reads a second time: only the CHANGE between the two readings is evidence, and that change is what the re-run reported |
 | G-S3 | **PASSED, a14 2026-08-14.** Does `is_checked` report a `BS_AUTORADIOBUTTON` correctly? `BM_GETCHECK` answered 1 for the checked radio and 0 for its sibling, which is what §6.1's "selected-ness comes from `is_checked`, never `CDIS_CHECKED`" rests on | `CheckRadioButton` a known pill, then read all four |
 | G-S4 | The strip under each of the four shipped HC schemes | the same screenshot in ordinary dark, where the trough is known to be visible |
 | G-S5 | `GetSystemMetricsForDpi(SM_CXSIZEFRAME / SM_CYSIZEFRAME / SM_CXPADDEDBORDER, dpi)` printed by name at 96 and 144, and the left/right resize edge dragged across the strip's band | dragging the same edge below the strip, where it is known to work |
@@ -577,6 +581,26 @@ re-scope it rather than inherit it.
    `DM_GETDEFID` — and "Enter on a tab presses a button that no longer
    exists" is worse than the Reload-saves defect it descends from. The
    auto-save workstream owns this; the strip is what makes it urgent.
+
+   **HALF SETTLED 2026-08-14, and the other half is sharper for it.** Settled:
+   what Enter on a focused pill means *today*. It Saves. The pills carry no
+   `BS_NOTIFY`, so no `BN_SETFOCUS` arrives to move the ring onto one, and
+   `repair_hidden_button` leaves the ring at `HOME` on every route that ends
+   with a pill focused — either it was already there, or the `visible` test
+   sends it there because the button it named is behind the door that just
+   closed. A Save with nothing to save is disabled and the dialog manager does
+   not dispatch to a disabled control, so the resting meaning of Enter on a
+   pill is "save, or nothing". Reasoned from `IsDialogMessageW`'s documented
+   order plus this window's own `DM_GETDEFID` arm, **not measured**: the run is
+   `Ctrl+2` then Enter with the config dirty, which must write the file and
+   leave the window open.
+
+   Not settled: what `DM_GETDEFID` should answer once Save is gone. What
+   changed is the frequency — the same commit made `show_page` move focus onto
+   the incoming door's pill rather than onto `Close` (a `Close` that Enter then
+   pressed, one keystroke after `Ctrl+2`), so a focused pill is now the
+   ORDINARY state after any keyboard door change rather than a corner. The
+   auto-save workstream still owns the answer and now meets it sooner.
 5. Whether macOS draws any of this. It accepts and discards `page` today
    (`beckon-macos/src/settings_window.rs:626`); design §12 Q4 is still
    unanswered.
