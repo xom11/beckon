@@ -35,14 +35,37 @@ fn main() {
 #[cfg(windows)]
 fn embed_win32_resources() {
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-        // `embed-resource` 2.x returns `()`; the `.manifest_optional()`
-        // builder is 3.x API. This file shipped with the 3.x form once and
-        // the macOS cross-check did not notice, because a build script is
-        // compiled for the HOST -- so `#[cfg(windows)]` is false here and the
-        // whole function is dead code on the machine that runs the gate.
-        // Anything inside it is only ever type-checked by a real Windows
-        // build.
-        embed_resource::compile("examples.rc", embed_resource::NONE);
+        // `compile` is the WRONG function here and the difference is invisible
+        // until you ask the running process what it loaded. It emits
+        // `cargo:rustc-link-arg-bins`, and **an example is not a bin** -- so
+        // the resource is built, the build succeeds, and the example links
+        // without it. Measured on a14 2026-08-14: with `compile`, the probe's
+        // own `DllGetVersion` reported comctl32 **5.82.10586**, which is why
+        // every NM_CUSTOMDRAW count was zero.
+        //
+        // `compile_for` names the targets explicitly. Every example that opens
+        // a window belongs in this list; one that does not will silently
+        // measure v5 again.
+        //
+        // (`embed-resource` 2.x returns `()`; the `.manifest_optional()`
+        // builder is 3.x. This file shipped with the 3.x form once and the
+        // macOS cross-check said nothing, because a build script is compiled
+        // for the HOST -- `#[cfg(windows)]` is dead code on the gate machine,
+        // so anything inside it is only ever type-checked by a real Windows
+        // build.)
+        embed_resource::compile_for(
+            "examples.rc",
+            [
+                "pill_probe",
+                "settings_probe",
+                "combo_probe",
+                "caps_probe",
+                "caps_live",
+                "customdraw_probe",
+                "showhide_probe",
+            ],
+            embed_resource::NONE,
+        );
     }
 }
 
