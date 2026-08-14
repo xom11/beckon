@@ -17,6 +17,39 @@ pub struct Palette {
     pub bg: u32,
     pub card: u32,
     pub card_border: u32,
+    /// The trough the tab pills sit in.
+    ///
+    /// **In dark mode this is LIGHTER than the card, and that is forced by
+    /// arithmetic rather than taste.** No colour darker than `DARK.bg` can
+    /// clear the 1.2 border floor against it -- pure black, the far end,
+    /// reaches only 1.171 -- so a dark trough has to move away from the
+    /// ground upward. The light half is symmetric: pure white against
+    /// `LIGHT.bg` is 1.101, which forecloses a near-white trough the same
+    /// way. Both figures are pinned by
+    /// `the_trough_can_only_move_away_from_the_ground_one_way`, because a
+    /// reader who does not believe them will reach for exactly those two
+    /// extremes first.
+    pub strip: u32,
+    /// Hover on an inactive pill.
+    ///
+    /// `LIGHT` is `#C2C9D8` and not the design's `#CBD1DE`, which measures
+    /// 1.126 against `strip` -- under the 1.2 border floor, i.e. a hover
+    /// state that cannot be seen. The design states the floor and then gives
+    /// a value that fails it; the floor wins. Restoring `#CBD1DE` needs no
+    /// new guard: it fails the `strip_hover on strip` row in `pairs()`.
+    ///
+    /// The ink changes with the state -- an inactive pill draws `text_muted`
+    /// on `strip` and `text` on `strip_hover` -- and that swap is
+    /// load-bearing rather than decorative. `text_muted` on `strip_hover`
+    /// measures **3.700 / 4.304**, so a hover that moved only the ground
+    /// would drop the label under 4.5 in both themes.
+    ///
+    /// **CORRECTED 2026-08-14.** The plan and spec quote that same pair as
+    /// "4.015 / 4.304". 4.015 is `text_muted` on the design's rejected
+    /// `#CBD1DE`, i.e. measured before this token moved; against the
+    /// `#C2C9D8` that shipped it is 3.700. Recomputed with `contrast` in
+    /// this file. The conclusion is unchanged and the margin is wider.
+    pub strip_hover: u32,
     pub text: u32,
     pub text_muted: u32,
     pub text_faint: u32,
@@ -41,6 +74,8 @@ pub const LIGHT: Palette = Palette {
     bg: 0xF2F4F8,
     card: 0xFFFFFF,
     card_border: 0xDCE0E8,
+    strip: 0xD9DDE7,
+    strip_hover: 0xC2C9D8,
     text: 0x15181E,
     text_muted: 0x5A6270,
     text_faint: 0x6F7785,
@@ -65,6 +100,8 @@ pub const DARK: Palette = Palette {
     bg: 0x15171C,
     card: 0x1D2027,
     card_border: 0x2B303A,
+    strip: 0x2E323D,
+    strip_hover: 0x3A3F4C,
     text: 0xE7E9EE,
     text_muted: 0x9FA6B4,
     text_faint: 0x7F8795,
@@ -298,6 +335,48 @@ mod tests {
             // against its own `keycap` face. A border-visibility floor,
             // like the other borders above, not a text floor.
             ("keycap edge on keycap face", p.keycap_edge, p.keycap, 1.2),
+            // -- The tab strip, 2026-08-14. Four `BS_AUTORADIOBUTTON |
+            // BS_PUSHLIKE` pills in a painted trough between the
+            // client-drawn title bar and the first card.
+            //
+            // **These rows land before either site exists**, which is the
+            // order the design asks for: the palette is checked first and
+            // the drawing is written against tokens already known to clear
+            // their floors. The sites will be `beckon-windows`'s
+            // `paint::tab_pill` and the trough fill in `WM_PAINT`.
+            //
+            // **Four of these ten measurements clear by under 0.04.** The
+            // tightest is the DARK half of "strip_hover on strip" at
+            // 1.2168, +0.017; the other three are LIGHT -- 4.5222 (+0.022),
+            // 1.2346 (+0.035), 1.2220 (+0.022). They are correct and they
+            // are fragile: a future move of `text_muted`, `bg` or either
+            // strip token can break one, and these rows exist so that break
+            // is a test failure rather than a screenshot.
+            //
+            // (The spec's table bolds three cells as the near-floor ones,
+            // all LIGHT. Recomputed here, the DARK half of `strip_hover` is
+            // narrower than any of them and is the one to watch.)
+            //
+            // An inactive pill's ink changes with the state, and the swap
+            // is load-bearing: `text_muted` on `strip_hover` measures
+            // 3.700 / 4.304, so a hover that moved only the ground would
+            // drop the label under 4.5. See `Palette::strip_hover`.
+            ("inactive pill label on strip", p.text_muted, p.strip, 4.5),
+            (
+                "hovered pill label on strip_hover",
+                p.text,
+                p.strip_hover,
+                4.5,
+            ),
+            ("strip on window bg", p.strip, p.bg, 1.2),
+            ("strip_hover on strip", p.strip_hover, p.strip, 1.2),
+            // The active pill's FILL, against the trough it sits in. Its
+            // INK already has a row -- "white on accent fill" above -- and
+            // that row is the reason the fill must be `accent_fill` and
+            // never `accent`: `accent_on` on `DARK.accent` measures 3.044,
+            // and no row in this table covers that pair, so the failure
+            // would ship unseen.
+            ("active pill fill on strip", p.accent_fill, p.strip, 1.2),
             // -- Exemptions. WCAG 2.1 SC 1.4.3 itself excepts "text ... that
             // is part of an inactive user interface component" from the 4.5
             // floor. These two rows are the disabled-state ink the review's
@@ -371,6 +450,30 @@ mod tests {
     #[test]
     fn accent_and_accent_fill_are_distinct_in_dark() {
         assert_ne!(DARK.accent, DARK.accent_fill);
+    }
+
+    /// `Palette::strip`'s "the dark trough is lighter than the card" claim,
+    /// as arithmetic rather than as prose.
+    ///
+    /// A reader who doubts it reaches for the far end of the obvious
+    /// direction -- black under a dark theme, white under a light one -- and
+    /// those two are the best case, not a middling one. Neither reaches the
+    /// 1.2 that `pairs()` holds `strip` to against `bg`, so the trough has
+    /// nowhere to go but away from the ground. `pairs()` cannot cover this:
+    /// black and white are not palette tokens, and the point is about
+    /// colours the palette deliberately does NOT contain.
+    #[test]
+    fn the_trough_can_only_move_away_from_the_ground_one_way() {
+        assert!(contrast(0x000000, DARK.bg) < 1.2);
+        assert!(contrast(0xFFFFFF, LIGHT.bg) < 1.2);
+        // The two figures the doc comment quotes, so a `bg` edit that
+        // invalidates the prose fails here rather than being believed.
+        assert!((contrast(0x000000, DARK.bg) - 1.171).abs() < 0.001);
+        assert!((contrast(0xFFFFFF, LIGHT.bg) - 1.101).abs() < 0.001);
+        // And the trough did move that way: lighter than the card in DARK,
+        // darker than the card in LIGHT.
+        assert!(luminance(DARK.strip) > luminance(DARK.card));
+        assert!(luminance(LIGHT.strip) < luminance(LIGHT.card));
     }
 
     fn ti(hc: bool, light: Option<u32>) -> ThemeInputs {
