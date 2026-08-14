@@ -470,8 +470,7 @@ pub fn name_substring_matches(id: &str, installed: &[InstalledAppInfo]) -> Vec<I
 
 /// What a keypress costs when a name matched only by substring and exactly one
 /// app answered it.
-const GUESS_LONE: &str =
-    "substring match, so an app installed later can quietly take this name";
+const GUESS_LONE: &str = "substring match, so an app installed later can quietly take this name";
 
 /// What happens on a miss. Not "nothing": the window-matching layer still
 /// tries the exe name and then the window title, so a miss can still focus
@@ -523,7 +522,10 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
 
 /// One `NameReport` per name, in the order given, against a caller-supplied
 /// catalog.
-pub(crate) fn resolve_reports_in(names: &[&str], installed: &[InstalledAppInfo]) -> Vec<NameReport> {
+pub(crate) fn resolve_reports_in(
+    names: &[&str],
+    installed: &[InstalledAppInfo],
+) -> Vec<NameReport> {
     names
         .iter()
         .map(|id| match resolve(id, installed) {
