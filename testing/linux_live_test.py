@@ -12,7 +12,9 @@ Run it inside the session you want to test — it picks its probe the same way
 `beckon_linux::pick_backend` picks its backend:
 
     SWAYSOCK / I3SOCK               -> swaymsg / i3-msg tree probe
+    HYPRLAND_INSTANCE_SIGNATURE     -> hyprctl probe
     WAYLAND_DISPLAY  (GNOME)        -> the beckon shell extension over D-Bus
+    WAYLAND_DISPLAY  (KDE)          -> KWin scripting over D-Bus
     DISPLAY                         -> xprop / EWMH probe
 
     ./testing/linux_live_test.py --beckon ./target/release/beckon
@@ -216,6 +218,126 @@ class SwayEnv(Env):
         if in_scratch(tree, False):
             return True
         return all(w.wid != wid for w in self.windows())
+
+
+class HyprEnv(Env):
+    """Hyprland, probed through `hyprctl`.
+
+    Deliberately a different client from the backend under test: beckon opens
+    `$XDG_RUNTIME_DIR/hypr/<sig>/.socket.sock` itself, this shells out to
+    `hyprctl`. Same compositor, independent path — so a bug in beckon's own
+    socket plumbing cannot make the oracle agree with it.
+    """
+
+    name = "Hyprland (hyprctl)"
+    default_multi = "foot"
+    # The same pair as sway, for the same reason: `foot` is Wayland-native
+    # (class = app_id = `foot`) while `xterm` arrives through XWayland, where
+    # the class is its `WM_CLASS` (`XTerm`) rather than the `.desktop` stem
+    # (`debian-xterm`) — the identity mismatch beckon has to survive.
+    default_other = "xterm"
+    # `extra_kill` is deliberately left at the default. sway kills Xwayland
+    # because a stray "Xwayland on :N" toplevel turns step 5c's hide into a
+    # toggle-back, and sway starts it again on demand; neither half of that
+    # has been measured on Hyprland. An unexpected extra window surfaces as
+    # the skip in `_hide_alone`, which names every class it found, so guessing
+    # here would trade a legible skip for a session that may not come back.
+
+    # Must match `HIDE_WORKSPACE` in crates/beckon-linux/src/hyprland.rs.
+    # Step 5c parks the window on a special workspace instead of unmapping
+    # it, so a hidden window is still in `j/clients` and the workspace name
+    # is the only thing that says it is hidden.
+    HIDE_WORKSPACE = "special:beckon"
+
+    def __init__(self) -> None:
+        if not shutil.which("hyprctl"):
+            raise RuntimeError("hyprctl not on PATH")
+        if self._json("activeworkspace") is None:
+            raise RuntimeError(
+                "hyprctl did not answer — is HYPRLAND_INSTANCE_SIGNATURE pointing at a "
+                "live Hyprland instance?"
+            )
+
+    def _json(self, kind: str):
+        """`hyprctl -j <kind>`, or None when the query failed.
+
+        Degrading to None rather than raising is what keeps the suite's
+        `wait_for` polls working the way they do on every other backend, where
+        a failed probe reads as "nothing yet". `__init__` is the loud gate.
+
+        `is_hidden` is the one poll that reads the other way — an empty client
+        list means "gone", so a failed query there passes instead of retrying.
+        Same shape as `KdeEnv.is_hidden`, and unmeasured on either.
+        """
+        res = run(["hyprctl", "-j", kind], timeout=15)
+        if res.returncode != 0:
+            return None
+        try:
+            return json.loads(res.stdout)
+        except ValueError:
+            return None
+
+    def _clients(self) -> list[dict]:
+        data = self._json("clients")
+        return data if isinstance(data, list) else []
+
+    def _dispatch(self, *args: str) -> None:
+        """`hyprctl dispatch …`, loud when the compositor refuses.
+
+        Hyprland answers a dispatch with `ok` or with the reason it declined
+        — the same check `hyprland::dispatch` makes — and nothing in the suite
+        polls these for success. A silently dropped `focuswindow` would come
+        back as an unexplained skip out of `force_focus` instead.
+        """
+        res = run(["hyprctl", "dispatch", *args], timeout=15)
+        body = (res.stdout or "").strip()
+        if res.returncode != 0 or body.lower() != "ok":
+            raise RuntimeError(
+                f"hyprctl dispatch {' '.join(args)} -> rc={res.returncode} {body!r}"
+            )
+
+    def spawn(self, argv: list[str]) -> None:
+        # Through the compositor rather than forking from here: Hyprland hands
+        # its children WAYLAND_DISPLAY and the DISPLAY of its own Xwayland,
+        # neither of which is necessarily in the environment the suite was
+        # started from (an ssh shell, say).
+        self._dispatch("exec", " ".join(argv))
+
+    def windows(self) -> list[Win]:
+        # The address is Hyprland's own `0x…` string, used verbatim: beckon
+        # matches the `j/activewindow` address against the `j/clients` ones by
+        # exact string compare (`algorithm::decide`, fed by `snapshots_from`),
+        # so normalising it here would test something beckon does not do.
+        out = []
+        for c in self._clients():
+            cls = c.get("class") or ""
+            if cls:
+                out.append(Win(c.get("address") or "", cls, c.get("title") or ""))
+        return out
+
+    def focused(self) -> Win | None:
+        data = self._json("activewindow")
+        if not isinstance(data, dict):
+            return None
+        # Hyprland answers `{}` when nothing is focused; `hyprland::parse_active`
+        # also treats an empty or `0x0` address as nothing, so this does too.
+        addr = (data.get("address") or "").strip()
+        if not addr or addr == "0x0":
+            return None
+        return Win(addr, data.get("class") or "", data.get("title") or "")
+
+    def activate(self, wid: str) -> None:
+        self._dispatch("focuswindow", f"address:{wid}")
+
+    def is_hidden(self, wid: str) -> bool:
+        # Hyprland hide == parked on `special:beckon`, so hidden-ness is a
+        # property of where the window lives, not of whether it is still
+        # listed — the same shape as SwayEnv, where the node stays in the tree
+        # but hangs off `__i3_scratch`.
+        for c in self._clients():
+            if c.get("address") == wid:
+                return (c.get("workspace") or {}).get("name") == self.HIDE_WORKSPACE
+        return True  # gone from the list entirely
 
 
 class GnomeEnv(Env):
@@ -473,6 +595,12 @@ class X11Env(Env):
 def detect_env() -> Env:
     if os.environ.get("SWAYSOCK") or os.environ.get("I3SOCK"):
         return SwayEnv()
+    # Ahead of WAYLAND_DISPLAY, and for the reason `pick_backend` orders it
+    # that way too: Hyprland sets WAYLAND_DISPLAY as well, so a later branch
+    # reads a Hyprland session as GNOME and probes for an extension that will
+    # never be there.
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return HyprEnv()
     if os.environ.get("WAYLAND_DISPLAY"):
         # Same rule beckon's own pick_backend uses: XDG_CURRENT_DESKTOP is a
         # colon-separated list, matched per component.
