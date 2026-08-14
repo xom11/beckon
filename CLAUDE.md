@@ -35,13 +35,34 @@ hypothetical and not visible from inside any one session:
 
 - `git status` cannot say which change belongs to whom, so nobody can commit
   without either sweeping in a stranger's work or hand-picking hunks.
-- `git switch` in one session moves the branch under every other session
-  sharing the checkout. One did, mid-edit.
-- Two sessions independently designed the *same* flag with **opposite**
-  semantics (`--resolve` exiting non-zero versus never changing the exit
-  code). Neither could see the other's work, because it was uncommitted.
+- **`git switch` in one session silently re-homes every commit another
+  session makes next.** One did, mid-edit. The victim is not warned at any
+  point: after HEAD moved, five `git commit` runs printed the ordinary
+  `[main abc1234] …` — committing to `main` is not an error, so there is
+  nothing for git to say — while the feature branch they believed they were
+  on still pointed at the old commit.
+  - And the push that should have caught it does not. `git push -u origin
+    <branch>` pushed that untouched branch and printed
+    `remote: Create a pull request for '<branch>' …` — **an empty push and a
+    real one print the same thing**, and `-q` does not suppress it because it
+    is a remote message. It surfaced only when `gh pr create` refused with
+    *"you must first push the current branch"*, which is a different tool,
+    much later. Verify instead of reading output: `git branch --show-current`
+    **before** committing, and `git branch -vv` (it prints
+    `[origin/<branch>: ahead N]`) or `git ls-remote --heads origin <branch>`
+    against your local SHA **after** pushing.
 - A `CLAUDE.md` edit from either session lands on top of the other's
   uncommitted text and is swept into whichever commit is made first.
+- **Two sessions independently designed the *same* flag with *opposite*
+  semantics** — `--resolve` exiting non-zero versus never changing the exit
+  code. Note what did *not* cause this: one side's design was **committed**,
+  on its own branch, the whole time. It was invisible because nobody fetched
+  or listed branches, not because it was unwritten.
+
+**So: a worktree prevents two sessions colliding on a FILE. It does nothing
+about two sessions building the same THING.** Two spotless worktrees produce
+the duplicate-design failure just as readily. Only the last rule below catches
+that one.
 
 Rules that follow from that:
 
@@ -57,10 +78,23 @@ Rules that follow from that:
   `git worktree list` is the inventory. Two strays predate this rule and are
   not covered by it — `~/Documents/dev/beckon-fix-linux` and
   `.claude/worktrees/four-doors-phase-0`.
-- **Before starting, look for company**: `git worktree list`, `git status` in
-  the primary checkout, and `ListAgents`. Uncommitted work in a shared
-  checkout means somebody is mid-task; a feature that already exists there
-  uncommitted means your plan needs reconciling, not executing.
+- **Before starting, look for company — and look at branches, not just at the
+  working tree.** This is the only rule here that catches duplicate *design*,
+  and the three obvious checks are all blind to it:
+
+  ```sh
+  git worktree list                 # other checkouts
+  git status                        # in the PRIMARY checkout: someone mid-task
+  ListAgents                        # other sessions, but not what they are building
+  git fetch --all && git branch -a  # committed work you would otherwise never see
+  git log --all --oneline -20       # including branches nobody has merged
+  ```
+
+  Uncommitted work in the shared checkout means somebody is mid-task. A
+  *branch* carrying a spec or a design doc means somebody has already decided
+  something — and other people's work is far more often committed-but-unmerged
+  than uncommitted. Either way the answer is the same: reconcile the plan
+  before executing it, and talk to the other session if there is one.
 
 ## Architecture
 
