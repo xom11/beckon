@@ -492,45 +492,25 @@ a:hover { text-decoration-color: currentColor; }
   height: var(--nav-h);
 }
 
-/* THE WINDOW CONTROLS ARE A PICTURE, NOT A CONTROL. No focus, no hover, no
-   accessible name, `aria-hidden` in the markup — the page's rule is that a
-   control on screen never silently does nothing, and the cheapest way to keep
-   it is to not be a control. `order` is what moves the group from the left
-   (macOS) to the right (Windows, Linux) without a second element.
+/* THE FAKE WINDOW CONTROLS ARE GONE, 2026-08-14. `.bar-ctl` was a three-dot
+   group ordered to the left on macOS and re-drawn as `─ ▢ ✕` glyphs or a
+   circular close pill ordered hard right on Windows and GNOME. It was inert by
+   design — no focus, no hover, no accessible name — and that is what finished
+   it: on two of the three skins it put a row of dead buttons in the top-right
+   corner, inches under the browser's own live window buttons and immediately
+   beside beckon's two real controls. A reader cannot tell those apart by
+   looking, and the page's rule has always been that nothing on screen that
+   looks like a control silently does nothing.
 
-   THE DOTS ARE INK AT 20%, NOT RED/AMBER/GREEN. Traffic-light colour is the
-   single most quoted macOS gesture on the web and it invites someone to click
-   the red one. The desks in §4 keep real colour, because there they depict an
-   actual window; the page is not a window and does not pretend to be. */
-.bar-ctl { display: flex; align-items: center; gap: 8px; order: -1; }
-.bar-ctl i {
-  width: 12px; height: 12px; border-radius: 50%;
-  background: var(--fg-dim); opacity: .2;
-}
-:root[data-os="windows"] .bar-ctl,
-:root[data-os="linux"]   .bar-ctl { order: 9; margin-left: 4px; }
-/* Windows draws glyphs, not dots: a 46x32 hit area each, hard right. */
-:root[data-os="windows"] .bar-ctl { gap: 0; }
-:root[data-os="windows"] .bar-ctl i {
-  width: 34px; height: 30px; border-radius: 0;
-  background: none; opacity: .75;
-  display: grid; place-items: center;
-  font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
-}
-:root[data-os="windows"] .bar-ctl i:nth-child(1)::before { content: "\2014"; }
-:root[data-os="windows"] .bar-ctl i:nth-child(2)::before { content: "\25A1"; }
-:root[data-os="windows"] .bar-ctl i:nth-child(3)::before { content: "\2715"; }
-/* GNOME ships ONE control on a headerbar, a circular close button. */
-:root[data-os="linux"] .bar-ctl i:nth-child(1),
-:root[data-os="linux"] .bar-ctl i:nth-child(2) { display: none; }
-:root[data-os="linux"] .bar-ctl i {
-  width: 24px; height: 24px;
-  background: color-mix(in srgb, var(--fg) 10%, transparent); opacity: 1;
-  display: grid; place-items: center;
-}
-:root[data-os="linux"] .bar-ctl i::before {
-  content: "\2715"; font: 400 10px/1 var(--ui-sans); color: var(--fg-dim);
-}
+   The skin now rides on the title's position alone (centred vs hard left) plus
+   the corner radius and the press. That is one tell fewer and it is the right
+   trade; the desks in §4 still draw real window chrome, traffic-light colour
+   and all, because there it IS a window rather than a page dressed as one.
+
+   Nothing replaced it — the rules that positioned it (`order`, and the
+   `margin-left: auto` on `.bar-links` below) still do their job with one fewer
+   item in the flex line, which is why the brand's absolute centring is
+   untouched. */
 
 .brand {
   display: inline-flex; align-items: center; gap: 9px;
@@ -597,6 +577,34 @@ a:hover { text-decoration-color: currentColor; }
               background-color var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease);
 }
+/* THE THEME BUTTON IS A GLYPH, and the glyph is the theme you GET by pressing
+   it: a sun while the page is dark, a moon while it is light. That is the same
+   promise its `aria-label` has always made ("Switch to the light theme"), so
+   the two cannot drift — and it is the reason the state is written by JS as
+   `data-icon` rather than keyed off `[data-theme]` in CSS. There is a third
+   theme state, "follow the system", where `[data-theme]` is absent and only
+   `prefers-color-scheme` knows the answer; a CSS-only swap would have to
+   duplicate that media query and would still be wrong for the one reader whose
+   OS is light and whose stored choice is dark.
+
+   Square, 30px, so it clears WCAG 2.2 SC 2.5.8 (24x24) on its own rather than
+   through the label padding it no longer has. */
+.ghost-icon {
+  padding: 0; width: 30px;
+  display: inline-grid; place-items: center;
+}
+.ico { width: 17px; height: 17px; display: block; }
+.ico circle, .ico path {
+  fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+/* One of the two ships visible so a paint that beats the script still shows a
+   glyph rather than an empty box; `label()` runs before the button is
+   un-hidden, so in practice the reader never sees the default. */
+.ico-moon { display: none; }
+#theme[data-icon="moon"] .ico-sun { display: none; }
+#theme[data-icon="moon"] .ico-moon { display: block; }
+
 .ghost:hover { background: var(--bg-raised); }
 .ghost:active {
   transform: translateY(var(--press-travel));
@@ -2456,49 +2464,86 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   .how-grid {
     grid-template-columns: minmax(0, 1.04fr) minmax(0, .96fr);
     gap: 44px;
-    align-items: start;
+    /* STRETCH, NOT START — this is what makes the two columns end together.
+     *
+     * A 16/9 picture with a caption under it grows faster than a five-row list
+     * ever can: the demo is `width * 9/16 + 56` tall (12px gap, 44px readout)
+     * and the table is a constant 286.7, so the two are only equal at a desk
+     * 410px wide. Every width where they sit side by side is above that, so the
+     * DEMO IS ALWAYS THE TALLER ITEM here and the table is always the one that
+     * stretches. That direction matters: were it ever the other way round, the
+     * demo's box would grow while its readout stayed put and the bottom rule
+     * would be an empty gap instead of a line.
+     *
+     * `align-items: start` was the old answer and it left the readout hanging
+     * below the list — 56px of it at 1512x982. The other half of that fix was
+     * `.how-demo { margin-top: -16px }`, which lifted the picture until its own
+     * bottom edge met the table's last rule and let the caption hang; it is
+     * gone, because a lift big enough to serve the wider picture below would
+     * have collided with the lead. */
+    align-items: stretch;
   }
+  /* The table is a grid item, so stretch gives it a definite height and the
+     browser distributes the surplus across its rows. `height: 100%` is belt and
+     braces for the same thing — Safari has historically treated a stretched
+     <table> as auto-height — and it is inert when there is no surplus. */
+  .how-table { height: 100%; }
+  /* MIDDLE, ONLY WHERE THE ROWS ARE STRETCHED. A row is 52.7px of its own and
+     87px once it has taken its share of the picture's height, and `top` spent
+     every one of those extra 34px under the text — so each condition sat hard
+     against the rule above it with a hole beneath, which reads as five broken
+     rows rather than one airy list.
+     `top` is still the rule below this breakpoint and still right there: the
+     table is narrow enough for column one to wrap, and it was `baseline` that
+     hung "Back" off the SECOND line of "focused, more windows". `middle` has
+     no such failure — a one-line cell centres against a two-line one — but the
+     rows down there have no surplus to centre in, so this stays scoped. */
+  .how-table th, .how-table td { vertical-align: middle; }
 }
 
-/* --- and once the page has stopped growing, the example takes the wider half.
+/* --- and once the page has stopped growing, the example runs off the measure.
  *
- * `--maxw` is 1120px, so at that viewport and at every one above it the grid's
+ * `--maxw` is 1120px, so at that viewport and at every one above it the wrap's
  * content box is a constant 1064px. THAT is why this is a second breakpoint
  * rather than an edit to the one above: a fixed ratio only has a fixed outcome
  * over a fixed width, and between 1041 and 1120 the grid is still growing, so
- * the same ratio would squeeze the table further at every step down. Below
- * 1120 the table is the tighter of the two and keeps the wider column.
+ * the same ratio would squeeze the table further at every step down.
  *
- * The desk goes 489.6 -> 537.6 wide, and the table 544.4 -> 500.4 — which is
- * 20px clear of the 479px floor and 8px clear of what column one needs at 44%.
- * Everything on the desk scales with it, so this is the only lever that makes
- * the example easier to watch without redrawing anything on it. */
+ * THE TABLE IS PINNED AT 486px AND THE PICTURE TAKES EVERYTHING ELSE. The two
+ * columns of ink measure 212.3px and 266.5px, a 479px floor (see `tbody th`),
+ * and the table renders 14px wider than its track by its own negative margin —
+ * so 486 is the narrowest track that cannot wrap a row, with 7px to spare. A
+ * ratio cannot express that; it used to read .95fr/1.05fr and every future
+ * change to the grid's width moved the table a little closer to wrapping.
+ *
+ * THE PICTURE THEN BLEEDS PAST THE WRAP, to the right only. Inside 1064 the
+ * whole argument was over 7px of slack: the desk could go 537.6 -> 545 and no
+ * further, which is not a bigger picture, it is a rounding error. Bleeding
+ * right buys 176px of real estate that costs the table nothing and — this is
+ * the reason it is one-sided — leaves the exhibit's LEFT edge exactly under the
+ * `h2` and the lead. A symmetric breakout would have made this the only section
+ * on the page whose heading does not start on the page's own left margin.
+ *
+ * Desk 537.6 -> 713.6 wide, 302.4 -> 401.4 tall, at 1512x982. The table under
+ * it stretches to match (see the block above), so the two still end on one
+ * line, and the hero's desk is 807px at the same viewport — this is still the
+ * smaller of the page's two pictures, which is the order they should be in.
+ *
+ * THE CAP IS THE GUTTER, NOT THE PICTURE. `(100vw - 1120px) / 2` is the space
+ * outside the wrap on one side; spending all of it puts the desk's edge on the
+ * viewport's, so the bleed is that number clamped to [0, 176]. At 1512 it is
+ * 176 with 48px of gutter left; at 1366 it is 123 with 28px, the wrap's own
+ * padding; at 1120 it is 0 and this rule does nothing. `100vw` counts a classic
+ * scrollbar, which makes the bleed up to ~7px optimistic — that eats gutter,
+ * never content, so it cannot produce a horizontal scrollbar of its own. */
 @media (min-width: 1120px) {
   .how-grid {
-    grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+    grid-template-columns: minmax(0, 486px) minmax(0, 1fr);
     gap: 40px;
   }
-  /* THE DESK'S BOTTOM EDGE LANDS ON THE TABLE'S LAST RULE.
-   *
-   * Widening the desk makes it taller — it is a 16/9 box — so at 537.6 wide it
-   * is 302.4 tall against a table of 286.7, and top-aligned it would hang below
-   * the list with its readout hanging further. Lifting the column by exactly
-   * the difference puts both blocks in one band, so they read as one exhibit
-   * rather than as a list with a picture beside it.
-   *
-   * 16px IS THAT DIFFERENCE, MEASURED, and it is a constant for the same reason
-   * the ratio above is: over this whole range the grid's content box does not
-   * move, and the table's height is five rows of fixed type that never wrap.
-   *
-   * IT CANNOT REACH THE LEAD. There is 30px of clear space between that
-   * paragraph's box and the top of the grid, measured at 1512x982; 16 of it is
-   * spent here and 14 is left. Anything that makes the lead taller — a third
-   * line at some width, a longer sentence — eats that 14 before it eats this.
-   *
-   * This reverses nothing above it: the `thead` still has no top padding, so on
-   * the LEFT the table's first ink is still flush with the top of its own grid
-   * track. What has changed is that the desk no longer starts on that line. */
-  .how-demo { margin-top: -16px; }
+  .how-demo {
+    margin-right: calc(-1 * max(0px, min(176px, (100vw - var(--maxw)) / 2)));
+  }
 }
 
 @media (max-width: 1040px) {
@@ -2534,14 +2579,15 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
      ones that have to survive. Before this the Theme button was clipped off the
      right edge of a 390px screen.
 
-     The window-control picture goes too, and it is the first thing to go: it is
-     the one element on the page that is decoration by construction, and a
-     390px-wide title bar has no room for a costume. */
-  .bar-links, .bar-ctl { display: none; }
+     There used to be a third thing to drop here, `.bar-ctl` — the fake window
+     controls — and it was the first to go, being decoration by construction. It
+     is now gone at every width, so this rule lost half its job rather than
+     changing its mind. */
+  .bar-links { display: none; }
   :root[data-os="macos"] .brand,
   :root[data-os="linux"] .brand { position: static; left: auto; transform: none; margin-right: auto; }
   .os-switch label { display: none; }
-  .os-switch select, .ghost { padding: 5px 8px; font-size: 13px; }
+  .os-switch select, .ghost:not(.ghost-icon) { padding: 5px 8px; font-size: 13px; }
 
   /* One chord row is on screen at a time, and at full keycap size a row is two
      chords and an `=` on a 350px line. Smaller caps keep it to one line.

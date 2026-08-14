@@ -68,28 +68,38 @@
 
 <!-- THE TITLE BAR — the page's first sentence, and it has no words in it.
      ================================================================
-     It is drawn as the title bar of the machine the reader is on: three dots on
-     the left with the title centred (macOS), a hard-right `─ ▢ ✕` glyph row with
-     the title left (Windows), or one circular pill on the right with the title
-     centred (Linux). By the time anyone reads "One key per app. Every machine you
-     own." the page has already made that claim in a shape they recognise.
+     It is drawn as the title bar of the machine the reader is on. What carries
+     that now is WHERE THE TITLE SITS: centred on macOS and GNOME, hard left on
+     Windows. By the time anyone reads "One key per app. Every machine you own."
+     the page has already made that claim in a shape they recognise.
 
-     THE WINDOW CONTROLS ARE INERT AND aria-hidden. They are a picture of a
-     control, not a control, so they take no focus, show no hover state and carry
-     no accessible name — the page's rule is that a control on screen never
-     silently does nothing, and the cheapest way to keep it here is to not be a
-     control at all. The desks in §4 keep REAL traffic-light colour, because there
-     they depict an actual window; the page is not a window and does not pretend
-     to be one, which is why these dots are ink at 20% rather than red/amber/green.
+     THE FAKE WINDOW CONTROLS ARE GONE, 2026-08-14, in all three skins — the
+     three dots on the left (macOS), the `─ ▢ ✕` glyph row on the right
+     (Windows) and the circular pill on the right (GNOME). They were inert and
+     `aria-hidden`, which is exactly the problem: the top-right corner of a page
+     is where a reader's real controls live, and beckon put two working ones
+     (Machine, theme) directly beside a row of dead ones that look like the
+     window buttons of the browser above them. Removing them costs the skin one
+     tell and keeps two; the desks in §4 still draw real window chrome, because
+     there it depicts an actual window rather than dressing up a page.
+
+     Do not re-add them "just for macOS". The dots read as harmless because they
+     are on the left, but they were the same ornament and they went for the same
+     reason.
 
      Both controls on the right ship `hidden`; beckon.js removes it. Neither does
      anything without JS, and everything they change is already fully on screen
      without them. A <select> rather than a cycling <button>: there are three
      machines, so a button could only ever offer the next one and its accessible
-     name would name a state the reader is not in. -->
+     name would name a state the reader is not in.
+
+     THE THEME BUTTON IS A SUN OR A MOON, not the word "Theme". It is the only
+     control on the bar whose whole job is a binary the icon can state, and the
+     glyph shown is the one you get by pressing it — sun while dark, moon while
+     light — which is the same thing its `aria-label` has always said. The label
+     is still where the accessible name comes from; the SVG is `aria-hidden`. -->
 <header class="bar">
   <div class="wrap">
-    <span class="bar-ctl" aria-hidden="true"><i></i><i></i><i></i></span>
     <a class="brand" href="#top">
       <img src="favicon.png" alt="" width="20" height="20">
       beckon
@@ -112,7 +122,17 @@
         <option value="linux">Linux</option>
       </select>
     </span>
-    <button id="theme" class="ghost" type="button" hidden>Theme</button>
+    <button id="theme" class="ghost ghost-icon" type="button" hidden>
+      <svg class="ico" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+        <g class="ico-sun">
+          <circle cx="10" cy="10" r="3.4"/>
+          <path d="M10 2.2v1.8M10 16v1.8M4.5 4.5l1.3 1.3M14.2 14.2l1.3 1.3M2.2 10h1.8M16 10h1.8M4.5 15.5l1.3-1.3M14.2 5.8l1.3-1.3"/>
+        </g>
+        <g class="ico-moon">
+          <path d="M16.1 12.3A6.8 6.8 0 0 1 7.7 3.9a6.8 6.8 0 1 0 8.4 8.4z"/>
+        </g>
+      </svg>
+    </button>
   </div>
 </header>
 
@@ -335,8 +355,20 @@
   <section id="how" aria-labelledby="how-h">
     <div class="wrap">
       <h2 id="how-h">One key, five answers.</h2>
-      <p class="lead">beckon reads down this list and stops at the first line that matches.
-      Nothing to configure — it decides from what is already on screen.</p>
+      <!-- ONE LINE, AND THAT IS A LAYOUT CONSTRAINT AS MUCH AS AN EDIT. The two
+           sentences this replaces ran to two lines at every width from 900 up,
+           and the second line was 30px the exhibit below could have spent on
+           the picture. Measured against the 58ch measure at 1512x982: this is
+           580px of ink in 724px, i.e. 80%, where the pair it replaces was 93%
+           of a SECOND line. Headroom is the point — the face is Segoe UI on one
+           machine and Cantarell on another, and a rewrite that fits at 97% here
+           wraps there and gives the 30px straight back.
+
+           WHAT WAS CUT: "it decides from what is already on screen". The first
+           column of the table below is nothing but screen states — not running,
+           running, focused — so the clause was captioning a picture that was
+           already in frame. -->
+      <p class="lead">beckon reads down this list. First match wins — nothing to configure.</p>
 
       <div class="how-grid">
 

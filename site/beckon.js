@@ -54,9 +54,16 @@
         ? root.dataset.theme === 'dark'
         : window.matchMedia('(prefers-color-scheme: dark)').matches;
     };
+    /* The button carries no words, so this is now the ONLY name it has — and
+       the glyph beside it is the same promise drawn: sun while dark, moon while
+       light, i.e. the theme you get by pressing rather than the one you are in.
+       Written here rather than in CSS because "follow the system" is a third
+       state with no `[data-theme]` to key off. */
     var label = function () {
+      var dark = isDark();
       btn.setAttribute('aria-label',
-        isDark() ? 'Switch to the light theme' : 'Switch to the dark theme');
+        dark ? 'Switch to the light theme' : 'Switch to the dark theme');
+      btn.dataset.icon = dark ? 'sun' : 'moon';
     };
 
     btn.hidden = false;
