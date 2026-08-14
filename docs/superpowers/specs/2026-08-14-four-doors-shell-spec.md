@@ -365,12 +365,19 @@ Rows to add to `pairs()`, all measured:
 | `text_muted` on `strip` | 4.5 | **4.522** | 5.237 |
 | `text` on `strip_hover` | 4.5 | 10.700 | 8.664 |
 | `strip` on `bg` | 1.2 | **1.235** | 1.400 |
-| `strip_hover` on `strip` | 1.2 | **1.222** | 1.217 |
+| `strip_hover` on `strip` | 1.2 | **1.222** | **1.217** |
 | `accent_fill` on `strip` | 1.2 | 3.802 | 2.826 |
 
-Three of those clear by under 0.04. They are correct and they are fragile:
-any future move of `text_muted`, `bg` or either strip token can break one, and
-the rows exist so that break is a test failure rather than a screenshot.
+**Four of those ten clear by under 0.04**, and the narrowest is the one this
+paragraph originally left unbolded: `strip_hover` on `strip` in **DARK**, at
++0.017 against +0.022, +0.035 and +0.022 for the three light cells. Corrected
+2026-08-14 during Task 1 — the first version bolded per row on the light
+column, which pointed the reader at the wrong cell in a sentence whose entire
+job is to flag fragility.
+
+They are correct and they are fragile: any future move of `text_muted`, `bg`
+or either strip token can break one, and the rows exist so that break is a
+test failure rather than a screenshot.
 
 `accent_on` on `accent_fill` (the active pill's ink on its fill) already has
 its row (`beckon-core/src/theme.rs:225`, 5.169 / 4.531). **The active pill's

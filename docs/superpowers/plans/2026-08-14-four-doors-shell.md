@@ -149,7 +149,7 @@ Expected: fails to compile — `strip` and `strip_hover` do not exist.
     ///
     /// The ink changes with the state: an inactive pill draws `text_muted`
     /// on `strip`, and `text` on `strip_hover`. `text_muted` on
-    /// `strip_hover` measures 4.015 / 4.304 and would fail — which is why
+    /// `strip_hover` measures 3.700 / 4.304 and would fail — which is why
     /// the hover swaps both halves, not just the ground.
     pub strip_hover: u32,
 ```
@@ -174,7 +174,9 @@ values, for the assertion messages and for checking your work:
 | `strip_hover` / `strip` | 1.2 | 1.222 | 1.217 |
 | `accent_fill` / `strip` | 1.2 | 3.802 | 2.826 |
 
-**Three of these clear by under 0.04.** Say so in a comment beside them: they
+**Four of these ten measurements clear by under 0.04**, and the narrowest is
+`strip_hover`/`strip` in DARK at +0.017 — not one of the three light cells.
+Say so in a comment beside them: they
 are correct and fragile, and the rows exist so that a future move of
 `text_muted`, `bg` or either strip token is a test failure rather than a
 screenshot.
@@ -535,7 +537,11 @@ of `button`, not a branch inside it.
 Three states. Active: `accent_fill` ground, `accent_on` ink. Inactive:
 `strip` ground, `text_muted` ink. Hover: `strip_hover` ground, **`text`
 ink** — the ink swaps with the ground, because `text_muted` on `strip_hover`
-measures 4.015 / 4.304 and fails 4.5.
+measures 3.700 / 4.304 and fails 4.5. (The figure was 4.015 in the first
+draft of this plan, which is `text_muted` against the design's REJECTED
+`#CBD1DE` — measured before the token moved and not re-measured after. Task 1
+caught it. Re-measure any figure quoted here for a token that moved rather
+than copying it.)
 
 **The active fill is `accent_fill`, never `accent`**: `accent_on` on
 `DARK.accent` measures 3.044, and nothing in `pairs()` covers that
@@ -599,7 +605,7 @@ A sibling of paint::button, not a branch inside it: the pills are not in
 PUSH_BUTTONS and the existing custom-draw dispatch is gated on is_push_button.
 
 The hover swaps ink as well as ground -- text_muted on strip_hover measures
-4.015 LIGHT and fails the 4.5 floor, so an inactive pill draws text_muted on
+3.700 LIGHT and fails the 4.5 floor, so an inactive pill draws text_muted on
 strip and text on strip_hover.
 
 The badge counts the file's bindings, not ControlState::items, which is
