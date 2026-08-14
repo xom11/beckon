@@ -18,6 +18,7 @@ backend, so run it inside the session you want to test:
 | environment | probe | notes |
 |---|---|---|
 | `SWAYSOCK` / `I3SOCK` | `swaymsg` / `i3-msg` tree | covers sway *and* i3 |
+| `HYPRLAND_INSTANCE_SIGNATURE` | `hyprctl -j clients` / `activewindow` | matched **before** `WAYLAND_DISPLAY`, which Hyprland also sets |
 | `WAYLAND_DISPLAY` (GNOME) | the beckon shell extension over `busctl` | extension must be installed and enabled |
 | `WAYLAND_DISPLAY` (KDE) | KWin scripting over `busctl` | nothing to install; KWin ships the engine |
 | `DISPLAY` | `xprop` / `xdotool` (EWMH) | any EWMH window manager |
@@ -34,8 +35,9 @@ without a second run.
 
 ## Bringing up test compositors in a headless VM
 
-All four Linux backends were exercised this way on Ubuntu 26.04 arm64 under
-Lima (`vmType: vz`), with no display attached.
+GNOME, KDE, sway/i3 and generic X11 were exercised this way on Ubuntu 26.04
+arm64 under Lima (`vmType: vz`), with no display attached. Hyprland is the one
+backend that has not been — see its section below.
 
 ### GNOME Wayland (GNOME Shell 50.1)
 
@@ -164,6 +166,35 @@ GTK4 apps do **not** map a window on a headless sway output here — no
 the same thing with beckon out of the picture. Use `foot` (Wayland) and
 `xterm` (XWayland) instead; between them they cover both window-identity
 paths.
+
+### Hyprland
+
+**Not yet brought up here — the `HyprEnv` probe has never been run against a
+live compositor.** Everything below is what is known, not a recipe that has
+been followed end to end; the first person to run it should replace this
+section with what actually worked.
+
+The obvious shortcut, nesting Hyprland inside the sway rig, is already ruled
+out: Hyprland 0.53.3 needs `xdg_wm_base` v6 and sway 1.11 / weston 14.0.2 only
+expose v5 (measured, and recorded at the top of
+`crates/beckon-cli/tests/hyprland_e2e.rs` — which is why that file drives a
+fake compositor instead). So this wants either a newer host compositor or
+Hyprland's own headless backend on a VM.
+
+Once a session is up, run the suite inside it the same way as everywhere else.
+`foot` and `xterm` are the default app pair for the same reason they are on
+sway — Wayland-native `app_id` on one side, XWayland `WM_CLASS` on the other.
+Two things specific to this backend:
+
+- Step 5c does not unmap the window, it parks it on the special workspace
+  `special:beckon` (`HIDE_WORKSPACE` in `crates/beckon-linux/src/hyprland.rs`).
+  A hidden window is therefore still in `hyprctl -j clients`, and
+  `HyprEnv.is_hidden` reads the workspace name rather than the window's
+  absence. If the two ever drift apart, that constant is the thing to grep.
+- `HyprEnv` is the only probe that treats a refused command as a hard error:
+  `hyprctl dispatch` answers `ok` or says why not, and nothing in the suite
+  polls those calls for success, so a dropped `focuswindow` would otherwise
+  surface as an unexplained skip out of `force_focus`.
 
 ### i3 and generic X11
 
