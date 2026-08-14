@@ -184,6 +184,14 @@ unsafe fn run() {
     let p = SEEN_PUSH.load(Ordering::Relaxed);
     let c = SEEN_CHECK.load(Ordering::Relaxed);
 
+    // Which comctl32 is actually loaded. This is the control for the
+    // MANIFEST, and it is the reading that was missing when the first two
+    // runs came back with every count at zero: a v5 BUTTON sends no
+    // NM_CUSTOMDRAW at all, so "the probe is blind" and "the manifest did not
+    // take" are the same picture until this line distinguishes them.
+    let ver = comctl_version();
+    println!("\ncomctl32: {ver}");
+
     println!("\n--- G2 result ---");
     println!(
         "notifications: radio={} push={}",
@@ -230,6 +238,54 @@ unsafe fn run() {
     }
 
     let _ = DestroyWindow(hwnd);
+}
+
+/// `DllGetVersion` on the loaded comctl32. v5 reports 5.82; a process under a
+/// v6 activation context reports 6.x.
+fn comctl_version() -> String {
+    #[repr(C)]
+    struct DllVersionInfo {
+        cb_size: u32,
+        major: u32,
+        minor: u32,
+        build: u32,
+        platform_id: u32,
+    }
+    unsafe {
+        let lib = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("comctl32.dll"));
+        let Ok(lib) = lib else {
+            return "LoadLibrary failed".into();
+        };
+        let proc = windows::Win32::System::LibraryLoader::GetProcAddress(
+            lib,
+            windows::core::s!("DllGetVersion"),
+        );
+        let Some(proc) = proc else {
+            return "no DllGetVersion".into();
+        };
+        let f: extern "system" fn(*mut DllVersionInfo) -> i32 = std::mem::transmute(proc);
+        let mut v = DllVersionInfo {
+            cb_size: std::mem::size_of::<DllVersionInfo>() as u32,
+            major: 0,
+            minor: 0,
+            build: 0,
+            platform_id: 0,
+        };
+        if f(&mut v) != 0 {
+            return "DllGetVersion failed".into();
+        }
+        format!(
+            "{}.{}.{}  ({})",
+            v.major,
+            v.minor,
+            v.build,
+            if v.major >= 6 {
+                "v6 -- manifest took"
+            } else {
+                "v5 -- NO MANIFEST, buttons send no NM_CUSTOMDRAW"
+            }
+        )
+    }
 }
 
 fn bits(v: u32) -> String {
