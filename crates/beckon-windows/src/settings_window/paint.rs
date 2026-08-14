@@ -1331,13 +1331,24 @@ pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut Them
 ///
 /// **Geometry: `layout` gives `IDC_CAPS` its own budget, not `glyph`.**
 /// `w_caps = tw(cap::CAPS) + toggle_glyph`, where `toggle_glyph` (`layout.rs`,
-/// `s(50)`) covers exactly what this function draws before the caption: the
+/// `s(50)`) covers everything this function draws before the caption: the
 /// track's own left inset (`off`, 2 px -- see the track-rect comment above),
-/// the 40 px track itself, and `tok::GAP` (8 px) before the text -- so the
-/// caption's `DrawTextW` box is never narrower than its own measured width
-/// and `DT_END_ELLIPSIS` below is a true fallback (matching `list_custom_draw`'s
-/// Shortcut column and `draw_chip`'s empty-cap path), not the guaranteed
-/// truncation an earlier pass through this task left in place.
+/// the 40 px track itself, and `tok::GAP` (6 px) before the text. Those sum
+/// to 48, so the budget covers them with 2 logical px left over -- 2 to 6
+/// physical across the standard scale steps, derived step by step in the
+/// comment beside `toggle_glyph`. The caption's `DrawTextW` box is therefore
+/// never narrower than its own measured width, and is in fact that much
+/// wider, so `DT_END_ELLIPSIS` below is a true fallback (matching
+/// `list_custom_draw`'s Shortcut column and `draw_chip`'s empty-cap path)
+/// rather than the guaranteed truncation an earlier pass through this task
+/// left in place.
+///
+/// **CORRECTED 2026-08-14: this said `tok::GAP` is 8 px**, which it was until
+/// the compaction pass (`1f46335`); at 8 the three terms summed to exactly
+/// 50 and the budget was tight rather than loose. Keep this paragraph and
+/// `toggle_glyph`'s in step. They are two prose copies of one budget, and
+/// the reason the number went stale here is that only one copy was
+/// re-derived when the token moved.
 pub(super) unsafe fn toggle(
     nm: &NMCUSTOMDRAW,
     on: bool,
@@ -1368,7 +1379,8 @@ pub(super) unsafe fn toggle(
     // past `rc.left` with nothing to clip into -- cut off. Inset the track
     // by `off` on the left instead, so `ring_rc.left` (`track.left - off`)
     // lands back exactly on `rc.left`. This mirrors `button`'s own ring
-    // painter (`paint.rs:1224`), which computes its ring as an INSET from
+    // painter (`ring_rc` in `button`, paint.rs:1254), which computes its
+    // ring as an INSET from
     // the full `rc` rather than an outset from an inner shape -- `button`
     // has margin on every side to shrink into; this track does not, so it
     // has to make its own margin on the one side (left) that had none.

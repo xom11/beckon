@@ -20,23 +20,53 @@ use super::*;
 /// a14 measurements (`docs/superpowers/measurements/2026-08-11-landing-1-a14.md`)
 /// and do not:
 ///
-/// - **`CTL` is 32, not the measured 22.** `BCM_GETIDEALSIZE` returns the
+/// - **`CTL` is 26, not the measured 22.** `BCM_GETIDEALSIZE` returns the
 ///   smallest box the theme can draw a caption in — a floor, not a layout
-///   recommendation. The measurement's job was to prove 32 does not clip,
-///   and it does not.
-/// - **There is no list-row token.** 29 px measured at 144 DPI is 19.33 at
-///   96, and a non-integer is the tell that comctl32 derives the row
-///   height from the font at the live DPI. A 96-DPI token pushed through
-///   `scale` would be wrong at every non-integer scale and would break
-///   again the moment the font changes, so `list_row_height` asks the
-///   control instead.
+///   recommendation — so clearing it is the whole test, and 26 clears it by
+///   4 logical px. That is also the height a14 actually ran: its buttons
+///   were laid out at `s(26)` and measured back at 39 physical against the
+///   theme's 33-physical ideal (§"The BUTTON row is worth an eyebrow"),
+///   the same four logical px of slack.
 ///
-/// **`BAND` (14) is gone, replaced by `GAP_CARD` (12).** Every band-to-band
+///   **CORRECTED 2026-08-14: this read "`CTL` is 32" and closed on "the
+///   measurement's job was to prove 32 does not clip, and it does not".**
+///   The compaction pass took `CTL` from 32 to 26 (`1f46335`; the record is
+///   the token list beside `WINDOW_HEIGHT` in `mod.rs`), and a run that
+///   clears the floor at 32 says nothing about 26. What carries the shipped
+///   value is the floor argument above, not that run. Note what neither
+///   covers: an ideal size is font-derived, the a14 run predates Task 8's
+///   font stack, and no button on this branch has been measured on
+///   hardware.
+/// - **The list row is asked for, not tabulated.** 29 px measured at 144
+///   DPI is 19.33 at 96, and a non-integer is the tell that comctl32
+///   derives the row height from the font at the live DPI. A 96-DPI token
+///   pushed through `scale` would be wrong at every non-integer scale and
+///   would break again the moment the font changes, so `list_row_height`
+///   (`mod.rs`) asks the control with `LVM_GETITEMRECT`.
+///
+///   **CORRECTED 2026-08-14: this read "There is no list-row token".**
+///   There is one — `tok::ROW_H`, below in this module — and since Task 10
+///   it is not spare: `rebuild_state_image_list` feeds `s(tok::ROW_H)` to
+///   `ImageList_Create`, and a ListView takes its row height from its image
+///   list, so the token forces the live row to be at least that tall.
+///   `list_row_height` falls back to it only when the list is empty and
+///   there is no row to measure. The reasoning is what survives the
+///   correction: the token sets a lower bound, comctl32 is still free to
+///   pad above it, and the control is the only thing that knows.
+///
+/// **`BAND` (14) is gone, replaced by `GAP_CARD` (8).** Every band-to-band
 /// gap Task 8 leaves as a gap (banner-to-card, card-to-card) now separates
 /// two cards that already carry their own `CARD_PAD` margin, so the gap
 /// between them wants to be a little tighter than the old gap between bare
-/// bands. `GAP` (8), the gap between two controls *inside* one band, is
-/// unchanged — it is a different relationship and Task 8 does not touch it.
+/// bands. `GAP` (6), the gap between two controls *inside* one band, is a
+/// different relationship, and Task 8 did not touch it.
+///
+/// **CORRECTED 2026-08-14:** that paragraph read `GAP_CARD` (12) and `GAP`
+/// (8) — both pre-compaction values — and called `GAP` "unchanged". Task 8
+/// leaving `GAP` alone is still true and is all that sentence was ever
+/// entitled to claim; the standing "unchanged" was not, because `1f46335`
+/// later took `GAP` to 6 and `GAP_CARD` to 8. The `BAND` (14) half is
+/// history and stays: that token really did exist at 14 and really is gone.
 pub(super) mod tok {
     /// Surface padding — the margin between the client rect and the first
     /// card, and the last card and the client rect. Also the command bar's
@@ -696,15 +726,37 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // control's own left edge -- so the focus ring it draws around the
     // track can grow outward without its left edge and arcs falling outside
     // `NM_CUSTOMDRAW`'s clip rect, see the track-rect comment in `paint.rs`
-    // -- then `tok::GAP` (8 px) before the caption. `off`, the 40 px track
+    // -- then `tok::GAP` (6 px) before the caption. `off`, the 40 px track
     // and `gap` are each their own `scale()` call in `paint.rs` (`off` and
     // `track_w` in the track-rect block, `gap` in the caption block), so a
     // single `s(50)` call here is provably never short of their sum: floor
     // is subadditive (`floor(a)+floor(b)+floor(c) <= floor(a+b+c)` for any
-    // a/b/c >= 0), so `s(2)+s(40)+gap <= s(50)` at every DPI. Checked
-    // exactly at every standard Windows scale step too (100/125/150/175/
-    // 200/225/250/300%, i.e. dpi 96/120/144/168/192/216/240/288): all eight
-    // land on equality, so this does not over-allocate in practice either.
+    // a/b/c >= 0) and monotone, and 2 + 40 + tok::GAP is 48, so
+    // `s(2)+s(40)+gap <= s(48) <= s(50)` at every DPI.
+    //
+    // It is never short, and it is no longer tight. Re-derived at every
+    // standard Windows scale step (100/125/150/175/200/225/250/300%, i.e.
+    // dpi 96/120/144/168/192/216/240/288), `s(50)` exceeds the sum by
+    // 2/3/3/4/4/5/5/6 px respectively. Nothing clips, because the slack
+    // falls on the caption's side: `w_caps` is `tw(cap::CAPS)` plus this
+    // budget, so `paint::toggle`'s `DrawTextW` box comes out 2-6 px WIDER
+    // than the caption it holds and `DT_END_ELLIPSIS` never fires. What it
+    // costs is looseness -- `IDC_CAPS`' rect ends 2-6 px past its own
+    // caption, so `IDC_LBL_HOLD` sits that much further right than the
+    // nominal `gap * 2` that separates the line's three sections.
+    //
+    // **CORRECTED 2026-08-14: this said "all eight land on equality, so
+    // this does not over-allocate in practice either".** That was exact
+    // while `tok::GAP` was 8 -- 2 + 40 + 8 == 50 is what made subadditivity
+    // bind at equality, re-derived at all eight steps to check -- and the
+    // compaction pass (`1f46335`) took `GAP` to 6 without moving the 50,
+    // leaving 2 logical px of budget with nothing to spend it on. The
+    // safety half of the old claim needed no rescue: a smaller `GAP` can
+    // only widen the margin. Do not "fix" the looseness by dropping this to
+    // `s(48)` without reading `paint.rs`'s copy of the same budget first --
+    // the two are one number written twice, and the number went stale here
+    // because only one copy was re-derived.
+    //
     // The two STATICs below get a hair of slack instead of this budget, for
     // the reason the editor strip's labels do: SS_CENTERIMAGE clips rather
     // than wraps.
