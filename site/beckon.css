@@ -196,8 +196,13 @@
   --dy:          0px;
   --win-w:       62%;
   --win-h:       60%;
-  --bar-h:       0px;        /* how much of the desk's bottom edge the bar owns,
-                                so a maximised window stops above it; §4 per OS */
+  --bar-h:       0px;        /* how much of the desk's bottom edge the bar owns.
+                                It is the desk's WORK AREA that it defines — see
+                                `.desk-wins` in §4 — not just where a maximised
+                                window stops; §4 sets it per OS */
+  --dock-icon:   clamp(13px, 2.2cqw, 26px);  /* one dock tile. Read by the macOS
+                                `--bar-h`, which is that pill's own height, so
+                                the two cannot drift; §4 */
 
   --hud-bg:      rgba(250, 250, 248, .86);
 }
@@ -805,11 +810,25 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 
 /* --- windows on the desk --- */
 
-.desk-wins { position: absolute; inset: 0; }
+/* THE WORK AREA — the desk minus the strip its bar owns, which is what every
+   window manager calls the place windows are allowed to be. It used to be
+   `inset: 0`, the whole desk, and the fourth window of the cascade landed at
+   97.4% of the desk's height with the macOS Dock starting at 90%: the pill drew
+   on top of the window, the window drew over the taskbar on the other two, and
+   a reader who pressed all five letters got a picture of a broken desktop.
+   Measured before the fix, hero desk 807x454: Spotify at slot 3 spanned
+   37.4%-97.4% against a Dock at 90%-96.5%.
+
+   Every window position below is a percentage OF THIS BOX, so the fix holds at
+   every desk width and on all three machines by construction rather than by a
+   number tuned against the smallest one — which is what a hand-tuned `top` and
+   `height` would have been, since the bars clamp and their share of the desk
+   grows as the desk shrinks. */
+.desk-wins { position: absolute; inset: 0 0 var(--bar-h) 0; }
 
 .win {
   position: absolute;
-  left: 8%; top: 14%;
+  left: 8%; top: 12%;
   width: var(--win-w); height: var(--win-h);
   border-radius: 9px;
   overflow: hidden;
@@ -821,13 +840,22 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   color: var(--win-ink);
   /* transform, not left/top: the cascade offset is what animates, and moving a
      window by its box position relayouts on every frame.
-     15% and 13% are what keep the FOURTH window (slot 3) fully on the desk:
-     the offsets are percentages of the window, so slot 3 lands at
-     8% + 3x15%x62% = 35.9% with 62% of width to go — 97.9%, just inside. At
-     20%/17% it was 107% wide and 105% tall, and the fourth window was visibly
-     clipped on the right the moment a reader launched Files or Spotify. */
-  transform: translate(calc(var(--slot) * 15% + var(--dx)),
-                       calc(var(--slot) * 13% + var(--dy)));
+     10.5% is what keeps the FIFTH window — slot 4, and there are five of them
+     because there are five letters — fully inside the WORK AREA. The offsets
+     are percentages of the window, so slot 4 lands at
+     8% + 4x10.5%x62% = 34% with 62% of width to go — 96% — and at
+     12% + 4x10.5%x60% = 37.2% with 60% to go — 97.2%. Both inside, and the box
+     they sit inside of already excludes the bar.
+     It was 15%/13% for four steps. The room for a fifth came out of the STEP
+     and not out of the window, because the window is what a reader is actually
+     looking at while the step only has to leave a title bar readable. Measured
+     on a 732px desk: 47.7px across, 23.3px down, against a 29.3px title bar —
+     so the window behind gives up the bottom 6px of its bar and still shows its
+     lights and its name. A step that cleared the bar outright would need 13.2%,
+     which puts slot 4 at 103.7% and off the desk; the window would have to
+     shrink to buy it, and it is the wrong thing to spend. */
+  transform: translate(calc(var(--slot) * 10.5% + var(--dx)),
+                       calc(var(--slot) * 10.5% + var(--dy)));
   transition: transform .3s ease, opacity .3s ease, box-shadow .3s ease,
               border-color .3s ease, width .3s ease, height .3s ease;
   box-shadow: var(--shadow-soft);
@@ -858,12 +886,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    a window lagging behind the hand holding it. */
 .win.is-grabbed { transition: none; }
 
-/* Maximised: the whole desk except whatever the bar owns. `--bar-h` is set per
-   OS in the dock block below, because a floating macOS dock, a full-width
-   Windows taskbar and a Plasma panel do not take the same bite out of it. */
+/* Maximised: the whole work area. `100%`, not `calc(100% - var(--bar-h))` —
+   `.desk-wins` already takes that bite out, and subtracting it twice would
+   leave a maximised window floating a whole bar's height above the bar. */
 .win.is-max {
   left: 0; top: 0;
-  width: 100%; height: calc(100% - var(--bar-h));
+  width: 100%; height: 100%;
   transform: none;
 }
 /* The corners are squared off by a SEPARATE, heavier selector on purpose: each
@@ -1189,8 +1217,15 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
    focusing one both end with the same window in the same place; the only thing
    that distinguishes them on screen is that a launch lights up a slot that was
    dark. Without this, the demo's most-explained branch was its least visible. */
+/* z-index 50, not 5. A window's z-index is `open windows - its MRU index`, so
+   with five open the front one scored 5 too — and a tie is broken by document
+   order, which the two desks disagree about: the hero writes the bar first and
+   #how writes it second, so the same tie put the bar over the window on one
+   desk and under it on the other. Nothing can reach the bar's strip any more
+   (`.desk-wins` stops short of it, and so does a drag), but a number that only
+   works while fewer than five windows are open is not a rule. */
 .desk-bar {
-  position: absolute; z-index: 5;
+  position: absolute; z-index: 50;
   display: flex; align-items: center; gap: 6px;
 }
 .desk-bar { gap: clamp(4px, .9cqw, 10px); }
@@ -1212,9 +1247,13 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   font: 600 8px/1 var(--mono);
   transition: opacity .3s ease, transform .3s ease, box-shadow .3s ease;
 }
+/* `--dock-icon` rather than the clamp written out, because the macOS `--bar-h`
+   below is this pill's own height and has to be able to read it. The literal
+   13px above stays: a browser with no container units drops this declaration
+   whole and lands on that one. */
 .desk-bar .dock-app {
-  width: clamp(13px, 2.2cqw, 26px);
-  height: clamp(13px, 2.2cqw, 26px);
+  width: var(--dock-icon);
+  height: var(--dock-icon);
   border-radius: clamp(3px, .55cqw, 6px);
   font-size: clamp(7.5px, 1.25cqw, 14px);
 }
@@ -1268,15 +1307,27 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   border-radius: 34%;                         /* a squircle */
 }
 
-/* `--bar-h` is the bite each bar takes out of the desk, and it is what stops a
-   maximised window from sliding under one. It is declared per OS beside the bar
-   it describes, so the two cannot drift. */
+/* `--bar-h` is the bite each bar takes out of the desk: it is the height of
+   `.desk-wins`'s missing bottom edge, so it decides where the cascade stops and
+   where a maximised window stops alike. It is declared per OS beside the bar it
+   describes, so the two cannot drift.
+
+   IT HAS TO BE THE BAR'S REAL HEIGHT, not a number in the same neighbourhood.
+   The Windows and Linux bars are `height: var(--bar-h)` below, so those two are
+   exact by construction. macOS's is not — that pill is content-sized — and the
+   old `clamp(30px, 5.4cqw, 54px)` was a guess that came out 2px short of the
+   pill at 807px of desk and further out at every other width. */
 
 /* macOS: a floating pill, centred at the bottom. It floats OVER the wallpaper,
    so a maximised window stops above it rather than behind it — which is what
-   macOS itself does with the Dock at its default setting. */
+   macOS itself does with the Dock at its default setting.
+   The pill is one `--dock-icon` plus 6px of padding either side, and it sits
+   3.5% of the desk's height clear of the bottom edge. That 3.5% is written here
+   as 1.97cqw because the desk is a 16/9 box and `container-type: inline-size`
+   offers no cqh: 3.5 x 9/16 = 1.97. Both halves of the sum are the `.desk-bar`
+   rule below read back, so changing one means changing this. */
 .desk[data-os="macos"] {
-  --bar-h: clamp(30px, 5.4cqw, 54px);
+  --bar-h: calc(var(--dock-icon) + 12px + 1.97cqw);
 }
 .desk[data-os="macos"] .desk-bar {
   left: 50%; bottom: 3.5%; transform: translateX(-50%);

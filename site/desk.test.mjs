@@ -12,7 +12,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
-  DESK_APPS, DESK_SCENES, deskMake, deskPress, deskAppOf, deskSay, deskStepName,
+  DESK_APPS, DESK_SCENES, DESK_SLOTS,
+  deskMake, deskPress, deskAppOf, deskSay, deskStepName,
   deskFocus, deskMinimize, deskClose, deskToggleMax, deskSayWindow
 } = require('./desk.js');
 
@@ -124,6 +125,42 @@ test('a launched window takes a new place, not somebody else’s', () => {
   const born = after.wins.find(w => w.app === 'Files');
   assert.ok(born, 'Files launched');
   assert.ok(!taken.includes(born.slot), `slot ${born.slot} was already occupied`);
+});
+
+/* --- the places on the desk ------------------------------------------------
+ *
+ * These three exist because the renderer draws `slot % DESK_SLOTS`, so a slot
+ * number the model is happy with is only worth anything if it survives that
+ * modulo. It did not: the model counted launches without limit and the page
+ * wrapped at four, which put the fifth window exactly on top of the first —
+ * same left, same top, same size — while the test above went on passing,
+ * because it asserted on `w.slot` and the defect was in what got drawn.
+ */
+
+test('one place per letter, so five launches never share one', () => {
+  assert.equal(DESK_SLOTS, DESK_APPS.length,
+    'a letter with no place of its own launches on top of another window');
+});
+
+test('pressing all five letters fills five distinct places', () => {
+  let d = deskMake('macos', DESK_SCENES.hero);
+  for (const k of ['T', 'C', 'V', 'F', 'S']) d = deskPress(d, k).desk;
+  assert.equal(d.wins.length, 5);
+  const drawn = d.wins.map(w => w.slot % DESK_SLOTS);
+  assert.equal(new Set(drawn).size, 5, `two windows drawn at one place: ${drawn}`);
+});
+
+test('a relaunch takes back the place it freed, rather than drifting off the ring', () => {
+  /* Close Chrome and press C again. `nextSlot++` handed out place 5, which the
+     renderer draws at place 0 — where VS Code was still sitting. */
+  let d = deskMake('macos', DESK_SCENES.hero);
+  const chrome = d.wins.find(w => w.app === 'Chrome');
+  d = deskClose(d, chrome.id);
+  d = deskPress(d, 'C').desk;
+  const reborn = d.wins.find(w => w.app === 'Chrome');
+  assert.equal(reborn.slot, chrome.slot, 'Chrome came back somewhere else');
+  const drawn = d.wins.map(w => w.slot % DESK_SLOTS);
+  assert.equal(new Set(drawn).size, d.wins.length, `two windows drawn at one place: ${drawn}`);
 });
 
 /* --- the two properties the ring exists to have --------------------------- */

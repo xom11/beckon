@@ -33,6 +33,19 @@ var DESK_APPS = [
   { key: 'S', name: 'Spotify', label: 'S' }
 ];
 
+/* HOW MANY PLACES THERE ARE ON THE DESK, and it is five because there are five
+   letters. With four, pressing all five put the fifth window EXACTLY on top of
+   the first — same left, same top, same size — and a reader who pressed F last
+   watched VS Code disappear rather than watched a window launch. Two windows at
+   one address does not read as a cascade wrapping round; it reads as the demo
+   losing one.
+
+   The number lives here rather than in the renderer because it is what
+   `deskFreeSlot` hands out. site/beckon.css is tuned so the fifth step of the
+   cascade still lands inside the desk's work area, and site/beckon.js wraps
+   `--slot` on it — change this and re-measure both. */
+var DESK_SLOTS = 5;
+
 function deskAppOf(letter) {
   var k = String(letter).toLowerCase();
   for (var i = 0; i < DESK_APPS.length; i++) {
@@ -105,6 +118,24 @@ function deskWin(d, id) {
   return null;
 }
 
+/* Where a launched window goes: THE LOWEST FREE PLACE, not the next one nobody
+   has ever used.
+   `d.nextSlot++` was the latter, and it drifted off the end of the ring: close
+   Chrome and press C again and the new window took place 5, which the renderer
+   wraps to place 0 — a window that was still open and still visible. A freed
+   place is free, so a relaunch takes its old spot back and the desk keeps one
+   window per place.
+   `nextSlot` stays as the fallback for the one case a ring of five cannot
+   serve — more than five windows at once, which only the Cycle scene's two
+   Chromes can reach. There a wrap is honest: it is what a real cascade does
+   when it runs out of desk. */
+function deskFreeSlot(d) {
+  var used = {};
+  d.wins.forEach(function (w) { used[w.slot % DESK_SLOTS] = true; });
+  for (var i = 0; i < DESK_SLOTS; i++) if (!used[i]) return i;
+  return d.nextSlot % DESK_SLOTS;
+}
+
 /* Move a window to the head of the MRU list and give it focus. Un-minimises on
    the way, because every backend's focus path does: the X11 one maps the window
    before activating it, the KWin script clears `minimized` first, and
@@ -135,7 +166,8 @@ function deskPress(desk, letter) {
   /* Step 4 — nothing of this app is running, so launch it. A new window takes
      the next free place on the desk; it does not take someone else's. */
   if (mine.length === 0) {
-    var born = { id: d.next++, app: app.name, min: false, max: false, slot: d.nextSlot++ };
+    var born = { id: d.next++, app: app.name, min: false, max: false, slot: deskFreeSlot(d) };
+    d.nextSlot++;
     d.wins = [born].concat(d.wins);
     d.focused = born.id;
     return { desk: d, step: '4', app: app };
@@ -347,6 +379,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     DESK_APPS: DESK_APPS,
     DESK_SCENES: DESK_SCENES,
+    DESK_SLOTS: DESK_SLOTS,
     deskAppOf: deskAppOf,
     deskMake: deskMake,
     deskPress: deskPress,

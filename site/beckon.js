@@ -341,12 +341,16 @@
       /* POSITION FROM THE WINDOW, STACKING FROM THE ORDER. The window's own
          slot never changes, so a raise leaves it exactly where it was and only
          brings it in front — which is what raising a window looks like.
-         Wrapped at four because a fifth step of the cascade would put the
-         window's right edge off the desk.
+         WRAPPED AT `DESK_SLOTS`, WHICH IS FIVE, and the model hands out five
+         distinct places for five letters, so this modulo is a guard rather than
+         the thing that decides. It used to be a bare `% 4` against a model that
+         counted launches without limit, and that threw away the guarantee
+         desk.js's own test asserts — "a launched window takes a new place, not
+         somebody else's" was true of `w.slot` and false of what got drawn.
          A window the reader has DRAGGED owns its position outright, and this
          must not take it back: `_placed` is set by the drag, and from then on
          the cascade has nothing to say about where that window sits. */
-      if (!n._placed) n.style.setProperty('--slot', String(w.slot % 4));
+      if (!n._placed) n.style.setProperty('--slot', String(w.slot % DESK_SLOTS));
       n.style.zIndex = String(order.length - i);
       n.classList.toggle('is-focused', w.id === desk.focused);
       n.classList.toggle('is-max', !!w.max);
@@ -405,11 +409,15 @@
    * window the reader has dragged without moving it a pixel.
    */
 
-  /* .win's own base rule in beckon.css, in fractions of the desk. A drag has to
-     turn that percentage layout into pixels before it can add a delta to it, so
-     the two files agree on these four numbers by hand. Change one, change both;
-     `place` below is the only reader. */
-  var WIN_X = .08, WIN_Y = .14;
+  /* .win's own base rule in beckon.css, in fractions of THE WORK AREA — the
+     `.desk-wins` box, which stops short of the desk's bottom edge by whatever
+     the bar owns. Every rect this file measures for a drag is that box and not
+     the desk, or the two disagree by `--bar-h` and a window jumps the moment it
+     is picked up.
+     A drag has to turn the percentage layout into pixels before it can add a
+     delta to it, so the two files agree on these four numbers by hand. Change
+     one, change both; `place` below is the only reader. */
+  var WIN_X = .08, WIN_Y = .12;
   var MIN_W = .22, MIN_H = .24;    /* no shrinking a window into a sliver */
 
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -422,7 +430,7 @@
   /* Turn a cascaded window into a placed one, once. Until the reader touches
      it, a window sits where `--slot` puts it — an offset in percent OF ITS OWN
      WIDTH, so resizing it would also move it. From the first drag onward it is
-     pixels from the desk's origin and only the drag writes them. */
+     pixels from the work area's origin and only the drag writes them. */
   function place(node, box) {
     if (node._placed) return;
     var r = node.getBoundingClientRect();
@@ -517,7 +525,16 @@
       if (!grip && !e.target.closest('.win-bar')) return;
       if (maxOf(d, id)) return;                       /* maximised: nowhere to go */
 
-      var box = host.getBoundingClientRect();
+      /* The WORK AREA's rect, not the desk's — `.win` is positioned inside
+         `.desk-wins`, so that is the box its percentages resolve against and
+         the box a drag has to be clamped to. Off `host` both go wrong by the
+         bar: `place` would write a `--dy` short by `WIN_Y x --bar-h` and the
+         window would hop the moment it was picked up, and the bottom clamp
+         would be a whole `--bar-h` too generous — letting a drag put a window
+         over the dock, which is the overlap `.desk-wins` exists to make
+         unrepresentable. Measured with this line in place: 0.00px of movement
+         on pointerdown. */
+      var box = wins.getBoundingClientRect();
       place(win, box);
       drag = {
         node: win, name: name, mode: grip ? 'size' : 'move', box: box,
@@ -545,9 +562,10 @@
       var mx = e.clientX - drag.px, my = e.clientY - drag.py;
       if (!drag.far && (Math.abs(mx) > 3 || Math.abs(my) > 3)) drag.far = true;
       var b = drag.box, ox = b.width * WIN_X, oy = b.height * WIN_Y;
-      /* Clamped to the desk on both axes. A window dragged off the edge of a
-         picture of a desktop does not read as a window behind a bezel; it reads
-         as the demo losing one. */
+      /* Clamped to the work area on both axes. A window dragged off the edge of
+         a picture of a desktop does not read as a window behind a bezel; it
+         reads as the demo losing one — and one dragged over the dock reads as
+         the demo being broken. */
       if (drag.mode === 'move') {
         drag.node.style.setProperty('--dx',
           clamp(drag.x + mx, -ox, b.width - ox - drag.w) + 'px');
