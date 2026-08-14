@@ -106,6 +106,41 @@ pub fn is_accessibility_trusted() -> bool {
     false
 }
 
+/// Which of `names` nothing on this machine answers to, for
+/// `beckon check --resolve`.
+///
+/// A batch rather than a loop over `apps::resolve`, because the scans are the
+/// expensive half and they are per-call there: `installed_apps()` walks three
+/// roots one level deep and reads one `Info.plist` per bundle, and a shortcuts
+/// file with eighteen bindings is an ordinary one.
+///
+/// `running_apps()` is part of the answer because it is part of the priority
+/// ladder (tiers 1 and 2) — an app that is running but installed somewhere
+/// this scan does not reach still resolves. `Finder` is the everyday case:
+/// its bundle is `/System/Library/CoreServices/Finder.app`, which is under
+/// none of the three roots, so `beckon resolve Finder` matches on the running
+/// name and nothing else. That is the one place this answer depends on the
+/// session rather than on the disk.
+#[cfg(target_os = "macos")]
+pub fn unresolved_names<'a>(names: &[&'a str]) -> Result<Vec<&'a str>> {
+    let running = apps::running_apps();
+    let installed = apps::installed_apps();
+    Ok(names
+        .iter()
+        .copied()
+        .filter(|n| !apps::resolves_in(n, &running, &installed))
+        .collect())
+}
+
+/// Returns an error rather than an empty vector: an empty one reads as
+/// "every name resolved", which is the one answer this cannot know.
+#[cfg(not(target_os = "macos"))]
+pub fn unresolved_names<'a>(_names: &[&'a str]) -> Result<Vec<&'a str>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-macos only compiles on macOS".to_string(),
+    ))
+}
+
 /// Print a `resolve` resolution report for `id` on stdout. Mirrors the Linux
 /// `cmd_resolve_linux` shape but uses macOS metadata (running apps + installed
 /// .app bundles).
