@@ -2043,6 +2043,13 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("LOG_SIZE", 1081),
     ("LOG_OPEN", 1082),
     ("LOG_SHOW", 1083),
+    // The one line the page shows while it is waiting. From the reserved TAIL
+    // of the range rather than the next free number: 1070-1083 are named above
+    // for controls nothing has built, and a placeholder is the one control on
+    // this page that is meant to be DELETED -- taking a number out of the
+    // middle of the block would leave a hole in a page's numbering the day it
+    // goes.
+    ("SYS_PLACEHOLDER", 1084),
     // -- About -------------------------------------------------------------
     ("ABOUT_MARK", 1100),
     ("ABOUT_NAME", 1101),
@@ -2059,6 +2066,9 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("ABOUT_GITHUB", 1112),
     ("ABOUT_RELEASES", 1113),
     ("ABOUT_BUG", 1114),
+    // Same reasoning as `SYS_PLACEHOLDER` above, at the head of About's own
+    // reserved tail.
+    ("ABOUT_PLACEHOLDER", 1115),
 ];
 
 /// Ids that were used, are not any more, and must never be reused.

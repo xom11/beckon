@@ -281,16 +281,51 @@ pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
 /// rounded, bordered rectangle with nothing in it, which reads as a page
 /// that failed to load rather than as a page that is not on screen.
 ///
-/// **What this does NOT do is re-stack the window per page**, and that is a
-/// known-unfinished state rather than an oversight. The keyboard card stays
-/// bottom-anchored above the command bar and still reserves its height on
-/// the Shortcuts page, so the Shortcuts page keeps a card-shaped gap at the
-/// bottom and the Keyboard page keeps a larger one at the top. Every figure
-/// under `MIN_HEIGHT` and beside `WINDOW_HEIGHT` is a reading of THIS
-/// arithmetic; making the stack page-dependent moves all of them, and the
-/// shell plan schedules no task to re-derive them. System and About are
-/// where it stops being tolerable -- both are a single line with no card at
-/// all yet -- so the page that adds them is the one that should re-stack.
+/// **What this does NOT do is re-stack the window per page.** The keyboard
+/// card stays bottom-anchored above the command bar and still reserves its
+/// height on every page, so the Shortcuts page keeps a card-shaped gap above
+/// the command bar and the Keyboard page keeps a larger one below the strip.
+///
+/// **DECIDED 2026-08-14, Task 7, and deferred again.** This paragraph used to
+/// end "System and About are where it stops being tolerable -- both are a
+/// single line with no card at all yet -- so the page that adds them is the
+/// one that should re-stack." That page is this one, and it did not. The
+/// reasons, worst-case first:
+///
+/// - **The re-stack is a change to the SHORTCUTS page's vertical geometry, and
+///   that geometry is another workstream's open subject.** Design §4 uncaps
+///   the list and deletes `tok::ROWS`; design §3.1 deletes the editor card's
+///   `Editing "…"` caption, which is the `s(24)` inside `grp_content_h` and so
+///   an input to `card2_h`. `MIN_HEIGHT`'s own comment already names that
+///   caption as pending and solves the table with it struck out. Re-deriving
+///   the table now means re-deriving it again a landing later, and the second
+///   pass would be checking the first pass's arithmetic rather than the
+///   window's.
+/// - **Nothing on the host this is written on can display the window.** Every
+///   vertical figure in `MIN_HEIGHT` and beside `WINDOW_HEIGHT` is a hand
+///   trace of this function; those figures were corrected twice on 2026-08-13
+///   and 2026-08-14 and re-derived once more when the strip landed, and each
+///   pass is where a stale number gets written down as fact. Two STATICs are
+///   not worth a fourth.
+///
+/// **What deferring costs, re-derived here rather than asserted.** The
+/// keyboard card's reservation is `gap_card + kb_card_h` = 8 + 78 = 86 px at
+/// 96 DPI, which the list would otherwise get: `list_h` would go from
+/// `h - 386 - notes_h` to `h - 300 - notes_h` with the banner down. At the
+/// shipped client height of 600 with `notes_h` 36, that is a cap of 178 rather
+/// than 264, against a `want` of `21 + 8*22` = 197 -- so today the cap binds
+/// at seven whole rows and 3 px of an eighth, and after a re-stack `want`
+/// would bind at eight. **One row at the shipped size, plus the 86 px gap
+/// above the command bar**, which is the visible half and is on the page the
+/// user lives on. At `MIN_HEIGHT` with the banner up it is larger -- 82 px
+/// (two rows) against 168 (six) -- but nobody sits at the floor.
+///
+/// **What System and About needed instead, and got.** A page whose entire
+/// content is one line has no stack to re-derive: `layout` puts each waiting
+/// line at the content origin (card 0's top, which on those two pages is the
+/// origin -- see that block) and the emptiness below it is the page being
+/// empty rather than the line being misplaced. That is what "waiting" is
+/// supposed to look like.
 unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 4] {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
@@ -323,8 +358,11 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
         bottom: top + height,
     };
     // Which doors own the four cards. Cards 0-2 are the Shortcuts page; card
-    // 3 is the Keyboard page; System and About own none of them yet, so both
-    // draw as an empty surface below the strip until Task 7 gives them one.
+    // 3 is the Keyboard page. **System and About own none of them and are not
+    // waiting for one**: each shows a single line with no card behind it, so
+    // all four rects stay at zero height there and `layout` places that line
+    // against the content origin directly. See the doc comment above on the
+    // re-stack this landing decided against.
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
 
@@ -345,8 +383,10 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     let kb_y = clamp(bar_y - gap_card - kb_card_h);
     // `kb_y` is computed on EVERY page, and only the rect is page-bound: it
     // is the bottom stop the Shortcuts list measures its room against, and
-    // making that stop move with the door is the re-stack this function's
-    // doc comment defers.
+    // making that stop move with the door is the re-stack this function's doc
+    // comment weighs and defers. THIS line is the one to change when it is
+    // taken -- the reservation is `gap_card + kb_card_h`, 86 px at 96 DPI, and
+    // everything under `MIN_HEIGHT` and beside `WINDOW_HEIGHT` moves with it.
     let card3 = card(kb_y, if keyboard { kb_card_h } else { 0 });
 
     // The editor card's content keeps `grp_h`'s exact pre-Task-8 shape too
@@ -1163,6 +1203,41 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // and the key list take, so every box in the window narrows together.
         let tap_w = s(tok::SHORTCUT_COL).min(clamp(kb_x + kb_w - gap - kx));
         place(IDC_TAP, kx, ry + edit_dy, tap_w, field_h * 5);
+    }
+
+    // -- System and About: one waiting line each, at the content origin.
+    //
+    // **`card0.top` IS the content origin on these two pages**, and reading it
+    // back is what keeps this function from spelling
+    // `strip_rect(rc, dpi).bottom + gap_card` a second time. The banner is
+    // `BANNER_PAGE`-only (`banner_shown`), so behind these two doors
+    // `compute_card_rects` never advances `y` past card 0 -- its rect is a
+    // zero-height one AT the origin, which is exactly the number wanted here.
+    // If the banner ever widens to every page again, this line follows it down
+    // by itself instead of drawing under it.
+    //
+    // Inset by `card_pad` on the left and top, so the line begins where every
+    // other string in the window begins rather than out at the card border.
+    // Neither page has a card today; both will grow one, and a placeholder
+    // that has to move sideways when it arrives is a placeholder standing in
+    // the wrong place.
+    //
+    // No `else` and no clearing: the OTHER page's line is hidden by
+    // `show_page_controls`, and leaving it wherever it was last placed is what
+    // every other off-page control does.
+    let waiting = match ui.page {
+        Page::System => Some(IDC_SYS_PLACEHOLDER),
+        Page::About => Some(IDC_ABOUT_PLACEHOLDER),
+        Page::Shortcuts | Page::Keyboard => None,
+    };
+    if let Some(id) = waiting {
+        place(
+            id,
+            cx + card_pad,
+            card0.top + card_pad,
+            clamp(cw - card_pad * 2),
+            ctl,
+        );
     }
 
     // -- The command bar. Save is the outermost button on the right, Close

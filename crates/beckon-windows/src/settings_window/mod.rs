@@ -487,7 +487,7 @@ fn tab_id_of(page: Page) -> i32 {
 
 /// Which door each control lives behind.
 ///
-/// **Three kinds of control are absent, and each absence is a decision:**
+/// **Two kinds of control are absent, and each absence is a decision:**
 ///
 /// - **The four pills and the command bar's three buttons are chrome.** They
 ///   are drawn on every page, so they belong to none, and listing them here
@@ -499,16 +499,22 @@ fn tab_id_of(page: Page) -> i32 {
 ///   announce. `show_page_controls` handles them beside this loop, from the
 ///   same function core's `DefaultButton::visible` reads -- which is what
 ///   keeps them a single decision when Task 6 narrows it back to Shortcuts.
-/// - **System and About own nothing yet.** Both draw as an empty surface
-///   below the strip until Task 7 gives them a line each.
+///
+/// **CORRECTED 2026-08-14, Task 7.** There was a third bullet, and it read
+/// "**System and About own nothing yet.** Both draw as an empty surface below
+/// the strip until Task 7 gives them a line each." Each now owns its waiting
+/// line, so the absence it described is gone and its two rows are at the
+/// bottom of the table. What has NOT changed is the vertical stack behind
+/// those two doors -- see `compute_card_rects` in `layout.rs` for why the
+/// re-stack was weighed and deferred again rather than taken here.
 ///
 /// `every_control_belongs_to_exactly_one_group` in `ids.rs` is what keeps the
-/// three absences honest: it partitions `MINE` across this table, the pills,
+/// two absences honest: it partitions `MINE` across this table, the pills,
 /// the banner and the command bar, and fails on any control that lands in
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 26] = [
+const PAGE_CONTROLS: [(i32, Page); 28] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
     (IDC_LBL_SECTION, Page::Shortcuts),
     (IDC_LBL_COUNT, Page::Shortcuts),
@@ -537,6 +543,9 @@ const PAGE_CONTROLS: [(i32, Page); 26] = [
     (IDC_HOLD_ALT, Page::Keyboard),
     (IDC_LBL_TAP, Page::Keyboard),
     (IDC_TAP, Page::Keyboard),
+    // -- System and About: one waiting line each, and nothing else yet.
+    (IDC_SYS_PLACEHOLDER, Page::System),
+    (IDC_ABOUT_PLACEHOLDER, Page::About),
 ];
 
 /// Show the controls `page` owns and hide every other page's.
@@ -718,6 +727,19 @@ mod cap {
     pub const TAB_KEYBOARD: &str = "Keyboard";
     pub const TAB_SYSTEM: &str = "System";
     pub const TAB_ABOUT: &str = "About";
+    /// What System and About say until their real controls land.
+    ///
+    /// **One constant, two controls.** The two pages are waiting for different
+    /// things, but "waiting" is the whole of what either can say today, and a
+    /// second literal reading the same words would only be a second thing to
+    /// forget to delete. Each has its OWN id (`IDC_SYS_PLACEHOLDER`,
+    /// `IDC_ABOUT_PLACEHOLDER`) because they are two windows on two pages, and
+    /// a shared caption does not make them one control.
+    ///
+    /// No `&`: it is not operable and owns no mnemonic, and the STATIC is
+    /// created with `SS_NOPREFIX` so an `&` added here would draw as a literal
+    /// rather than silently eat the next letter.
+    pub const PLACEHOLDER: &str = "Nothing here yet.";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -3863,6 +3885,44 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
+    // -- The System and About pages: one waiting line each, and that is the
+    // whole of both pages today.
+    //
+    // Created HERE rather than beside the band they sit in, because they sit
+    // in no band: neither page has a card at all (`compute_card_rects` gives
+    // all four zero height behind those two doors), so `layout` puts each line
+    // at the top of the content area -- card 0's own top, which is where the
+    // stack starts on every page. This is the last content in the function
+    // before the command bar, which is where two pages that come after
+    // Keyboard belong in a file whose order is its reading order.
+    //
+    // Creation order is Tab order, and neither of these takes a tab stop: a
+    // STATIC has no `WS_TABSTOP` and `GetNextDlgTabItem` skips it. So both
+    // doors are, today, doors that Tab walks straight past into the command
+    // bar -- correct, since there is nothing behind either to reach.
+    //
+    // **`SS_NOPREFIX`, like `IDC_LBL_COUNT`.** The text carries no mnemonic
+    // (`cap::PLACEHOLDER`), and a STATIC that would silently eat an `&` added
+    // to it later is a trap whether or not one is there today.
+    //
+    // **Neither is in the `on_card` match** in the `WM_CTLCOLORSTATIC` arm
+    // below, and that is not the omission the plan warned about: they have
+    // their own branch there, painting them on the window's own `bg`, because
+    // that is the surface actually under them. Joining `on_card` would draw a
+    // card-coloured strip on a page with no card behind it; falling through to
+    // `DefWindowProcW` would draw a `COLOR_3DFACE` one. Both are wrong, and
+    // only the second was written down.
+    for id in [IDC_SYS_PLACEHOLDER, IDC_ABOUT_PLACEHOLDER] {
+        child(
+            hwnd,
+            w!("STATIC"),
+            cap::PLACEHOLDER,
+            SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+            id,
+            &fonts,
+        );
+    }
+
     // -- Band 7: the command bar. `Open config file` far left, then Close
     // and Save on the right, Save outermost and default.
     //
@@ -6740,6 +6800,63 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SetBkMode(hdc, OPAQUE);
                     return LRESULT(theme_brush(field).0 as isize);
                 }
+                // **The two waiting lines sit on `bg`, not on `card`**, and
+                // this branch is that difference rather than an exception to
+                // it. System and About have no card at all -- behind those two
+                // doors `compute_card_rects` leaves every one of the four
+                // rects at zero height, and `WM_PAINT`'s card loop skips a
+                // degenerate rect -- so what is under either STATIC is the
+                // window ground the `WM_ERASEBKGND` arm above fills. Adding
+                // them to `on_card` below would paint a card-coloured strip
+                // the width of the line onto a page with no card behind it,
+                // which reads as a rendering fault rather than as a page that
+                // is waiting; leaving them out of BOTH branches would fall
+                // through to `DefWindowProcW`'s opaque `COLOR_3DFACE`, the
+                // system-grey rectangle Task 8 fixed for every other STATIC,
+                // group box and check box in this window at once. The plan and
+                // spec named only the second hazard, which is why this is a
+                // branch of its own rather than two more ids in the match
+                // below.
+                //
+                // **`OPAQUE`, and under Mica that is the half that matters.**
+                // These are the first strings this window draws outside a
+                // card, and `theme::apply_backdrop` names exactly that as the
+                // change that reopens Mica's documented hazard: GDI text drawn
+                // straight onto glass loses its alpha channel and fringes
+                // black. Filling the control's own rect with `bg` first is
+                // what keeps that closed -- the ink lands on an opaque surface
+                // either way -- and it costs a `bg`-coloured strip the width
+                // of one line on a page that would otherwise be glass. That
+                // trade is already this window's: Mica is measured dead here
+                // (gate 01, a14) because ~30 opaque child rects paint the
+                // client edge to edge, so this is one more of them and not a
+                // new kind of thing. `TRANSPARENT` would be the alternative
+                // and it is the one that fringes.
+                //
+                // `text_muted`, not `text`: the line says the page is empty,
+                // which is secondary to everything else on screen. The pair is
+                // already covered -- `theme::pairs` carries "muted text on
+                // window bg" at the 4.5 floor, so no new row was needed and
+                // moving either token stays a test failure.
+                //
+                // `COLOR_BTNTEXT` on `COLOR_BTNFACE` under high contrast, a
+                // same-family pair: `bg` resolves to `COLOR_BTNFACE` at every
+                // other site in this window (`chrome::paint`, `paint::button`,
+                // `draw_chip`, the `WM_ERASEBKGND` arm above), and
+                // `paint::button` already pairs it with `COLOR_BTNTEXT` for
+                // its `Secondary` tier. `COLOR_WINDOWTEXT` here would be the
+                // cross-family pair the `on_card` branch below has its own
+                // correction about -- latent only because the four shipped HC
+                // schemes happen to make those two indices equal.
+                if id == IDC_SYS_PLACEHOLDER || id == IDC_ABOUT_PLACEHOLDER {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let bg = theme_col(|p| p.bg, COLOR_BTNFACE);
+                    let text = theme_col(|p| p.text_muted, COLOR_BTNTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, bg);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(bg).0 as isize);
+                }
                 // `IDC_NOTES` is deliberately ABSENT since Task 12: it is
                 // `SS_OWNERDRAW` now, and an owner-draw static never asks
                 // its parent for a background brush at all -- `draw_chip`'s
@@ -7951,6 +8068,48 @@ mod tests {
                 "control {id} is not behind a door, so a switch cannot hide it"
             );
         }
+    }
+
+    /// No door opens onto nothing.
+    ///
+    /// This is the whole of what Task 7 shipped, stated as the property
+    /// rather than as the two ids: before it, System and About had no row in
+    /// `PAGE_CONTROLS` at all, so both doors led to a surface with the strip
+    /// and the command bar on it and nothing in between -- which reads as a
+    /// window that failed to draw, not as a page that is waiting. Nothing
+    /// else catches that: `every_control_belongs_to_exactly_one_group` in
+    /// `ids.rs` partitions the CONTROLS across the table, so it is silent
+    /// about a page that owns none of them, and the placeholders are the one
+    /// kind of control whose whole purpose is to be deleted later.
+    ///
+    /// **The door list is walked with `Page::next` until it comes home**, not
+    /// written out as four literals: a fifth door added to the cycle would
+    /// otherwise be tested by nobody, which is the same failure one level up.
+    /// The loop is bounded independently of the walk so a `next` that never
+    /// returns cannot hang the suite -- it fails instead.
+    #[test]
+    fn every_door_owns_at_least_one_control() {
+        let mut page = Page::Shortcuts;
+        let mut seen = 0;
+        loop {
+            assert!(
+                PAGE_CONTROLS.iter().any(|(_, p)| *p == page),
+                "no control is behind {page:?}, so that door opens onto an \
+                 empty surface between the strip and the command bar"
+            );
+            page = page.next();
+            seen += 1;
+            if page == Page::Shortcuts {
+                break;
+            }
+            assert!(seen < 64, "`Page::next` never came home");
+        }
+        assert_eq!(
+            seen,
+            TABS.len(),
+            "the cycle visits {seen} doors and the strip has {} pills",
+            TABS.len()
+        );
     }
 
     /// Why `show_page` calls `end_capture`.

@@ -63,9 +63,63 @@ Last updated: 2026-08-14, branch `four-doors-phase-0`.
 
 ## §3.3 System page · §3.4 About page
 
-Both are **a single waiting line** today, by decision — see the shell spec §8.
-Every id is allocated (1070-1099, 1100-1119) and tested for uniqueness, so the
-pages can be filled without touching anything else.
+| Design says | Status | Where / why |
+|---|---|---|
+| Both pages exist and open | **done** | Task 7. Each owns one `STATIC` reading `Nothing here yet.` — `IDC_SYS_PLACEHOLDER 1084`, `IDC_ABOUT_PLACEHOLDER 1115`, from the reserved TAILS of their ranges rather than the next free number, so deleting a placeholder cannot leave a hole in the middle of a page's numbering. `every_door_owns_at_least_one_control` is the assertion: before Task 7 both doors opened onto the strip, the command bar and nothing between, which reads as a window that failed to draw |
+| Every id allocated (1070-1099, 1100-1119) | **done** (Phase 0) | and tested for uniqueness, so the pages can be filled without touching anything else |
+| Every real System control (pause, autostart, dark, opacity, the two file rows) | **open** | |
+| Every real About control (mark, version, build, location, licence, the hook disclosure, three links) | **open** | |
+
+**The placeholders sit on `bg`, not on `card`, and that is a correction to the
+plan.** The plan and shell spec §8 both say "**both must be added to the
+`on_card` match** or they fall through to `COLOR_3DFACE` and draw as grey
+rectangles". The hazard is real and is closed; the prescription was half right.
+Neither page has a card at all — `compute_card_rects` leaves all four rects at
+zero height behind those two doors — so `on_card` would have painted a
+card-coloured strip the width of one line onto a page with no card behind it.
+They get their own branch of `WM_CTLCOLORSTATIC` instead, returning the `bg`
+brush with `text_muted` ink (already covered by `theme::pairs`' *muted text on
+window bg* row) and `COLOR_BTNTEXT`/`COLOR_BTNFACE` under high contrast — a
+same-family pair, unlike the cross-family one the `on_card` branch below it
+carries its own correction about.
+
+**They are also the first strings this window draws outside a card**, which
+reopens a hazard `theme::apply_backdrop` had closed by naming that exact
+change: GDI text drawn straight onto Mica glass loses its alpha and fringes
+black. `OPAQUE` plus the `bg` fill is what keeps it closed — the ink lands on
+an opaque surface either way. That comment has been corrected rather than left
+describing a window that no longer exists.
+
+## The vertical stack is still page-blind, and Task 7 decided not to fix it
+
+`compute_card_rects` reserves the keyboard card's height on **every** page, so
+Shortcuts keeps a card-shaped gap above the command bar and Keyboard keeps a
+larger one below the strip. Task 4's agent recommended Task 7 own the re-stack;
+Task 7 weighed it and deferred, and the argument is at `compute_card_rects`
+rather than only here:
+
+- The re-stack changes the **Shortcuts** page's vertical geometry, which is
+  another workstream's open subject — design §4 uncaps the list and deletes
+  `tok::ROWS`, design §3.1 deletes the editor's `Editing "…"` caption line
+  (an input to `card2_h` that `MIN_HEIGHT`'s comment already solves the table
+  without). Doing it now means re-deriving the same table twice.
+- Nothing on the host can display this window. Every vertical figure under
+  `MIN_HEIGHT` and beside `WINDOW_HEIGHT` is a hand trace, corrected twice on
+  2026-08-13/14 and re-derived again when the strip landed. Two `STATIC`s are
+  not worth a fourth pass.
+
+**What deferring costs, re-derived rather than asserted:** the reservation is
+`gap_card + kb_card_h` = 86 px at 96 DPI. With it gone the list's cap at the
+shipped client height of 600 (banner down, `notes_h` 36) would be 264 instead
+of 178, against a `want` of 197 — so `want` would bind and the list would show
+**eight** rows instead of seven. One row at the shipped size, plus the 86 px
+gap above the command bar, which is the visible half and is on the page the
+user lives on. `kb_y` in `compute_card_rects` is the single line to change when
+it is taken.
+
+System and About needed none of it: a page whose whole content is one line has
+no stack to re-derive, and the emptiness below that line is the page being
+empty rather than the line being misplaced.
 
 ## §4 The list
 

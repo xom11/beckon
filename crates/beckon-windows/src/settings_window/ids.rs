@@ -126,6 +126,26 @@ pub(super) const IDC_TAB_KEYBOARD: i32 = 1041;
 pub(super) const IDC_TAB_SYSTEM: i32 = 1042;
 pub(super) const IDC_TAB_ABOUT: i32 = 1043;
 
+/// The one line System and About each show while they are waiting.
+///
+/// **From the reserved TAIL of each page's range, not the next free number.**
+/// 1070-1083 and 1100-1114 are already named in `CONTROL_IDS` for controls
+/// Phase 0 specified and nothing has built, and a placeholder is the one
+/// control on either page that is meant to be *deleted* -- taking a number out
+/// of the middle of a block would leave a hole in that page's numbering the day
+/// it goes.
+///
+/// **Neither sits on a card, so neither is in the `on_card` match** in
+/// `mod.rs`'s `WM_CTLCOLORSTATIC` arm. Both pages leave all four card rects at
+/// zero height (`compute_card_rects`), so the ground under these two is the
+/// window's own `bg`; they are answered by their own branch of that arm, above
+/// the `on_card` one. Falling through to `DefWindowProcW` would draw either as
+/// a `COLOR_3DFACE` rectangle -- the defect that once hit eight controls at
+/// once -- and joining `on_card` would paint a card-coloured strip on a page
+/// with no card behind it.
+pub(super) const IDC_SYS_PLACEHOLDER: i32 = 1084;
+pub(super) const IDC_ABOUT_PLACEHOLDER: i32 = 1115;
+
 /// `Ctrl+Tab` and `Ctrl+Shift+Tab`: "the next door" and "the one before it".
 ///
 /// **Commands, not controls.** `Ctrl+1`..`Ctrl+4` name a door outright and so
@@ -198,6 +218,8 @@ mod tests {
         ("TAB_KEYBOARD", super::IDC_TAB_KEYBOARD),
         ("TAB_SYSTEM", super::IDC_TAB_SYSTEM),
         ("TAB_ABOUT", super::IDC_TAB_ABOUT),
+        ("SYS_PLACEHOLDER", super::IDC_SYS_PLACEHOLDER),
+        ("ABOUT_PLACEHOLDER", super::IDC_ABOUT_PLACEHOLDER),
     ];
 
     /// The net under `MINE`. It reads this file's own source -- the same

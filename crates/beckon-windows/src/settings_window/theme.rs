@@ -287,12 +287,26 @@ pub(super) fn apply_backdrop(hwnd: HWND, b: Backdrop) {
                 // here rather than merely the way to reach more of it. Its
                 // documented hazard -- GDI text drawn straight onto glass
                 // loses its alpha channel and fringes black -- does not
-                // apply here, because every string this window draws lives
-                // inside an opaque card (Task 8); the glass is only ever
-                // visible through the gaps BETWEEN cards, where nothing is
-                // drawn at all. The next change that puts text, an icon or
-                // any other GDI ink directly on the window background
-                // outside a card reopens that hazard and needs to know this.
+                // apply here, because every string this window draws lands
+                // on an opaque surface first; the glass is only ever visible
+                // where nothing is drawn at all. The next change that puts
+                // text, an icon or any other GDI ink onto the window
+                // background WITHOUT filling its own rect first reopens that
+                // hazard and needs to know this.
+                //
+                // **CORRECTED 2026-08-14, Task 7.** That reason used to read
+                // "every string this window draws lives inside an opaque card
+                // (Task 8); the glass is only ever visible through the gaps
+                // BETWEEN cards". System's and About's waiting lines are the
+                // first strings drawn outside a card -- neither page has one
+                // -- so the card half of the claim is no longer true and the
+                // conclusion had to be re-earned rather than inherited. It is:
+                // their `WM_CTLCOLORSTATIC` branch returns a `bg` brush and
+                // sets `OPAQUE`, so each line's own rect is filled before a
+                // glyph is drawn. What that costs is one line's worth of
+                // opaque `bg` on a page that would otherwise be glass, which
+                // is the trade this window has already made ~30 times over
+                // (Mica is measured dead here for exactly that reason).
                 let m = MARGINS {
                     cxLeftWidth: -1,
                     cxRightWidth: -1,

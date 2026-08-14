@@ -721,34 +721,78 @@ plain text."
 **Files:**
 - Modify: `crates/beckon-core/src/settings.rs` — two `CONTROL_IDS` rows
 - Modify: `crates/beckon-windows/src/settings_window/ids.rs` — two constants + two `MINE` rows
-- Modify: `crates/beckon-windows/src/settings_window/mod.rs` — creation, `on_card`
+- Modify: `crates/beckon-windows/src/settings_window/mod.rs` — creation, `PAGE_CONTROLS`, `WM_CTLCOLORSTATIC`
 
-- [ ] **Step 1: Allocate the ids**
+**Two files it also touched, neither optional.** `layout.rs` gained the
+placement — a control with a row in `PAGE_CONTROLS` and no `SetWindowPos` is
+shown at the origin, under the title bar — and its `compute_card_rects` doc
+carries the re-stack decision below. `theme.rs`'s `apply_backdrop` had a
+comment whose reasoning rested on every string in the window living inside an
+opaque card; these two are the first that do not.
+
+- [x] **Step 1: Allocate the ids**
 
 `IDC_SYS_PLACEHOLDER = 1084` and `IDC_ABOUT_PLACEHOLDER = 1115`, from the
 reserved tails of their pages' ranges. Add a row to `CONTROL_IDS`, a constant
 to `ids.rs` and a row to `MINE` — `every_declared_id_has_a_row_in_mine` and
 `ids_are_unique` both fail otherwise, which is the net working.
 
-- [ ] **Step 2: Create them**
+Done. A third table needed a row and the plan did not name it:
+`PAGE_CONTROLS`, or `every_control_belongs_to_exactly_one_group` fails — and
+without it `show_page_controls` would draw both lines on all four doors.
+
+- [x] **Step 2: Create them**
 
 Two `STATIC`s reading `Nothing here yet.`
 
-**Both must be added to the `on_card` match at `mod.rs:5363-5375`**, or they
+~~**Both must be added to the `on_card` match at `mod.rs:5363-5375`**, or they
 fall through to `DefWindowProcW`'s `COLOR_3DFACE` and draw as grey rectangles
-— the defect recorded at `mod.rs:5294-5309`, which hit eight controls at once.
+— the defect recorded at `mod.rs:5294-5309`, which hit eight controls at
+once.~~
 
-- [ ] **Step 3: Gate and commit**
+**CORRECTED: the hazard is real, the prescription was half right.** Neither
+page has a card — `compute_card_rects` leaves all four rects at zero height
+behind those two doors — so `on_card` would paint a card-coloured strip the
+width of one line onto a page with no card behind it. They get their own
+branch of `WM_CTLCOLORSTATIC`, above `on_card`, returning the `bg` brush with
+`text_muted` ink (covered already by `theme::pairs`' *muted text on window bg*)
+and `COLOR_BTNTEXT`/`COLOR_BTNFACE` under high contrast. Falling through is
+still the thing that must not happen; joining `on_card` is just a second way to
+be wrong.
+
+**And they are the first strings this window draws outside a card**, which
+reopens the Mica hazard `theme::apply_backdrop` closed by naming exactly that
+change — GDI text on glass loses its alpha and fringes black. `OPAQUE` plus the
+`bg` fill keeps it closed; that comment is corrected rather than left standing.
+
+- [x] **Step 3: The vertical stack — decided, not fixed**
+
+Task 4's agent recommended this task own the re-stack. It does not, and the
+argument is at `compute_card_rects` with the figures re-derived: the
+reservation is `gap_card + kb_card_h` = 86 px at 96 DPI, worth **one** list row
+at the shipped size (the cap goes 178 → 264 against a `want` of 197) plus the
+gap above the command bar. Against that, the re-stack moves every figure under
+`MIN_HEIGHT` and beside `WINDOW_HEIGHT` — hand traces, no hardware — and design
+§4 and §3.1 are already scheduled to move the same table.
+
+- [x] **Step 4: Gate and commit**
+
+All five, each falsified first. `beckon-windows` tests compile only, so the new
+`every_door_owns_at_least_one_control` is checked by the Windows CI job.
 
 ```bash
 git add crates/beckon-core/src/settings.rs \
         crates/beckon-windows/src/settings_window/ids.rs \
-        crates/beckon-windows/src/settings_window/mod.rs
+        crates/beckon-windows/src/settings_window/mod.rs \
+        crates/beckon-windows/src/settings_window/layout.rs \
+        crates/beckon-windows/src/settings_window/theme.rs
 git commit -m "feat(settings-window): System and About, waiting
 
-Two STATICs, both in the on_card match -- a STATIC outside it falls through to
-COLOR_3DFACE and draws as a grey rectangle, which hit eight controls at once
-the last time."
+Two STATICs, and NOT in the on_card match -- neither page has a card, so
+on_card would paint a card-coloured strip onto a page with no card behind it.
+They get their own WM_CTLCOLORSTATIC branch on bg. Falling through to
+COLOR_3DFACE is still the hazard the plan named; joining on_card is a second
+way to be wrong."
 ```
 
 ---
