@@ -98,8 +98,17 @@ mod tests {
     use beckon_core::settings::{CONTROL_IDS, RETIRED_IDS};
 
     /// Every id this module defines, paired with the name the core table
-    /// knows it by. Hand-maintained, and that is the point: adding a control
-    /// without adding it here is caught by `every_core_id_is_defined_here`.
+    /// knows it by. Hand-maintained, and `every_declared_id_has_a_row_in_mine`
+    /// is what keeps the hand honest: it reads this file's own source and
+    /// fails when a constant above has no row below.
+    ///
+    /// CORRECTED 2026-08-14: this comment used to say the omission was caught
+    /// by `every_core_id_is_defined_here`. That test was specified by the plan
+    /// and cancelled two paragraphs later in the same plan, so it was never
+    /// written -- grep found the name in this comment and nowhere else. The
+    /// claim was the whole safety argument for the design: every test in this
+    /// module iterates `MINE` and none iterates `CONTROL_IDS`, so `MINE` is
+    /// the hinge, and until the test below existed nothing guarded it.
     const MINE: &[(&str, i32)] = &[
         ("LIST", super::IDC_LIST),
         ("COMBO", super::IDC_COMBO),
@@ -134,6 +143,54 @@ mod tests {
         ("GRP_EDITOR", super::IDC_GRP_EDITOR),
         ("LBL_COUNT", super::IDC_LBL_COUNT),
     ];
+
+    /// The net under `MINE`. It reads this file's own source -- the same
+    /// `include_str!` trick `geometry_matches_the_probe` uses on the probe,
+    /// pointed one file closer -- and reads every line that starts with `pub`
+    /// and carries `const IDC_` as a declaration. Add a constant above and
+    /// forget the row below, and this fails on the Windows CI job, the only
+    /// one that compiles this crate at all.
+    ///
+    /// It cannot count its own text, by construction twice over: every
+    /// mention inside `mod tests` is indented, so no line of it starts with
+    /// `pub`, and a comment cannot start with `pub` at any indentation
+    /// either. A declaration written with no visibility modifier would be
+    /// missed -- and cannot exist, because `mod.rs` is what names these and a
+    /// private one would be dead code under `-D warnings`.
+    ///
+    /// What it does not cover: `CONTROL_IDS` on core's side is unguarded in
+    /// the other direction, deliberately -- that table already carries ids for
+    /// pages nothing has built yet, so a name there with no constant here is
+    /// the normal state rather than a defect.
+    #[test]
+    fn every_declared_id_has_a_row_in_mine() {
+        let declared: Vec<&str> = include_str!("ids.rs")
+            .lines()
+            .filter(|l| l.starts_with("pub"))
+            .filter_map(|l| l.split_once("const IDC_"))
+            .map(|(_, rest)| rest.split(':').next().unwrap_or(rest))
+            .collect();
+        for name in &declared {
+            assert!(
+                MINE.iter().any(|(n, _)| n == name),
+                "`IDC_{name}` is declared in ids.rs and has no row in `MINE`. \
+                 Every test in this module iterates `MINE`, so an id missing \
+                 from it is checked by nothing: it can repeat a number already \
+                 in use, and `layout` resolves a duplicate through \
+                 `GetDlgItem` to the first match -- the second control is \
+                 created, never placed, and left at the origin."
+            );
+        }
+        assert_eq!(
+            declared.len(),
+            MINE.len(),
+            "ids.rs declares {} controls and `MINE` has {} rows. Every \
+             declaration found a row above, so the surplus is `MINE`'s own: a \
+             row written twice, or one naming a constant that is gone.",
+            declared.len(),
+            MINE.len()
+        );
+    }
 
     #[test]
     fn ids_match_the_core_table() {
