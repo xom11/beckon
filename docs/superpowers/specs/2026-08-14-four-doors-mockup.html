@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Four Doors — beckon-serve settings window mockup</title>
+<!--
+  REFERENCE DRAWING for docs/superpowers/specs/2026-08-14-four-doors-settings-window-design.md
+  Open this file in a browser. Nothing here is production code -- it is a
+  faithful picture of the agreed window, at the agreed size, in the agreed
+  colours, so a build session can check its own output against something.
+
+  What is real and should be copied:
+    - 680 px window width, 34 px title bar, 36 px tab strip
+    - the light and dark palettes (the :root / .dark token blocks below are the
+      SAME hex values as crates/beckon-windows/src/settings_window/theme.rs)
+    - the row order and the exact on-screen wording of every label
+    - which page draws which control, and that System/About draw no Save
+
+  What is NOT real:
+    - HTML/CSS is not how this is built. Every "control" here is a div. The
+      real window is hand-written Win32 + GDI with owner-drawn buttons.
+    - proportions inside a row are approximate; the design doc's arithmetic is
+      the authority, and G1 in its gate list is what settles the widths.
+    - the interactions wired up (tab switch, the two toggles, the expander)
+      exist so the drawing can be inspected in every state, not as a spec for
+      how the real controls behave.
+-->
+<style>
+  :root{
+    --w-bg:#F2F4F8; --w-card:#FFFFFF; --w-border:#DCE0E8; --w-div:#DDE1E9;
+    --w-ink:#15181E; --w-mut:#5A6270; --w-faint:#6F7785;
+    --w-acc:#2563EB; --w-fill:#2563EB; --w-on:#FFFFFF; --w-soft:#E8F0FF;
+    --w-field:#FFFFFF; --w-fieldb:#D2D8E3; --w-cap:#FFFFFF; --w-cape:#B6BFCF;
+    --w-strip:#D9DDE7; --w-striph:#CBD1DE; --w-off:#8B93A3; --w-thumb:#FFFFFF;
+    --w-ok:#067647; --w-warn:#8A5406; --w-bad:#B42318;
+    --font-ui:system-ui,'Segoe UI Variable Text','Segoe UI',sans-serif;
+    --font-mono:ui-monospace,'Cascadia Code',Consolas,monospace;
+  }
+  body{margin:0;padding:40px 20px;background:#e8ebf2;font-family:var(--font-ui);
+       display:flex;flex-direction:column;align-items:center;gap:18px}
+  body.dark{background:#0d0f13}
+  .hint{font-family:var(--font-mono);font-size:12px;color:#6F7785;text-align:center;max-width:680px;line-height:1.6}
+  body.dark .hint{color:#7F8795}
+
+  .win{
+    width:680px;min-width:680px;border-radius:9px;overflow:hidden;
+    background:var(--w-bg);color:var(--w-ink);font-size:14px;line-height:1.35;
+    box-shadow:0 2px 6px rgba(21,24,30,.10),0 18px 50px rgba(21,24,30,.18);
+  }
+  .win.dark{
+    --w-bg:#15171C; --w-card:#1D2027; --w-border:#2B303A; --w-div:#333944;
+    --w-ink:#E7E9EE; --w-mut:#9FA6B4; --w-faint:#7F8795;
+    --w-acc:#5B92F7; --w-fill:#3970E6; --w-soft:#1B2A47;
+    --w-field:#23262E; --w-fieldb:#353A45; --w-cap:#292D36; --w-cape:#131519;
+    --w-strip:#2E323D; --w-striph:#3A3F4C; --w-off:#5A6270; --w-thumb:#E7E9EE;
+    --w-ok:#5CCB92; --w-warn:#F2C46B; --w-bad:#FF9A92;
+    box-shadow:0 2px 6px rgba(0,0,0,.5),0 18px 50px rgba(0,0,0,.55);
+  }
+  .titlebar{height:34px;display:flex;align-items:center;gap:8px;padding-left:10px}
+  .appicon{width:18px;height:18px;border-radius:4px;background:var(--w-fill);color:#fff;
+           font-family:var(--font-mono);font-size:12px;font-weight:700;
+           display:flex;align-items:center;justify-content:center}
+  .wordmark{color:var(--w-acc);font-weight:600;font-size:15px}
+  .ver{color:var(--w-faint);font-size:12px}
+  .capbtns{margin-left:auto;display:flex}
+  .capbtn{width:44px;height:34px;display:flex;align-items:center;justify-content:center;
+          color:var(--w-mut);font-size:11px;font-family:var(--font-mono)}
+  .tabstrip{display:flex;padding:0 10px 8px}
+  .trough{display:flex;background:var(--w-strip);padding:2px;border-radius:10px}
+  .pill{appearance:none;border:0;background:transparent;cursor:pointer;font-family:var(--font-ui);
+        font-size:14px;font-weight:600;color:var(--w-mut);padding:6px 14px;border-radius:8px;
+        margin:3px;display:flex;align-items:center;gap:7px}
+  .pill:hover{background:var(--w-striph);color:var(--w-ink)}
+  .pill[aria-selected="true"]{background:var(--w-fill);color:var(--w-on)}
+  .pill .n{font-size:11.5px;opacity:.75;font-variant-numeric:tabular-nums}
+  .page{padding:0 10px 10px;display:none;min-height:326px}
+  .page.on{display:block}
+  .card{background:var(--w-card);border:1px solid var(--w-border);border-radius:10px;
+        padding:11px 12px;margin-bottom:8px}
+  .card:last-child{margin-bottom:0}
+  .headrow{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .headrow .spacer{margin-left:auto}
+  .field{background:var(--w-field);border:1px solid var(--w-fieldb);border-radius:5px;height:26px;
+         display:flex;align-items:center;padding:0 8px;color:var(--w-ink);font-size:13px}
+  .field.cue{color:var(--w-faint)}
+  .btn{appearance:none;cursor:default;height:26px;padding:0 12px;border-radius:5px;
+       border:1px solid var(--w-fieldb);background:var(--w-card);color:var(--w-ink);
+       font-family:var(--font-ui);font-size:13px;font-weight:600;white-space:nowrap}
+  .btn.glyph{width:28px;padding:0;font-family:var(--font-mono);font-size:13px;
+             color:var(--w-mut);border-color:transparent;background:transparent}
+  .listwrap{display:flex;gap:6px}
+  .list{flex:1;min-width:0;border-top:1px solid var(--w-div)}
+  .sbar{width:7px;border-radius:4px;background:var(--w-strip);position:relative;flex:none}
+  .sbar i{position:absolute;left:0;right:0;top:4%;height:58%;border-radius:4px;
+          background:var(--w-off);opacity:.7}
+  .lrow{display:flex;align-items:center;gap:9px;height:32px;
+        border-bottom:1px solid var(--w-div);padding:0 2px}
+  .lrow:last-child{border-bottom:0}
+  .lrow.sel{background:var(--w-soft)}
+  .tick{width:13px;height:13px;border:1px solid var(--w-fieldb);border-radius:3px;
+        flex:none;background:var(--w-field)}
+  .lapp{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .st{font-size:11.5px;white-space:nowrap;width:78px;text-align:right}
+  .st.bad{color:var(--w-bad)}
+  .chips{display:flex;gap:3px;flex:none}
+  .cap{font-size:11px;font-weight:600;background:var(--w-cap);border:1px solid var(--w-cape);
+       border-radius:4px;padding:2px 6px;min-width:32px;text-align:center;line-height:1.2}
+  .cap.caps{border-color:var(--w-fill);color:var(--w-acc);font-weight:700}
+  .cap.on{background:var(--w-fill);border-color:var(--w-fill);color:#fff}
+  /* full chord is the DEFAULT; the Caps shorthand is opt-in */
+  .chips.shortform{display:none}
+  .win.capsview .chips.shortform{display:flex}
+  .win.capsview .chips.longform{display:none}
+  .chips.always{display:flex}
+  .srow{display:flex;align-items:center;gap:10px;padding:7px 0;min-height:32px}
+  .srow .lab{flex:1;min-width:0}
+  .srow .val{font-size:12.5px;color:var(--w-faint);white-space:nowrap}
+  .sw{width:36px;height:20px;border-radius:999px;background:var(--w-off);position:relative;
+      flex:none;cursor:pointer}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;
+             border-radius:50%;background:var(--w-thumb)}
+  .sw.on{background:var(--w-fill)}
+  .sw.on::after{left:18px;background:#fff}
+  .divider{height:1px;background:var(--w-div);margin:4px 0}
+  .slider{display:flex;align-items:center;gap:10px;flex:none}
+  .track{width:120px;height:4px;border-radius:2px;background:var(--w-off);position:relative}
+  .track .fill{position:absolute;left:0;top:0;bottom:0;width:73%;border-radius:2px;background:var(--w-fill)}
+  .track .thumb{position:absolute;left:73%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+                border-radius:50%;background:var(--w-fill);border:2px solid var(--w-card)}
+  .pct{font-size:12.5px;color:var(--w-mut);font-variant-numeric:tabular-nums;width:34px;text-align:right}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.ok{background:var(--w-ok)} .dot.warn{background:var(--w-warn)} .dot.bad{background:var(--w-bad)}
+  .note{display:flex;gap:7px;align-items:flex-start;font-size:12.5px;color:var(--w-mut);padding:3px 0}
+  .note .dot{margin-top:5px}
+  .exp{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--w-acc);padding:6px 0;cursor:pointer}
+  .caret{font-family:var(--font-mono);font-size:11px}
+  .expbody{padding:2px 0 4px 20px}
+  .cmdbar{display:flex;align-items:center;gap:8px;padding:10px;
+          border-top:1px solid var(--w-border);background:var(--w-bg)}
+  .cmdbar .spacer{margin-left:auto}
+  .status{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--w-mut)}
+  .saved{font-size:12px;color:var(--w-faint);opacity:.45;transition:opacity .2s}
+  .aboutid{text-align:center;padding:14px 0 4px}
+  .aboutid .big{width:48px;height:48px;border-radius:11px;background:var(--w-fill);color:#fff;
+                font-family:var(--font-mono);font-size:28px;font-weight:700;
+                display:flex;align-items:center;justify-content:center;margin:0 auto 10px}
+  .aboutid .nm{font-size:17px;font-weight:600}
+  .kv{display:flex;align-items:center;gap:12px;padding:7px 0;
+      border-bottom:1px solid var(--w-div);font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{width:74px;color:var(--w-mut);flex:none}
+  .kv .v{flex:1;font-family:var(--font-mono);font-size:12.5px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .kv .cp{color:var(--w-faint);font-size:11px}
+  .linkrow{display:flex;gap:8px;justify-content:center;padding:14px 0 4px}
+</style>
+</head>
+<body class="dark">
+
+<div class="win dark" id="w">
+  <div class="titlebar">
+    <div class="appicon">b</div><span class="wordmark">beckon</span><span class="ver">0.9.3</span>
+    <div class="capbtns"><div class="capbtn">&#8212;</div><div class="capbtn">&#10005;</div></div>
+  </div>
+
+  <div class="tabstrip">
+    <div class="trough" role="tablist">
+      <button class="pill" role="tab" aria-selected="true" data-tab="p1">Shortcuts <span class="n">19</span></button>
+      <button class="pill" role="tab" aria-selected="false" data-tab="p2">Keyboard</button>
+      <button class="pill" role="tab" aria-selected="false" data-tab="p3">System</button>
+      <button class="pill" role="tab" aria-selected="false" data-tab="p4">About</button>
+    </div>
+  </div>
+
+  <!-- ============================ SHORTCUTS ============================ -->
+  <div class="page on" id="p1">
+    <div class="card">
+      <div class="headrow">
+        <div class="field cue" style="width:200px">&#8981;&nbsp; Filter</div>
+        <span class="spacer"></span>
+        <button class="btn">Remove</button><button class="btn">Add</button>
+      </div>
+      <div class="listwrap">
+        <div class="list">
+          <div class="lrow"><span class="tick"></span><span class="lapp">Brave</span><span class="st"></span>
+            <span class="chips shortform"><span class="cap caps">Caps</span><span class="cap">B</span></span>
+            <span class="chips longform"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">B</span></span></div>
+          <div class="lrow"><span class="tick"></span><span class="lapp">Windows Terminal</span><span class="st"></span>
+            <span class="chips shortform"><span class="cap caps">Caps</span><span class="cap">T</span></span>
+            <span class="chips longform"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">T</span></span></div>
+          <div class="lrow sel"><span class="tick"></span><span class="lapp">Discord</span><span class="st bad">in use</span>
+            <span class="chips shortform"><span class="cap caps">Caps</span><span class="cap">D</span></span>
+            <span class="chips longform"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">D</span></span></div>
+          <div class="lrow"><span class="tick"></span><span class="lapp">Obsidian</span><span class="st bad">missing</span>
+            <span class="chips shortform"><span class="cap caps">Caps</span><span class="cap">O</span></span>
+            <span class="chips longform"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">O</span></span></div>
+          <div class="lrow"><span class="tick"></span><span class="lapp">Claude</span><span class="st"></span>
+            <span class="chips shortform"><span class="cap caps">Caps</span><span class="cap">C</span></span>
+            <span class="chips longform"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">C</span></span></div>
+          <!-- a binding on any OTHER chord never collapses: that is what makes it
+               visible at a glance, and why the "other chord" status word could go -->
+          <div class="lrow"><span class="tick"></span><span class="lapp">Telegram Web</span><span class="st"></span>
+            <span class="chips always"><span class="cap">Ctrl</span><span class="cap">Win</span><span class="cap">Alt</span><span class="cap">Shift</span><span class="cap">T</span></span></div>
+        </div>
+        <div class="sbar"><i></i></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="srow">
+        <div class="field" style="width:168px">Discord</div>
+        <span class="chips"><span class="cap on">Ctrl</span><span class="cap on">Win</span><span class="cap on">Alt</span><span class="cap">Shift</span></span>
+        <div class="field" style="width:74px">D &#8964;</div>
+        <span class="spacer" style="margin-left:auto"></span>
+        <button class="btn">Record</button><button class="btn">Revert</button>
+      </div>
+      <div class="note"><span class="dot bad"></span><span>Another program owns this key. Windows will not say which.</span></div>
+    </div>
+  </div>
+
+  <!-- ============================= KEYBOARD ============================= -->
+  <div class="page" id="p2">
+    <div class="card">
+      <div class="srow"><span class="lab">Use Caps Lock as a shortcut key</span><span class="sw on"></span></div>
+      <div class="divider"></div>
+      <div class="srow">
+        <span class="lab" style="flex:none;width:44px">Hold</span>
+        <span class="chips"><span class="cap on">Ctrl</span><span class="cap on">Win</span><span class="cap on">Alt</span></span>
+        <span class="spacer" style="margin-left:auto"></span>
+        <span class="lab" style="flex:none;width:32px">Tap</span>
+        <div class="field" style="width:150px">Caps Lock &#8964;</div>
+      </div>
+      <div class="divider"></div>
+      <div class="srow">
+        <span class="lab">Write shortcuts as <span class="cap caps">Caps</span> instead of
+          <span class="cap">Ctrl</span> <span class="cap">Win</span> <span class="cap">Alt</span></span>
+        <span class="sw" id="capsview" role="switch" aria-checked="false"></span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="exp" id="capsexp"><span class="caret">&#9656;</span>If Caps Lock does nothing</div>
+      <div class="expbody" id="capsbody" style="display:none">
+        <div class="note"><span class="dot warn"></span><span>An admin window has focus &#8212; Caps is blocked there. Type the chord instead; that always works.</span></div>
+        <div class="note"><span class="dot warn"></span><span>Another remapper holds Caps &#8212; kanata, PowerToys, AutoHotkey.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== SYSTEM ============================== -->
+  <div class="page" id="p3">
+    <div class="card">
+      <div class="srow"><span class="lab">Pause shortcuts</span><span class="sw"></span></div>
+      <div class="srow"><span class="lab">Start with Windows</span><span class="sw on"></span></div>
+      <div class="srow" style="justify-content:flex-end"><button class="btn">Reload</button></div>
+      <div class="divider"></div>
+      <div class="srow"><span class="lab">Dark mode</span><span class="sw on" id="darkmode" role="switch" aria-checked="true"></span></div>
+      <div class="srow"><span class="lab">Window transparency</span>
+        <span class="slider"><span class="pct">96%</span><span class="track"><span class="fill"></span><span class="thumb"></span></span></span>
+      </div>
+      <div class="divider"></div>
+      <div class="srow"><span class="lab">apps.windows.toml</span><span class="val">&#8230;\shortcuts\</span>
+        <button class="btn glyph">&#8599;</button><button class="btn glyph">&#9636;</button></div>
+      <div class="srow"><span class="lab">beckon-serve.log</span><span class="val">112 KB</span>
+        <button class="btn glyph">&#8599;</button><button class="btn glyph">&#9636;</button></div>
+    </div>
+  </div>
+
+  <!-- =============================== ABOUT =============================== -->
+  <div class="page" id="p4">
+    <div class="card">
+      <div class="aboutid"><div class="big">b</div><div class="nm">beckon 0.9.3</div></div>
+      <div class="divider"></div>
+      <div class="kv"><span class="k">Build</span><span class="v">aarch64-pc-windows-msvc &#183; 2026-08-13</span><span class="cp">&#8452;</span></div>
+      <div class="kv"><span class="k">Location</span><span class="v">&#8230;\scoop\apps\beckon\current\</span><span class="cp">&#8452;</span></div>
+      <div class="kv"><span class="k">Licence</span><span class="v">MIT OR Apache-2.0</span><span class="cp">&#8452;</span></div>
+      <div class="divider"></div>
+      <div class="note"><span class="dot ok"></span><span>The keyboard hook is installed only while Caps Lock is on, or while you are recording a shortcut. beckon keeps no record of what you type.</span></div>
+      <div class="linkrow">
+        <button class="btn">GitHub</button><button class="btn">Releases</button><button class="btn">Report a bug</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- the dot is a DRAWN GDI Ellipse in the real window, never the character -->
+  <div class="cmdbar">
+    <span class="status"><span class="dot ok"></span>Serving &#183; 18 of 19</span>
+    <span class="spacer"></span>
+    <span class="saved" id="savedmark">Saved</span>
+    <button class="btn">Undo</button>
+  </div>
+</div>
+
+<p class="hint">
+  680 &#215; 600 at 100% DPI &#183; dark by default &#183; no Save, no Close<br>
+  Click the tabs. Toggle <b>Dark mode</b> and <b>Write shortcuts as Caps</b> on the pages that own them.
+</p>
+
+<script>
+(function(){
+  var win = document.getElementById('w');
+  var tabs = win.querySelectorAll('[data-tab]');
+  tabs.forEach(function(p){
+    p.addEventListener('click', function(){
+      tabs.forEach(function(o){ o.setAttribute('aria-selected','false'); });
+      p.setAttribute('aria-selected','true');
+      win.querySelectorAll('.page').forEach(function(pg){ pg.classList.remove('on'); });
+      var t = document.getElementById(p.getAttribute('data-tab'));
+      if (t) t.classList.add('on');
+    });
+  });
+  function flashSaved(){
+    var m = document.getElementById('savedmark');
+    m.style.opacity = '1';
+    setTimeout(function(){ m.style.opacity = '.45'; }, 900);
+  }
+  function flip(sw){
+    var on = sw.classList.toggle('on');
+    sw.setAttribute('aria-checked', on ? 'true' : 'false');
+    return on;
+  }
+  var capsview = document.getElementById('capsview');
+  capsview.addEventListener('click', function(){
+    win.classList.toggle('capsview', flip(capsview)); flashSaved();
+  });
+  var darkmode = document.getElementById('darkmode');
+  darkmode.addEventListener('click', function(){
+    var on = flip(darkmode);
+    win.classList.toggle('dark', on);
+    document.body.classList.toggle('dark', on);
+    flashSaved();
+  });
+  var exp = document.getElementById('capsexp'), body = document.getElementById('capsbody');
+  exp.addEventListener('click', function(){
+    var open = body.style.display !== 'none';
+    body.style.display = open ? 'none' : '';
+    exp.querySelector('.caret').innerHTML = open ? '&#9656;' : '&#9662;';
+  });
+})();
+</script>
+</body>
+</html>
