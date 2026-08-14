@@ -605,6 +605,28 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //
 // `compute_card_rects` (`layout.rs`) is the arithmetic; this is a reading of
 // it, and the direction of that dependency is not negotiable.
+//
+// **Which tokens the compaction pass moved.** All eight moved in one commit,
+// `1f46335` (2026-08-13, "a tighter window, and transparency backed off to a
+// hint"); read back from that commit and its parent rather than carried over:
+//
+//   tok::PAD            16 -> 10
+//   tok::CARD_PAD       16 -> 11
+//   tok::GAP_CARD       12 ->  8
+//   tok::GAP             8 ->  6
+//   tok::LABEL          12 -> 10
+//   tok::CTL            32 -> 26
+//   tok::ROW_H          26 -> 22
+//   chrome::TITLEBAR_H  40 -> 34
+//
+// This list travelled inside the 900x740 derivation table and was deleted
+// with it. Deleting the table was right -- a full derivation of a window that
+// does not exist is worse than none -- but the list is not a derivation, it is
+// a record of an event, and it had no other home: after the deletion
+// `grep -rn "ROW_H 26" crates/ docs/` matched nothing. `Ui::shown_empty`'s
+// comment is the worked example of what that costs. A pixel figure derived
+// from `tok::ROW_H` has gone stale there twice now, once per move, and the
+// second time there was nothing left in the tree to check it against.
 const WINDOW_WIDTH: i32 = 760;
 const WINDOW_HEIGHT: i32 = 600;
 
@@ -1045,23 +1067,38 @@ struct Ui {
     ///
     /// The path runs through `list_row_height`, which cannot measure a row
     /// that is not there and returns `scale(tok::ROW_H, dpi)` when the list
-    /// is empty -- `scale(26, dpi)`, 39 px at a14's 144 DPI. **CORRECTED**:
-    /// this used to say `scale(20, dpi)` / "30 px ... against 29 measured" /
-    /// "~8 px taller" -- three numbers that were right for the pre-Task-10
-    /// row height (`tok::ROW_H` was 20) and went stale when Task 10 raised
-    /// it to 26 without this block being re-derived. The 39 px figure is
-    /// also not directly comparable to a "measured" figure the way the old
-    /// text implied: since Task 10, `rebuild_state_image_list`'s state
-    /// image list FORCES the live row to be at least `scale(tok::ROW_H,
-    /// dpi)`, but comctl32 is still free to pad further on top of that
-    /// image height (`list_row_height`'s own doc), and no hardware
-    /// measurement of the live, non-empty row exists yet (Gate 05, `NOT YET
-    /// RUN`). So a window opened on a config with no shortcuts lays out
-    /// against a LOWER BOUND that may or may not equal the true row height,
-    /// and without this field the first Add would keep whatever the
-    /// fallback got wrong: `external_change` does not move, the layout is
-    /// skipped, and the list is left at whatever height the fallback
-    /// produced rather than the one the real rows need.
+    /// is empty -- `scale(22, dpi)`, 33 px at a14's 144 DPI.
+    ///
+    /// **CORRECTED TWICE, for the same reason both times.** It first read
+    /// `scale(20, dpi)` / "30 px ... against 29 measured" / "~8 px taller",
+    /// three numbers that were right while `tok::ROW_H` was 20 and went
+    /// stale when Task 10 raised it to 26. The re-derivation that fixed
+    /// that wrote `scale(26, dpi)` / "39 px", which went stale in turn on
+    /// 2026-08-13 when the compaction pass (`1f46335`) took `tok::ROW_H`
+    /// from 26 to 22 -- see the token record beside `WINDOW_HEIGHT`, which
+    /// exists because of this. The recurring cause is not carelessness in
+    /// either pass: it is a figure DERIVED from a token, written out as a
+    /// literal, in a comment nothing compiles and no test reads. `scale` is
+    /// `v * dpi / 96` (`fn scale`, mod.rs:916), so `tok::ROW_H` and this are
+    /// one edit apart and nothing links them -- moving the token leaves the
+    /// prose silently wrong. The second time round there was also nothing
+    /// left to check it against: `grep -rn "ROW_H 26" crates/ docs/` matched
+    /// NOTHING, because the one place that recorded the 26 was the 900x740
+    /// derivation table, deleted in the same pass. Re-derive rather than
+    /// nudge, and expect to be back.
+    ///
+    /// The 33 px figure is also not directly comparable to a "measured"
+    /// figure the way the first version of this text implied: since Task 10,
+    /// `rebuild_state_image_list`'s state image list FORCES the live row to
+    /// be at least `scale(tok::ROW_H, dpi)`, but comctl32 is still free to
+    /// pad further on top of that image height (`list_row_height`'s own
+    /// doc), and no hardware measurement of the live, non-empty row exists
+    /// yet (Gate 05, `NOT YET RUN`). So a window opened on a config with no
+    /// shortcuts lays out against a LOWER BOUND that may or may not equal
+    /// the true row height, and without this field the first Add would keep
+    /// whatever the fallback got wrong: `external_change` does not move, the
+    /// layout is skipped, and the list is left at whatever height the
+    /// fallback produced rather than the one the real rows need.
     ///
     /// **Where a too-short fallback's slack goes changed with Task 9, and
     /// the guard is what stops it mattering more, not less.** A shortfall
@@ -3324,11 +3361,22 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// window height is `561 + 2(L - 16)` for a real Caption line height `L`.
 /// The FORM has never changed -- `notes_h` is a single linear term inside
 /// `card2_h`, which is a single linear term inside the total, so the
-/// coefficient survives every re-derivation and only the anchor moves. Four
-/// anchors so far: 546 before Task 7's title bar, 555 after it, 697 after
-/// Task 10's 26 px rows, and 561 after the 2026-08-13 compaction pass, which
-/// is the one this line now carries. `MIN_HEIGHT`'s own table is where 561
-/// comes from; re-read it there rather than trusting this sentence.
+/// coefficient survives every re-derivation and only the anchor moves. Five
+/// anchors so far: 546 before Task 7's title bar, 555 after it, 675 after
+/// Task 8's cards, 697 after Task 10's 26 px rows, and 561 after the
+/// 2026-08-13 compaction pass, which is the one this line now carries.
+///
+/// (**CORRECTED**: this sentence said "Four anchors" and skipped Task 8's
+/// 675. The three separate re-derivation paragraphs that stood here were
+/// compressed into one sentence in `9e4e026`, and the middle anchor was lost
+/// in the compression rather than refuted. It is in that commit's parent,
+/// under "Re-derived for Task 8's cards": at the banner-up four-row floor
+/// `client = 631 + notes_h` exactly, and `notes_h = 2L + scale(4, dpi)`, so
+/// `client = 635 + 2L` at 96 DPI -- `675 + 2(L-16)` once the `+8` non-client
+/// frame and the `-32` from centring the formula on `L = 16` are folded in.)
+///
+/// `MIN_HEIGHT`'s own table is where 561 comes from; re-read it there rather
+/// than trusting this sentence.
 ///
 /// **The shipped 560 does NOT absorb `L = 16` with the four-row banner-up
 /// guarantee intact** -- it is one pixel short of it, which is the whole of
