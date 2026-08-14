@@ -37,10 +37,15 @@ hypothetical and not visible from inside any one session:
   without either sweeping in a stranger's work or hand-picking hunks.
 - **`git switch` in one session silently re-homes every commit another
   session makes next.** One did, mid-edit. The victim is not warned at any
-  point: after HEAD moved, five `git commit` runs printed the ordinary
-  `[main abc1234] …` — committing to `main` is not an error, so there is
-  nothing for git to say — while the feature branch they believed they were
-  on still pointed at the old commit.
+  point, and the obvious defence does not exist. Committing to `main` is not
+  an error, so git has nothing to say: the most it would print is the ordinary
+  `[main abc1234] …` — and that line was not printed either, because the
+  commits went through `git commit -q`, which suppresses it. The check that
+  followed looked conclusive and was not: **`git log --oneline -1` never names
+  the branch you are on.** Five commits landed on `main` while every command
+  involved reported success. This is why the rule below is *run
+  `git branch --show-current`*, not *read the output more carefully* — on this
+  path there is no output to read.
   - And the push that should have caught it does not. `git push -u origin
     <branch>` pushed that untouched branch and printed
     `remote: Create a pull request for '<branch>' …` — **an empty push and a
