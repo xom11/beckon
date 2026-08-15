@@ -3105,11 +3105,11 @@ pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035
 /// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
 ///
 /// It drives ANOTHER process across a process boundary, so it cannot link
-/// this crate and cannot be recompiled into agreement: these forty-four are
+/// this crate and cannot be recompiled into agreement: these forty-eight are
 /// fixed points, and `probe_pinned_ids_have_not_moved` is what says so out
 /// loud.
 ///
-/// **WIDENED 2026-08-15, from fifteen to forty-four**, on review. This list
+/// **WIDENED 2026-08-15, from fifteen to forty-eight**, on review. This list
 /// used to hold only the `const IDC_*` declarations at the top of the probe,
 /// and the sentence below still counts them that way -- `grep -c "const
 /// IDC_"` is 15 and stays 15. That was never the rule the list claimed to
@@ -3177,6 +3177,14 @@ pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
     ("OPENFILE", 1012),
     ("CLOSE", 1013),
     ("TAP", 1025),
+    // The four pills. `examples/settings_probe.rs`'s `TAB_PILLS` transcribes
+    // 1040-1043 as bare literals, exactly like every other entry here — they
+    // were missed when this table grew from 15 to 44 because that pass walked
+    // the System and About sections and the pills are neither.
+    ("TAB_SHORTCUTS", 1040),
+    ("TAB_KEYBOARD", 1041),
+    ("TAB_SYSTEM", 1042),
+    ("TAB_ABOUT", 1043),
     ("MOD_CTRL", 1028),
     ("MOD_WIN", 1029),
     ("MOD_ALT", 1030),
@@ -5586,9 +5594,9 @@ mod tests {
     fn probe_pinned_ids_count_matches_its_doc() {
         assert_eq!(
             PROBE_PINNED_IDS.len(),
-            44,
+            48,
             "`PROBE_PINNED_IDS` changed length. Its own doc comment says how \
-             many there are (\"these forty-four are fixed points\") -- update \
+             many there are (\"these forty-eight are fixed points\") -- update \
              the word as well as the list"
         );
         let mut ids: Vec<i32> = PROBE_PINNED_IDS.iter().map(|(_, v)| *v).collect();
