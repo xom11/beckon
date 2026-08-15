@@ -239,6 +239,34 @@ escape hatch that strictly dominates is the one that already exists.
 Full measurements and the rejected alternatives are in
 `docs/superpowers/specs/2026-08-10-cli-subcommands-design.md`.
 
+#### `check` validates shape; `check --resolve` validates meaning
+
+`beckon check` never consults the machine — that is what makes it usable in
+CI, where none of the apps are installed, and it is pinned by
+`check_without_resolve_says_nothing_about_whether_the_app_exists`.
+
+`--resolve` grades every app name against this machine's catalog using
+`beckon_core::certainty::Certainty`. Every backend already computed the tier
+and threw it away on one line (`resolve_inner(..).is_some()` on macOS,
+`resolve_detailed_in(..).is_none()` on Linux, `apps::resolve(..).is_none()`
+on Windows); the grade is that projection removed.
+
+**Only `NoMatch` changes the exit code.** A `Guess` — the single substring
+tier every backend has — resolves, so it prints and exits 0. Two of the
+author's own bindings depend on that tier deliberately (`Settings` matching
+*System Settings*, `DeepSeek` matching *DeepSeek - Into the Unknown*), so
+failing on `Guess` would turn a correct file red, which is how a check stops
+being run. The scale is why the flag exists at all: measured on `rog`,
+**14 of 18 shortcuts did not resolve** while `beckon check` reported
+`ok: 18 shortcuts`.
+
+A `Guess` reports **two different hazards** and says which: one candidate
+means a later install can take the name; several means the winner is already
+decided by sort order over `.desktop` ids or display names, not by anything
+the user wrote. Before `desktop::scan()` sorted its output, 20 runs of
+`beckon resolve` split 12/8 between two entries sharing a `Name=` — the same
+keypress, two answers.
+
 ### Linux backend dispatch
 
 "Linux" is not one backend — it depends on the compositor/DE the user is currently running. `beckon-linux` detects this at startup via env variables and dispatches to the right implementation. A user only ever runs one compositor at a time, so there is no "support both at once" — there is only "detect correctly".
