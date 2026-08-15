@@ -74,6 +74,7 @@ pub mod caps;
 pub mod capture;
 pub mod config_write;
 pub mod menu;
+pub mod paths;
 pub mod settings;
 pub mod shortcuts;
 pub mod theme;

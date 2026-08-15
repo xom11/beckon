@@ -375,9 +375,25 @@ pub fn cmd_serve_app(
     on_broken: BrokenConfig,
 ) -> Result<()> {
     let _lock = acquire_lock(config)?;
-    let config = config
-        .canonicalize()
-        .with_context(|| format!("cannot resolve `{}`", config.display()))?;
+    // `canonicalize` is what makes every later consumer agree about which file
+    // this is; `paths::plain` is what keeps the answer in a spelling a person
+    // and the shell both accept. On Windows `canonicalize` is
+    // `GetFinalPathNameByHandleW` and always returns `\\?\C:\...`, which leaked
+    // to the startup log, the `Open config file` tooltip and the System page's
+    // config row — and, less visibly, to `ShellExecuteW` and `explorer /select,`
+    // behind that row's two glyphs, which are documented not to take it.
+    //
+    // **This is the only site that needs it, and deliberately not the one
+    // inside `lockfile::acquire`.** The lock runs on the ORIGINAL `&Path` one
+    // line above, does its own `canonicalize`, and hashes the result into the
+    // lock file's NAME (`stable_id`). Simplifying there would rename the lock,
+    // so an old and a new binary would stop seeing each other's lock and both
+    // would serve — the exact failure `stable_id`'s module doc records.
+    let config = beckon_core::paths::plain(
+        config
+            .canonicalize()
+            .with_context(|| format!("cannot resolve `{}`", config.display()))?,
+    );
     let text = std::fs::read_to_string(&config)
         .with_context(|| format!("cannot read `{}`", config.display()))?;
     // The path prefix is applied HERE rather than inside `plan_startup`, so
