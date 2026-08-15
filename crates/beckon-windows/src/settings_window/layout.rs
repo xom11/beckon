@@ -22,6 +22,7 @@
 //! one -- which is why there is exactly one.
 
 use super::*;
+use beckon_core::page_plan::{AboutPlan, RowMetrics, SystemPlan};
 
 /// Layout tokens, at 96 DPI. Every one of them goes through `scale`.
 ///
@@ -88,6 +89,29 @@ pub(super) mod tok {
     pub const GAP_CARD: i32 = 8;
     /// Between two controls inside one band.
     pub const GAP: i32 = 6;
+    /// Between two SETTING ROWS on the System and About pages -- the rhythm
+    /// `beckon_core::page_plan` stacks with.
+    ///
+    /// **New 2026-08-15, and it is one of the two halves of the void those
+    /// two doors carried.** Those rows sat one `GAP` apart, so the pitch was
+    /// `CTL + GAP` = 32 against the mock-up's 46 -- and the mock-up is the
+    /// authority on what is on screen. Measured in Chrome at the drawn 680 px:
+    /// `.srow` is 46 px and the System card is 364, where the shipped card was
+    /// 254. That 110 px is half the 224 px of ground under it; the other half
+    /// is `WINDOW_HEIGHT`, which fell in the same pass.
+    ///
+    /// **This is not a regrid of `CTL` / `ROW_H` / `CARD_PAD`**, which design
+    /// §10 puts out of scope and which would move the list's tick cell through
+    /// `ImageList_Create`. It is the space BETWEEN rows on two pages, owned by
+    /// the two plan functions and read nowhere else.
+    pub const ROW_GAP: i32 = 20;
+    /// Above and below a divider hairline on those same two pages.
+    ///
+    /// Half `ROW_GAP`, so a group boundary is `10 + 1 + 10` = 21 against a
+    /// 20 px row gap: parted by the LINE, and by one pixel more of air than
+    /// the rows already have. A full `ROW_GAP` each side would part them
+    /// twice and put a hole at every group.
+    pub const DIV_GAP: i32 = ROW_GAP / 2;
     /// A label and the control it names.
     pub const LABEL: i32 = 10;
     /// Height of one band line, and of every button on it.
@@ -262,33 +286,32 @@ impl LayoutHandles {
     }
 }
 
-/// Where each of the System card's rows starts, as an offset from the card's
-/// own content origin, plus the two dividers and the total interior height.
+/// The System and About cards' row rhythm, at ONE DPI, already scaled.
 ///
-/// **One plan, three readers**: `compute_card_rects` takes `content_h` to
-/// size the card, `layout` takes the row offsets to place fourteen controls,
-/// and `WM_PAINT` takes the two divider offsets to draw two hairlines. Three
-/// spellings of "how tall is the System card" would drift, and the drift
-/// would read as a rendering fault -- a divider through a row, or a card with
-/// a gap at the bottom.
+/// **Both plans moved to `beckon_core::page_plan` on 2026-08-15**, and these
+/// three functions are the seam. They were pure integer arithmetic sitting in
+/// a `cfg(windows)` module with **no tests in it at all** -- so the whole
+/// vertical geometry of two doors was unrunnable on the machine it is written
+/// on and invisible to two of the three CI jobs, which is why 224 px of ground
+/// under the System card reached a photograph before it reached a failure.
+/// Design §12 q3 makes exactly this argument for `Page`.
 ///
-/// **A row that is not on screen contributes NO height**, the same rule the
-/// banner's card follows: its offset is the one the next row takes, so an
-/// absent `Start with Windows` closes the gap rather than leaving a hole.
-/// That is what makes "omitted, not greyed" a layout property rather than a
-/// `ShowWindow` that leaves a space behind.
-#[derive(Clone, Copy, Default)]
-pub(super) struct SystemPlan {
-    pause: i32,
-    autostart: i32,
-    reload: i32,
-    div1: i32,
-    dark: i32,
-    opacity: i32,
-    div2: i32,
-    config: i32,
-    log: i32,
-    content_h: i32,
+/// **The TOKENS stay here.** Core is handed lengths and never names one, so
+/// there is no second copy of `CTL` to drift from this one, and
+/// `the_row_rhythm_is_the_one_core_stacks_with` is what ties the two ends
+/// together.
+fn row_metrics(dpi: u32) -> RowMetrics {
+    let s = |v: i32| v * dpi as i32 / 96;
+    RowMetrics {
+        ctl: s(tok::CTL),
+        row_gap: s(tok::ROW_GAP),
+        div_gap: s(tok::DIV_GAP),
+        mark: s(paint::MARK_D),
+        // The name line is `s(24)`, the same budget the Keyboard card's
+        // caption takes for its own single line of Subtitle-adjacent text.
+        // `ctl` would be a control's height, and this is not a control.
+        name: s(24),
+    }
 }
 
 /// Walk the nine slots in drawing order, skipping the two conditional ones.
@@ -300,125 +323,13 @@ pub(super) struct SystemPlan {
 /// three groups without a heading on any of them -- design §7 rule 5, read
 /// backwards: a group whose rows share a store does not need a word saying so.
 fn system_plan(dpi: u32, rows: SystemRows) -> SystemPlan {
-    let s = |v: i32| v * dpi as i32 / 96;
-    let ctl = s(tok::CTL);
-    let gap = s(tok::GAP);
-    // A divider costs its own hairline plus a gap either side, so the two
-    // groups it separates are not merely spaced but visibly parted.
-    let div_h = gap + s(1).max(1) + gap;
-    let mut p = SystemPlan::default();
-    let mut y = 0;
-    let row = |y: &mut i32, on: bool| -> i32 {
-        if !on {
-            // The offset an absent row reports is where the NEXT row starts,
-            // so a caller that places it anyway (which `layout` does not)
-            // stacks it under its successor rather than at the card's origin.
-            return *y;
-        }
-        let at = *y;
-        *y += ctl + gap;
-        at
-    };
-    p.pause = row(&mut y, true);
-    p.autostart = row(&mut y, rows.autostart);
-    p.reload = row(&mut y, true);
-    // The gap the last row of a group already left is the divider's own top
-    // gap, so it is taken back before the divider is placed -- otherwise
-    // every group boundary would be spaced twice.
-    y -= gap;
-    p.div1 = y + gap;
-    y += div_h;
-    p.dark = row(&mut y, true);
-    p.opacity = row(&mut y, true);
-    y -= gap;
-    p.div2 = y + gap;
-    y += div_h;
-    p.config = row(&mut y, true);
-    p.log = row(&mut y, rows.log);
-    // The trailing `gap` the last row added is not interior height: the
-    // card's own `CARD_PAD` is what separates it from the border.
-    p.content_h = (y - gap).max(0);
-    p
+    beckon_core::page_plan::system_plan(row_metrics(dpi), rows)
 }
 
-/// Every vertical figure on the About page, at one DPI.
-///
-/// `system_plan`'s shape exactly, and for the same three readers:
-/// `compute_card_rects` takes `content_h`, `layout` takes the row offsets, and
-/// `WM_PAINT` takes the two divider offsets through `about_dividers`. Three
-/// spellings of "how tall is the About card" would drift, and the drift reads
-/// as a divider through a row.
-///
-/// **Nothing here is conditional**, unlike System's two omittable rows: there
-/// is no fact about a machine that removes a row from this page, so the plan
-/// takes no `rows` argument and only the disclosure's height varies -- with
-/// the FONT and the card's width, not with any state.
-#[derive(Clone, Copy, Default)]
-pub(super) struct AboutPlan {
-    mark: i32,
-    name: i32,
-    div1: i32,
-    build: i32,
-    location: i32,
-    licence: i32,
-    div2: i32,
-    disclosure: i32,
-    links: i32,
-    content_h: i32,
-}
-
-/// `disclosure_h` is measured by `disclosure_height` and passed in, so this
-/// function stays pure arithmetic and the one measurement has one call site
-/// per pass.
+/// `disclosure_h` is measured by `disclosure_height` and passed in, so the
+/// arithmetic stays pure and the one measurement has one call site per pass.
 fn about_plan(dpi: u32, disclosure_h: i32) -> AboutPlan {
-    let s = |v: i32| v * dpi as i32 / 96;
-    let ctl = s(tok::CTL);
-    let gap = s(tok::GAP);
-    // `system_plan`'s divider, to the pixel: a hairline plus a gap either
-    // side, so the groups it parts are visibly parted rather than merely
-    // spaced. Spelled again rather than shared because the two pages compute
-    // nothing else in common and a `divider_h(dpi)` helper would be a shared
-    // name for two independent decisions.
-    let div_h = gap + s(1).max(1) + gap;
-    let mut p = AboutPlan::default();
-    let mut y = 0;
-
-    // The identity block: the mark, then the name under it. `MARK_D` is
-    // `paint::mark`'s own constant -- the painter draws a tile that size and
-    // this reserves exactly it, so a change to one is a compile-time change to
-    // the other rather than a silently clipped tile.
-    p.mark = y;
-    y += s(paint::MARK_D) + gap;
-    // The name line is `s(24)`, the same budget the Keyboard card's caption
-    // takes for its own single line of Subtitle-adjacent text. `ctl` would be
-    // a control's height, and this is not a control.
-    p.name = y;
-    y += s(24);
-
-    p.div1 = y + gap;
-    y += div_h;
-
-    let row = |y: &mut i32| -> i32 {
-        let at = *y;
-        *y += ctl + gap;
-        at
-    };
-    p.build = row(&mut y);
-    p.location = row(&mut y);
-    p.licence = row(&mut y);
-    // The gap the last row left is the divider's own top gap -- taken back
-    // before placing it, or the boundary is spaced twice. `system_plan` does
-    // the same and for the same reason.
-    y -= gap;
-    p.div2 = y + gap;
-    y += div_h;
-
-    p.disclosure = y;
-    y += disclosure_h + gap;
-    p.links = y;
-    y += ctl;
-    p.content_h = y.max(0);
-    p
+    beckon_core::page_plan::about_plan(row_metrics(dpi), disclosure_h)
 }
 
 /// How tall the wrapped disclosure needs to be at `width`.
@@ -933,11 +844,19 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // tall and the two conditional rows either take a row's height or none.
     //
     // No clamp against `content_bottom`, on card 3's reasoning: the tallest
-    // this card gets is nine slots, which at 96 DPI is 262 px of interior
-    // against a floor of 560 for the whole window, so it cannot reach the
-    // command bar at any size `WM_GETMINMAXINFO` allows -- and below the
-    // floor, clamping its top downward would push it INTO the bar rather than
-    // away from it.
+    // this card gets is nine slots, which at 96 DPI is **304 px of interior**
+    // and 326 with its own `CARD_PAD`, against a floor of 480 for the whole
+    // window -- it needs 448 -- so it cannot reach the command bar at any size
+    // `WM_GETMINMAXINFO` allows, and below the floor clamping its top downward
+    // would push it INTO the bar rather than away from it.
+    //
+    // **The figure here said 262 and was wrong by 30 px before the rhythm
+    // even changed.** Nine slots at the old `CTL + GAP` pitch is 232, not 262,
+    // and no reading of the function produced 262 -- which is the whole reason
+    // `system_plan` now lives in `beckon_core::page_plan` with
+    // `the_system_card_interior_is_304_with_every_row` beside it. A comment
+    // asserting a number no test could reach is how this door came to carry
+    // 224 px of ground without anything failing.
     let sys_card_h = card_pad * 2 + system_plan(dpi, sys_rows()).content_h;
     let card4 = card(content_top, if system { sys_card_h } else { 0 });
 
@@ -948,12 +867,20 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // measurement is pure and depends only on `hwnd`, the font and the width,
     // so `layout` recomputing it a moment later cannot get a different answer.
     //
-    // No clamp against `content_bottom`, on cards 3 and 4's reasoning. The
-    // tallest this card gets is the mark (36) plus a name line (24) plus two
-    // dividers (13 each) plus three rows (32 each) plus three lines of
-    // disclosure (~48) plus a link row (26) plus `CARD_PAD` twice -- about 280
-    // px at 96 DPI against a floor of 560 for the whole window, so it cannot
-    // reach the command bar at any size `WM_GETMINMAXINFO` allows.
+    // **This is the card `MIN_HEIGHT` is derived from**, and the only one on
+    // any door whose height moves with a text measurement rather than with a
+    // token. At 96 DPI: the mark (36) plus a row gap (20) plus a name line
+    // (24) plus two dividers (21 each) plus three rows (46 each) plus the
+    // disclosure plus a row gap plus a link row (26), and `CARD_PAD` twice --
+    // 340 at a two-line disclosure, 356 at three, 372 at four.
+    //
+    // No clamp against `content_bottom`, on cards 3 and 4's reasoning, but the
+    // margin is REAL here rather than large: the floor of 480 leaves
+    // `480 - 44 - 78` = 358 px, so two lines clear it by 18 and three by 2.
+    // **Four lines do not fit**, and that is stated rather than guarded
+    // because of what it collides with: nothing. The command bar draws no
+    // buttons on this door (`command_bar_shown`), so the band the card would
+    // reach into is empty ground. See `MIN_HEIGHT` for the full table.
     let about_inner_w = clamp(cw - card_pad * 2);
     let about_card_h = card_pad * 2
         + about_plan(
@@ -1958,4 +1885,143 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         bw_close,
         ctl,
     );
+}
+
+/// **The first tests this file has ever had, 2026-08-15.**
+///
+/// Nothing here touches an `HWND`, and that is the whole reason they can
+/// exist: they re-run the vertical arithmetic of `compute_card_rects` against
+/// the same constants that function reads, for the three doors whose cards are
+/// FIXED. `compute_card_rects` itself cannot be called without a window, so
+/// what is checked is the arithmetic rather than the function -- and the two
+/// are kept honest by every term below being the token or the core function
+/// the real one uses, never a transcribed number.
+///
+/// **They run on the Windows CI job only.** `settings_window` is `cfg`-gated,
+/// so `cargo test` on ubuntu and macOS never sees them; on those two jobs the
+/// crate is `--exclude`d outright. The half that runs everywhere is
+/// `beckon_core::page_plan`'s, which is why the plans were moved there.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `compute_card_rects`' own vertical terms, spelled once here.
+    fn geometry(h: i32) -> (i32, i32) {
+        let content_top = chrome::TITLEBAR_H + tok::TABSTRIP_H + tok::GAP_CARD;
+        let content_bottom = h - tok::PAD - tok::CTL - tok::GAP_CARD;
+        (content_top, content_bottom)
+    }
+
+    fn card_h(content_h: i32) -> i32 {
+        tok::CARD_PAD * 2 + content_h
+    }
+
+    const M96: RowMetrics = RowMetrics {
+        ctl: tok::CTL,
+        row_gap: tok::ROW_GAP,
+        div_gap: tok::DIV_GAP,
+        mark: paint::MARK_D,
+        name: 24,
+    };
+
+    const BOTH: SystemRows = SystemRows {
+        autostart: true,
+        log: true,
+    };
+
+    /// The seam. `row_metrics` scales the tokens for core, and at 96 DPI the
+    /// scale is the identity -- so this is the assertion that a token moved
+    /// here reaches the arithmetic tested there.
+    #[test]
+    fn the_row_rhythm_is_the_one_core_stacks_with() {
+        assert_eq!(row_metrics(96), M96);
+        assert_eq!(M96.pitch(), 46, "the setting-row pitch left the drawing");
+        // 144 DPI is the a14 screenshots' scale, and the one the probe runs
+        // at; a rounding change here would move every row on two doors.
+        assert_eq!(row_metrics(144).ctl, 39);
+        assert_eq!(row_metrics(144).row_gap, 30);
+    }
+
+    /// **The defect, as an assertion.** At the shipped size the System card
+    /// ended 224 px above the command bar and About 210 -- a third of the
+    /// window, on two doors out of four -- and no test anywhere could fail.
+    ///
+    /// The bound is 60 px: one row's pitch (46) plus a card gap, which is the
+    /// most a page can leave before the emptiness stops reading as margin.
+    /// The mock-up, measured in Chrome, leaves 10 px on System and 14 on
+    /// About.
+    #[test]
+    fn the_fixed_doors_leave_no_room_for_a_second_card() {
+        let (top, bottom) = geometry(WINDOW_HEIGHT);
+        let sys = card_h(beckon_core::page_plan::system_plan(M96, BOTH).content_h);
+        let about = card_h(beckon_core::page_plan::about_plan(M96, 32).content_h);
+        assert_eq!(sys, 326);
+        assert_eq!(about, 340);
+        for (name, h) in [("System", sys), ("About", about)] {
+            let ground = bottom - (top + h);
+            assert!(
+                (0..=60).contains(&ground),
+                "the {name} door leaves {ground} px of ground at the shipped \
+                 size (card {h}, page {} px)",
+                bottom - top
+            );
+        }
+    }
+
+    /// The floor has to fit the card it was derived from, or the window has a
+    /// size at which a page draws into the command bar's band.
+    ///
+    /// Three-line disclosure, which is the row `MIN_HEIGHT` is set from --
+    /// see its own table for why four lines is stated rather than guarded.
+    #[test]
+    fn the_fixed_doors_fit_above_the_command_bar_at_the_floor() {
+        let (top, bottom) = geometry(MIN_HEIGHT);
+        let sys = card_h(beckon_core::page_plan::system_plan(M96, BOTH).content_h);
+        let kb = tok::CARD_PAD * 2 + 24 + tok::CTL + tok::GAP;
+        for (name, h) in [
+            ("System", sys),
+            ("Keyboard", kb),
+            (
+                "About, two lines",
+                card_h(beckon_core::page_plan::about_plan(M96, 32).content_h),
+            ),
+            (
+                "About, three lines",
+                card_h(beckon_core::page_plan::about_plan(M96, 48).content_h),
+            ),
+        ] {
+            assert!(
+                top + h <= bottom,
+                "{name} needs {} px and the floor gives {}",
+                h,
+                bottom - top
+            );
+        }
+    }
+
+    /// The Shortcuts list is what absorbs whatever the fixed cards leave, so
+    /// its row count is a CONSEQUENCE of the two constants above rather than
+    /// an input to them -- but it still has to be a list.
+    ///
+    /// `MIN_HEIGHT`'s own three bullets are these numbers; this is what makes
+    /// them fail rather than merely go stale.
+    #[test]
+    fn the_list_is_still_worth_looking_at_at_both_sizes() {
+        // `compute_card_rects`' chain, banner DOWN, with the 96-DPI fallback
+        // row and a one-line notes strip (`notes_h = 2L + 4`, L = 16).
+        let rows = |h: i32| {
+            let (top, bottom) = geometry(h);
+            let list_top = top + tok::CARD_PAD + tok::CTL + tok::GAP;
+            let card2_h = tok::CARD_PAD * 2 + tok::CTL * 2 + tok::GAP * 3 + 36;
+            let avail = (bottom - list_top) - tok::GAP_CARD - tok::CARD_PAD - card2_h;
+            avail / tok::ROW_H
+        };
+        assert_eq!(rows(WINDOW_HEIGHT), 8);
+        assert_eq!(rows(MIN_HEIGHT), 7);
+        assert!(
+            rows(MIN_HEIGHT) >= 2,
+            "a window whose list shows one row is not a smaller version of \
+             this window, it is a broken one"
+        );
+    }
 }

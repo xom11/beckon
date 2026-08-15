@@ -151,10 +151,10 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    about_state, banner_shown, combo_needs_placing, copy_text, default_button, image_identity,
-    opacity_alpha, system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState,
-    DefaultButton, Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths,
-    SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
+    about_state, banner_shown, combo_needs_placing, command_bar_shown, copy_text, default_button,
+    image_identity, opacity_alpha, system_state, warn_dot_shown, AboutInputs, AboutState,
+    ComboSpot, ControlState, DefaultButton, Field, FlagTone, ImageOnDisk, ListItem, Mark, Note,
+    Page, Paths, SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -710,11 +710,12 @@ const PAGE_CONTROLS: [(i32, Page); 50] = [
 /// safe direction: a row that flickers into existence is a cosmetic fault,
 /// while a row shown for a capability this process does not have is a
 /// control that does nothing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SystemRows {
-    autostart: bool,
-    log: bool,
-}
+/// **The type moved to `beckon_core::page_plan` on 2026-08-15** with the plan
+/// function that reads it; this alias is what keeps the ~8 sites here reading
+/// as they did. The thread-local, the push and `sys_row_shown` are still the
+/// window's -- only "which rows exist, and therefore how tall the card is" is
+/// core's.
+use beckon_core::page_plan::SystemRows;
 
 thread_local! {
     static SYS_ROWS: std::cell::Cell<SystemRows> = const {
@@ -782,6 +783,23 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
     for id in [IDC_BANNER, IDC_RELOAD, IDC_KEEPMINE] {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
             show(h, on);
+        }
+    }
+    // The command bar's three, handled here rather than through
+    // `PAGE_CONTROLS` for the banner's exact reason: that table maps an id to
+    // ONE owning door, and these three belong to two. `command_bar_shown` is
+    // the same function `DefaultButton::visible` reads, so the buttons on
+    // screen and the ring's opinion of them cannot disagree.
+    //
+    // **The BAND is not hidden with them.** `compute_card_rects` reserves
+    // `pad + ctl` at the bottom of all four doors whatever this says, so
+    // `content_bottom` stays one expression with one meaning -- and an empty
+    // bar is indistinguishable from the window ground it is painted on, so
+    // there is nothing on screen to explain away.
+    let bar = command_bar_shown(page);
+    for id in [IDC_OPENFILE, IDC_CLOSE, IDC_APPLY] {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            show(h, bar);
         }
     }
 }
@@ -1339,7 +1357,35 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // from `tok::ROW_H` has gone stale there twice now, once per move, and the
 // second time there was nothing left in the tree to check it against.
 const WINDOW_WIDTH: i32 = 680;
-const WINDOW_HEIGHT: i32 = 600;
+/// **600 -> 500 on 2026-08-15, and 600 was never derived for this window.**
+///
+/// Design §2's table reads "680 × 600 at 100 % DPI (was 760 × 600)" and then
+/// spends a paragraph deriving the WIDTH -- the 638 px of card interior, the
+/// 200 px shortcut column, the ~438 left for an app name. The height is
+/// carried over from the pre-Four-Doors window unexamined, and it is the
+/// larger half of the void the System and About doors shipped with.
+///
+/// **The mock-up is 497 px tall.** Measured rather than read off the drawing's
+/// own caption, which says 600: rendered at its stated 680 px in Chrome, the
+/// `.win` element is 496.9 -- 34 title bar, 47 strip, 336-374 page, 47 command
+/// bar -- and its System card fills its page to within 10 px. The shipped
+/// window gave that same page 478 px and the card needed 254, so 224 px
+/// became ground. 500 is that drawing, rounded to the ten.
+///
+/// **What it costs, and why that is the right side to lose on.** At 96 DPI
+/// with the banner down the list gets `500 - 276 - notes_h(36)` = 188 px, which
+/// snaps to **eight** whole rows where 600 gave thirteen. Eight is more than
+/// the mock-up draws (six). The window is resizable and the list is the ONE
+/// thing that flexes (`compute_card_rects`' `list_h`), so a taller window is
+/// one drag away and every pixel of it reaches the list -- whereas no drag
+/// helps the three doors whose cards are fixed, because their content cannot
+/// grow into the space. The default therefore serves the doors that cannot
+/// help themselves.
+///
+/// Re-derive BOTH ends before moving this again: the table under `MIN_HEIGHT`
+/// is the arithmetic, and `layout.rs`'s `the_fixed_doors_fit_above_the_command_bar`
+/// is what fails if this and the floor stop agreeing.
+const WINDOW_HEIGHT: i32 = 500;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
@@ -1447,57 +1493,81 @@ const WINDOW_HEIGHT: i32 = 600;
 /// row count is not the thing to guarantee. Restoring the four-row wording
 /// would re-couple this constant to a number the design deliberately let go.
 ///
-/// **RE-DERIVED 2026-08-15, after the four §3.1/§4 deletions.** The paragraph
-/// that stood here costed the spec's two §2.3 alternatives against a table
-/// that no longer describes this function: it put "raise the floor to keep
-/// four rows" at 587 and "wait for the Shortcuts workstream to return the
-/// editor's `Editing "…"` caption" at 563. That workstream landed, and it did
-/// not return the caption — it deleted it, along with the column header, the
-/// field labels and the keyboard card's cross-page reservation. Both figures
-/// are history; the table below is the current one and gives four rows at
-/// **456**. Neither alternative is live any more, because the floor now clears
-/// four rows by 104 px without moving.
+/// **RE-DERIVED AGAIN 2026-08-15, and this time the SUBJECT changed.** Every
+/// version of this block before it solved the SHORTCUTS page for a row count.
+/// That is no longer the binding constraint, and pretending otherwise is what
+/// let the System and About doors ship with a third of the window empty: their
+/// cards are sized by their own contents, so a floor derived from the list says
+/// nothing at all about whether they fit.
+///
+/// **The floor is now the tallest FIXED page.** Of the four doors, three have
+/// no flexing element -- Keyboard, System and About are one card each, as tall
+/// as their rows. The list gives room up before anything else moves
+/// (`compute_card_rects`), so the Shortcuts door cannot be the one that runs
+/// out of room first; one of the other three is, and it is About.
 ///
 /// ```text
-///   Derived from `compute_card_rects` (`layout.rs`) at 96 DPI, banner UP,
-///   Shortcuts page, with the shipped tokens. Solving that function for the
-///   client height `h` at which the list gets exactly two rows:
+///   At 96 DPI with the shipped tokens. The banner is a Shortcuts-only card
+///   (`banner_shown`), so on the fixed doors `content_top` is the strip's
+///   bottom plus one gap and nothing else:
 ///
-///     bar_y          = h - PAD - CTL                  = h - 36
-///     content_bottom = bar_y - GAP_CARD               = h - 44
-///     card2_h        = 2*CARD_PAD + (2*CTL + 2*GAP
-///                      + notes_h + GAP)               = 92 + notes_h
-///     y0             = TITLEBAR_H + TABSTRIP_H
-///                      + GAP_CARD                     = 78
-///     card0          = 2*CARD_PAD + CTL = 48,
-///                      so content_top                 = 134
-///     list_top       = content_top + CARD_PAD
-///                      + CTL + GAP                    = 177
-///     room           = content_bottom - list_top      = h - 221
-///     avail          = room - GAP_CARD - CARD_PAD
-///                      - card2_h                      = h - 332 - notes_h
-///     list_h         = avail - avail % row_h
+///     content_top    = TITLEBAR_H + TABSTRIP_H + GAP_CARD   = 78
+///     bar_y          = h - PAD - CTL                        = h - 36
+///     content_bottom = bar_y - GAP_CARD                     = h - 44
 ///
-///   Two rows is 2 * `list_row_height` (22) = 44 -- there is no header term
-///   any more -- and `notes_h` is 36 when the Caption line is 16 px, so
+///   Card heights come from `beckon_core::page_plan`, which is where the
+///   arithmetic now lives and where it is TESTED (all three CI jobs):
 ///
-///     h = 332 + 36 + 44 = 412  client == window (see below)
+///     sys_card_h     = 2*CARD_PAD + system_plan.content_h
+///                    = 22 + 304                             = 326
+///     about_card_h   = 2*CARD_PAD + about_plan.content_h
+///                    = 22 + (286 + disclosure_h)
+///
+///   `disclosure_h` is the ONE measured term on either page -- a DT_CALCRECT
+///   of `HOOK_DISCLOSURE` -- so About is the door whose height moves with the
+///   font. At 96 DPI in a 680 px window it wraps to two lines (32 px), which
+///   is what the a14 photograph shows:
+///
+///     about_card_h   2 lines (32) = 340    3 lines (48) = 356
+///                    4 lines (64) = 372
+///
+///   Fitting is `content_top + card_h <= content_bottom`, i.e.
+///   `h >= 122 + card_h`:
+///
+///     System                      h >= 448
+///     About, two-line disclosure  h >= 462
+///     About, three lines          h >= 478   <-- the floor
+///     About, four lines           h >= 494
 /// ```
 ///
-/// **412, and the constant stays 560**, which is a much larger gap than the
-/// 17 px it was and wants saying out loud: the floor is no longer anywhere
-/// near its own derivation. At 560 the list gets `560 - 332 - 36` = 192 px
-/// with the banner up, which snaps to **eight** whole rows.
+/// **480, from the three-line row, and the choice of row is the judgement.**
+/// Two lines is what the shipped string measures at every DPI the window is
+/// drawn at, so a floor at 462 would fit the window as it is; three is one
+/// line of headroom for a larger system font, and 480 clears it. Four lines
+/// does not fit, and the honest statement of what happens then is that the
+/// About card runs 14 px past `content_bottom` -- into the command bar's band,
+/// which **on that door is empty ground since the store split**
+/// (`command_bar_shown`). So the overflow state has nothing to collide with;
+/// it is the card sitting closer to the bottom edge than intended, not a
+/// control drawn over another. That is why the floor is set from the
+/// three-line row rather than the four.
 ///
-/// **Nothing forces a move, so it does not move.** The standard the floor is
-/// held to ("enough rows to see that it is a list") is met at 412 and met at
-/// 560, so the standard cannot choose; and the direction the slack points is
-/// the safe one — a floor that is too high costs draggability, a floor that is
-/// too low ships a window whose list is one row. `MIN_WIDTH` is frozen until
-/// gate G1 runs for the same class of reason, and moving either costs an edit
-/// to `examples/settings_probe.rs`'s transcribed copy, which exists to be
-/// checked on hardware nobody can reach today. Whoever does lower it has the
-/// number: 412 for two rows, 456 for four, 500 for six.
+/// **The Shortcuts list is now a consequence rather than the derivation**, and
+/// it lands well: at 480 with the banner down `avail` is `480 - 276 - 36` =
+/// 168, which snaps to **seven** whole rows, and with the banner up
+/// `480 - 332 - 36` = 112, or **five**. The withdrawn four-row guarantee above
+/// is cleared at the floor by a row, without the constant being answerable for
+/// it.
+///
+/// **"Nothing forces a move, so it does not move" is FALSIFIED, and it was the
+/// previous paragraph here.** It reasoned that the standard ("enough rows to
+/// see that it is a list") was met at 412 and at 560 alike, so nothing could
+/// choose between them -- true, and beside the point, because the standard it
+/// consulted was about the list. What forces the move is `WINDOW_HEIGHT`:
+/// 500 cannot be the default size of a window whose minimum is 560. The old
+/// note ends with the numbers it offered whoever lowered it -- "412 for two
+/// rows, 456 for four, 500 for six" -- and those were banner-UP figures for
+/// the old rhythm; the table above supersedes them.
 ///
 /// **The client rect IS the window rect, so there is no frame term.**
 /// `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
@@ -1553,18 +1623,24 @@ const WINDOW_HEIGHT: i32 = 600;
 /// `h - 276 - notes_h` instead of `h - 332 - notes_h`, and there is no cap:
 /// whatever is left goes to the list, snapped down to whole rows.
 ///
-/// - at the floor (client 560, which IS `MIN_HEIGHT` — see above), banner up:
-///   192 px, **eight** whole rows and 16 px over;
-/// - at the floor, banner down: 248 px, **eleven** rows and 6 px over;
-/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: 288 px,
-///   **thirteen** rows and 2 px over.
+/// - at the floor (client 480, which IS `MIN_HEIGHT` — see above), banner up:
+///   112 px, **five** whole rows and 2 px over;
+/// - at the floor, banner down: 168 px, **seven** rows and 14 px over;
+/// - at `WINDOW_HEIGHT` (client 500, likewise), banner down: 188 px,
+///   **eight** rows and 12 px over.
 ///
-/// **RE-DERIVED 2026-08-15, and all three bullets changed by more than any
-/// previous correction.** They read 82 / 138 / 178 the day before — two rows,
-/// five, seven — because the page reserved 86 px for a keyboard card it did
-/// not draw, the editor card reserved 24 px for a caption, the list reserved
-/// ~21 px for a column header, and `tok::ROWS` capped the result at eight
-/// anyway. All four went in one pass (design §3.1 and §4).
+/// **RE-DERIVED 2026-08-15 (second pass, the four-doors visual gaps).** The
+/// bullets read 192 / 248 / 288 — eight, eleven and thirteen rows — against a
+/// 560 floor and a 600 default. Only the two constants moved; the arithmetic
+/// above them is untouched, because the editor card and the banner are spaced
+/// with `tok::GAP` and the row rhythm that changed (`tok::ROW_GAP`) belongs to
+/// the System and About cards alone.
+///
+/// **The pass before that, the same day**, moved them from 82 / 138 / 178 —
+/// two rows, five, seven — because the page reserved 86 px for a keyboard card
+/// it did not draw, the editor card reserved 24 px for a caption, the list
+/// reserved ~21 px for a column header, and `tok::ROWS` capped the result at
+/// eight anyway. All four went in one pass (design §3.1 and §4).
 ///
 /// **CORRECTED 2026-08-14** — the same three bullets moved twice in one day
 /// before that, and the record is worth keeping because it is the reason every
@@ -1583,7 +1659,20 @@ const WINDOW_HEIGHT: i32 = 600;
 /// Simulated, not seen: nothing on the machine this was written on can display
 /// the window.
 const MIN_WIDTH: i32 = 660;
-const MIN_HEIGHT: i32 = 560;
+const MIN_HEIGHT: i32 = 480;
+
+/// The default size has to be one the floor allows, or `WM_GETMINMAXINFO`
+/// resizes the window in the same breath it is created.
+///
+/// A `const` block rather than a `#[test]`, and clippy is what settled it:
+/// both sides are constants, so `assert!` in a test is
+/// `clippy::assertions_on_constants` and would not have compiled under
+/// `-D warnings`. Here the same comparison fails the BUILD instead of a test
+/// run, on every job that compiles this crate.
+const _: () = {
+    assert!(WINDOW_HEIGHT >= MIN_HEIGHT);
+    assert!(WINDOW_WIDTH >= MIN_WIDTH);
+};
 
 /// §B.3's type roles. The seven roles — Title, Subtitle, BodyStrong, Body,
 /// Caption, Keycap, Chrome — map to five visual levels (Title, Subtitle, Body,
@@ -2557,11 +2646,17 @@ fn set_default_id(parent: HWND, id: i32) {
 
 /// `Ui::defid` in the vocabulary the pure decision speaks.
 ///
-/// Total: anything that is not one of the seven push buttons reads as
-/// `HOME`, which is where the ring lives at rest and what `DM_GETDEFID`
-/// answers before focus has ever touched a button.
-fn default_button_of(id: i32) -> DefaultButton {
-    match id {
+/// **`Option`, and `IDC_APPLY` has its own arm, since 2026-08-15.** Both
+/// changes are one change. This function used to end `_ => DefaultButton::HOME`
+/// and `HOME` was the constant `Save`, so `IDC_APPLY` needed no arm — it fell
+/// through the catch-all and came back as itself, which was true by coincidence
+/// rather than by construction. `HOME` is now `home(page)` and answers `None`
+/// on the two doors that do not draw Save, so the catch-all cannot name a
+/// button any more: it means "the ring is on nothing", which is exactly what
+/// `NO_DEFAULT` records and what System and About rest in.
+fn default_button_of(id: i32) -> Option<DefaultButton> {
+    Some(match id {
+        IDC_APPLY => DefaultButton::Save,
         IDC_ADD => DefaultButton::Add,
         IDC_REMOVE => DefaultButton::Remove,
         IDC_OPENFILE => DefaultButton::OpenFile,
@@ -2581,8 +2676,22 @@ fn default_button_of(id: i32) -> DefaultButton {
         IDC_ABOUT_GITHUB => DefaultButton::AboutGithub,
         IDC_ABOUT_RELEASES => DefaultButton::AboutReleases,
         IDC_ABOUT_BUG => DefaultButton::AboutBug,
-        _ => DefaultButton::HOME,
-    }
+        _ => return None,
+    })
+}
+
+/// The id `Ui::defid` and `DM_GETDEFID` carry for "the ring is on nothing".
+///
+/// Zero is the value `DM_GETDEFID`'s own contract already reserves — it
+/// answers `0` in the low word when a dialog has no default — and no beckon
+/// control can collide with it: `ids.rs` starts at 1001 and `RETIRED_IDS`
+/// never freed anything below it. `set_default_id` still demotes the OUTGOING
+/// button when it is handed this, which is the half that matters on screen.
+const NO_DEFAULT: i32 = 0;
+
+/// `id_of_default_button` over the `Option` the decision now speaks in.
+fn id_of_default_button_opt(b: Option<DefaultButton>) -> i32 {
+    b.map_or(NO_DEFAULT, id_of_default_button)
 }
 
 /// The other direction. Total by construction -- the enum has no variant
@@ -2714,14 +2823,32 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
     // under the focus and there is no obvious place for it to go, which is
     // the situation the fallback was written for. A door change is not that
     // situation and names its own -- see `repair_hidden_button`.
-    repair_hidden_button(hwnd, external_change, page, IDC_CLOSE);
+    //
+    // **...but only where `Close` is on screen, 2026-08-15.** The store split
+    // hides the command bar's three buttons on System and About, so the
+    // successor this caller had always been able to name unconditionally --
+    // "always present, always enabled even in the read-only state", as
+    // `repair_hidden_button`'s own doc puts it -- is behind another door on
+    // half of them. Moving focus onto a hidden control is the exact defect
+    // that function exists to repair, so naming one here would have made the
+    // repair the fault.
+    //
+    // The fallback is the open door's own pill, which is `show_page`'s
+    // successor and is on screen by construction: the strip is chrome and is
+    // never hidden.
+    let successor = if command_bar_shown(page) {
+        IDC_CLOSE
+    } else {
+        tab_id_of(page)
+    };
+    repair_hidden_button(hwnd, external_change, page, successor);
     let cur = UI
         .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
         .unwrap_or(IDC_APPLY);
     let want = default_button(default_button_of(cur), st, external_change, page);
     // `set_default_id` no-ops when the id it is handed is already the
     // default, so the overwhelmingly common push repaints nothing.
-    set_default_id(hwnd, id_of_default_button(want));
+    set_default_id(hwnd, id_of_default_button_opt(want));
 }
 
 /// The half of `repair_default_button` that needs no `ControlState`: move
@@ -2733,8 +2860,16 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
 /// a question the two callers answer differently, and answering it here for
 /// both of them was a defect. `repair_default_button` fires when a control
 /// went out of reach under the focus with no obvious replacement, so it names
-/// `IDC_CLOSE`: always present, always enabled even in the read-only state,
-/// and safe under a stray Space because it routes through `on_close_request`.
+/// `IDC_CLOSE`: always enabled even in the read-only state, and safe under a
+/// stray Space because it routes through `on_close_request`.
+///
+/// **"Always present" came off that list on 2026-08-15.** Design §1's store
+/// split hides the command bar's three buttons on System and About, so
+/// `repair_default_button` names `IDC_CLOSE` only where `command_bar_shown`
+/// is true and the open door's pill otherwise -- which makes the two callers
+/// agree on the fixed doors and keeps the successor a control that is
+/// guaranteed on screen. A successor that is itself hidden would make this
+/// function the source of the state it exists to repair.
 ///
 /// **A door change HAS an obvious successor, and it is the pill for the door
 /// just opened.** `show_page` names that instead, for three reasons:
@@ -2856,9 +2991,18 @@ unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page, su
     let focus = GetFocus();
     if !focus.is_invalid() {
         let fid = GetDlgCtrlID(focus);
-        if hidden_child(hwnd, focus)
-            || (is_push_button(fid) && !default_button_of(fid).visible(external_change, page))
-        {
+        // A push button this function cannot name is one whose id left
+        // `default_button_of`'s table, and moving focus off it is the safe
+        // reading of an id nobody claims -- the alternative is Space reaching
+        // a control the decision layer has no opinion about.
+        //
+        // `map_or(true, ..)` rather than `is_none_or`: the workspace pins
+        // `rust-version = "1.75"` and `Option::is_none_or` is stable since
+        // 1.82. Clippy's `incompatible_msrv` catches it on the Windows job.
+        #[allow(clippy::unnecessary_map_or)]
+        let ring_is_off_this_page =
+            default_button_of(fid).map_or(true, |b| !b.visible(external_change, page));
+        if hidden_child(hwnd, focus) || (is_push_button(fid) && ring_is_off_this_page) {
             match GetDlgItem(Some(hwnd), successor) {
                 Ok(next) => {
                     let _ = SetFocus(Some(next));
@@ -2886,8 +3030,16 @@ unsafe fn repair_hidden_button(hwnd: HWND, external_change: bool, page: Page, su
     let cur = UI
         .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
         .unwrap_or(IDC_APPLY);
-    if !default_button_of(cur).visible(external_change, page) {
-        set_default_id(hwnd, id_of_default_button(DefaultButton::HOME));
+    // `DefaultButton::home(page)`, not the old `HOME` constant: on System and
+    // About that is `None`, so this both takes the ring OFF the vanished
+    // button and declines to hand it to a Save those doors do not draw. The
+    // `is_none_or` arm is the resting state itself -- `cur` is already
+    // `NO_DEFAULT` there, `default_button_of` answers `None`, and
+    // `set_default_id` no-ops on the repeat.
+    #[allow(clippy::unnecessary_map_or)] // MSRV 1.75; `is_none_or` is 1.82.
+    let gone = default_button_of(cur).map_or(true, |b| !b.visible(external_change, page));
+    if gone {
+        set_default_id(hwnd, id_of_default_button_opt(DefaultButton::home(page)));
     }
 }
 
@@ -7472,9 +7624,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // does not send a command to a disabled control -- and the
                 // `IDC_APPLY` arm of `handle_command` checks anyway, because
                 // `TranslateAcceleratorW` has no such scruple about Ctrl+S.
+                //
+                // **The fallback is the DOOR's home since 2026-08-15**, where
+                // it was the constant `IDC_APPLY`. It is reached only before
+                // `UI` exists, but answering `Save` there while the System
+                // door is open is the same lie this arm was written to stop,
+                // one message earlier.
                 let id = UI
                     .with(|u| u.borrow().as_ref().map(|ui| ui.defid))
-                    .unwrap_or(IDC_APPLY);
+                    .unwrap_or_else(|| {
+                        id_of_default_button_opt(DefaultButton::home(PAGE.with(|p| p.get())))
+                    });
                 LRESULT(((DC_HASDEFID_FLAG << 16) | id as u32) as isize)
             }
             DM_SETDEFID_MSG => {
@@ -9096,8 +9256,21 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // exactly when the ring MUST leave: focus has genuinely gone. (Safe
         // to re-enter from there: `apply_state` holds no borrow across the
         // block that calls `enable`.)
+        //
+        // **`BN_KILLFOCUS` returns the ring to the DOOR's home since
+        // 2026-08-15**, where it returned it to the literal `IDC_APPLY`. Tab
+        // off the last button on the System door and that constant put the
+        // ring on a Save that door does not draw -- the defect
+        // `repair_hidden_button` exists for, reached through the Tab key
+        // instead of through a door change, and reached in a state where
+        // nothing afterwards would have corrected it.
         (_, c) if is_push_button(id) && (c == BN_SETFOCUS || c == BN_KILLFOCUS) => {
-            set_default_id(hwnd, if c == BN_SETFOCUS { id } else { IDC_APPLY });
+            let to = if c == BN_SETFOCUS {
+                id
+            } else {
+                id_of_default_button_opt(DefaultButton::home(PAGE.with(|p| p.get())))
+            };
+            set_default_id(hwnd, to);
         }
         // Anything else a push button says is not a command. `BS_NOTIFY`
         // documents `BN_PAINT` / `BN_PUSHED` / `BN_UNPUSHED` / `BN_DISABLE`
@@ -9318,6 +9491,29 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             // worse, one `apply_state` disabled Save for because it has
             // errors in it. A key must never do what its button cannot.
             if !enabled(hwnd, IDC_APPLY) {
+                return;
+            }
+            // **The same rule one step further, 2026-08-15: a key must never
+            // do what its button is not THERE to do.** Since design §1's store
+            // split the command bar is drawn on two doors, and `Ctrl+S` is an
+            // accelerator on the window, not on the page -- so from System or
+            // About it arrived here and wrote `apps.toml` with no Save on
+            // screen and nothing having offered to write anything. That is the
+            // invisible write the four-doors pass set out to remove.
+            //
+            // **Inert, not "switch to Shortcuts and save".** The model stays
+            // dirty and Save stays enabled, so the keystroke is not lost --
+            // it is waiting on the door that owns it, one `Ctrl+1` away. A key
+            // that changes doors under the user and then writes is a bigger
+            // surprise than a key that does nothing, and `show_page` is a
+            // route with its own focus and geometry repairs that nothing
+            // should acquire a fourth caller of by accident.
+            //
+            // `enabled` alone would not have covered this: `apply_enabled` is
+            // `dirty && no errors` and has no page term, and a hidden button
+            // is not a disabled one -- the window never calls
+            // `enable(false)` on a control it hides.
+            if !command_bar_shown(PAGE.with(|p| p.get())) {
                 return;
             }
             // The fields are the source of truth at the moment Save is
@@ -9857,14 +10053,20 @@ mod tests {
     #[test]
     fn every_push_button_round_trips_through_the_default_button_enum() {
         for id in PUSH_BUTTONS {
+            // **Stronger than it was.** This read
+            // `id_of_default_button(default_button_of(id))`, and while
+            // `default_button_of` ended `_ => HOME` an id missing from its
+            // table came back as `Save` -- so the round trip failed loudly for
+            // nineteen ids and SILENTLY for `IDC_APPLY`, the one that reached
+            // the catch-all. `Option` makes the gap an assertion.
             assert_eq!(
-                id_of_default_button(default_button_of(id)),
-                id,
+                default_button_of(id).map(id_of_default_button),
+                Some(id),
                 "control {id} does not survive the round trip"
             );
         }
         for b in DefaultButton::ALL {
-            assert_eq!(default_button_of(id_of_default_button(b)), b);
+            assert_eq!(default_button_of(id_of_default_button(b)), Some(b));
             assert!(
                 is_push_button(id_of_default_button(b)),
                 "{b:?} maps to an id `handle_command` does not treat as a \
@@ -9919,20 +10121,45 @@ mod tests {
     fn a_tab_pill_is_never_a_push_button() {
         for (id, _, _) in TABS {
             assert!(!is_push_button(id), "pill {id} is in PUSH_BUTTONS");
-            assert_eq!(default_button_of(id), DefaultButton::HOME);
+            assert_eq!(default_button_of(id), None);
         }
     }
 
-    /// The mapping is total, and anything unknown reads as the button the
-    /// ring rests on. `GetDlgCtrlID` returns 0 for the parent window and
-    /// comctl32 gives a combo box's inner EDIT an id of its own choosing --
-    /// both reach `default_button_of`.
+    /// The mapping names a button or it names none. `GetDlgCtrlID` returns 0
+    /// for the parent window and comctl32 gives a combo box's inner EDIT an id
+    /// of its own choosing -- both reach `default_button_of`.
+    ///
+    /// **RENAMED and inverted 2026-08-15**, from
+    /// `an_id_that_is_not_a_push_button_reads_as_home`. It asserted that an
+    /// unknown id reads as `HOME`, which was `Save` -- true then, and the
+    /// reason `IDC_APPLY` needed no arm of its own. With `home` a function of
+    /// the door there is no constant left to fall back TO, so the honest
+    /// answer for an id nobody claims is that nobody claims it.
     #[test]
-    fn an_id_that_is_not_a_push_button_reads_as_home() {
-        assert_eq!(default_button_of(0), DefaultButton::HOME);
-        assert_eq!(default_button_of(IDC_CAPS), DefaultButton::HOME);
-        assert_eq!(default_button_of(-1), DefaultButton::HOME);
-        assert_eq!(id_of_default_button(DefaultButton::HOME), IDC_APPLY);
+    fn an_id_that_is_not_a_push_button_names_no_button() {
+        assert_eq!(default_button_of(NO_DEFAULT), None);
+        assert_eq!(default_button_of(IDC_CAPS), None);
+        assert_eq!(default_button_of(-1), None);
+        // The two spellings of "nowhere" have to agree, since `Ui::defid`
+        // holds one and the decision layer returns the other.
+        assert_eq!(id_of_default_button_opt(None), NO_DEFAULT);
+        assert_eq!(
+            id_of_default_button_opt(DefaultButton::home(Page::Shortcuts)),
+            IDC_APPLY
+        );
+        assert_eq!(
+            id_of_default_button_opt(DefaultButton::home(Page::System)),
+            NO_DEFAULT
+        );
+    }
+
+    /// `NO_DEFAULT` must not collide with a real control, or clearing the ring
+    /// would demote-and-promote some button nobody asked about. The other half
+    /// -- that no DECLARED id equals it -- is `ids.rs`'s
+    /// `the_no_default_id_is_not_a_declared_control`, where the id table is.
+    #[test]
+    fn the_no_default_id_is_not_a_push_button() {
+        assert!(!is_push_button(NO_DEFAULT));
     }
 
     /// Why `show_page` needs `focus_the_open_door` on top of

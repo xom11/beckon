@@ -332,6 +332,24 @@ mod tests {
     /// the other direction, deliberately -- that table already carries ids for
     /// pages nothing has built yet, so a name there with no constant here is
     /// the normal state rather than a defect.
+    /// `NO_DEFAULT` is the id `Ui::defid` carries for "the ring is on
+    /// nothing", and `set_default_id` hands it straight to `GetDlgItem`. If
+    /// any real control ever answered to it, clearing the ring on the System
+    /// or About door would silently promote that control to default instead.
+    ///
+    /// Zero is safe today because the block starts at 1001 and `RETIRED_IDS`
+    /// has never freed anything below it -- but "today" is what a test is
+    /// for, and this file is where the id table lives.
+    #[test]
+    fn the_no_default_id_is_not_a_declared_control() {
+        assert!(
+            !MINE.iter().any(|(_, id)| *id == super::super::NO_DEFAULT),
+            "a control answers to NO_DEFAULT ({}), so clearing the ring \
+             would promote it",
+            super::super::NO_DEFAULT
+        );
+    }
+
     #[test]
     fn every_declared_id_has_a_row_in_mine() {
         let declared: Vec<&str> = include_str!("ids.rs")

@@ -328,22 +328,27 @@ mod win {
     /// hardware in the loop -- which is the exact drift the paragraph above
     /// says nobody would otherwise have seen until a person ran this probe.
     const WINDOW_WIDTH_96: i32 = 680;
-    const WINDOW_HEIGHT_96: i32 = 600;
+    const WINDOW_HEIGHT_96: i32 = 500;
     /// Printed for reference only. What has to be checked at this floor
     /// needs a human to drag the corner, and this probe does not drive a
     /// resize.
     ///
-    /// **CORRECTED 2026-08-14: that check is no longer "gate 09 (eight rows,
-    /// no scrollbar)".** Two things were wrong with the sentence. Gate 09 of
-    /// the redesign plan is eight rows at the SHIPPED size against a 20-row
-    /// config, not at the floor -- the floor has never shown eight. And the
-    /// tab strip's band (`tok::TABSTRIP_H`) takes 34 px out of the list, so
-    /// the shipped 600 now caps it at seven rows and the floor at two; the
-    /// derivation is under `MIN_HEIGHT` in `settings_window::mod`, which
-    /// withdraws the four-row guarantee in the same landing. Eight rows is
-    /// not a property of this window any more, at either size.
+    /// **RE-STATED 2026-08-15: the floor is no longer about the list.** It is
+    /// derived from the tallest FIXED page -- the About card at a three-line
+    /// disclosure -- because that is the door that runs out of room first: the
+    /// Shortcuts list gives room up before anything else moves, so it can
+    /// never be the binding constraint. The list's row count at each size is
+    /// now a consequence, five at the floor and eight at the shipped size with
+    /// the banner down. Full table under `MIN_HEIGHT` in
+    /// `settings_window::mod`.
+    ///
+    /// **CORRECTED 2026-08-14** — the sentence here read "gate 09 (eight rows,
+    /// no scrollbar)". Gate 09 of the redesign plan is eight rows at the
+    /// SHIPPED size against a 20-row config, not at the floor, and the tab
+    /// strip's band takes 34 px out of the list either way. Eight rows is not
+    /// a property of this window at both sizes and never was.
     const MIN_WIDTH_96: i32 = 660;
-    const MIN_HEIGHT_96: i32 = 560;
+    const MIN_HEIGHT_96: i32 = 480;
 
     /// A 96-DPI value scaled to `dpi`, transcribed from
     /// `settings_window::mod::scale` -- truncating, not `MulDiv`'s

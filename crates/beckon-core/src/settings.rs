@@ -455,6 +455,51 @@ impl Page {
             Page::About => Page::System,
         }
     }
+
+    /// Does this door write `apps.toml`?
+    ///
+    /// **Design §1's split by STORE, as a function rather than as prose.** It
+    /// read "Shortcuts and Keyboard write `apps.toml`; System and About write
+    /// `HKCU\Software\beckon`, the Run key, or nothing" and lived only in the
+    /// design document and in one comment inside `pressable` -- so the window
+    /// drew a `Save` button under all four doors, including the two that have
+    /// nothing to save. `Ctrl+S` wrote the file from them too.
+    ///
+    /// **An exhaustive `match`, on `next`/`prev`'s reasoning**: a fifth door is
+    /// then a compile error in this file rather than a silent `false` at the
+    /// one call that decides whether a page can save.
+    ///
+    /// Note which side `Keyboard` is on and why it is not obvious: its three
+    /// controls set `keyboard.caps`, `keyboard.caps_hold` and
+    /// `keyboard.caps_tap`, which are keys in `apps.toml` -- so it saves,
+    /// even though nothing on it is a shortcut.
+    pub fn writes_config(self) -> bool {
+        match self {
+            Page::Shortcuts | Page::Keyboard => true,
+            Page::System | Page::About => false,
+        }
+    }
+}
+
+/// Is the command bar's row of buttons on screen?
+///
+/// **One condition, three readers**, in `banner_shown`'s shape and for the same
+/// reason: `DefaultButton::visible` decides whether the ring may rest there,
+/// `show_page_controls` decides whether the three windows are shown, and
+/// `handle_command`'s `IDC_APPLY` arm decides whether `Ctrl+S` writes. Three
+/// spellings would drift, and the drift that matters is the last: an
+/// accelerator that saves from a door showing no Save is a file written with
+/// nothing on screen having offered to write it.
+///
+/// **The BAND is not what this hides.** `compute_card_rects` reserves
+/// `pad + ctl` at the bottom of every page whatever this answers, so the
+/// stop every card shares stays one expression on all four doors -- and the
+/// bar has no ground of its own to give away, so an empty one is
+/// indistinguishable from the window ground beside it. Design §6.4 fills that
+/// band on all four pages with the service line; this is the button row, not
+/// the band.
+pub fn command_bar_shown(page: Page) -> bool {
+    page.writes_config()
 }
 
 /// Is the external-change banner on screen?
@@ -2548,10 +2593,28 @@ impl DefaultButton {
         DefaultButton::AboutBug,
     ];
 
-    /// Where the ring rests, and the one button `default_button` will fall
-    /// back to. Always on screen, and it is what `DM_GETDEFID` answers before
-    /// focus has ever touched a button.
-    pub const HOME: DefaultButton = DefaultButton::Save;
+    /// Where the ring rests on `page`, and the button `default_button` falls
+    /// back to there. It is what `DM_GETDEFID` answers before focus has ever
+    /// touched a button.
+    ///
+    /// **It was `const HOME: DefaultButton = Save` until 2026-08-15**, and
+    /// `default_button`'s doc named the exact condition that would end it:
+    /// *"`HOME`'s exemption survives that unchanged, because `Save` is on every
+    /// page -- if it ever stops being, this early return is the line that
+    /// breaks."* `Page::writes_config` is that change, so the constant becomes
+    /// a function of the door and the early return became a comparison against
+    /// its answer.
+    ///
+    /// **`None` is a real answer, not a missing one.** System and About have no
+    /// primary action: their eleven buttons are five file/service verbs and six
+    /// copies and links, and promoting any one of them to the Enter key would
+    /// be inventing a default the design never asked for. Enter on those doors
+    /// does nothing until the user tabs onto a button, at which point
+    /// `BN_SETFOCUS` moves the ring there -- which is the same rule the other
+    /// two doors follow, minus a resting place.
+    pub fn home(page: Page) -> Option<DefaultButton> {
+        command_bar_shown(page).then_some(DefaultButton::Save)
+    }
 
     /// Is this button on screen in the state described?
     ///
@@ -2571,11 +2634,31 @@ impl DefaultButton {
     /// can check, and the window applies it rather than restating it.
     pub fn visible(self, external_change: bool, page: Page) -> bool {
         match self {
-            // The command bar is chrome: `Open config file`, `Close` and
-            // `Save` are created once, placed by `layout` on every page, and
-            // never hidden. `Save` in particular MUST stay on all four --
-            // it is `HOME`, the button `default_button` falls back to.
-            DefaultButton::Save | DefaultButton::OpenFile | DefaultButton::Close => true,
+            // **The command bar stopped being chrome on 2026-08-15.** This arm
+            // read `=> true`, with a comment saying the three "are created
+            // once, placed by `layout` on every page, and never hidden" and
+            // that "`Save` in particular MUST stay on all four -- it is
+            // `HOME`". Both halves went together: `HOME` is now
+            // `home(page)`, and the three follow design §1's store split like
+            // every other button on the page that owns them.
+            //
+            // `Close` and `Open config file` go with `Save` rather than
+            // staying: neither writes the file, but both are the SAVE
+            // gesture's other half -- `Close` is where "discard" lives (the
+            // dirty prompt is in `WM_CLOSE`) and `Open config file` is a
+            // second route to the file the System page already lists with its
+            // own two glyphs. A bar holding one orphaned button under a page
+            // that cannot save is not a smaller command bar, it is a stranded
+            // one.
+            //
+            // **No door loses its way out**, by two routes rather than one:
+            // the client-drawn caption's `X` is chrome and is on all four, and
+            // Escape reaches `handle_command`'s `IDCANCEL` arm, which shares
+            // its body with `IDC_CLOSE` -- the dialog manager sends that id,
+            // not the button, so hiding the button does not disarm the key.
+            DefaultButton::Save | DefaultButton::OpenFile | DefaultButton::Close => {
+                command_bar_shown(page)
+            }
             DefaultButton::Reload | DefaultButton::KeepMine => banner_shown(external_change, page),
             // Shortcuts-page controls. `Add` and `Remove` sit on the list's
             // head row; `Record` and `Revert` close the editor strip's second
@@ -2714,22 +2797,33 @@ impl DefaultButton {
 /// **A tab switch reaches the same defect by another route**, which is why
 /// `page` is here: hiding a page's controls raises no focus notification
 /// either, so a ring left on `Add` while the user is behind the Keyboard
-/// door makes Enter add a row the user cannot see. `HOME`'s exemption
-/// survives that unchanged, because `Save` is on every page -- if it ever
-/// stops being, this early return is the line that breaks.
+/// door makes Enter add a row the user cannot see.
+///
+/// **`HOME` became `home(page)` on 2026-08-15, and the paragraph that stood
+/// here predicted it.** It read: *"`HOME`'s exemption survives that unchanged,
+/// because `Save` is on every page -- if it ever stops being, this early return
+/// is the line that breaks."* Design §1's store split is that change, so the
+/// early return now compares against the door's own answer instead of a
+/// constant. The exemption itself is unchanged in meaning: where a page HAS a
+/// resting place, the ring may sit there disabled, for the reason above.
+///
+/// **`None` in and `None` out are different facts and both are real.** `None`
+/// in is "the ring is nowhere" -- the state System and About rest in. `None`
+/// out is "it belongs nowhere on this door". They coincide on those two doors
+/// and must not be collapsed: `Some(Save)` arriving from a door change with
+/// `page == System` has to come back `None`, which is the whole repair.
 pub fn default_button(
-    current: DefaultButton,
+    current: Option<DefaultButton>,
     st: &ControlState,
     external_change: bool,
     page: Page,
-) -> DefaultButton {
-    if current == DefaultButton::HOME {
-        return DefaultButton::HOME;
-    }
-    if current.pressable(st, external_change, page) {
-        current
-    } else {
-        DefaultButton::HOME
+) -> Option<DefaultButton> {
+    let home = DefaultButton::home(page);
+    match current {
+        // The exemption: at home, stay home, without consulting enablement.
+        c if c == home => home,
+        Some(c) if c.pressable(st, external_change, page) => Some(c),
+        _ => home,
     }
 }
 
@@ -4151,13 +4245,13 @@ mod tests {
         // The measured defect, stated as the decision that prevents it.
         let st = busy_state();
         assert_eq!(
-            default_button(DefaultButton::Reload, &st, false, Page::Shortcuts),
-            DefaultButton::Save,
+            default_button(Some(DefaultButton::Reload), &st, false, Page::Shortcuts),
+            Some(DefaultButton::Save),
             "the banner is down, so Enter must not reach Reload"
         );
         assert_eq!(
-            default_button(DefaultButton::KeepMine, &st, false, Page::Shortcuts),
-            DefaultButton::Save
+            default_button(Some(DefaultButton::KeepMine), &st, false, Page::Shortcuts),
+            Some(DefaultButton::Save)
         );
     }
 
@@ -4167,12 +4261,12 @@ mod tests {
         // user has genuinely tabbed to.
         let st = busy_state();
         assert_eq!(
-            default_button(DefaultButton::Reload, &st, true, Page::Shortcuts),
-            DefaultButton::Reload
+            default_button(Some(DefaultButton::Reload), &st, true, Page::Shortcuts),
+            Some(DefaultButton::Reload)
         );
         assert_eq!(
-            default_button(DefaultButton::KeepMine, &st, true, Page::Shortcuts),
-            DefaultButton::KeepMine
+            default_button(Some(DefaultButton::KeepMine), &st, true, Page::Shortcuts),
+            Some(DefaultButton::KeepMine)
         );
     }
 
@@ -4181,16 +4275,16 @@ mod tests {
         let rest = rest_state();
         assert!(!rest.remove_enabled, "precondition: nothing is selected");
         assert_eq!(
-            default_button(DefaultButton::Remove, &rest, false, Page::Shortcuts),
-            DefaultButton::Save
+            default_button(Some(DefaultButton::Remove), &rest, false, Page::Shortcuts),
+            Some(DefaultButton::Save)
         );
         // And keeps it while it is live, so this is a real test and not one
         // that passes because everything falls back.
         let busy = busy_state();
         assert!(busy.remove_enabled, "precondition: a row is selected");
         assert_eq!(
-            default_button(DefaultButton::Remove, &busy, false, Page::Shortcuts),
-            DefaultButton::Remove
+            default_button(Some(DefaultButton::Remove), &busy, false, Page::Shortcuts),
+            Some(DefaultButton::Remove)
         );
     }
 
@@ -4204,8 +4298,8 @@ mod tests {
         let rest = rest_state();
         assert!(!rest.apply_enabled, "precondition: nothing to save");
         assert_eq!(
-            default_button(DefaultButton::Save, &rest, false, Page::Shortcuts),
-            DefaultButton::Save
+            default_button(Some(DefaultButton::Save), &rest, false, Page::Shortcuts),
+            Some(DefaultButton::Save)
         );
     }
 
@@ -4242,8 +4336,8 @@ mod tests {
         assert!(!DefaultButton::Record.pressable(&rest, false, Page::Shortcuts));
         assert!(!DefaultButton::Revert.pressable(&rest, false, Page::Shortcuts));
         assert_eq!(
-            default_button(DefaultButton::Record, &rest, false, Page::Shortcuts),
-            DefaultButton::Save,
+            default_button(Some(DefaultButton::Record), &rest, false, Page::Shortcuts),
+            Some(DefaultButton::Save),
             "Enter must not reach a greyed Record"
         );
 
@@ -4252,8 +4346,8 @@ mod tests {
         assert!(DefaultButton::Record.pressable(&busy, false, Page::Shortcuts));
         assert!(DefaultButton::Revert.pressable(&busy, false, Page::Shortcuts));
         assert_eq!(
-            default_button(DefaultButton::Record, &busy, false, Page::Shortcuts),
-            DefaultButton::Record
+            default_button(Some(DefaultButton::Record), &busy, false, Page::Shortcuts),
+            Some(DefaultButton::Record)
         );
 
         // A file that did not parse has a Model behind neither, so both are
@@ -4270,16 +4364,16 @@ mod tests {
         // one of those or on Save, never on Add.
         let ro = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
         assert_eq!(
-            default_button(DefaultButton::Add, &ro, false, Page::Shortcuts),
-            DefaultButton::Save
+            default_button(Some(DefaultButton::Add), &ro, false, Page::Shortcuts),
+            Some(DefaultButton::Save)
         );
         assert_eq!(
-            default_button(DefaultButton::Close, &ro, false, Page::Shortcuts),
-            DefaultButton::Close
+            default_button(Some(DefaultButton::Close), &ro, false, Page::Shortcuts),
+            Some(DefaultButton::Close)
         );
         assert_eq!(
-            default_button(DefaultButton::OpenFile, &ro, false, Page::Shortcuts),
-            DefaultButton::OpenFile
+            default_button(Some(DefaultButton::OpenFile), &ro, false, Page::Shortcuts),
+            Some(DefaultButton::OpenFile)
         );
     }
 
@@ -4298,16 +4392,29 @@ mod tests {
             for external in [false, true] {
                 for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
                     for b in DefaultButton::ALL {
-                        let got = default_button(b, st, external, page);
-                        assert!(
-                            got.visible(external, page),
-                            "{b:?} -> {got:?} is off screen \
-                             (external_change={external}, page={page:?})"
-                        );
-                        assert!(
-                            got.pressable(st, external, page) || got == DefaultButton::HOME,
-                            "{b:?} -> {got:?} is disabled and is not HOME"
-                        );
+                        // `None` in as well as `Some(b)`: the ring resting
+                        // nowhere is the state System and About open in, so
+                        // it is a real input and not just a possible output.
+                        for current in [Some(b), None] {
+                            let Some(got) = default_button(current, st, external, page) else {
+                                // Nowhere is always a legal answer -- and on a
+                                // door with no `home` it is the only one. What
+                                // must never happen is a ring on a button that
+                                // is not there, which is what the two asserts
+                                // below are for.
+                                continue;
+                            };
+                            assert!(
+                                got.visible(external, page),
+                                "{current:?} -> {got:?} is off screen \
+                                 (external_change={external}, page={page:?})"
+                            );
+                            assert!(
+                                got.pressable(st, external, page)
+                                    || Some(got) == DefaultButton::home(page),
+                                "{current:?} -> {got:?} is disabled and is not this door's home"
+                            );
+                        }
                     }
                 }
             }
@@ -4339,9 +4446,12 @@ mod tests {
             );
             for page in [Page::Keyboard, Page::System, Page::About] {
                 assert!(!b.visible(false, page), "{b:?} is drawn on {page:?}");
+                // `home(page)`, not `Save`: since the store split, two of
+                // these three doors have no resting place at all, so the
+                // right answer here is `None` on System and About.
                 assert_eq!(
-                    default_button(b, &busy, false, page),
-                    DefaultButton::Save,
+                    default_button(Some(b), &busy, false, page),
+                    DefaultButton::home(page),
                     "Enter must not reach {b:?} from {page:?}"
                 );
             }
@@ -4369,15 +4479,18 @@ mod tests {
             );
             // The ring may rest on a banner button there, which is the other
             // half of "it is on screen".
-            assert_eq!(default_button(b, &busy, true, BANNER_PAGE), b);
+            assert_eq!(default_button(Some(b), &busy, true, BANNER_PAGE), Some(b));
             for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
                 assert!(!b.visible(false, page), "no change to announce on {page:?}");
-                assert_eq!(default_button(b, &busy, false, page), DefaultButton::Save);
+                assert_eq!(
+                    default_button(Some(b), &busy, false, page),
+                    DefaultButton::home(page)
+                );
                 if page != BANNER_PAGE {
                     assert!(!b.visible(true, page), "{b:?} is drawn on {page:?}");
                     assert_eq!(
-                        default_button(b, &busy, true, page),
-                        DefaultButton::Save,
+                        default_button(Some(b), &busy, true, page),
+                        DefaultButton::home(page),
                         "Enter must not reach {b:?} from {page:?}"
                     );
                 }
@@ -4460,9 +4573,23 @@ mod tests {
             );
         }
         for (page, banner, dot) in doors {
-            assert!(
+            // **REVISED 2026-08-15.** This was
+            // `assert!(DefaultButton::Save.visible(true, page), "Save is
+            // chrome; if it is not on {page:?} this test measures nothing")`,
+            // and design §1's store split falsified its premise: Save is drawn
+            // on two doors now, not four.
+            //
+            // The claim the test makes did not narrow with it. The warning is
+            // still owed from every door, including the two that can no longer
+            // save -- what a person does next from System is open the
+            // Shortcuts door, and arriving there to find the file already
+            // reloaded under them is the failure either way. So the row below
+            // still covers four doors; only this precondition changed, into
+            // the pairing that now makes the test meaningful.
+            assert_eq!(
                 DefaultButton::Save.visible(true, page),
-                "Save is chrome; if it is not on {page:?} this test measures nothing"
+                page.writes_config(),
+                "the command bar and the store split disagree on {page:?}"
             );
             // The table's own shape, checked before it is used as an oracle:
             // somebody is warning on every door, and never both at once.
@@ -4656,22 +4783,105 @@ mod tests {
         ));
     }
 
-    /// The command bar is chrome, and `HOME` above all: `default_button`'s
-    /// fallback is `Save`, so a `Save` that could be hidden would make the
-    /// fallback itself unreachable and every assertion in this section
-    /// vacuous.
+    /// Design §1's split by store, pinned as a table rather than as prose.
+    ///
+    /// `Keyboard` is the row worth having a test for: nothing on that door is
+    /// a shortcut, so "the Shortcuts page saves" is a plausible misreading --
+    /// but its three controls write `keyboard.caps`, `keyboard.caps_hold` and
+    /// `keyboard.caps_tap`, which are keys in the same file.
     #[test]
-    fn the_command_bar_is_on_every_page() {
+    fn the_store_split_is_two_doors_each_way() {
+        assert!(Page::Shortcuts.writes_config());
+        assert!(Page::Keyboard.writes_config());
+        assert!(!Page::System.writes_config());
+        assert!(!Page::About.writes_config());
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
-            for b in [
-                DefaultButton::Save,
-                DefaultButton::OpenFile,
-                DefaultButton::Close,
-            ] {
+            assert_eq!(
+                command_bar_shown(page),
+                page.writes_config(),
+                "the bar and the store split disagree on {page:?}"
+            );
+        }
+    }
+
+    /// **REPLACED 2026-08-15.** This test was `the_command_bar_is_on_every_page`
+    /// and asserted the opposite of what it now asserts: that all three
+    /// buttons are visible on all four doors, ending
+    /// `assert!(DefaultButton::HOME.visible(false, Page::About))`. It was
+    /// right about the code and wrong about the window -- design §1 splits by
+    /// STORE, and a `Save` under a door that writes no file is a button with
+    /// nothing to do.
+    #[test]
+    fn the_command_bar_follows_the_store_split() {
+        const BAR: [DefaultButton; 3] = [
+            DefaultButton::Save,
+            DefaultButton::OpenFile,
+            DefaultButton::Close,
+        ];
+        for page in [Page::Shortcuts, Page::Keyboard] {
+            for b in BAR {
                 assert!(b.visible(false, page), "{b:?} is missing from {page:?}");
             }
+            assert_eq!(DefaultButton::home(page), Some(DefaultButton::Save));
         }
-        assert!(DefaultButton::HOME.visible(false, Page::About));
+        for page in [Page::System, Page::About] {
+            for b in BAR {
+                assert!(!b.visible(false, page), "{b:?} still draws on {page:?}");
+            }
+            assert_eq!(
+                DefaultButton::home(page),
+                None,
+                "{page:?} has no Save, so the ring has nowhere to rest"
+            );
+        }
+    }
+
+    /// The repair itself, stated as the transition it has to survive: the
+    /// window opens on Shortcuts with the ring at `Save`, the user presses
+    /// `Ctrl+3`, and `Save` is no longer on screen.
+    ///
+    /// **This is the case `default_button`'s old early return got wrong by
+    /// construction** -- `current == HOME` returned `HOME` without looking at
+    /// the page at all, so the ring stayed on a button the door does not draw
+    /// and Enter would have pressed it. Hiding a control raises no focus
+    /// notification (measured, a14 2026-08-11), so nothing else would have
+    /// moved it.
+    #[test]
+    fn changing_to_a_door_that_cannot_save_takes_the_ring_off_save() {
+        let busy = busy_state();
+        assert!(busy.apply_enabled, "precondition: Save would be live");
+        assert_eq!(
+            default_button(Some(DefaultButton::Save), &busy, false, Page::Shortcuts),
+            Some(DefaultButton::Save)
+        );
+        for page in [Page::System, Page::About] {
+            assert_eq!(
+                default_button(Some(DefaultButton::Save), &busy, false, page),
+                None,
+                "the ring stayed on Save behind {page:?}"
+            );
+        }
+    }
+
+    /// The System and About doors still take the ring onto a button the user
+    /// tabs to -- "no home" is not "no default ever", and reading it that way
+    /// would make Enter dead on eleven working buttons.
+    #[test]
+    fn a_door_without_a_home_still_follows_focus_onto_its_own_buttons() {
+        let rest = rest_state();
+        assert_eq!(
+            default_button(Some(DefaultButton::SysReload), &rest, false, Page::System),
+            Some(DefaultButton::SysReload)
+        );
+        assert_eq!(
+            default_button(Some(DefaultButton::AboutGithub), &rest, false, Page::About),
+            Some(DefaultButton::AboutGithub)
+        );
+        // ...and drops it when the button belongs to another door.
+        assert_eq!(
+            default_button(Some(DefaultButton::SysReload), &rest, false, Page::About),
+            None
+        );
     }
 
     /// The mirror of the test above: a state projected from a real model is
