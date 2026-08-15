@@ -23,6 +23,10 @@ pub mod autostart;
 mod backend;
 #[cfg(target_os = "windows")]
 pub mod caps_hook;
+/// Put text on the clipboard -- the About page's three copy buttons, and
+/// nothing else. See its module header for why it sits beside `shell.rs`.
+#[cfg(target_os = "windows")]
+pub mod clipboard;
 #[cfg(target_os = "windows")]
 pub mod hotkey;
 #[cfg(target_os = "windows")]

@@ -341,6 +341,150 @@ fn system_plan(dpi: u32, rows: SystemRows) -> SystemPlan {
     p
 }
 
+/// Every vertical figure on the About page, at one DPI.
+///
+/// `system_plan`'s shape exactly, and for the same three readers:
+/// `compute_card_rects` takes `content_h`, `layout` takes the row offsets, and
+/// `WM_PAINT` takes the two divider offsets through `about_dividers`. Three
+/// spellings of "how tall is the About card" would drift, and the drift reads
+/// as a divider through a row.
+///
+/// **Nothing here is conditional**, unlike System's two omittable rows: there
+/// is no fact about a machine that removes a row from this page, so the plan
+/// takes no `rows` argument and only the disclosure's height varies -- with
+/// the FONT and the card's width, not with any state.
+#[derive(Clone, Copy, Default)]
+pub(super) struct AboutPlan {
+    mark: i32,
+    name: i32,
+    div1: i32,
+    build: i32,
+    location: i32,
+    licence: i32,
+    div2: i32,
+    disclosure: i32,
+    links: i32,
+    content_h: i32,
+}
+
+/// `disclosure_h` is measured by `disclosure_height` and passed in, so this
+/// function stays pure arithmetic and the one measurement has one call site
+/// per pass.
+fn about_plan(dpi: u32, disclosure_h: i32) -> AboutPlan {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let ctl = s(tok::CTL);
+    let gap = s(tok::GAP);
+    // `system_plan`'s divider, to the pixel: a hairline plus a gap either
+    // side, so the groups it parts are visibly parted rather than merely
+    // spaced. Spelled again rather than shared because the two pages compute
+    // nothing else in common and a `divider_h(dpi)` helper would be a shared
+    // name for two independent decisions.
+    let div_h = gap + s(1).max(1) + gap;
+    let mut p = AboutPlan::default();
+    let mut y = 0;
+
+    // The identity block: the mark, then the name under it. `MARK_D` is
+    // `paint::mark`'s own constant -- the painter draws a tile that size and
+    // this reserves exactly it, so a change to one is a compile-time change to
+    // the other rather than a silently clipped tile.
+    p.mark = y;
+    y += s(paint::MARK_D) + gap;
+    // The name line is `s(24)`, the same budget the Keyboard card's caption
+    // takes for its own single line of Subtitle-adjacent text. `ctl` would be
+    // a control's height, and this is not a control.
+    p.name = y;
+    y += s(24);
+
+    p.div1 = y + gap;
+    y += div_h;
+
+    let row = |y: &mut i32| -> i32 {
+        let at = *y;
+        *y += ctl + gap;
+        at
+    };
+    p.build = row(&mut y);
+    p.location = row(&mut y);
+    p.licence = row(&mut y);
+    // The gap the last row left is the divider's own top gap -- taken back
+    // before placing it, or the boundary is spaced twice. `system_plan` does
+    // the same and for the same reason.
+    y -= gap;
+    p.div2 = y + gap;
+    y += div_h;
+
+    p.disclosure = y;
+    y += disclosure_h + gap;
+    p.links = y;
+    y += ctl;
+    p.content_h = y.max(0);
+    p
+}
+
+/// How tall the wrapped disclosure needs to be at `width`.
+///
+/// **`DT_CALCRECT` with `paint::DISCLOSURE_FLAGS`, the identical flag set the
+/// painter draws with.** A fixed line budget was the alternative --
+/// `notes_height`'s shape, and it is what `IDC_NOTES` does -- and it loses
+/// here: that string is `beckon_core::settings::HOOK_DISCLOSURE`, roughly 150
+/// characters, so it takes two lines in the shipped card and three in a
+/// narrower one or a larger face. A budget short by one line clips the half of
+/// the sentence that is the feature ("beckon keeps no record of what you
+/// type"), and a budget long by one leaves a hole under the last line on every
+/// machine.
+///
+/// **The width it is given is the width the painter gets**, dot column
+/// subtracted, which is what makes the measurement answer the same question
+/// the paint asks. Both terms come from `paint`'s own constants.
+///
+/// Falls back to three lines of the font's own height when the DC cannot be
+/// had -- generous in the safe direction, exactly like `text_size`'s estimate.
+unsafe fn disclosure_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32, width: i32) -> i32 {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let font = ui.fonts.get(Role::Caption);
+    let line = text_size(hwnd, font, dpi, "Ag").1;
+    let est = line * 3;
+    let dc = GetDC(Some(hwnd));
+    if dc.is_invalid() {
+        return est;
+    }
+    let prev = SelectObject(dc, HGDIOBJ(font.0));
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: width.max(1),
+        bottom: 0,
+    };
+    let mut t = wide(beckon_core::settings::HOOK_DISCLOSURE);
+    let n = t.len() - 1;
+    let h = DrawTextW(
+        dc,
+        &mut t[..n],
+        &mut rc,
+        paint::DISCLOSURE_FLAGS | DT_CALCRECT,
+    );
+    if !prev.is_invalid() {
+        SelectObject(dc, prev);
+    }
+    ReleaseDC(Some(hwnd), dc);
+    // `DT_CALCRECT` returns the height it computed and also writes it into
+    // the rect; the return is used because it is the documented one. A zero
+    // or negative answer means the call did not do what it says, so the
+    // estimate stands rather than a control of no height.
+    if h > 0 { h.max(line) } else { est }.max(s(1))
+}
+
+/// The width `disclosure_height` measures against and `paint::disclosure`
+/// draws into: the card's interior less the dot column.
+///
+/// One function so the measure and the paint cannot disagree about the dot's
+/// width -- which they would the first time either side was edited, and the
+/// symptom would be a paragraph one line taller or shorter than its box.
+fn disclosure_text_w(card_inner_w: i32, dpi: u32) -> i32 {
+    let s = |v: i32| v * dpi as i32 / 96;
+    (card_inner_w - s(paint::NOTE_DOT_D) - s(paint::NOTE_TEXT_GAP)).max(1)
+}
+
 /// The two divider hairlines inside the System card, in client coordinates.
 ///
 /// `WM_PAINT`'s only window onto `system_plan`. Returns a zero-width rect for
@@ -362,6 +506,42 @@ pub(super) unsafe fn system_dividers(hwnd: HWND) -> [RECT; 2] {
     }
     let pad = s(tok::CARD_PAD);
     let plan = system_plan(dpi, sys_rows());
+    let line = |dy: i32| RECT {
+        left: card.left + pad,
+        top: card.top + pad + dy,
+        right: card.right - pad,
+        bottom: card.top + pad + dy + s(1).max(1),
+    };
+    [line(plan.div1), line(plan.div2)]
+}
+
+/// The two divider hairlines inside the About card, in client coordinates.
+///
+/// `system_dividers`' twin, and a SEPARATE function rather than a `page`
+/// argument on that one: the two pages compute their offsets from different
+/// plans, so a shared entry point would be an `if` on the page wrapped around
+/// two unrelated arithmetics. `WM_PAINT` chains both, and each answers with
+/// zero-width rects behind any door but its own -- which `paint::divider`
+/// declines to draw, the same degenerate-rect rule the card loop applies.
+pub(super) unsafe fn about_dividers(hwnd: HWND) -> [RECT; 2] {
+    let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
+        return [RECT::default(); 2];
+    };
+    if ui.page != Page::About {
+        return [RECT::default(); 2];
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let s = |v: i32| v * dpi as i32 / 96;
+    let card = compute_card_rects(hwnd, &ui, dpi)[5];
+    if card.bottom <= card.top {
+        return [RECT::default(); 2];
+    }
+    let pad = s(tok::CARD_PAD);
+    let inner_w = (card.right - card.left - pad * 2).max(0);
+    let plan = about_plan(
+        dpi,
+        disclosure_height(hwnd, &ui, dpi, disclosure_text_w(inner_w, dpi)),
+    );
     let line = |dy: i32| RECT {
         left: card.left + pad,
         top: card.top + pad + dy,
@@ -501,24 +681,27 @@ pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
 /// it reaches the list instead of stopping at eight rows. See `MIN_HEIGHT` for
 /// the full table.
 ///
-/// **About needed none of this and is unchanged.** A page whose entire
-/// content is one line has no stack: `layout` puts the waiting line at the
-/// content origin (card 0's top, which on that page is the origin) and the
-/// emptiness below it is the page being empty rather than the line being
-/// misplaced. The Keyboard page now reads the same way, which is the second
-/// half of why the re-stack was worth taking: one card at the origin and
-/// space below it is a page with one thing on it, while one card at the
-/// bottom and space above it is a page that failed to lay out.
+/// **CORRECTED 2026-08-15: About has a card too.** This read "**About needed
+/// none of this and is unchanged.** A page whose entire content is one line
+/// has no stack: `layout` puts the waiting line at the content origin ... and
+/// the emptiness below it is the page being empty rather than the line being
+/// misplaced." That was true of a page holding one waiting line and stopped
+/// being true the day design §3.4's fifteen controls replaced it. The
+/// paragraph's own reasoning is what survives, one door across: the Keyboard,
+/// System and About pages each put ONE card at the content origin with space
+/// below it, which is what a page with one thing on it looks like, while one
+/// card at the bottom and space above it is a page that failed to lay out.
 ///
-/// **System grew card 4 on 2026-08-15** (design §3.3), and it follows card 3's
-/// shape exactly: one card at the content origin, its height fixed by its own
-/// contents rather than by the window's. The array is five long and still
-/// never five tall -- Shortcuts stacks 0/1/2, Keyboard draws 3 alone, System
-/// draws 4 alone, About draws none.
-unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 5] {
+/// **System grew card 4 on 2026-08-15** (design §3.3) **and About grew card 5
+/// the same day** (design §3.4); both follow card 3's shape exactly -- one
+/// card at the content origin, its height fixed by its own contents rather
+/// than by the window's. The array is six long and still never six tall:
+/// Shortcuts stacks 0/1/2, Keyboard draws 3 alone, System draws 4 alone,
+/// About draws 5 alone.
+unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 6] {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
-        return [RECT::default(); 5];
+        return [RECT::default(); 6];
     }
     let s = |v: i32| v * dpi as i32 / 96;
     // See `layout`'s own comment on `clamp` for the widths-vs-positions
@@ -546,14 +729,14 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
         right: cx + cw,
         bottom: top + height,
     };
-    // Which doors own the four cards. Cards 0-2 are the Shortcuts page; card
-    // 3 is the Keyboard page. **System and About own none of them and are not
-    // waiting for one**: each shows a single line with no card behind it, so
-    // all four rects stay at zero height there and `layout` places that line
-    // against the content origin directly.
+    // Which doors own the six cards. Cards 0-2 are the Shortcuts page, card 3
+    // is Keyboard, card 4 is System and card 5 is About -- **every door owns
+    // at least one now**, where this comment used to record that the last two
+    // owned none and were "not waiting for one".
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
     let system = ui.page == Page::System;
+    let about = ui.page == Page::About;
 
     // The command bar is anchored, not stacked, so the window's bottom edge is
     // where it stays however tall the content above is. `content_bottom` is
@@ -758,7 +941,29 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     let sys_card_h = card_pad * 2 + system_plan(dpi, sys_rows()).content_h;
     let card4 = card(content_top, if system { sys_card_h } else { 0 });
 
-    [card0, card1, card2, card3, card4]
+    // -- Card 5: the About page, same shape again. One thing here is unlike
+    // cards 3 and 4: its height depends on a TEXT MEASUREMENT (the wrapped
+    // disclosure), so this function does what it already does for card 2 --
+    // `notes_height` is the same kind of call -- and asks for it. The
+    // measurement is pure and depends only on `hwnd`, the font and the width,
+    // so `layout` recomputing it a moment later cannot get a different answer.
+    //
+    // No clamp against `content_bottom`, on cards 3 and 4's reasoning. The
+    // tallest this card gets is the mark (36) plus a name line (24) plus two
+    // dividers (13 each) plus three rows (32 each) plus three lines of
+    // disclosure (~48) plus a link row (26) plus `CARD_PAD` twice -- about 280
+    // px at 96 DPI against a floor of 560 for the whole window, so it cannot
+    // reach the command bar at any size `WM_GETMINMAXINFO` allows.
+    let about_inner_w = clamp(cw - card_pad * 2);
+    let about_card_h = card_pad * 2
+        + about_plan(
+            dpi,
+            disclosure_height(hwnd, ui, dpi, disclosure_text_w(about_inner_w, dpi)),
+        )
+        .content_h;
+    let card5 = card(content_top, if about { about_card_h } else { 0 });
+
+    [card0, card1, card2, card3, card4, card5]
 }
 
 /// The four card rects, for `WM_PAINT` -- see `compute_card_rects` for the
@@ -771,9 +976,9 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
 /// immediately" rule on its own. The PAGE it lays out for does not ride in
 /// that borrow at all -- `LayoutHandles::of` reads the `PAGE` `Cell`, so a
 /// paint arriving while `UI` is held elsewhere still gets the right answer.
-pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 5] {
+pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 6] {
     let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
-        return [RECT::default(); 5];
+        return [RECT::default(); 6];
     };
     let dpi = GetDpiForWindow(hwnd).max(96);
     compute_card_rects(hwnd, &ui, dpi)
@@ -1037,14 +1242,15 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // arithmetic `card_rects` (called from `WM_PAINT`) also runs. Every
     // control below is placed `card_pad` inside whichever of these it
     // belongs to.
-    let [card0, card1, card2, card3, card4] = compute_card_rects(hwnd, &ui, dpi);
-    // Which door is open. The same three names `compute_card_rects` binds, and
-    // the three must agree: a card given height there and skipped here is an
+    let [card0, card1, card2, card3, card4, card5] = compute_card_rects(hwnd, &ui, dpi);
+    // Which door is open. The same four names `compute_card_rects` binds, and
+    // the four must agree: a card given height there and skipped here is an
     // empty card, and a card skipped there and placed into here puts every
     // control at the origin.
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
     let system = ui.page == Page::System;
+    let about = ui.page == Page::About;
 
     // -- Band 0: the tab strip, above card 0 and outside all four of them.
     // The trough is not a card, which is why `compute_card_rects` does not
@@ -1629,34 +1835,112 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         }
     }
 
-    // -- About: one waiting line, at the content origin.
+    // -- Card 5: the About page (design §3.4). The mark and the name, a
+    // divider, three value rows, a divider, the disclosure, three links.
+    // `about_plan` owns every vertical figure and `about_dividers` hands the
+    // same two hairlines to `WM_PAINT`.
     //
-    // **`card0.top` IS the content origin on that page**, and reading it back
-    // is what keeps this function from spelling
-    // `strip_rect(rc, dpi).bottom + gap_card` a second time. The banner is
-    // `BANNER_PAGE`-only (`banner_shown`), so behind that door
-    // `compute_card_rects` never advances `y` past card 0 -- its rect is a
-    // zero-height one AT the origin, which is exactly the number wanted here.
-    // If the banner ever widens to every page again, this line follows it down
-    // by itself instead of drawing under it.
+    // Skipped off-page for cards 1-4's reason. As on System there is no
+    // `CBS_DROPDOWN` here, so the measured data-loss call is out of reach on
+    // this page and uniformity is the argument.
     //
-    // Inset by `card_pad` on the left and top, so the line begins where every
-    // other string in the window begins rather than out at the card border.
-    // The page has no card today and will grow one, and a placeholder that has
-    // to move sideways when it arrives is a placeholder standing in the wrong
-    // place.
-    //
-    // No `else` and no clearing: another page's controls are hidden by
-    // `show_page_controls`, and leaving them wherever they were last placed is
-    // what every other off-page control does.
-    if ui.page == Page::About {
-        place(
-            IDC_ABOUT_PLACEHOLDER,
-            cx + card_pad,
-            card0.top + card_pad,
-            clamp(cw - card_pad * 2),
-            ctl,
+    // **The waiting line this replaces had its own comment about `card0.top`
+    // being the content origin on a page with no card.** That is now
+    // `compute_card_rects`' business like every other page's, and the origin
+    // reaches this block through `card5` instead.
+    if about {
+        let ax = card5.left + card_pad;
+        let ay = card5.top + card_pad;
+        let aw = clamp(card5.right - card5.left - card_pad * 2);
+        // The SAME two calls `compute_card_rects` just made, in the same
+        // order, on the same inputs -- `notes_height`'s arrangement one card
+        // across, and sound for the same reason: both are pure functions of
+        // `hwnd`, the font and the width, so the two calls cannot disagree,
+        // and `card_rects`' interface is `[RECT; 6]` rather than a richer
+        // struct that could carry the answer over.
+        let disc_h = disclosure_height(hwnd, &ui, dpi, disclosure_text_w(aw, dpi));
+        let plan = about_plan(dpi, disc_h);
+
+        // The mark and the name both take the card's FULL width and centre
+        // their own content -- `paint::mark` centres the tile in its rect,
+        // `SS_CENTER` centres the name in its. Sizing either to its content
+        // would mean measuring a 36 px tile and an 18 px string here only to
+        // centre them by arithmetic, and the two would then be centred on two
+        // slightly different axes.
+        place(IDC_ABOUT_MARK, ax, ay + plan.mark, aw, s(paint::MARK_D));
+        place(IDC_ABOUT_NAME, ax, ay + plan.name, aw, s(24));
+
+        // The three value rows: label, value, copy button. The label column is
+        // as wide as the widest of the three captions, so the values line up
+        // in a column -- the mock-up's `.kv .k{width:74px}` as a measurement
+        // rather than as a number, because a fixed 74 would be wrong at every
+        // DPI and in any face wider than the one it was traced from.
+        //
+        // The copy button is `ctl` square, exactly like the System page's four
+        // glyph buttons and for the same reason: it holds one character, and
+        // `tok::BTN` of button around it would be a target the size of the row.
+        let lbl_w = tw(cap::ABOUT_BUILD)
+            .max(tw(cap::ABOUT_LOCATION))
+            .max(tw(cap::ABOUT_LICENCE))
+            + s(4);
+        let cw_btn = ctl;
+        // The value takes everything between the label and the button. **No
+        // `tok::SHORTCUT_COL` ceiling here**, unlike every other measured
+        // column in this window: the one thing this slot holds that can be
+        // long is a path, `SS_PATHELLIPSIS` shortens it to whatever it is
+        // given, and capping the width would mean shortening a path that had
+        // room -- spending the card's own width on nothing.
+        let val_w = clamp(aw - lbl_w - lblgap - cw_btn - gap);
+        let value_row = |y: i32, label: i32, value: i32, copy: i32| {
+            place(label, ax, y, lbl_w, ctl);
+            place(value, ax + lbl_w + lblgap, y, val_w, ctl);
+            place(copy, ax + clamp(aw - cw_btn), y, cw_btn, ctl);
+        };
+        value_row(
+            ay + plan.build,
+            IDC_ABOUT_BUILD_LABEL,
+            IDC_ABOUT_BUILD_VALUE,
+            IDC_ABOUT_BUILD_COPY,
         );
+        value_row(
+            ay + plan.location,
+            IDC_ABOUT_LOCATION_LABEL,
+            IDC_ABOUT_LOCATION_VALUE,
+            IDC_ABOUT_LOCATION_COPY,
+        );
+        value_row(
+            ay + plan.licence,
+            IDC_ABOUT_LICENCE_LABEL,
+            IDC_ABOUT_LICENCE_VALUE,
+            IDC_ABOUT_LICENCE_COPY,
+        );
+
+        // The disclosure takes the card's full interior; `paint::disclosure`
+        // insets the dot column itself, from the same two constants
+        // `disclosure_text_w` subtracted above.
+        place(IDC_ABOUT_DISCLOSURE, ax, ay + plan.disclosure, aw, disc_h);
+
+        // The three links, CENTRED as a run rather than right-aligned like
+        // every other button row in this window. That is the drawing
+        // (`.linkrow{justify-content:center}`) and it is also the only row
+        // here that is not answering a question above it -- a command bar's
+        // buttons close a page, and these three leave it.
+        //
+        // Each is sized from its own caption through `btn`, so `Report a bug`
+        // is wider than `GitHub` and the run is their sum plus two gaps. The
+        // start is clamped to the card's left edge: at a width where the three
+        // do not fit, they run off the RIGHT (where the window can be
+        // widened) rather than off the left under the card border.
+        let bw_github = btn(cap::ABOUT_GITHUB);
+        let bw_releases = btn(cap::ABOUT_RELEASES);
+        let bw_bug = btn(cap::ABOUT_BUG);
+        let run = bw_github + gap + bw_releases + gap + bw_bug;
+        let mut lx = ax + clamp(aw - run) / 2;
+        place(IDC_ABOUT_GITHUB, lx, ay + plan.links, bw_github, ctl);
+        lx += bw_github + gap;
+        place(IDC_ABOUT_RELEASES, lx, ay + plan.links, bw_releases, ctl);
+        lx += bw_releases + gap;
+        place(IDC_ABOUT_BUG, lx, ay + plan.links, bw_bug, ctl);
     }
 
     // -- The command bar. Save is the outermost button on the right, Close

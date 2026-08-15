@@ -1416,6 +1416,112 @@ mod win {
         }
     }
 
+    /// The About page (design §3.4), read back control by control.
+    ///
+    /// `measure_system`'s shape and its rules: transcribed ids, run it with
+    /// the About door open, and everything hidden means the section is not a
+    /// verdict.
+    ///
+    /// Four things it can catch that nothing on the build host can:
+    ///
+    /// - **The copy glyph.** `U+29C9 TWO JOINED SQUARES` is the third
+    ///   non-ASCII string this window draws and the least certain of the
+    ///   three -- the other two were argued to be in Segoe UI's own coverage,
+    ///   while this is a mathematical symbol that may only arrive through font
+    ///   linking. Reading the caption back does NOT prove it rendered (a font
+    ///   that lacks it still reports the character and draws a box), but a
+    ///   caption that comes back as `?` proves it did not survive the trip at
+    ///   all, which is the failure that costs three buttons their meaning.
+    /// - **The `Location` row's text**, which is the whole point of the page:
+    ///   it must be the launch path with `\current\` still in it, NOT a
+    ///   resolved version directory. A path containing a version number is
+    ///   the tell that something started resolving it, which is exactly the
+    ///   surface that lied on a14.
+    /// - **The name row's version**, which is the running IMAGE's. Compare it
+    ///   against `beckon --version` typed at a shell: they are allowed to
+    ///   disagree, and when they do, THIS one is the truth and an update is
+    ///   waiting for a restart.
+    /// - **The disclosure**, whose second sentence is a promise. A control
+    ///   whose text comes back truncated is a promise half-made.
+    fn measure_about(parent: HWND) {
+        println!("  -- About page (design 3.4) --");
+        // Transcribed from `beckon_core::settings::CONTROL_IDS`' About block
+        // (1100-1114). `ABOUT_PLACEHOLDER` (1115) is RETIRED and deliberately
+        // absent, exactly like `SYS_PLACEHOLDER` in `measure_system`.
+        const ROWS: [(i32, &str); 15] = [
+            (1100, "MARK"),
+            (1101, "NAME"),
+            (1102, "BUILD_LABEL"),
+            (1103, "BUILD_VALUE"),
+            (1104, "BUILD_COPY"),
+            (1105, "LOCATION_LABEL"),
+            (1106, "LOCATION_VALUE"),
+            (1107, "LOCATION_COPY"),
+            (1108, "LICENCE_LABEL"),
+            (1109, "LICENCE_VALUE"),
+            (1110, "LICENCE_COPY"),
+            (1111, "DISCLOSURE"),
+            (1112, "GITHUB"),
+            (1113, "RELEASES"),
+            (1114, "BUG"),
+        ];
+        let mut any_visible = false;
+        for (id, name) in ROWS {
+            let Some(ctl) = dlg_item(parent, id) else {
+                println!("    {id} {name:<15}: MISSING <<< FAIL");
+                continue;
+            };
+            let vis = unsafe { IsWindowVisible(ctl) }.as_bool();
+            any_visible |= vis;
+            let (x, y, w, h) = box_in_client(parent, ctl);
+            let text = ctl_text(ctl);
+            println!(
+                "    {id} {name:<15}: {}   visible={vis}   text={text:?}",
+                fmt_box(x, y, w, h)
+            );
+        }
+        if !any_visible {
+            println!(
+                "    (every control is hidden -- this run is not on the About door, so \
+                 nothing above is a verdict)"
+            );
+            return;
+        }
+        let text = |id: i32| dlg_item(parent, id).map(ctl_text).unwrap_or_default();
+        // The three copy glyphs, as ONE verdict: they carry one caption, so
+        // three separate lines would be three readings of the same fact.
+        let glyphs: Vec<String> = [1104, 1107, 1110].iter().map(|id| text(*id)).collect();
+        if glyphs.iter().all(|g| g == "\u{29C9}") {
+            println!("    copy glyph: all three carry U+29C9 (a box on screen is still possible)");
+        } else {
+            println!("    copy glyph: <<< FAIL, captions came back {glyphs:?}");
+        }
+        // The row this page exists for. `\current\` is scoop's junction; a
+        // machine that installed some other way has no such component, so its
+        // absence is not a failure -- what IS reported is the raw string, so
+        // a reader can see for themselves whether anything resolved it.
+        let loc = text(1106);
+        println!("    location: {loc:?}");
+        if loc.contains("(updated on disk") || loc.contains("(no longer on disk") {
+            println!("    location verdict: PRESENT -- the running image is not the file on disk");
+        } else {
+            println!("    location verdict: silent (Current or Unknown -- see `image_age`)");
+        }
+        // The disclosure's two halves, both of which design 3.4 requires. The
+        // second is the negative claim, which nothing but the words can make.
+        let disc = text(1111);
+        let both = disc.contains("recording a shortcut") && disc.contains("keeps no record");
+        println!(
+            "    disclosure: {} ({} chars)",
+            if both {
+                "both halves present"
+            } else {
+                "<<< FAIL, a half is missing"
+            },
+            disc.chars().count()
+        );
+    }
+
     fn click(parent: HWND, id: i32) {
         let Some(ctl) = dlg_item(parent, id) else {
             println!("    (no control {id})");
@@ -2252,6 +2358,8 @@ mod win {
         // says something only on the run where that door is open. Cheap and
         // silent otherwise -- it prints one line saying so and returns.
         measure_system(h);
+        // Same rule again, one door across.
+        measure_about(h);
 
         // **Asked before anything reads a chord, and it is a control for the
         // probe itself.** Every shortcut this run prints is rebuilt from the

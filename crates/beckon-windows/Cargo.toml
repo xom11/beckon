@@ -20,6 +20,15 @@ features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
+    # The clipboard, for the About page's three copy buttons (`clipboard.rs`).
+    # `Win32_System_DataExchange` is the API and `Win32_System_Memory` is the
+    # `HGLOBAL` it takes ownership of -- neither is avoidable by picking a
+    # narrower call, unlike the `Win32_Security` feature `prefs.rs` declined
+    # to enable in order to pass `None` to one parameter. `Win32_System_Memory`
+    # was already a DEV-dependency feature for `settings_probe`; features are
+    # additive, so promoting it here changes nothing for the probes.
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     # `MessageBeep`, which spec F.3 names for a refused chord. Windows files
     # it under Diagnostics::Debug rather than WindowsAndMessaging, where its
     # `MESSAGEBOX_STYLE` argument lives. Not a new dependency: this feature

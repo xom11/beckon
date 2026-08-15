@@ -151,14 +151,17 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    banner_shown, combo_needs_placing, default_button, opacity_alpha, system_state, warn_dot_shown,
-    ComboSpot, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths,
-    SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
+    about_state, banner_shown, combo_needs_placing, copy_text, default_button, opacity_alpha,
+    system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton,
+    Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, SettingsCommand, SystemInputs,
+    SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 /// `DWMWA_WINDOW_CORNER_PREFERENCE` is not in `windows` 0.61's own constant
 /// table -- `theme.rs` already names the same reason for
 /// `DWMWA_USE_IMMERSIVE_DARK_MODE` -- so `create` defines it locally.
@@ -169,6 +172,11 @@ use windows::Win32::Graphics::Gdi::*;
 /// glob-imported so the surprise is written down once.
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+/// `GetProcessTimes` against `GetCurrentProcess`' pseudo-handle: half of the
+/// About page's stale-image verdict, and the half that cannot be got any
+/// other way -- a process's own start time is not in any environment variable
+/// or any file.
+use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 /// `HIGHCONTRASTW` is filed under Accessibility, not WindowsAndMessaging
 /// where `SPI_GETHIGHCONTRAST` itself lives. Named rather than glob-imported
 /// so the surprise is written down once -- the same reason `MessageBeep` is.
@@ -290,6 +298,18 @@ const SS_PATHELLIPSIS_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x8000);
 /// look question, not a correctness one. `settings_probe`'s System section
 /// prints the control's text and a screenshot shows which happened.
 const SS_RIGHT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0002);
+
+/// `SS_CENTER` (0x0001), which `windows` 0.61 does not export either.
+///
+/// A third VALUE of the same low-bit type field `SS_LEFT` (0), `SS_RIGHT` (2)
+/// and `SS_OWNERDRAW` (13) share -- so it is `|`-ed in like a flag and is not
+/// one, and combining it with `SS_RIGHT` would produce `SS_SIMPLE` (3) rather
+/// than a contradiction the compiler could catch.
+///
+/// One control carries it: `IDC_ABOUT_NAME`, the `beckon 0.9.3` line under
+/// the mark. It is the only centred text in the window, which is why the
+/// constant arrives with the About page rather than earlier.
+const SS_CENTER_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0001);
 
 /// `EM_SETCUEBANNER` (`ECM_FIRST + 1`), which `windows` 0.61 does not
 /// export -- the same gap `SS_CENTERIMAGE_STYLE` above fills.
@@ -454,7 +474,14 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 /// says `Save`. Enter on a focused `Open config file` glyph would have
 /// written the config file. That is the `Reload` defect this list was built
 /// for, two pages across.
-const PUSH_BUTTONS: [i32; 14] = [
+///
+/// **The About page's six joined the next day, for the same reason and with
+/// one extra consequence worth naming.** Three of them are copy glyphs, which
+/// look even more like ornaments than System's four -- and a stray Enter on a
+/// copy button silently replaces whatever the user had on the clipboard,
+/// which is a loss they do not see until they paste. The other three open a
+/// browser.
+const PUSH_BUTTONS: [i32; 20] = [
     IDC_ADD,
     IDC_REMOVE,
     IDC_APPLY,
@@ -469,6 +496,12 @@ const PUSH_BUTTONS: [i32; 14] = [
     IDC_CONFIG_SHOW,
     IDC_LOG_OPEN,
     IDC_LOG_SHOW,
+    IDC_ABOUT_BUILD_COPY,
+    IDC_ABOUT_LOCATION_COPY,
+    IDC_ABOUT_LICENCE_COPY,
+    IDC_ABOUT_GITHUB,
+    IDC_ABOUT_RELEASES,
+    IDC_ABOUT_BUG,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -563,6 +596,12 @@ fn tab_id_of(page: Page) -> i32 {
 /// those two doors -- see `compute_card_rects` in `layout.rs` for why the
 /// re-stack was weighed and deferred again rather than taken here.
 ///
+/// **CORRECTED A THIRD TIME 2026-08-15**: both waiting lines are gone and
+/// both pages own real controls, so no door in this window is a placeholder
+/// any more. About's fifteen are unconditional -- unlike System's fourteen,
+/// two of whose rows depend on `SYS_ROWS`, there is nothing about this
+/// machine that can remove a row from the About page.
+///
 /// **CORRECTED AGAIN 2026-08-15**: System's waiting line is gone and its
 /// fourteen real controls are here. Two of the page's rows are CONDITIONAL --
 /// `Start with Windows` when this process cannot offer it, and the log row
@@ -580,7 +619,7 @@ fn tab_id_of(page: Page) -> i32 {
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 36] = [
+const PAGE_CONTROLS: [(i32, Page); 50] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
     // The head row's `Shortcuts` heading (`IDC_LBL_SECTION`, 1020) left this
     // table with the control on 2026-08-15; the row itself is unchanged.
@@ -621,8 +660,23 @@ const PAGE_CONTROLS: [(i32, Page); 36] = [
     (IDC_LOG_SIZE, Page::System),
     (IDC_LOG_OPEN, Page::System),
     (IDC_LOG_SHOW, Page::System),
-    // -- About: one waiting line, and nothing else yet.
-    (IDC_ABOUT_PLACEHOLDER, Page::About),
+    // -- About: the mark and the name, the three value rows, the disclosure,
+    // the three links.
+    (IDC_ABOUT_MARK, Page::About),
+    (IDC_ABOUT_NAME, Page::About),
+    (IDC_ABOUT_BUILD_LABEL, Page::About),
+    (IDC_ABOUT_BUILD_VALUE, Page::About),
+    (IDC_ABOUT_BUILD_COPY, Page::About),
+    (IDC_ABOUT_LOCATION_LABEL, Page::About),
+    (IDC_ABOUT_LOCATION_VALUE, Page::About),
+    (IDC_ABOUT_LOCATION_COPY, Page::About),
+    (IDC_ABOUT_LICENCE_LABEL, Page::About),
+    (IDC_ABOUT_LICENCE_VALUE, Page::About),
+    (IDC_ABOUT_LICENCE_COPY, Page::About),
+    (IDC_ABOUT_DISCLOSURE, Page::About),
+    (IDC_ABOUT_GITHUB, Page::About),
+    (IDC_ABOUT_RELEASES, Page::About),
+    (IDC_ABOUT_BUG, Page::About),
 ];
 
 /// Which of the System page's two CONDITIONAL rows are on screen.
@@ -910,17 +964,11 @@ mod cap {
     pub const TAB_KEYBOARD: &str = "Keyboard";
     pub const TAB_SYSTEM: &str = "System";
     pub const TAB_ABOUT: &str = "About";
-    /// What About says until its real controls land.
-    ///
-    /// **It was two controls' caption until 2026-08-15**, when design §3.3's
-    /// rows replaced System's waiting line (`IDC_SYS_PLACEHOLDER`, 1084,
-    /// retired). One constant is still right for one control: About is still
-    /// waiting, and "waiting" is the whole of what it can say.
-    ///
-    /// No `&`: it is not operable and owns no mnemonic, and the STATIC is
-    /// created with `SS_NOPREFIX` so an `&` added here would draw as a literal
-    /// rather than silently eat the next letter.
-    pub const PLACEHOLDER: &str = "Nothing here yet.";
+    // `PLACEHOLDER` ("Nothing here yet.") stood here until 2026-08-15 and is
+    // gone with the last control that read it. It was two controls' caption,
+    // then one, then none: design §3.3's rows took System's waiting line and
+    // §3.4's took About's the next day. Nothing is waiting any more, so the
+    // constant has nothing left to be about.
 
     /// The System page's five rows (design §3.3), in drawing order.
     ///
@@ -979,6 +1027,75 @@ mod cap {
     pub const TIP_CONFIG_SHOW: &str = "Show the config file in Explorer";
     pub const TIP_LOG_OPEN: &str = "Open the log file";
     pub const TIP_LOG_SHOW: &str = "Show the log file in Explorer";
+
+    /// The About page (design §3.4).
+    ///
+    /// **The letter, not a picture.** `beckon.ico` is embedded in both
+    /// binaries and `LoadImageW` could draw it here -- and the mock-up draws a
+    /// `b` in a rounded accent square, which is what the drawing decides.
+    /// Loading the icon would also need a fallback for the build that has no
+    /// resource, i.e. two paths where the drawing asks for one.
+    pub const MARK: &str = "b";
+    /// **No `&` on any of the three labels**, and unlike the tab pills this
+    /// is not a counting argument -- free letters exist (`b`, `i`, `n` among
+    /// them). Two reasons that do not depend on the alphabet:
+    ///
+    /// - **A label's mnemonic presses nothing.** `Alt+B` on a STATIC moves
+    ///   focus to the next control in tab order, which here is a value the
+    ///   user cannot edit and then a copy button they did not aim at. That is
+    ///   the rule the editor's own two labels carried and `IDC_LBL_HOLD` /
+    ///   `IDC_LBL_TAP` still carry: a label that names the control after it
+    ///   buys nothing by holding a letter for it.
+    /// - **Design §10 forbids new `Alt` mnemonics until a uniqueness
+    ///   `#[test]` lands**, and the collision table above is still maintained
+    ///   by hand with nothing checking it.
+    ///
+    /// `Licence`, not `License`: the mock-up spells it this way, and it is
+    /// the row's LABEL rather than the identifier under it -- the value stays
+    /// `MIT OR Apache-2.0`, which is Cargo's string and not a word this
+    /// window gets to spell.
+    pub const ABOUT_BUILD: &str = "Build";
+    pub const ABOUT_LOCATION: &str = "Location";
+    pub const ABOUT_LICENCE: &str = "Licence";
+    /// The three copy buttons' one caption.
+    ///
+    /// **`U+29C9 TWO JOINED SQUARES`, the third non-ASCII string this window
+    /// draws and the least certain of the three.** `OPEN_GLYPH` (U+2197) and
+    /// `SHOW_GLYPH` (U+25A4) were argued to be in Segoe UI's coverage on every
+    /// Windows 10/11 build; this one is a mathematical symbol, so the face
+    /// that answers for it is more likely to be Segoe UI Symbol through font
+    /// linking than Segoe UI itself. It is what design §3.4's drawing uses,
+    /// and the failure mode is the one every glyph here has -- a box --
+    /// which `settings_probe` reads back by caption, the same check the other
+    /// two get and the cheapest one available without a screenshot.
+    ///
+    /// The alternative was the word `Copy` three times, and it loses to rule
+    /// 1: the row already carries a label AND a value, so a third word on it
+    /// would be the only one naming a mechanism rather than a fact.
+    pub const COPY_GLYPH: &str = "\u{29C9}";
+    /// The three copy tooltips -- the words the buttons do not spend width
+    /// on. Written out per row rather than templated, for the reason the
+    /// System page's four are: read aloud, "Copy the build" and "Copy the
+    /// path" differ by more than a noun.
+    ///
+    /// `TIP_LOCATION_COPY` says **path**, and the button really does copy the
+    /// bare path -- not the string on screen, which may carry a verdict and is
+    /// shortened by `SS_PATHELLIPSIS`. See `beckon_core::settings::copy_text`.
+    pub const TIP_BUILD_COPY: &str = "Copy the build identifier";
+    pub const TIP_LOCATION_COPY: &str = "Copy the full path";
+    pub const TIP_LICENCE_COPY: &str = "Copy the licence";
+    /// The three links, in drawing order. No `&` on any of them: `g` and `b`
+    /// are genuinely free, and design §10's standing rule is the reason
+    /// anyway -- no new `Alt` mnemonics until the collision table above has a
+    /// uniqueness `#[test]` behind it. `Releases` and `Report a bug` would
+    /// also have to split `r`, which `Reload` already owns.
+    ///
+    /// They are the only captions in this window that name something outside
+    /// it, which is why none of them is a verb: `GitHub` and `Releases` are
+    /// places, and `Report a bug` is the one that is an errand.
+    pub const ABOUT_GITHUB: &str = "GitHub";
+    pub const ABOUT_RELEASES: &str = "Releases";
+    pub const ABOUT_BUG: &str = "Report a bug";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -1468,15 +1585,13 @@ const MIN_HEIGHT: i32 = 560;
 enum Role {
     /// The title-bar app name. Read by `chrome::paint`.
     Title,
-    /// **Nothing constructs this since 2026-08-15**, and the `allow` is that
-    /// fact rather than an oversight. Its one reader was `IDC_LBL_SECTION`,
-    /// the `Shortcuts` card heading, which design §3.1 does not have; the role
-    /// and its 18 px semibold font stay because §B.3 names seven roles and
-    /// About's name row (`ABOUT_NAME`, 1101) is the next control that wants
-    /// one. `#[expect]` would say this better -- it fails once the variant is
-    /// constructed again, so the attribute cannot outlive its reason -- but it
-    /// stabilised in 1.81 and the workspace floor is 1.75.
-    #[allow(dead_code)]
+    /// 18 px semibold. **It was unconstructed for one day** -- design §3.1
+    /// deleted its only reader, the `Shortcuts` card heading
+    /// (`IDC_LBL_SECTION`), and the role was kept behind an `#[allow(dead_code)]`
+    /// naming About's name row as the next control that would want it. Design
+    /// §3.4 built that row on 2026-08-15, so the `allow` is gone and the
+    /// prediction is spent: `IDC_ABOUT_NAME` draws `beckon 0.9.3` in this, and
+    /// `IDC_ABOUT_MARK` draws the letter in the tile beside it.
     Subtitle,
     /// Card captions, the ListView column headers, and the `Save` caption.
     BodyStrong,
@@ -1500,13 +1615,22 @@ enum Role {
 /// the one that drifts.
 fn role_of(id: i32) -> Role {
     match id {
-        // **No arm returns `Role::Subtitle` since 2026-08-15.** Its one reader
-        // was `IDC_LBL_SECTION`, the `Shortcuts` heading, and design §3.1's
-        // card has no heading. The role and its font stay: §B.3 names seven
-        // roles, and About's own name row (`ABOUT_NAME`, 1101) is the next
-        // control that will want an 18 px semibold. Nothing DRAWS in it today,
-        // and that is a fact about this window rather than about the type
-        // scale.
+        // **`Role::Subtitle` has a reader again since 2026-08-15**, and it is
+        // the one the previous version of this comment predicted: About's name
+        // row. That comment read "No arm returns `Role::Subtitle` ... About's
+        // own name row (`ABOUT_NAME`, 1101) is the next control that will want
+        // an 18 px semibold", written the day `IDC_LBL_SECTION` was deleted;
+        // the role and its font were kept for it and are now spent on it. The
+        // `#[allow(dead_code)]` on the variant went with this arm.
+        //
+        // **`IDC_ABOUT_MARK` shares it, and that is a size decision rather
+        // than a semantic one.** The mock-up draws a 48 px tile with a 28 px
+        // letter -- a ratio of 0.58 -- and there is no 28 px face in this
+        // window: §B.3 names seven roles and the largest is this 18 px
+        // semibold. Inventing an eighth for one letter is a change to the type
+        // scale, so the TILE shrinks instead (`paint::mark`'s `MARK_D`, 36 px,
+        // ratio 0.5) and the scale stays closed.
+        IDC_ABOUT_NAME | IDC_ABOUT_MARK => Role::Subtitle,
         //
         // The one card caption left, and the Save caption. `IDC_GRP_KEYBOARD`
         // was reclassed from `BS_GROUPBOX` to a plain caption `STATIC` in Task
@@ -1545,7 +1669,24 @@ fn role_of(id: i32) -> Role {
         // on the same line, and drawing them at Body weight would make each
         // row read as two labels. The mock-up draws them at 12.5 px against
         // its 14 px body, which is this role.
-        IDC_NOTES | IDC_CONFIG_DIR | IDC_LOG_SIZE | IDC_OPACITY_VALUE => Role::Caption,
+        //
+        // **About's three LABELS are here and its three VALUES are not, which
+        // is the exact opposite of the System page one line up.** That is the
+        // mock-up rather than an inconsistency: `.kv .k` is muted at label
+        // size and `.kv .v` is not. The rows answer different questions. On
+        // System the label names a setting the reader operates and the value
+        // is the machine's answer to it; on About the label is a signpost --
+        // `Build`, `Location`, `Licence` -- and the VALUE is the thing the
+        // reader opened the page for. Whichever half carries the question gets
+        // the quieter face.
+        IDC_NOTES
+        | IDC_CONFIG_DIR
+        | IDC_LOG_SIZE
+        | IDC_OPACITY_VALUE
+        | IDC_ABOUT_BUILD_LABEL
+        | IDC_ABOUT_LOCATION_LABEL
+        | IDC_ABOUT_LICENCE_LABEL
+        | IDC_ABOUT_DISCLOSURE => Role::Caption,
         // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
         // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
         // same font -- the draw font and the measuring font move together,
@@ -2425,6 +2566,12 @@ fn default_button_of(id: i32) -> DefaultButton {
         IDC_CONFIG_SHOW => DefaultButton::ConfigShow,
         IDC_LOG_OPEN => DefaultButton::LogOpen,
         IDC_LOG_SHOW => DefaultButton::LogShow,
+        IDC_ABOUT_BUILD_COPY => DefaultButton::AboutBuildCopy,
+        IDC_ABOUT_LOCATION_COPY => DefaultButton::AboutLocationCopy,
+        IDC_ABOUT_LICENCE_COPY => DefaultButton::AboutLicenceCopy,
+        IDC_ABOUT_GITHUB => DefaultButton::AboutGithub,
+        IDC_ABOUT_RELEASES => DefaultButton::AboutReleases,
+        IDC_ABOUT_BUG => DefaultButton::AboutBug,
         _ => DefaultButton::HOME,
     }
 }
@@ -2447,6 +2594,12 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::ConfigShow => IDC_CONFIG_SHOW,
         DefaultButton::LogOpen => IDC_LOG_OPEN,
         DefaultButton::LogShow => IDC_LOG_SHOW,
+        DefaultButton::AboutBuildCopy => IDC_ABOUT_BUILD_COPY,
+        DefaultButton::AboutLocationCopy => IDC_ABOUT_LOCATION_COPY,
+        DefaultButton::AboutLicenceCopy => IDC_ABOUT_LICENCE_COPY,
+        DefaultButton::AboutGithub => IDC_ABOUT_GITHUB,
+        DefaultButton::AboutReleases => IDC_ABOUT_RELEASES,
+        DefaultButton::AboutBug => IDC_ABOUT_BUG,
     }
 }
 
@@ -4414,42 +4567,157 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
-    // -- The About page: one waiting line, and that is the whole page today.
+    // -- Card 5: the About page (design §3.4). The mark and the name, a
+    // divider, three value rows with copy buttons, a divider, the hook
+    // disclosure, and three links.
     //
-    // Created HERE rather than beside the band it sits in, because it sits in
-    // no band: the page has no card at all (`compute_card_rects` gives all
-    // four zero height behind that door), so `layout` puts the line at the top
-    // of the content area -- card 0's own top, which is where the stack starts
-    // on every page. This is the last content in the function before the
-    // command bar, which is where the page that comes after System belongs in
-    // a file whose order is its reading order.
+    // **The waiting line this replaces was the last placeholder in the
+    // window** (`IDC_ABOUT_PLACEHOLDER`, 1115, retired), and with it goes the
+    // whole "sits in no band" arrangement its creation comment described: this
+    // page has a card now, like every other door, so `compute_card_rects`
+    // gives card 5 a height behind it and every STATIC below sits on `card`
+    // rather than on the window's own `bg`.
     //
-    // Creation order is Tab order, and this takes no tab stop: a STATIC has no
-    // `WS_TABSTOP` and `GetNextDlgTabItem` skips it. So About is, today, a
-    // door that Tab walks straight past into the command bar -- correct, since
-    // there is nothing behind it to reach.
+    // **Two of the fifteen are `SS_OWNERDRAW` and the rest are not**, which is
+    // what decides whether a control needs a row in the `on_card` match: an
+    // owner-draw static never asks its parent for a background brush, so
+    // `IDC_ABOUT_MARK` and `IDC_ABOUT_DISCLOSURE` are deliberately absent from
+    // it (`IDC_NOTES`' rule) while every other STATIC here is in it.
     //
-    // **`SS_NOPREFIX`.** The text carries no mnemonic (`cap::PLACEHOLDER`),
-    // and a STATIC that would silently eat an `&` added to it later is a trap
-    // whether or not one is there today.
-    //
-    // **It is not in the `on_card` match** in the `WM_CTLCOLORSTATIC` arm
-    // below, and that is not the omission the plan warned about: it has its
-    // own branch there, painting it on the window's own `bg`, because that is
-    // the surface actually under it. Joining `on_card` would draw a
-    // card-coloured strip on a page with no card behind it; falling through to
-    // `DefWindowProcW` would draw a `COLOR_3DFACE` one. Both are wrong, and
-    // only the second was written down. **System left that branch on
-    // 2026-08-15**: its rows sit on a card now, so they are in `on_card` like
-    // every other on-card STATIC.
+    // The mark: a rounded accent tile with a `b` in it, drawn by
+    // `paint::mark`. Owner-draw because neither half of it is text a STATIC
+    // can produce -- the tile is a `RoundRect` and the letter has to be
+    // centred in it on both axes.
     child(
         hwnd,
         w!("STATIC"),
-        cap::PLACEHOLDER,
-        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
-        IDC_ABOUT_PLACEHOLDER,
+        cap::MARK,
+        SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
+        IDC_ABOUT_MARK,
         &fonts,
     );
+    // `beckon 0.9.3`. **The version is the running IMAGE's**, compiled in --
+    // which is what makes this row the honest half of the a14 incident: a
+    // fresh `beckon --version` starts whatever is on disk today, while this
+    // string was baked into the process that is painting it.
+    //
+    // `SS_CENTER`, the only centred text in the window; see that constant.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE | SS_CENTER_STYLE,
+        IDC_ABOUT_NAME,
+        &fonts,
+    );
+    // The three value rows. Label, value, copy button -- and the LABELS are
+    // created with their captions while the VALUES arrive through
+    // `apply_about_state`, because only the second kind can change.
+    //
+    // **`SS_PATHELLIPSIS` on the Location value alone**, the same asymmetry
+    // the System page's two file rows have and for the same reason: it
+    // shortens by eating the middle of a path, which is right for
+    // `…\scoop\apps\beckon\current\beckon-serve.exe` and finds no separator to
+    // cut in `MIT OR Apache-2.0`. Unlike System's config row this one is NOT
+    // `SS_RIGHT`: a path reads from its start, and the copy button beside it
+    // is a fixed square rather than something the text has to reach.
+    //
+    // **`SS_NOPREFIX` on all six.** A path can contain an ampersand (`C:\R&D\`
+    // is a legal directory name), and without this the STATIC would eat it and
+    // underline the next character -- the same trap the app-name column
+    // carries this style for.
+    for (label_id, label, value_id, value_style) in [
+        (
+            IDC_ABOUT_BUILD_LABEL,
+            cap::ABOUT_BUILD,
+            IDC_ABOUT_BUILD_VALUE,
+            WINDOW_STYLE(0),
+        ),
+        (
+            IDC_ABOUT_LOCATION_LABEL,
+            cap::ABOUT_LOCATION,
+            IDC_ABOUT_LOCATION_VALUE,
+            SS_PATHELLIPSIS_STYLE,
+        ),
+        (
+            IDC_ABOUT_LICENCE_LABEL,
+            cap::ABOUT_LICENCE,
+            IDC_ABOUT_LICENCE_VALUE,
+            WINDOW_STYLE(0),
+        ),
+    ] {
+        child(
+            hwnd,
+            w!("STATIC"),
+            label,
+            SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+            label_id,
+            &fonts,
+        );
+        child(
+            hwnd,
+            w!("STATIC"),
+            "",
+            SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE | value_style,
+            value_id,
+            &fonts,
+        );
+    }
+    for id in [
+        IDC_ABOUT_BUILD_COPY,
+        IDC_ABOUT_LOCATION_COPY,
+        IDC_ABOUT_LICENCE_COPY,
+    ] {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            cap::COPY_GLYPH,
+            WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
+    // The hook disclosure (design §3.4, moved off Keyboard).
+    //
+    // **`SS_OWNERDRAW`, for two reasons that a plain STATIC gives up
+    // together.** It carries a severity dot, which is a drawn `Ellipse` and
+    // never the character `●` -- the same rule `draw_notes` follows, and the
+    // reason an em-dash in `serve --log` once came back as `?"`. And it is the
+    // only WRAPPED prose in the window: `paint::disclosure` runs `DT_WORDBREAK`
+    // over whatever width it is given, against a height `layout` measured with
+    // `DT_CALCRECT` from the same string in the same font.
+    //
+    // The caption is set here and never rewritten: it is a constant
+    // (`beckon_core::settings::HOOK_DISCLOSURE`), and the painter reads it back
+    // off the control rather than being handed it, so there is one copy of the
+    // sentence in the process.
+    child(
+        hwnd,
+        w!("STATIC"),
+        beckon_core::settings::HOOK_DISCLOSURE,
+        SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
+        IDC_ABOUT_DISCLOSURE,
+        &fonts,
+    );
+    // The three links. Ordinary push buttons -- **not** a syslink or a
+    // colour-as-affordance: this window custom-draws every button it has, and
+    // a fourth appearance that means "this leaves the window" would need a
+    // fifth `BtnTier`, its own high-contrast pair and its own `theme::pairs`
+    // row before it drew anything. The captions say where they go.
+    for (caption, id) in [
+        (cap::ABOUT_GITHUB, IDC_ABOUT_GITHUB),
+        (cap::ABOUT_RELEASES, IDC_ABOUT_RELEASES),
+        (cap::ABOUT_BUG, IDC_ABOUT_BUG),
+    ] {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
 
     // -- Band 7: the command bar. `Open config file` far left, then Close
     // and Save on the right, Save outermost and default.
@@ -4522,18 +4790,35 @@ unsafe fn build_children(hwnd: HWND) {
     // run with no log: a tooltip on a hidden control never shows, and
     // wiring them behind `SYS_ROWS` would put a second reader on a fact that
     // arrives after this function has finished.
+    // **About's three copy glyphs ride in the same vector**, which is why it
+    // is no longer named for the System page alone in anything but its field
+    // name (`Ui::sys_tips`, kept because renaming a field is churn a reader
+    // gains nothing from). The lifetime rule is what they share and it is the
+    // whole reason there is a vector at all: comctl32 keeps the POINTER, so
+    // every buffer has to outlive the tooltip, and `Ui` is what outlives both.
     let mut sys_tips: Vec<Vec<u16>> = [
         cap::TIP_CONFIG_OPEN,
         cap::TIP_CONFIG_SHOW,
         cap::TIP_LOG_OPEN,
         cap::TIP_LOG_SHOW,
+        cap::TIP_BUILD_COPY,
+        cap::TIP_LOCATION_COPY,
+        cap::TIP_LICENCE_COPY,
     ]
     .iter()
     .map(|t| wide(t))
     .collect();
-    for (i, id) in [IDC_CONFIG_OPEN, IDC_CONFIG_SHOW, IDC_LOG_OPEN, IDC_LOG_SHOW]
-        .into_iter()
-        .enumerate()
+    for (i, id) in [
+        IDC_CONFIG_OPEN,
+        IDC_CONFIG_SHOW,
+        IDC_LOG_OPEN,
+        IDC_LOG_SHOW,
+        IDC_ABOUT_BUILD_COPY,
+        IDC_ABOUT_LOCATION_COPY,
+        IDC_ABOUT_LICENCE_COPY,
+    ]
+    .into_iter()
+    .enumerate()
     {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
             add_tooltip(hwnd, h, &mut sys_tips[i]);
@@ -5312,6 +5597,160 @@ unsafe fn render_system(hwnd: HWND, st: &SystemState) {
         layout(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
+}
+
+/// The target triple this binary was built for, stamped in by `build.rs`.
+///
+/// **Why the row is worth a control at all**: a14 is ARM64 and runs x64
+/// binaries under emulation, so *am I running the emulated build?* is a real
+/// question with a real performance answer, and nothing else on screen
+/// answers it.
+///
+/// **Cargo's own `TARGET`, not a `cfg!`-derived guess.** A triple assembled
+/// from `std::env::consts::ARCH` plus `cfg!(target_env)` gets the emulation
+/// question right too -- both are compile-time facts -- and it cannot see a
+/// vendor other than `pc`, so `aarch64-uwp-windows-msvc` and its siblings
+/// would come back mislabelled. beckon does not build for those, so the
+/// difference is one word in one row; it is taken because the build script
+/// already existed for the examples' manifest and forwarding one variable
+/// through it cost two lines.
+///
+/// **No build DATE**, which design §3.4's drawing shows beside the triple.
+/// `build.rs`'s own comment carries the reasoning: a stamped date is really
+/// "when the build script last ran", cargo caches that, and the version on
+/// the row above answers "how old is this" without being able to drift from
+/// the running process.
+const TARGET_TRIPLE: &str = env!("BECKON_TARGET");
+
+/// Gather the About page from what only this process can know.
+///
+/// **`current_exe()` is used UNRESOLVED, deliberately**, and this is the one
+/// line of the page that a well-meaning simplification would break:
+/// `GetFinalPathNameByHandleW` on it would report where the junction points
+/// TODAY, which is exactly the surface that lied on a14 -- a watchdog-started
+/// beckon ran the 0.8.0 image for three hours while `--version` and scoop's
+/// `current` junction both said 0.9.0. std's `current_exe` is
+/// `GetModuleFileNameW`, which returns the launch path with `\current\` still
+/// in it, and that is what the row must show.
+///
+/// The two timestamps behind the verdict: `GetProcessTimes` for when this
+/// process started, and one `stat` for when the file at that path was last
+/// written. `beckon_core::settings::image_age` decides what they mean, and
+/// its doc is where the one-sidedness of that comparison is written down.
+fn about_now() -> AboutState {
+    let exe = std::env::current_exe().ok();
+    // `Written` / `Gone` / `Unknown` are three different answers to the
+    // reader, so the error is inspected rather than flattened: a file that is
+    // not there is a fact worth printing, and a `stat` that failed for any
+    // other reason is beckon declining to claim anything.
+    let disk = match exe.as_ref().map(std::fs::metadata) {
+        Some(Ok(m)) => match m.modified() {
+            Ok(t) => ImageOnDisk::Written(t),
+            Err(_) => ImageOnDisk::Unknown,
+        },
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => ImageOnDisk::Gone,
+        _ => ImageOnDisk::Unknown,
+    };
+    about_state(AboutInputs {
+        version: env!("CARGO_PKG_VERSION"),
+        target: TARGET_TRIPLE,
+        exe: exe.as_deref(),
+        started: process_start_time(),
+        disk,
+        licence: env!("CARGO_PKG_LICENSE"),
+    })
+}
+
+/// When this process started, as a `SystemTime`.
+///
+/// `GetProcessTimes` answers in `FILETIME`, i.e. 100-nanosecond ticks since
+/// 1601-01-01 UTC, and the gap to the Unix epoch is a fixed 11 644 473 600
+/// seconds -- both calendars are UTC with no leap seconds, so the conversion
+/// is arithmetic rather than a calendar question.
+///
+/// `None` on failure, which `image_age` reads as "no claim". Asking a process
+/// about itself with a pseudo-handle cannot realistically fail; the arm is
+/// here because the alternative is `unwrap` in a wndproc, where a panic
+/// crosses an `extern "system"` boundary and aborts.
+fn process_start_time() -> Option<std::time::SystemTime> {
+    const EPOCH_DELTA_SECS: u64 = 11_644_473_600;
+    let mut created = FILETIME::default();
+    let mut exited = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .ok()?;
+    }
+    let ticks = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+    let secs = ticks / 10_000_000;
+    let nanos = ((ticks % 10_000_000) * 100) as u32;
+    secs.checked_sub(EPOCH_DELTA_SECS)
+        .map(|s| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::new(s, nanos))
+}
+
+/// Put one About row's payload on the clipboard, then tell the caller.
+///
+/// See the `IDC_ABOUT_*_COPY` arms in `handle_command` for why the act
+/// happens here rather than in `serve`. What is copied is core's decision:
+/// the row's bare value, never the string on screen, which for `Location` may
+/// carry a verdict and is shortened by `SS_PATHELLIPSIS` on its way to the
+/// pixels.
+fn copy_about_field(field: Field) {
+    let st = about_now();
+    if let Err(e) = crate::clipboard::set_text(copy_text(&st, field)) {
+        // Swallowed, on `set_dark`'s reasoning: what is lost is one
+        // clipboard write the user can retry, and a modal dialog for it would
+        // be worse than the fault.
+        eprintln!("beckon: cannot copy to the clipboard: {e}");
+    }
+    with_cb(|cb| (cb.on_command)(SettingsCommand::Copy(field)));
+}
+
+/// Push the About page. Third entry point beside `apply_state` and
+/// `apply_system_state`, and it takes no arguments at all.
+///
+/// **Everything on this page is something only this process can know**, which
+/// is the System page's argument taken all the way: the version is compiled
+/// into this binary, the triple is stamped into it by `build.rs`, the launch
+/// path is `current_exe()`, and both halves of the stale-image verdict are
+/// Win32 calls about this process and this file. There is nothing for `serve`
+/// to pass in, and anything it did pass would be a copy of a fact this crate
+/// can read directly.
+///
+/// **It is called on every refresh rather than once at open**, because one of
+/// the four strings it writes genuinely moves: the file at the launch path
+/// can be replaced while the window is up, which is the whole subject of the
+/// `Location` row. The other three are fixed for the process's lifetime and
+/// cost a `set_text_if_changed` that finds nothing to change.
+pub fn apply_about_state() {
+    let Some(hwnd) = UI.with(|u| u.borrow().as_ref().map(|x| x.hwnd)) else {
+        return;
+    };
+    let st = about_now();
+    unsafe { render_about(hwnd, &st) };
+}
+
+/// Write `st` onto the controls.
+///
+/// Split from `apply_about_state` for `render_system`'s reason: the gathering
+/// above has no `unsafe` in it and this has no policy in it.
+///
+/// **No `layout` call and nothing conditional**, unlike `render_system`: this
+/// page has no row that can appear or vanish, so a push can never change the
+/// card's height. That is what keeps the About page off the one path that
+/// reaches `SetWindowPos` on the populated App combo.
+unsafe fn render_about(hwnd: HWND, st: &AboutState) {
+    set_text_if_changed(hwnd, IDC_ABOUT_NAME, &st.name);
+    set_text_if_changed(hwnd, IDC_ABOUT_BUILD_VALUE, &st.build.shown);
+    set_text_if_changed(hwnd, IDC_ABOUT_LOCATION_VALUE, &st.location.shown);
+    set_text_if_changed(hwnd, IDC_ABOUT_LICENCE_VALUE, &st.licence.shown);
 }
 
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
@@ -7142,20 +7581,27 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         card(hdc, rc, dpi);
                     }
                 }
-                // The System card's two dividers, in the same layer as the
-                // cards and immediately after them -- they are drawn ON the
-                // card, so a card painted afterwards would erase them. Their
-                // geometry is `system_plan`'s, the same arithmetic `layout`
-                // places the rows either side of them from, reached through
-                // `system_dividers` for `card_rects`' reason: one function,
-                // two readers, no second copy to drift.
+                // The System and About cards' two dividers each, in the same
+                // layer as the cards and immediately after them -- they are
+                // drawn ON a card, so a card painted afterwards would erase
+                // them. Their geometry is `system_plan`'s and `about_plan`'s,
+                // the same arithmetic `layout` places the rows either side of
+                // them from, reached through these two functions for
+                // `card_rects`' reason: one function per page, two readers
+                // each, no second copy to drift.
                 //
-                // Zero-width behind every other door, which `divider`
-                // declines to draw -- the same degenerate-rect rule the loop
-                // above applies.
+                // **Two functions chained rather than one taking a page.**
+                // The pages compute their offsets from unrelated plans, so a
+                // shared entry point would be an `if` wrapped around two
+                // arithmetics. Each answers with zero-width rects behind any
+                // door but its own, which `divider` declines to draw -- the
+                // same degenerate-rect rule the loop above applies.
                 {
                     let dpi = GetDpiForWindow(hwnd).max(96);
-                    for rc in system_dividers(hwnd) {
+                    for rc in system_dividers(hwnd)
+                        .into_iter()
+                        .chain(about_dividers(hwnd))
+                    {
                         divider(hdc, rc, dpi);
                     }
                 }
@@ -7584,63 +8030,29 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SetBkMode(hdc, OPAQUE);
                     return LRESULT(theme_brush(field).0 as isize);
                 }
-                // **The two waiting lines sit on `bg`, not on `card`**, and
-                // this branch is that difference rather than an exception to
-                // it. System and About have no card at all -- behind those two
-                // doors `compute_card_rects` leaves every one of the four
-                // rects at zero height, and `WM_PAINT`'s card loop skips a
-                // degenerate rect -- so what is under either STATIC is the
-                // window ground the `WM_ERASEBKGND` arm above fills. Adding
-                // them to `on_card` below would paint a card-coloured strip
-                // the width of the line onto a page with no card behind it,
-                // which reads as a rendering fault rather than as a page that
-                // is waiting; leaving them out of BOTH branches would fall
-                // through to `DefWindowProcW`'s opaque `COLOR_3DFACE`, the
-                // system-grey rectangle Task 8 fixed for every other STATIC,
-                // group box and check box in this window at once. The plan and
-                // spec named only the second hazard, which is why this is a
-                // branch of its own rather than two more ids in the match
-                // below.
+                // **DELETED 2026-08-15: the waiting-line branch.** A branch
+                // stood here answering `IDC_SYS_PLACEHOLDER` and then
+                // `IDC_ABOUT_PLACEHOLDER` with the window's own `bg` rather
+                // than `card`, because those two pages had no card at all --
+                // behind them `compute_card_rects` left every rect at zero
+                // height, so `on_card` would have painted a card-coloured
+                // strip onto bare ground while `DefWindowProcW` would have
+                // painted the `COLOR_3DFACE` rectangle Task 8 fixed for eight
+                // controls at once. Both pages have real cards now and both
+                // placeholders are retired, so the branch has no subject.
                 //
-                // **`OPAQUE`, and under Mica that is the half that matters.**
-                // These are the first strings this window draws outside a
-                // card, and `theme::apply_backdrop` names exactly that as the
-                // change that reopens Mica's documented hazard: GDI text drawn
-                // straight onto glass loses its alpha channel and fringes
-                // black. Filling the control's own rect with `bg` first is
-                // what keeps that closed -- the ink lands on an opaque surface
-                // either way -- and it costs a `bg`-coloured strip the width
-                // of one line on a page that would otherwise be glass. That
-                // trade is already this window's: Mica is measured dead here
-                // (gate 01, a14) because ~30 opaque child rects paint the
-                // client edge to edge, so this is one more of them and not a
-                // new kind of thing. `TRANSPARENT` would be the alternative
-                // and it is the one that fringes.
+                // What it discovered is worth keeping even with nothing left
+                // to apply it to, because the next control drawn outside a
+                // card will meet it again: those were the first strings this
+                // window drew on bare ground, and `theme::apply_backdrop`
+                // names exactly that as the change that reopens Mica's
+                // documented hazard -- GDI text drawn straight onto glass
+                // loses its alpha and fringes black. `OPAQUE` plus a `bg` fill
+                // is what closed it; `TRANSPARENT` is the spelling that
+                // fringes. And the high-contrast pair was `COLOR_BTNTEXT` on
+                // `COLOR_BTNFACE`, same-family, unlike the cross-family pair
+                // the `on_card` branch below carries its own correction about.
                 //
-                // `text_muted`, not `text`: the line says the page is empty,
-                // which is secondary to everything else on screen. The pair is
-                // already covered -- `theme::pairs` carries "muted text on
-                // window bg" at the 4.5 floor, so no new row was needed and
-                // moving either token stays a test failure.
-                //
-                // `COLOR_BTNTEXT` on `COLOR_BTNFACE` under high contrast, a
-                // same-family pair: `bg` resolves to `COLOR_BTNFACE` at every
-                // other site in this window (`chrome::paint`, `paint::button`,
-                // `draw_chip`, the `WM_ERASEBKGND` arm above), and
-                // `paint::button` already pairs it with `COLOR_BTNTEXT` for
-                // its `Secondary` tier. `COLOR_WINDOWTEXT` here would be the
-                // cross-family pair the `on_card` branch below has its own
-                // correction about -- latent only because the four shipped HC
-                // schemes happen to make those two indices equal.
-                if id == IDC_ABOUT_PLACEHOLDER {
-                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
-                    let bg = theme_col(|p| p.bg, COLOR_BTNFACE);
-                    let text = theme_col(|p| p.text_muted, COLOR_BTNTEXT);
-                    SetTextColor(hdc, text);
-                    SetBkColor(hdc, bg);
-                    SetBkMode(hdc, OPAQUE);
-                    return LRESULT(theme_brush(bg).0 as isize);
-                }
                 // **The System page's three VALUE slots**, on the card like
                 // everything else on that page but in `text_muted` rather
                 // than `text` -- design §7 rule 3: a fact about this machine
@@ -7665,7 +8077,24 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // already use. What it must not be is the fill's own index,
                 // which is the collision class that put five invisible strings
                 // on screen in the last redesign.
-                if id == IDC_CONFIG_DIR || id == IDC_LOG_SIZE || id == IDC_OPACITY_VALUE {
+                //
+                // **About's three LABELS joined this branch on 2026-08-15,
+                // and its three VALUES deliberately did not** -- the inversion
+                // `role_of` carries in the type scale, carried again in the
+                // ink. On System the muted half is the machine's answer; on
+                // About the muted half is the signpost (`Build`, `Location`,
+                // `Licence`) and the value is what the reader opened the page
+                // for. Same two tokens, opposite halves of the row, because
+                // the rows ask opposite questions.
+                if matches!(
+                    id,
+                    IDC_CONFIG_DIR
+                        | IDC_LOG_SIZE
+                        | IDC_OPACITY_VALUE
+                        | IDC_ABOUT_BUILD_LABEL
+                        | IDC_ABOUT_LOCATION_LABEL
+                        | IDC_ABOUT_LICENCE_LABEL
+                ) {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
                     let card = theme_col(|p| p.card, COLOR_WINDOW);
                     let text = theme_col(|p| p.text_muted, COLOR_GRAYTEXT);
@@ -7708,6 +8137,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // in a `COLOR_3DFACE` rectangle: the defect that once hit
                 // eight controls at once, reached through a control class
                 // rather than through a page.
+                //
+                // **About's name row and its three VALUE slots joined on
+                // 2026-08-15.** Its mark and its disclosure did NOT and must
+                // not: both are `SS_OWNERDRAW`, so like `IDC_NOTES` they never
+                // send this message at all -- `paint::mark` and
+                // `paint::disclosure` fill their own rects with `card` first,
+                // which is the same job this arm does for the others.
                 let on_card = matches!(
                     id,
                     IDC_BANNER
@@ -7721,6 +8157,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         | IDC_OPACITY
                         | IDC_CONFIG_NAME
                         | IDC_LOG_NAME
+                        | IDC_ABOUT_NAME
+                        | IDC_ABOUT_BUILD_VALUE
+                        | IDC_ABOUT_LOCATION_VALUE
+                        | IDC_ABOUT_LICENCE_VALUE
                 );
                 if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
@@ -7789,6 +8229,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     let dpi = GetDpiForWindow(hwnd).max(96);
                     let body = SHOWN_NOTES.with(|c| c.borrow().clone());
                     PAINT_THEME.with(|c| paint::draw_notes(di, &body, &mut c.borrow_mut(), dpi));
+                    return LRESULT(1);
+                }
+                // About's two owner-draw STATICs (design §3.4). Neither is
+                // reachable from `WM_CTLCOLORSTATIC` at all -- that is what
+                // `SS_OWNERDRAW` costs and buys -- so each fills its own rect
+                // with `card` before drawing.
+                //
+                // **Both read their text off the control** rather than being
+                // handed it, which is why no cache appears beside
+                // `SHOWN_NOTES` here: the mark's letter and the disclosure's
+                // sentence are constants set at creation and never rewritten,
+                // so the control IS the one copy in the process. The values
+                // that DO change on this page (`…_VALUE`) are ordinary STATICs
+                // and go through `set_text_if_changed`.
+                if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_ABOUT_MARK {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    PAINT_THEME.with(|c| paint::mark(di, &mut c.borrow_mut(), dpi));
+                    return LRESULT(1);
+                }
+                if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_ABOUT_DISCLOSURE {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    PAINT_THEME.with(|c| paint::disclosure(di, &mut c.borrow_mut(), dpi));
                     return LRESULT(1);
                 }
                 // `IDC_COMBO` and `IDC_TAP`, added in Task 9: both are
@@ -8830,6 +9292,50 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         }
         (IDC_LOG_OPEN, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Log))),
         (IDC_LOG_SHOW, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::Reveal(Target::Log))),
+        // ---- The About page (design §3.4).
+        //
+        // **The three copy buttons are done HERE and reported after**, which
+        // is `IDC_DARK`'s arrangement rather than the file rows'. Two reasons,
+        // and the second is why it cannot be the other way round:
+        //
+        // 1. The clipboard is this window's own OS surface, the way the theme
+        //    preference is its own store. `serve` has nothing to add.
+        // 2. **`serve` does not have the strings and must not build them.**
+        //    `SettingsCommand` is `Copy` and carries no `String` by design
+        //    (see its own doc), so the caller would have to reconstruct
+        //    `AboutState` to answer -- a second author for a page this window
+        //    already renders, and the two would disagree the first time one
+        //    was edited.
+        //
+        // The command is still raised, and it is a NOTIFICATION rather than a
+        // request: the caller owns the tray and may want to say something.
+        // `serve.rs`'s arm for it is deliberately empty.
+        //
+        // `about_now()` rather than a cached `AboutState`: everything it reads
+        // is cheap (`current_exe`, one `stat`) and re-asking cannot go stale
+        // between the click and the copy. What it copies is
+        // `beckon_core::settings::copy_text`'s decision -- the row's bare
+        // payload, never the annotated string on screen.
+        (IDC_ABOUT_BUILD_COPY, _) => copy_about_field(Field::Build),
+        (IDC_ABOUT_LOCATION_COPY, _) => copy_about_field(Field::Location),
+        (IDC_ABOUT_LICENCE_COPY, _) => copy_about_field(Field::Licence),
+        // The three links, through the command channel for the file rows'
+        // reason exactly: `ShellExecuteW` performs an out-of-process shell
+        // activation and PUMPS this thread's message queue, so it must not run
+        // from inside a notification with a `RefCell` borrow alive. Routing
+        // through `SettingsCommand` is also what keeps them off `Callbacks` --
+        // `beckon-macos/examples/settings_probe.rs` builds that struct as a
+        // complete literal with no `..`, so three new fields would be a hard
+        // E0063 on a CI job that has nothing to do with this page.
+        (IDC_ABOUT_GITHUB, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Github)))
+        }
+        (IDC_ABOUT_RELEASES, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Releases)))
+        }
+        (IDC_ABOUT_BUG, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::BugReport)))
+        }
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),
         (IDC_KEEPMINE, _) => with_cb(|cb| (cb.on_keep_mine)()),

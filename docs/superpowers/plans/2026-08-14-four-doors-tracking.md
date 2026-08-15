@@ -132,38 +132,46 @@ every row was already silent in it. Nothing in that picture moved.
 | The Caps switch itself | **changed 2026-08-15, by the System page and not by this workstream.** `paint::toggle` now draws its track at the RIGHT of the control and its caption at the left; it was the other way round. The mock-up draws the Caps row's switch right-aligned like System's three, so this is a step toward §3.2's own drawing rather than away from it — but only a step: the switch lands at the right end of `IDC_CAPS`' own rect, not at the card's right edge, because that needs the three-row Keyboard card this workstream owns. `layout` did not move: a switch's control is its caption plus `toggle_glyph` either way |
 | `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]` toggle, default OFF | **open** — id 1060 reserved. **It carries a fifth job nobody has scheduled: retiring the `other chord` status word.** §3.2 argues that once bindings on the caps chord collapse to `[Caps][B]` while every other chord keeps its full run of chips, "other chord" is visible at a glance and the word can go — and the mock-up is drawn in that future, which is why its `Telegram Web` row (a genuine `ctrl+super+alt+shift+t`) shows an EMPTY status cell while §3.1's own list of four words still names `other chord`. The two are not in conflict, they are dated: `row_condition` produces the word today because the toggle it depends on does not exist. Whoever builds 1060 owns deleting it — and `FLAGS` is a closed four-word table with three tests reading it, so that is a real task, not a line |
 | `If Caps Lock does nothing` expander | **open** — ids 1061/1062 reserved |
-| The hook-disclosure line moves to About | **open** |
+| The hook-disclosure line moves to About | **done** — 2026-08-15. `beckon_core::settings::HOOK_DISCLOSURE`, drawn by `paint::disclosure` on `IDC_ABOUT_DISCLOSURE` (1111). It is the mock-up's wording verbatim, and `the_hook_disclosure_keeps_both_halves` pins BOTH halves against a later trim: when the hook is held, and what beckon does not keep. The second is a **negative claim** — no icon, colour or control state can draw "beckon keeps no record of what you type", which is why it is a sentence and why nothing on that row but a severity dot is not words. Note the reading of "while Caps Lock is on": it means the SETTING (`keyboard.caps`), not the LED, and the claim is conservative in the safe direction — pausing removes the hook too, so the moments it is really installed are a SUBSET of the two named |
 
 ## §3.3 System page · §3.4 About page
 
 | Design says | Status | Where / why |
 |---|---|---|
-| Both pages exist and open | **done** | Task 7 gave each a `STATIC` reading `Nothing here yet.`, from the reserved TAILS of their ranges rather than the next free number, so deleting a placeholder could not leave a hole in the middle of a page's numbering. **System's is gone (2026-08-15) and that reasoning was paid off**: 1070-1083 came out intact and `IDC_SYS_PLACEHOLDER` (1084) is RETIRED, not freed. About's (1115) is still a live control. `every_door_owns_at_least_one_control` is the assertion: before Task 7 both doors opened onto the strip, the command bar and nothing between, which reads as a window that failed to draw |
-| Every id allocated (1070-1099, 1100-1119) | **done** (Phase 0) | and tested for uniqueness. **System spent all fourteen of its named ids on 2026-08-15 and invented none** — the page was built from Phase 0's own table, in that table's order |
+| Both pages exist and open | **done, and no placeholder is left in the window** | Task 7 gave each a `STATIC` reading `Nothing here yet.`, from the reserved TAILS of their ranges rather than the next free number, so deleting a placeholder could not leave a hole in the middle of a page's numbering. **That reasoning has now been paid off twice**: System's went on 2026-08-15 with 1070-1083 intact (`IDC_SYS_PLACEHOLDER`, 1084, RETIRED), About's went the same day with 1100-1114 intact (`IDC_ABOUT_PLACEHOLDER`, 1115, RETIRED). Neither range has a hole, and there is no third placeholder for the argument to apply to. `every_door_owns_at_least_one_control` is the assertion: before Task 7 both doors opened onto the strip, the command bar and nothing between, which reads as a window that failed to draw |
+| Every id allocated (1070-1099, 1100-1119) | **done** (Phase 0) | and tested for uniqueness. **System spent all fourteen of its named ids and About all fifteen of its, on 2026-08-15, and between them they invented none** — each page was built from Phase 0's own table, in that table's order |
 | Every real System control (pause, autostart, dark, opacity, the two file rows) | **done** | 2026-08-15; the rest of this section is what it cost |
-| Every real About control (mark, version, build, location, licence, the hook disclosure, three links) | **open** | |
+| Every real About control (mark, version, build, location, licence, the hook disclosure, three links) | **done** | 2026-08-15; *What the About page is made of* below is what it cost |
 
-**About's placeholder sits on `bg`, not on `card`, and that is a correction to
-the plan.** The plan and shell spec §8 both say "**both must be added to the
-`on_card` match** or they fall through to `COLOR_3DFACE` and draw as grey
-rectangles". The hazard is real and is closed; the prescription was half right.
-That page has no card at all — `compute_card_rects` leaves every rect at zero
-height behind that door — so `on_card` would have painted a card-coloured
-strip the width of one line onto a page with no card behind it. It gets its
-own branch of `WM_CTLCOLORSTATIC` instead, returning the `bg` brush with
-`text_muted` ink (already covered by `theme::pairs`' *muted text on window bg*
-row) and `COLOR_BTNTEXT`/`COLOR_BTNFACE` under high contrast — a same-family
-pair, unlike the cross-family one the `on_card` branch below it carries its own
-correction about. **System left that branch when it grew a card**; its five
-STATICs and switches are in `on_card` now and its three VALUE slots have a
-third branch of their own, in `text_muted` on `card`.
+**SPENT 2026-08-15: the waiting lines' own `WM_CTLCOLORSTATIC` branch is
+deleted with them.** The entry here read, correctly for its subject: *"About's
+placeholder sits on `bg`, not on `card`, and that is a correction to the plan.
+The plan and shell spec §8 both say '**both must be added to the `on_card`
+match** or they fall through to `COLOR_3DFACE` and draw as grey rectangles'.
+The hazard is real and is closed; the prescription was half right. That page
+has no card at all … so `on_card` would have painted a card-coloured strip the
+width of one line onto a page with no card behind it."* System left that branch
+when it grew a card and About left it the next day; neither half applies to any
+control that now exists.
 
-**It is also the first string this window draws outside a card**, which
-reopens a hazard `theme::apply_backdrop` had closed by naming that exact
-change: GDI text drawn straight onto Mica glass loses its alpha and fringes
-black. `OPAQUE` plus the `bg` fill is what keeps it closed — the ink lands on
-an opaque surface either way. That comment has been corrected rather than left
-describing a window that no longer exists.
+**Two findings from it are kept, because the next control drawn outside a card
+will meet them again.** Those were the first strings this window drew on bare
+ground, and `theme::apply_backdrop` names exactly that change as the one that
+reopens Mica's documented hazard: GDI text drawn straight onto glass loses its
+alpha and fringes black. `OPAQUE` plus a `bg` fill is what closed it;
+`TRANSPARENT` is the spelling that fringes. And the high-contrast pair was
+`COLOR_BTNTEXT` on `COLOR_BTNFACE`, same-family, unlike the cross-family pair
+the `on_card` branch carries its own correction about. Both survive as a
+comment at the site the branch occupied.
+
+**What each page has instead.** System: its five STATICs and switches are in
+`on_card`, and its three VALUE slots have a branch of their own in
+`text_muted` on `card`. About: the name row and its three VALUE slots are in
+`on_card`, its three LABELS joined the `text_muted` branch, and the two
+`SS_OWNERDRAW` controls (`IDC_ABOUT_MARK`, `IDC_ABOUT_DISCLOSURE`) are
+deliberately in NEITHER — `IDC_NOTES`' rule, not an exception to §8's: an
+owner-draw static never asks its parent for a brush at all, and each painter
+fills its own rect with `card` first.
 
 ### What the System page is made of, 2026-08-15
 
@@ -278,9 +286,11 @@ four sites including `beckon-macos`'s window and its probe's complete-literal
 `Callbacks` — a behaviour-neutral refactor across a platform this pass does
 not otherwise touch. The window now has two ways to open the same file, which
 is a duplication and is the reason this is written down rather than dropped.
-`Target::{Github, Releases, BugReport}` are likewise unhandled: they belong to
-About, which has no controls, and a link that opens the wrong page is worse
-than one that is not built.
+`Target::{Github, Releases, BugReport}` were likewise unhandled — *"they
+belong to About, which has no controls, and a link that opens the wrong page
+is worse than one that is not built"*. **That half closed the next day**:
+About was built, and `open_target` answers all three through `Target::url`.
+The `on_open_file` fold is still open and still the System workstream's.
 
 **Nothing on this page has been seen.** Every figure above is arithmetic and
 code, checked by five green gates on two Windows targets and by hand-verifying
@@ -289,6 +299,132 @@ the four id invariants that only run on the Windows CI job (46 declared ids ==
 `PUSH_BUTTONS` == 14 `DefaultButton::ALL`; no retired id reclaimed).
 `examples/settings_probe.rs` gained a `measure_system` section for the run
 that would change that — see the gates table.
+
+### What the About page is made of, 2026-08-15
+
+**Card 5, at the content origin, its height its CONTENTS' — cards 3 and 4's
+shape a third time.** `about_plan` walks nine slots in the drawing's order
+(mark, name, divider, three value rows, divider, disclosure, links) and is the
+**one** arithmetic three readers share: `compute_card_rects` takes
+`content_h`, `layout` takes the row offsets, `WM_PAINT` takes the two divider
+offsets through `about_dividers`. **Nothing on the page is conditional** —
+unlike System's two omittable rows, there is no fact about a machine that
+removes a row here, so `about_plan` takes no `rows` argument.
+
+**One thing is unlike either earlier card: a height that is MEASURED.** The
+hook disclosure is the only wrapped prose in the window, so
+`disclosure_height` runs `DT_CALCRECT | DT_WORDBREAK` over
+`HOOK_DISCLOSURE` at the width the painter will get, and `paint::disclosure`
+draws with the identical flag set (`paint::DISCLOSURE_FLAGS`) at the identical
+width (`layout::disclosure_text_w`). A fixed line budget was the alternative —
+`notes_height`'s shape — and it loses: that sentence is ~150 characters, so it
+takes two lines in the shipped card and three in a narrower one, and a budget
+short by one line clips the half that is the feature.
+
+**`DT_END_ELLIPSIS` is deliberately NOT in that flag set**, and it was for an
+hour. Every other `DrawTextW` in `paint.rs` carries it as a net. Here the net
+is unnecessary (measure and paint agree by construction) and the flag is a
+hazard: the ellipsis flags are documented against `DT_SINGLELINE`, and if they
+collapse a `DT_WORDBREAK` `DT_CALCRECT` to one line, the two calls still AGREE
+and the window quietly draws a privacy claim truncated before the sentence
+that is the point of it. **Clipping is the better failure — it reads as damage
+rather than as a shorter promise.**
+
+| Piece | Decided where | Note |
+|---|---|---|
+| What each row shows | `settings::about_state` | `AboutValue { shown, copy }` — the type is what says the two can differ |
+| What each copy button copies | `settings::copy_text` | the row's **bare payload**: an annotated path fails in the only two places a copied path goes |
+| Whether the running image is stale | `settings::image_age` | one-sided on purpose; see below |
+| What the verdict says | `ImageAge::note` | `None` for `Current` AND `Unknown` — rule 2 |
+| Where the three links go | `Target::url` | three https URLs under `xom11/beckon`, with a test that no two are equal |
+| The disclosure's wording | `settings::HOOK_DISCLOSURE` | both halves pinned by a test |
+
+**`Location` is the highest-value row and the reason it is trusted is that it
+does LESS than it could.** The path comes from `current_exe()` and is
+deliberately **not** resolved through `GetFinalPathNameByHandleW`: resolving
+reports today's junction target, which is precisely the surface that lied on
+a14 when a watchdog-started beckon ran the 0.8.0 image for three hours while
+`--version` and scoop's `current` both said 0.9.0.
+
+**The verdict is one-sided, and `ImageAge::note` is silent about it in the
+right direction.** `Replaced` (the image's mtime is after this process's start
+time, from `GetProcessTimes`) is reliable; `Current` is only *no evidence of
+replacement*, because an extractor that preserves an archive's stored
+timestamp — which scoop's unpack does — gives a newly installed exe an mtime
+from the release build. So the row says nothing at all for `Current` and for
+`Unknown`: a false negative costs a missing warning, while printing *up to
+date* would cost the row the only thing it has. **`Missing` is the third
+verdict and is fully reliable** — a launch path that no longer resolves is a
+process running an orphaned image, which `scoop cleanup` produces.
+
+*Named but not built, for whoever has hardware:*
+`QueryFullProcessImageNameW` is documented to return the executable path **of
+the process**, which for a launch through a junction should be the resolved
+target as it was at load time — the version directory actually running.
+Comparing that against today's resolution would be an identity test rather
+than a clock one. Nothing on this host can run a Windows process, so it is
+written down rather than guessed at.
+
+**Five things this pass did that the design did not ask for.**
+
+1. **The About page's six push buttons joined `PUSH_BUTTONS` and
+   `DefaultButton`** (14 → 20 in both), for the reason System's five did. The
+   extra consequence worth naming: three of them are copy glyphs, and a stray
+   Enter on one silently replaces whatever was on the clipboard — a loss the
+   user does not see until they paste.
+2. **`build.rs` gained `stamp_target`**, four lines forwarding cargo's own
+   `TARGET` as `BECKON_TARGET`. A `cfg!`-derived triple answers the question
+   that motivates the row (a14 is ARM64 and runs x64 under emulation) equally
+   well and cannot see a vendor other than `pc`; the stamp is taken because
+   the build script already existed for the examples' manifest. **It carries
+   no build DATE**, which the drawing shows: a stamped date is really "when
+   the build script last ran", cargo caches that, and the version row above
+   answers *how old is this* without being able to drift from the running
+   process.
+3. **`beckon-windows/src/clipboard.rs`**, a new module, and two `windows`
+   features with it (`Win32_System_DataExchange`, `Win32_System_Memory` —
+   the latter was already a dev-dependency feature for the probe). Ownership
+   of the `HGLOBAL` passes to the system on success and must not be freed
+   after it; every failure path frees it and the success path deliberately
+   does not.
+4. **`shell::open_url`**, which **refuses anything that is not `https://`**.
+   Every caller today passes a compile-time constant from `Target::url`, so
+   nothing hostile can reach it — and that is exactly the property that stops
+   holding silently the day a URL comes from a config file. `ShellExecuteW`'s
+   `open` verb runs whatever the string names.
+5. **`Role::Subtitle` has a reader again** and its `#[allow(dead_code)]` is
+   gone. It was kept for one day with a comment naming `ABOUT_NAME` as the
+   next control that would want an 18 px semibold; that prediction is spent.
+
+**Known deviations from the drawing.**
+
+- **No build date** in the `Build` row — see (2) above.
+- **The mark's tile is 36 px, not the mock-up's 48.** That drawing pairs 48
+  with a 28 px letter (ratio 0.58) and this window's type scale tops out at
+  the 18 px `Role::Subtitle`. Inventing an eighth role for one letter is a
+  change to the scale; shrinking the tile is not, and 18/36 is 0.5.
+- **`Location` shows the full image path, where the drawing shows a
+  directory** (`…\scoop\apps\beckon\current\`). §3.4's own bullet says the row
+  must carry the *running image path*, which a directory is not; the drawing's
+  value is sample data and its bullet is the specific instruction.
+- **The three copy glyphs wear `BtnTier::Secondary`**, like System's four and
+  unlike the mock-up's transparent `.btn.glyph` — the same fifth "ghost" tier
+  that pass declined to build, for the same reasons.
+
+**What is NOT built and is still open from the System pass**: `on_open_file`
+is not folded into `Open(Target::Config)`. Phase 0 assigns that to the System
+workstream and it stays open; the About links needed no such fold, because
+`Target::{Github, Releases, BugReport}` were already unhandled `_` arms rather
+than a duplicate callback. Those three ARE handled now, in `open_target`.
+
+**Nothing on this page has been seen either.** Every figure is arithmetic and
+code, checked by the five gates on two Windows targets and by hand-verifying
+the same id invariants (60 declared ids == 60 `MINE` rows; 50 `PAGE_CONTROLS`
++ 7 chrome + 3 banner == 60; 20 `PUSH_BUTTONS` == 20 `DefaultButton::ALL`; no
+retired id reclaimed, 1115 now among them). `examples/settings_probe.rs`
+gained a `measure_about` section — and it is the only check there will ever be
+on `COPY_GLYPH`, the third and least certain non-ASCII string this window
+draws.
 
 ## The vertical stack is page-dependent — taken 2026-08-15, after two defers
 
@@ -515,6 +651,33 @@ switches' tracks line up on the card's right edge, whether the glyphs
 arrows or as boxes, and whether `SS_PATHELLIPSIS` shortens the config
 directory or merely clips it under `SS_RIGHT`, which is the one pairing the
 Win32 documentation leaves ambiguous.
+
+**G-S10, unrun, same shape one door across: does the About page draw?**
+`measure_about` is the instrument and it must be run **with the About door
+open**, for `measure_system`'s reason. It prints all fifteen ids with their
+rect, visibility and text, then four verdicts a reader should not have to
+infer:
+
+- **The copy glyph.** `U+29C9 TWO JOINED SQUARES` is the third non-ASCII
+  string this window draws and the least certain of the three — the other two
+  were argued to be in Segoe UI's own coverage, while this is a mathematical
+  symbol likely to arrive through font linking. Reading the caption back does
+  **not** prove it rendered (a face without it still reports the character and
+  draws a box), so this is the cheap half and a screenshot is the other.
+- **The `Location` text**, printed raw. It must be the launch path with
+  `\current\` still in it; a version number in that string is the tell that
+  something started resolving it, which is the surface that lied on a14.
+- **The verdict**, present or silent, so a run on a machine that has just been
+  updated says so instead of leaving the reader to compare timestamps.
+- **The disclosure**, both halves and a character count — a control whose text
+  comes back truncated is a promise half-made.
+
+A screenshot answers the rest: whether the mark's tile reads as a mark at
+36 px with an 18 px letter in it, whether the two dividers land between the
+groups, whether the three links centre as a run, and whether the wrapped
+disclosure fits the box `DT_CALCRECT` measured for it — the one place where a
+disagreement between measure and paint would show, and the reason
+`DT_END_ELLIPSIS` is deliberately absent from both.
 
 **A new one, unrun, and cheap: G-S8 — did the five 2026-08-15 deletions land
 the way the arithmetic says?** (Four when this was written; the `Shortcuts`

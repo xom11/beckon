@@ -975,6 +975,16 @@ working when `apps.toml` does not parse, which is the one state a user most
 needs a GUI in. The sentence above still holds as written — a *file* is still
 only ever the shortcuts TOML — and the hot path (`beckon <id>`) reads neither.
 
+**One more read, added 2026-08-15 and not a config: `current_exe()` and a
+`stat` of it.** The About page (design §3.4) shows the RUNNING IMAGE's path
+and compares the file's modification time against this process's own start
+time. That is a read of beckon's own binary, not of anything a user writes,
+and it exists because a recorded failure had every obvious surface lying: a
+watchdog-started beckon on a14 ran the 0.8.0 image for three hours while
+`beckon --version` said 0.9.0 and scoop's `current` junction pointed at 0.9.0.
+The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
+— resolving reports today's junction target, which is the surface that lied.
+
 ## Out of scope (explicitly)
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
@@ -1009,6 +1019,35 @@ only ever the shortcuts TOML — and the hot path (`beckon <id>`) reads neither.
   asks "why is this greyed?" with no answer in the row. The log row is omitted
   the same way when `serve` ran without `--log`. Both decisions live in
   `beckon_core::settings::system_state`, so all three CI jobs test them.
+
+  **WIDENED AGAIN 2026-08-15 — the window also puts text on the clipboard and
+  opens a browser.** Design §3.4's About page has three copy buttons and three
+  links (`GitHub`, `Releases`, `Report a bug`). Two rules keep those from
+  growing into a second control surface:
+
+  - **The copy buttons act in the window and report afterwards**, like the
+    theme switch and unlike everything else: `SettingsCommand` is `Copy + Eq`
+    and carries no `String` by design, so a caller answering `Copy(Field)`
+    would have to rebuild the page's state and be a second author for it.
+    `beckon_core::settings::copy_text` is the one decision — **the row's bare
+    payload, not the string on screen**, because `Location` shows a verdict
+    clause and is shortened by `SS_PATHELLIPSIS`, and a copied path is for
+    pasting into Explorer.
+  - **The links go through `SettingsCommand::Open(Target::…)`, never a new
+    `Callbacks` field**: `beckon-macos/examples/settings_probe.rs` builds
+    `Callbacks` as a complete literal with no `..`, so a new field is a hard
+    E0063 on a CI job that has nothing to do with this page. The three
+    addresses live in `Target::url` in core, where a test can read them, and
+    `shell::open_url` refuses anything that is not `https://`.
+
+  **The hook disclosure lives on About**, moved off Keyboard by §3.4: *"The
+  keyboard hook is installed only while Caps Lock is on, or while you are
+  recording a shortcut. beckon keeps no record of what you type."* An unsigned
+  process that holds `WH_KEYBOARD_LL`, calls `SendInput` and writes an autorun
+  key owes the reader both halves, and **the second is a negative claim that
+  no icon, colour or control state can draw** — which is why it is a sentence
+  and why `HOOK_DISCLOSURE` has a test pinning both halves. "While Caps Lock
+  is on" means the SETTING, not the lock's LED.
 
   **Shape: bands stacked top to bottom, not a split pane** (landing 2a,
   `settings_window.rs::layout`). The 45/55 column split it replaced put 561 px of fixed

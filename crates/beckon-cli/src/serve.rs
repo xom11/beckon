@@ -700,26 +700,44 @@ fn set_autostart(state: &Rc<RefCell<ServeState>>, on: bool) {
 #[cfg(all(target_os = "macos", not(target_os = "windows")))]
 fn set_autostart(_state: &Rc<RefCell<ServeState>>, _on: bool) {}
 
-/// Open one of the window's files with whatever is registered for it.
+/// Open one of the window's files -- or one of its three links -- with
+/// whatever is registered for it.
 ///
-/// **The three URL targets are NOT handled and that is deliberate.**
-/// `Target::{Github, Releases, BugReport}` belong to the About page (design
+/// **The three URL targets are handled here since 2026-08-15**, and this
+/// comment used to say the opposite: "they belong to the About page (design
 /// §3.4), which has no controls yet; answering them here would be dead code
 /// whose only test is that it compiles, and a link that opens the wrong page
-/// is worse than one that is not built. The `_` arm is where they land, and
-/// whoever builds About owns turning it into three.
+/// is worse than one that is not built ... whoever builds About owns turning
+/// it into three." About is built, so this is that turn.
+///
+/// **The addresses are `Target::url`'s, in `beckon-core`**, not three string
+/// literals here: they are checkable on all three CI jobs there, and the
+/// `None` that function returns for a file is what picks the path branch
+/// below -- so "is this a link or a file" is one decision rather than two
+/// matches that agree today.
 ///
 /// **Every borrow is dropped before the call.** `ShellExecuteW` performs an
 /// out-of-process shell activation and pumps this thread's message queue, so
 /// a live `RefCell` borrow across it is the abort-across-`extern "system"`
 /// hazard this module's own doc describes. The path is cloned out first, the
-/// same discipline `install_tray_menu`'s `MENU_LOG` arm already follows.
+/// same discipline `install_tray_menu`'s `MENU_LOG` arm already follows -- and
+/// a URL needs no borrow at all.
 #[cfg(target_os = "windows")]
 fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
     use beckon_core::settings::Target;
+    if let Some(url) = target.url() {
+        if let Err(e) = beckon_windows::shell::open_url(url) {
+            eprintln!("beckon serve: {e}");
+        }
+        return;
+    }
     let path = match target {
         Target::Config => Some(state.borrow().config.clone()),
         Target::Log => state.borrow().log.clone(),
+        // Unreachable: every target with no `url()` is one of the two above.
+        // Spelled rather than `unreachable!()`, because a panic here would be
+        // inside a settings-window callback, i.e. across an `extern "system"`
+        // boundary, where it aborts the daemon instead of unwinding.
         _ => None,
     };
     if let Some(p) = path {
@@ -731,9 +749,11 @@ fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::T
 
 /// Show one of the window's files in Explorer, selected.
 ///
-/// The second glyph on each file row. Same target set, same borrow
-/// discipline, and the same silence about the three URL targets as
-/// `open_target` above -- there is nothing to reveal about a URL.
+/// The second glyph on each file row. Same target set and same borrow
+/// discipline as `open_target`, and it keeps that function's OLD silence
+/// about the three URL targets even now that `open_target` has stopped
+/// keeping it: there is nothing to reveal about a URL, and no control raises
+/// `Reveal` for one -- About's links are `Open`.
 #[cfg(target_os = "windows")]
 fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
     use beckon_core::settings::Target;
@@ -1274,6 +1294,23 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     // purpose is to be called.
     #[cfg(target_os = "windows")]
     swin::apply_system_state(paused, autostart);
+    // **A third push, and it takes no arguments at all.** Every string on the
+    // About page is something only the settings window's own process can know
+    // -- its compiled-in version, its target triple, its `current_exe()` and
+    // the two timestamps behind the stale-image verdict -- so there is
+    // nothing here to hand over, and anything this function did pass would be
+    // a copy of a fact that crate reads directly.
+    //
+    // Called on every refresh rather than once at open, because one of those
+    // strings genuinely moves: the file at the launch path can be replaced
+    // while the window is up, which is the whole subject of the `Location`
+    // row.
+    //
+    // Windows only, and not through a `swin` alias, for `apply_system_state`'s
+    // reason: the macOS settings window has no About page, so a no-op there
+    // would be a function whose only purpose is to be called.
+    #[cfg(target_os = "windows")]
+    swin::apply_about_state();
     #[cfg(not(target_os = "windows"))]
     let _ = paused;
 }
@@ -1874,10 +1911,21 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 SettingsCommand::SetDarkMode(_) | SettingsCommand::SetOpacity(_) => {}
                 SettingsCommand::Open(t) => open_target(&st, t),
                 SettingsCommand::Reveal(t) => reveal_target(&st, t),
+                // **`Copy` is a notification, not a request**, and the empty
+                // arm is the design rather than a gap. The window has already
+                // put the text on the clipboard by the time this arrives --
+                // it has to, because `SettingsCommand` is `Copy + Eq` and
+                // carries no `String` (see its own doc), so answering here
+                // would mean rebuilding `AboutState` in this file and having
+                // two authors for one page. What the command buys is a caller
+                // that CAN react, and the exercise of the channel by the
+                // control that raises it.
+                //
                 // Keyboard's shorthand toggle (§3.2) and auto-save's undo
-                // (§6) -- neither control exists yet, so neither command can
-                // arrive. Left as an empty arm rather than folded into a
-                // `_`, so the day one is built the compiler names this site.
+                // (§6) are the other two, and those genuinely have no control
+                // yet. All three are left as an empty arm rather than folded
+                // into a `_`, so the day one needs answering the compiler
+                // names this site.
                 SettingsCommand::SetCapsShorthand(_)
                 | SettingsCommand::Copy(_)
                 | SettingsCommand::Undo => {}

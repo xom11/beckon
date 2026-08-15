@@ -160,28 +160,61 @@ pub(super) const IDC_LOG_SIZE: i32 = 1081;
 pub(super) const IDC_LOG_OPEN: i32 = 1082;
 pub(super) const IDC_LOG_SHOW: i32 = 1083;
 
-/// The one line About shows while it is waiting.
+/// The About page (design §3.4), in the order the rows are drawn.
 ///
-/// **From the reserved TAIL of the page's range, not the next free number.**
-/// 1100-1114 are already named in `CONTROL_IDS` for controls Phase 0
-/// specified and nothing has built, and a placeholder is the one control on a
-/// page that is meant to be *deleted* -- taking a number out of the middle of
-/// a block would leave a hole in that page's numbering the day it goes.
+/// **Not chosen here either.** Phase 0 fixed all fifteen, and the page is
+/// built from exactly that list -- no number was picked, skipped or reused
+/// while the rows were written. That is now true of both late pages.
 ///
-/// **That reasoning has now been paid off once.** System's own placeholder
-/// was 1084, out of 1084-1099, and design §3.3's fourteen rows replaced it on
-/// 2026-08-15 with 1070-1083 intact and no gap in them. 1084 is RETIRED in
-/// `beckon_core::settings::RETIRED_IDS`, not freed.
+/// Two of the fifteen are `SS_OWNERDRAW` STATICs (`IDC_ABOUT_MARK` and
+/// `IDC_ABOUT_DISCLOSURE`) and are therefore **deliberately absent from the
+/// `on_card` match**, on `IDC_NOTES`' rule rather than as an exception to
+/// design §8's: an owner-draw static never asks its parent for a background
+/// brush at all, and `paint::mark` / `paint::disclosure` fill their own rects
+/// with `card` first. Every other STATIC here IS in that match, because
+/// falling through to `DefWindowProcW` draws it as a `COLOR_3DFACE`
+/// rectangle -- the defect that once hit eight controls at once.
 ///
-/// **It does not sit on a card, so it is not in the `on_card` match** in
-/// `mod.rs`'s `WM_CTLCOLORSTATIC` arm. The About page leaves all four card
-/// rects at zero height (`compute_card_rects`), so the ground under it is the
-/// window's own `bg`; it is answered by its own branch of that arm, above the
-/// `on_card` one. Falling through to `DefWindowProcW` would draw it as a
-/// `COLOR_3DFACE` rectangle -- the defect that once hit eight controls at once
-/// -- and joining `on_card` would paint a card-coloured strip on a page with
-/// no card behind it.
-pub(super) const IDC_ABOUT_PLACEHOLDER: i32 = 1115;
+/// **The label / value ink is INVERTED from the System page's**, and that is
+/// the mock-up rather than an oversight: `.kv .k` is muted and `.kv .v` is
+/// not. On System the label names a setting the reader operates and the value
+/// is the machine's answer; here the label is a signpost and the VALUE is
+/// what the reader came for. `role_of` and the `WM_CTLCOLORSTATIC` arms both
+/// carry the swap.
+///
+/// **`IDC_ABOUT_LOCATION_VALUE` is the highest-value control on the page.**
+/// It holds the running image's own path -- `current_exe()`, deliberately
+/// unresolved -- plus a stale-image verdict when there is one worth printing.
+/// See `beckon_core::settings::image_age` for why the path is not resolved
+/// and why the verdict is silent when it is unsure.
+pub(super) const IDC_ABOUT_MARK: i32 = 1100;
+pub(super) const IDC_ABOUT_NAME: i32 = 1101;
+pub(super) const IDC_ABOUT_BUILD_LABEL: i32 = 1102;
+pub(super) const IDC_ABOUT_BUILD_VALUE: i32 = 1103;
+pub(super) const IDC_ABOUT_BUILD_COPY: i32 = 1104;
+pub(super) const IDC_ABOUT_LOCATION_LABEL: i32 = 1105;
+pub(super) const IDC_ABOUT_LOCATION_VALUE: i32 = 1106;
+pub(super) const IDC_ABOUT_LOCATION_COPY: i32 = 1107;
+pub(super) const IDC_ABOUT_LICENCE_LABEL: i32 = 1108;
+pub(super) const IDC_ABOUT_LICENCE_VALUE: i32 = 1109;
+pub(super) const IDC_ABOUT_LICENCE_COPY: i32 = 1110;
+pub(super) const IDC_ABOUT_DISCLOSURE: i32 = 1111;
+pub(super) const IDC_ABOUT_GITHUB: i32 = 1112;
+pub(super) const IDC_ABOUT_RELEASES: i32 = 1113;
+pub(super) const IDC_ABOUT_BUG: i32 = 1114;
+
+// 1115 was `IDC_ABOUT_PLACEHOLDER`, the `Nothing here yet.` line this page
+// showed between Task 7 and the day the fifteen rows above were built.
+// Deleted 2026-08-15 and RETIRED in `beckon_core::settings::RETIRED_IDS`, not
+// freed.
+//
+// It was taken from the reserved TAIL of the page's range (1115-1119) rather
+// than from the next free number, for the reason 1084 was: a placeholder is
+// the one control on a page that is MEANT to be deleted, and taking a number
+// out of the middle of 1100-1114 would have left a hole in the numbering of
+// the page that replaced it. It did not -- the same result System's got one
+// day earlier, and the last time the question can arise, because there are no
+// placeholders left in this window.
 
 /// `Ctrl+Tab` and `Ctrl+Shift+Tab`: "the next door" and "the one before it".
 ///
@@ -193,7 +226,7 @@ pub(super) const IDC_ABOUT_PLACEHOLDER: i32 = 1115;
 ///
 /// **2001 rather than 1044**, deliberately far from the control range. 1044-6
 /// are already spoken for in core's `CONTROL_IDS` (`SERVICE_LINE`, `SAVED`,
-/// `UNDO`) and the whole 1001-1115 span belongs to controls this window either
+/// `UNDO`) and the whole 1001-1119 span belongs to controls this window either
 /// has or is going to grow; a command id sitting inside it would be a number
 /// that has to be skipped by everyone allocating from a range, for ever. The
 /// two are contiguous and ascending for no reason beyond reading order --
@@ -264,7 +297,21 @@ mod tests {
         ("LOG_SIZE", super::IDC_LOG_SIZE),
         ("LOG_OPEN", super::IDC_LOG_OPEN),
         ("LOG_SHOW", super::IDC_LOG_SHOW),
-        ("ABOUT_PLACEHOLDER", super::IDC_ABOUT_PLACEHOLDER),
+        ("ABOUT_MARK", super::IDC_ABOUT_MARK),
+        ("ABOUT_NAME", super::IDC_ABOUT_NAME),
+        ("ABOUT_BUILD_LABEL", super::IDC_ABOUT_BUILD_LABEL),
+        ("ABOUT_BUILD_VALUE", super::IDC_ABOUT_BUILD_VALUE),
+        ("ABOUT_BUILD_COPY", super::IDC_ABOUT_BUILD_COPY),
+        ("ABOUT_LOCATION_LABEL", super::IDC_ABOUT_LOCATION_LABEL),
+        ("ABOUT_LOCATION_VALUE", super::IDC_ABOUT_LOCATION_VALUE),
+        ("ABOUT_LOCATION_COPY", super::IDC_ABOUT_LOCATION_COPY),
+        ("ABOUT_LICENCE_LABEL", super::IDC_ABOUT_LICENCE_LABEL),
+        ("ABOUT_LICENCE_VALUE", super::IDC_ABOUT_LICENCE_VALUE),
+        ("ABOUT_LICENCE_COPY", super::IDC_ABOUT_LICENCE_COPY),
+        ("ABOUT_DISCLOSURE", super::IDC_ABOUT_DISCLOSURE),
+        ("ABOUT_GITHUB", super::IDC_ABOUT_GITHUB),
+        ("ABOUT_RELEASES", super::IDC_ABOUT_RELEASES),
+        ("ABOUT_BUG", super::IDC_ABOUT_BUG),
     ];
 
     /// The net under `MINE`. It reads this file's own source -- the same

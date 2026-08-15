@@ -1,7 +1,37 @@
 fn main() {
     println!("cargo:rerun-if-changed=examples.rc");
     println!("cargo:rerun-if-changed=examples.exe.manifest");
+    stamp_target();
     embed_win32_resources();
+}
+
+/// Forward cargo's own `TARGET` into the crate as `BECKON_TARGET`, for the
+/// About page's `Build` row.
+///
+/// **The exact triple, not a `cfg!`-derived one.** `std::env::consts::ARCH`
+/// plus `cfg!(target_env)` gets `aarch64-pc-windows-msvc` right and cannot
+/// see a vendor other than `pc` -- `aarch64-uwp-windows-msvc` and its
+/// siblings would come back mislabelled. beckon does not build for those, so
+/// this is a difference of one word in one row; it costs two lines here
+/// because the build script already existed for the manifest above.
+///
+/// **It carries no build DATE, and that is a decision.** Design §3.4's
+/// drawing shows one beside the triple. A date stamped here would really be
+/// "when this build script last ran", which cargo caches -- so it can be
+/// arbitrarily older than the binary beside it -- and it would make the
+/// output non-reproducible for the Nix flake, which is a cost the row does
+/// not repay: users install releases, so `beckon 0.9.3` on the row above
+/// already answers "how old is this", and unlike a date it cannot disagree
+/// with what the process is running.
+///
+/// Outside `embed_win32_resources`' `#[cfg(windows)]` deliberately: that
+/// function is dead code on a macOS host, and the two Windows cross-check
+/// legs of the gate compile this crate FROM one.
+fn stamp_target() {
+    println!(
+        "cargo:rustc-env=BECKON_TARGET={}",
+        std::env::var("TARGET").unwrap_or_else(|_| "unknown".into())
+    );
 }
 
 /// Give this package's **examples** the same activation context the shipped

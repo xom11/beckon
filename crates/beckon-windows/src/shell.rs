@@ -36,6 +36,46 @@ pub fn open_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Open a URL in the user's default browser.
+///
+/// The About page's three links (design §3.4). Separate from `open_path`
+/// rather than a `&str` overload of it, because the two take different kinds
+/// of argument and only one of them can be checked: a `Path` comes from
+/// `serve`'s own `Paths`, while this takes whatever `Target::url` says --
+/// which is why the guard below exists at all.
+///
+/// **The scheme is checked here, and it is not ceremony.** `ShellExecuteW`
+/// with the `open` verb runs whatever the string names: `file:///`,
+/// a UNC path, or a bare `.exe`. Every caller today passes a compile-time
+/// constant from `beckon_core::settings::Target::url`, so nothing can reach
+/// this with a hostile string -- and that is exactly the property that
+/// silently stops holding the day someone routes a URL through here from a
+/// config file. The guard costs one comparison and makes the safe property
+/// local rather than a fact about every present and future caller.
+///
+/// **This pumps the calling thread's message queue**, exactly like the two
+/// functions above and with the same consequence for `RefCell` borrows.
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err(format!("refusing to open `{url}`: not an https URL"));
+    }
+    let wide = HSTRING::from(url);
+    let rc = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if rc.0 as usize <= 32 {
+        return Err(format!("ShellExecuteW failed for `{url}`"));
+    }
+    Ok(())
+}
+
 /// Open Explorer with `path` selected, rather than opening `path` itself.
 ///
 /// The System page's second glyph on each file row (design §3.3). "Show" and

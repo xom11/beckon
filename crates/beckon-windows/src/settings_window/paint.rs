@@ -2401,14 +2401,20 @@ pub(super) unsafe fn draw_combo_item(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache
 
 /// The dot's diameter, at 96 DPI. `scale`d like every other literal in this
 /// file.
-const NOTE_DOT_D: i32 = 7;
+///
+/// `pub(super)` since 2026-08-15: `layout::disclosure_text_w` subtracts this
+/// and `NOTE_TEXT_GAP` from the card's interior to get the width it MEASURES
+/// the wrapped disclosure at, and `disclosure` below draws at the same
+/// offset. Two spellings of the dot column would put the paragraph's height
+/// and its box one line apart.
+pub(super) const NOTE_DOT_D: i32 = 7;
 
 /// The gap between the dot's right edge and where a note's text starts.
 /// Matches `pad` everywhere else in this file a leading glyph precedes body
 /// text (`draw_combo_item` and the Shortcut column's own ellipsis fallback --
 /// `header_custom_draw`'s title was the third until it went with the Header on
 /// 2026-08-15) -- one number, not a fresh guess here.
-const NOTE_TEXT_GAP: i32 = 6;
+pub(super) const NOTE_TEXT_GAP: i32 = 6;
 
 /// A severity WORD for `IDC_NOTES` under high contrast ONLY, prepended to a
 /// note's own text in place of the dot `draw_notes` skips there. See
@@ -2569,6 +2575,226 @@ pub(super) unsafe fn draw_notes(
         y += line_h;
     }
 
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+}
+
+/// The About mark's tile, at 96 DPI: a rounded accent square with the letter
+/// `b` centred in it.
+///
+/// **36, where the mock-up draws 48, and the letter is why.** That drawing
+/// pairs a 48 px tile with a 28 px letter -- a ratio of 0.58 -- and this
+/// window's type scale (§B.3, seven roles) tops out at the 18 px semibold
+/// `Role::Subtitle`. Inventing an eighth role for one letter is a change to
+/// the scale; shrinking the tile is not, and 18/36 is 0.5, near enough that
+/// the tile reads as a mark rather than as a letter adrift in a box.
+/// `layout::about_plan` reserves exactly this height.
+pub(super) const MARK_D: i32 = 36;
+
+/// Paint `IDC_ABOUT_MARK`: the tile, then the letter.
+///
+/// **Owner-draw because neither half is text a STATIC can produce** -- the
+/// tile is a `RoundRect` and the letter has to be centred on both axes inside
+/// it. That also takes the control out of `WM_CTLCOLORSTATIC` entirely, which
+/// is why this fills its own rect with `card` first: exactly `draw_notes`'
+/// arrangement, and the reason neither owner-draw id is in the `on_card`
+/// match.
+///
+/// The caption is read off the control (`cap::MARK`), so the letter exists
+/// once in the process.
+///
+/// **`accent_fill` with `accent_on` ink** -- the pair `theme::pairs` already
+/// carries as *white on accent fill* at the 4.5 floor, and the same pair
+/// `toggle` fills its ON track with. Under high contrast it resolves to
+/// `COLOR_HIGHLIGHT` / `COLOR_HIGHLIGHTTEXT`, a same-family pair, and the tile
+/// squares off like every other rounded shape here.
+pub(super) unsafe fn mark(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache, dpi: u32) {
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+
+    let bg = cache.col(|p| p.card, COLOR_WINDOW);
+    FillRect(hdc, &rc, cache.brush(bg));
+
+    let d = scale(MARK_D, dpi);
+    // Centred in whatever rect `layout` gave it, on both axes: the control is
+    // the full card width (so the tile lands in the middle of the page) and
+    // `MARK_D` tall, so the vertical term is normally zero.
+    let left = rc.left + ((rc.right - rc.left) - d).max(0) / 2;
+    let top = rc.top + ((rc.bottom - rc.top) - d).max(0) / 2;
+
+    let fill = cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT);
+    let brush = CreateSolidBrush(fill);
+    // A pen of the fill colour, `trough`'s and `toggle`'s choice: `RoundRect`
+    // strokes with the current pen, and the stock black one would ring the
+    // tile in black in both themes.
+    let pen = CreatePen(PS_SOLID, 1, fill);
+    let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    if hc {
+        let _ = Rectangle(hdc, left, top, left + d, top + d);
+    } else {
+        // The mock-up's 11/48 corner on a 36 px tile is 8.25; `scale` of 8 at
+        // 96 DPI, doubled because `RoundRect` takes the corner ellipse's full
+        // width and height rather than a radius -- the same doubling `toggle`
+        // does for its track.
+        let r = scale(8, dpi) * 2;
+        let _ = RoundRect(hdc, left, top, left + d, top + d, r, r);
+    }
+    if !prev_pen.is_invalid() {
+        SelectObject(hdc, prev_pen);
+    }
+    if !prev_brush.is_invalid() {
+        SelectObject(hdc, prev_brush);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let prev_font = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+    SetBkMode(hdc, TRANSPARENT);
+    let ink = cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT);
+    SetTextColor(hdc, ink);
+    let mut tr = RECT {
+        left,
+        top,
+        right: left + d,
+        bottom: top + d,
+    };
+    let mut t = wide(&text_of(di.hwndItem));
+    let n = t.len() - 1;
+    DrawTextW(
+        hdc,
+        &mut t[..n],
+        &mut tr,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    if !prev_font.is_invalid() {
+        SelectObject(hdc, prev_font);
+    }
+}
+
+/// The flags `disclosure` both MEASURES and DRAWS with.
+///
+/// **One constant, two callers on opposite sides of the same paragraph.**
+/// `layout::disclosure_height` runs `DT_CALCRECT` with these to decide how
+/// tall the control is; this function runs the identical set to fill it. Two
+/// spellings would differ by exactly the kind of flag that changes where a
+/// line breaks, and the symptom would be a sentence whose last line is
+/// missing -- on the one control in this window whose whole job is a claim
+/// about what beckon does not keep.
+///
+/// **No `DT_END_ELLIPSIS`, deliberately.** Every other `DrawTextW` in this
+/// file carries it as a net against a string outgrowing its box. Here the net
+/// is not needed and the flag is a hazard: measure and paint use this
+/// identical set at an identical width (`layout::disclosure_text_w` feeds
+/// both), so the box fits by construction -- while the ellipsis flags are
+/// documented against `DT_SINGLELINE`, and what they do to `DT_WORDBREAK`
+/// under `DT_CALCRECT` is not something this host can measure. If that
+/// interaction collapsed the paragraph to one line the two calls would still
+/// AGREE, and the window would quietly draw `The keyboard hook is installed
+/// only while Caps Lock is on, or w...`: a privacy claim truncated before the
+/// sentence that is the point of it. Clipping is the better failure -- it
+/// reads as damage rather than as a shorter promise.
+pub(super) const DISCLOSURE_FLAGS: DRAW_TEXT_FORMAT =
+    DRAW_TEXT_FORMAT(DT_LEFT.0 | DT_TOP.0 | DT_WORDBREAK.0 | DT_NOPREFIX.0);
+
+/// Paint `IDC_ABOUT_DISCLOSURE`: one severity dot, then the hook disclosure
+/// wrapped over as many lines as it needs.
+///
+/// **The only wrapped prose in the window**, which is why it does not go
+/// through `draw_notes`: that painter draws one `DT_SINGLELINE` line per note
+/// against a fixed two-line budget, and this is one note of three lines. What
+/// it borrows from `draw_notes` is everything else -- the dot is a drawn
+/// `Ellipse` and never the character, high contrast gets a WORD instead of a
+/// colour, and the ink is `text_muted` on `card` (`theme::pairs` carries both
+/// *ok note dot* and *muted text on card* at their floors).
+///
+/// **`Mark::Ok`, and the dot is the only thing in the row that is not
+/// words.** A green dot beside a privacy claim is decoration, not evidence --
+/// design §3.4 is explicit that the load-bearing half of the sentence is a
+/// NEGATIVE claim, and no icon, colour or control state can draw one. The dot
+/// is here for the reason the notes strip has one: it says which register the
+/// line is in, so a reader who has learnt that a red dot means something is
+/// wrong can pass over this in a glance.
+///
+/// **It cannot outgrow its box**: `layout::disclosure_height` measures this
+/// exact string, in this exact font, at this exact width, with this exact
+/// flag set -- so the height the control is given is the height the paragraph
+/// takes. `DISCLOSURE_FLAGS` is where the one thing that could break that is
+/// written down.
+pub(super) unsafe fn disclosure(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache, dpi: u32) {
+    let hdc = di.hDC;
+    let rc = di.rcItem;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+
+    let bg = cache.col(|p| p.card, COLOR_WINDOW);
+    FillRect(hdc, &rc, cache.brush(bg));
+
+    let font = HFONT(
+        SendMessageW(di.hwndItem, WM_GETFONT, Some(WPARAM(0)), Some(LPARAM(0))).0
+            as *mut core::ffi::c_void,
+    );
+    let prev_font = if font.is_invalid() {
+        HGDIOBJ::default()
+    } else {
+        SelectObject(hdc, HGDIOBJ(font.0))
+    };
+
+    let dot_d = scale(NOTE_DOT_D, dpi);
+    let text_x = rc.left + dot_d + scale(NOTE_TEXT_GAP, dpi);
+
+    if !hc {
+        // On the FIRST line, not on the paragraph's midline: the dot marks
+        // where the note starts, and a three-line note with a dot floating
+        // beside its second line reads as an unrelated bullet. `line_h` is
+        // measured the way `draw_notes` measures it, from the same "Ag" in
+        // the same font.
+        let mut sz = SIZE::default();
+        let ag = wide("Ag");
+        let _ = GetTextExtentPoint32W(hdc, &ag[..ag.len() - 1], &mut sz);
+        let line_h = if sz.cy > 0 { sz.cy } else { scale(16, dpi) };
+        let dot = cache.col(|p| p.ok, COLOR_WINDOWTEXT);
+        let dot_top = rc.top + (line_h - dot_d) / 2;
+        let brush = CreateSolidBrush(dot);
+        let pen = CreatePen(PS_SOLID, 1, dot);
+        let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+        let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+        let _ = Ellipse(hdc, rc.left, dot_top, rc.left + dot_d, dot_top + dot_d);
+        if !prev_pen.is_invalid() {
+            SelectObject(hdc, prev_pen);
+        }
+        if !prev_brush.is_invalid() {
+            SelectObject(hdc, prev_brush);
+        }
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    }
+
+    SetBkMode(hdc, TRANSPARENT);
+    let ink = cache.col(|p| p.text_muted, COLOR_WINDOWTEXT);
+    SetTextColor(hdc, ink);
+    // `Mark::Ok`'s high-contrast word is the empty string, so this prefix is
+    // a no-op today -- kept, and kept going through the same function
+    // `draw_notes` uses, because the alternative is this control quietly not
+    // participating the day that table changes.
+    let line = if hc {
+        format!("{}{}", hc_severity_word(Mark::Ok), text_of(di.hwndItem))
+    } else {
+        text_of(di.hwndItem)
+    };
+    let mut tr = RECT { left: text_x, ..rc };
+    let mut t = wide(&line);
+    let n = t.len() - 1;
+    DrawTextW(hdc, &mut t[..n], &mut tr, DISCLOSURE_FLAGS);
     if !prev_font.is_invalid() {
         SelectObject(hdc, prev_font);
     }
