@@ -670,6 +670,18 @@ class Suite:
         for name in names:
             flag = "-x" if len(name) <= 15 else "-f"
             subprocess.run(["pkill", flag, name], capture_output=True)
+            # NixOS wraps most GUI binaries, and the wrapper is what actually
+            # runs: measured on rog, `xterm` reports `comm=.xterm-wrapped` and
+            # `kitty` reports `.kitty-wrapped`, so neither `-x <name>` nor
+            # `-f <name>` matches -- `-f` looks at the command line, which is
+            # the store path ending in `/bin/xterm`, not the wrapper name.
+            # Without this the suite leaves its own windows behind, and the
+            # tests that need an empty session (step 5c and the hide/restore
+            # pair) skip themselves with "session has extra windows" while
+            # step 5b fails expecting a launch it already has.
+            wrapped = f".{name}-wrapped"
+            if len(wrapped) <= 15:
+                subprocess.run(["pkill", "-x", wrapped], capture_output=True)
         if not wait_for(lambda: not self.env.windows(), timeout=10):
             leftover = [f"{w.cls}:{w.wid}" for w in self.env.windows()]
             print(f"    {YELLOW}note{RESET} could not clear windows: {leftover}")

@@ -266,12 +266,15 @@ all. Every Linux bug fixed in the 2026-08 pass was found by it, and none of
 them were visible to the 65 unit tests that were green the whole time.
 
 It detects its environment the same way `pick_backend` does, so run it inside
-the session under test. **`HyprEnv` exists but has never been run** — it was
-added 2026-08-14 together with the Hyprland hide/MRU/filter fixes, and the
-session it was written against logged out before the suite could be driven
-end to end. Until someone runs it on a live Hyprland, treat Hyprland as
-verified only by the hand probes recorded in the Phase 1c note, not by this
-suite. The other four backends pass 19/19 on Ubuntu
+the session under test. **All five backends now pass 19/19.** Hyprland was the
+last to be brought up — 0.56.2 on 2026-08-15, nested inside a live GNOME
+session rather than on its own tty, which costs nothing and leaves the host
+desktop untouched (recipe in `testing/README.md`, config in
+`testing/hypr-nested.conf`). Two of the three defects that run found were the
+suite's own, and both looked like focus bugs: on NixOS `pkill -x <name>` never
+matches a wrapped binary (`comm` is `.xterm-wrapped`), so the suite left its
+own windows behind and step 5c skipped itself while 5b failed expecting a
+launch it already had. The other four pass on Ubuntu
 26.04 arm64 (GNOME Shell 50.1 headless, sway 1.11, i3 + Xvfb, openbox + Xvfb)
 — see `testing/README.md` for the headless bring-up recipes, including the
 D-Bus service-directory trick that keeps `gnome-shell --headless` from
