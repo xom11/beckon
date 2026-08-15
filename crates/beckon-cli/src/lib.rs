@@ -455,8 +455,19 @@ fn check_resolution<'a>(
 /// of them.
 fn unresolved_report(dead: &[(&Shortcut, &NameReport)]) -> String {
     let mut s = String::from("\nThese shortcuts name an app this machine has no match for:\n");
-    for (b, _) in dead {
-        s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app));
+    for (b, r) in dead {
+        match r.tier {
+            Some(t) => s.push_str(&format!(
+                "   {:<30} {}  ({})\n",
+                b.combo.canonical(),
+                b.app,
+                t
+            )),
+            None => s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app)),
+        }
+        if !r.consequence.is_empty() {
+            s.push_str(&format!("   {:<30} {}\n", "", r.consequence));
+        }
     }
     s.push_str(
         "\nHint: `beckon resolve <ID>` explains one of them; \
@@ -476,7 +487,15 @@ fn unresolved_report(dead: &[(&Shortcut, &NameReport)]) -> String {
 fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
     let mut s = String::from("\nThese shortcuts resolve, but only loosely:\n");
     for (b, r) in guessed {
-        s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app));
+        match r.tier {
+            Some(t) => s.push_str(&format!(
+                "   {:<30} {}  ({})\n",
+                b.combo.canonical(),
+                b.app,
+                t
+            )),
+            None => s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app)),
+        }
         if !r.consequence.is_empty() {
             s.push_str(&format!("   {:<30} {}\n", "", r.consequence));
         }
@@ -935,6 +954,23 @@ mod tests {
         let report = unresolved_report(&dead);
         assert!(report.contains("beckon resolve <ID>"), "{report}");
         assert!(report.contains("beckon installed"), "{report}");
+    }
+
+    /// Each backend's `MISS_CONSEQUENCE` says something genuinely different
+    /// per OS — a macOS miss errors, a Linux miss can still focus a live
+    /// window by class, a Windows miss can still fall through to exe/title
+    /// matching — so the report has to print it, not just the key and app.
+    #[test]
+    fn the_report_prints_a_dead_bindings_consequence() {
+        let s = shortcuts("\"ctrl+alt+c\" = \"Claude\"\n");
+        let mut claude = report("Claude", Certainty::NoMatch);
+        claude.consequence = "no match; this key will error and launch nothing".to_string();
+        let dead: Vec<(&Shortcut, &NameReport)> = vec![(&s[0], &claude)];
+        let report = unresolved_report(&dead);
+        assert!(
+            report.contains("no match; this key will error and launch nothing"),
+            "{report}"
+        );
     }
 
     /// A guess resolves. It is slow and fragile, not dead — so it is printed
