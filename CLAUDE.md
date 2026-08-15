@@ -71,12 +71,40 @@ that one.
 
 Rules that follow from that:
 
-- **Share the build directory.** `target/` is ~7.4 GB and this workspace also
-  cross-compiles to `aarch64-pc-windows-msvc`; a fresh worktree rebuilds all
-  of it. Export `CARGO_TARGET_DIR=~/Documents/dev/beckon/target` in the
-  worktree unless you have a reason to want a cold build. Cargo takes a lock
-  on that directory, so two worktrees building at once **serialise** — they
-  do not corrupt each other, and waiting is far cheaper than rebuilding.
+- **Share the build directory for `check`, `clippy` and `fmt`. Do not trust it
+  for `build` and `run`.** `target/` is ~7.4 GB and this workspace also
+  cross-compiles to `aarch64-pc-windows-msvc`, so a fresh worktree rebuilds
+  all of it: export `CARGO_TARGET_DIR=~/Documents/dev/beckon/target` and take
+  the saving. Cargo locks the directory, so concurrent builds serialise rather
+  than interleave — but "they do not corrupt each other" is where the useful
+  half of that sentence stops. Three failure modes, all measured 2026-08-15
+  with several worktrees live, in ascending order of how long they cost:
+
+  1. **A stale rlib produces a compile error naming a symbol that is plainly
+     in your source.** Ours said `no variant named 'Reset' for enum
+     DefaultButton` about a file the task had never touched, while `Reset` sat
+     in the enum three lines from where `grep` found it. **Rule: an error
+     about code you can grep is a stale artifact, not a bug.**
+  2. **`cargo clean -p <pkg>` does not clean cross-target artifacts**, so the
+     obvious fix appears to disprove the diagnosis: the clean runs, removes
+     ~99 MB, and the build fails *identically*, which reads as "so it is not
+     the cache" and sends you hunting a real bug. Pass the flag —
+     `cargo clean -p beckon-core -p beckon-windows --target
+     aarch64-pc-windows-msvc` removed a further 882 MB and the check then
+     passed in 0.8 s.
+  3. **`target/debug/beckon` is one path shared by every worktree, so the
+     binary you run may be another branch's** — and this one reports nothing
+     at all. `cargo build` said `Finished in 0.08s` and the binary at that
+     path had no `--resolve` flag, i.e. it predated `origin/main`. There is no
+     error to notice; you simply measure the wrong program. **Build into a
+     private `CARGO_TARGET_DIR` whenever you intend to run the binary and
+     believe its output.**
+
+  Unrelated to worktrees but it compounds all three: **the first exec of a
+  freshly linked binary is killed on this machine** (exit 137, empty output),
+  and the second succeeds. It makes a fresh `--help | grep` return nothing and
+  a fresh test binary report a failure, neither of which is true. Re-run
+  before believing either.
 - **The primary checkout stays on `main` and stays clean.** It is for reading,
   for `git log`, and for owning the shared `target/`.
 - **Clean up when the branch merges**: `git worktree remove .worktrees/<branch>`.
