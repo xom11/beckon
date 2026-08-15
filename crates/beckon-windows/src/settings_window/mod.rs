@@ -151,14 +151,14 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    about_state, banner_shown, combo_needs_placing, copy_text, default_button, opacity_alpha,
-    system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton,
-    Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, SettingsCommand, SystemInputs,
-    SystemState, Target, Transparency, BANNER_PAGE,
+    about_state, banner_shown, combo_needs_placing, copy_text, default_button, image_identity,
+    opacity_alpha, system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState,
+    DefaultButton, Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths,
+    SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
-use windows::core::{w, PCWSTR};
+use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     COLORREF, FILETIME, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
 };
@@ -175,8 +175,17 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 /// `GetProcessTimes` against `GetCurrentProcess`' pseudo-handle: half of the
 /// About page's stale-image verdict, and the half that cannot be got any
 /// other way -- a process's own start time is not in any environment variable
-/// or any file.
-use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+/// or any file. `QueryFullProcessImageNameW` is the OTHER half, the identity
+/// test, and it is the one that can see a moved scoop junction; `current_exe`
+/// deliberately cannot, because it answers about the launch path. Neither
+/// costs a new `windows` feature -- both live in `Win32_System_Threading`,
+/// which this crate already enables for `OpenProcess`, and `window_ops.rs`
+/// already calls `QueryFullProcessImageNameW` (about OTHER processes, for
+/// AUMID resolution) with the same `PROCESS_NAME_WIN32` / `PWSTR` shape used
+/// below.
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetProcessTimes, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+};
 /// `HIGHCONTRASTW` is filed under Accessibility, not WindowsAndMessaging
 /// where `SPI_GETHIGHCONTRAST` itself lives. Named rather than glob-imported
 /// so the surprise is written down once -- the same reason `MessageBeep` is.
@@ -5458,8 +5467,6 @@ unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
 // Drawing
 // ---------------------------------------------------------------------------
 
-/// Push a snapshot into the controls. The only path that changes what is on
-/// screen; the window never reads the model.
 /// The transparency row's whole caption: its label, then its value slot.
 ///
 /// **One STATIC holds both, and that is Phase 0's id table rather than a
@@ -5557,19 +5564,7 @@ unsafe fn render_system(hwnd: HWND, st: &SystemState) {
     check(hwnd, IDC_AUTOSTART, st.autostart.unwrap_or(false));
     check(hwnd, IDC_DARK, st.dark);
 
-    // The transparency row. `TBM_SETPOS` raises no `WM_HSCROLL` either, so
-    // the same reasoning holds: a push cannot be mistaken for a drag.
-    if let Transparency::On(p) = st.transparency {
-        if let Ok(h) = GetDlgItem(Some(hwnd), IDC_OPACITY) {
-            SendMessageW(h, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(p as isize)));
-        }
-    }
-    enable(hwnd, IDC_OPACITY, st.transparency.enabled());
-    set_text_if_changed(
-        hwnd,
-        IDC_OPACITY_VALUE,
-        &opacity_slot(&st.transparency.slot()),
-    );
+    render_transparency_row(hwnd, st.transparency);
 
     set_text_if_changed(hwnd, IDC_CONFIG_NAME, &st.config.name);
     set_text_if_changed(hwnd, IDC_CONFIG_DIR, &st.config.value);
@@ -5597,6 +5592,67 @@ unsafe fn render_system(hwnd: HWND, st: &SystemState) {
         layout(hwnd);
         let _ = InvalidateRect(Some(hwnd), None, true);
     }
+}
+
+/// Write the transparency row: the slider's position, whether it is live, and
+/// the slot beside it.
+///
+/// **Split out 2026-08-15 because it has two callers and only one of them has
+/// a `SystemState`.** `render_system` pushes it as part of the page;
+/// `refresh_transparency_row` pushes it on a theme change, where there is no
+/// `serve` in the call stack to supply `paused`/`autostart`. Spelled once so
+/// the two cannot drift into disagreeing about the same row.
+///
+/// `TBM_SETPOS` raises no `WM_HSCROLL`, so a push here cannot be mistaken for
+/// a drag -- the same property `BM_SETCHECK` has, and the reason neither
+/// needs the `suppress` guard the Shortcuts page's fields do.
+///
+/// The position is written only on the `On` arm. On `Off` the slider is
+/// disabled and its thumb is not a claim about anything; moving it would be
+/// writing a percentage into a control that has just been told to say
+/// `Off in a remote session`.
+unsafe fn render_transparency_row(hwnd: HWND, t: Transparency) {
+    if let Transparency::On(p) = t {
+        if let Ok(h) = GetDlgItem(Some(hwnd), IDC_OPACITY) {
+            SendMessageW(h, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(p as isize)));
+        }
+    }
+    enable(hwnd, IDC_OPACITY, t.enabled());
+    set_text_if_changed(hwnd, IDC_OPACITY_VALUE, &opacity_slot(&t.slot()));
+}
+
+/// Re-read the transparency row from the machine and push it, with no
+/// `SystemState` and no `serve` behind it.
+///
+/// **This closes a row that could say the opposite of what the window was
+/// doing.** The resolution lives in one place -- `theme::transparency_block`,
+/// which `theme::backdrop` and `Transparency::resolve` both consult -- but
+/// until now only `apply_system_state` PUSHED the answer, and only `serve`
+/// calls that. `on_theme_changed` re-resolved the backdrop and left the row
+/// alone, so turning high contrast on (or an `EnableTransparency` flip, which
+/// broadcasts `ImmersiveColorSet` without moving `Theme` at all) made the
+/// window opaque while the row went on offering a live slider and a
+/// percentage. One predicate with two readers is worth nothing if only one of
+/// them is ever asked again.
+///
+/// **It needs nothing from `serve`**, which is what lets it run from a
+/// wndproc: the block is a `GetSystemMetrics` plus a registry read and the
+/// level is `HKCU\Software\beckon`. No `UI` borrow either -- `enable` and
+/// `set_text_if_changed` take only the `HWND` -- so it is safe at the point
+/// in `on_theme_changed` where a `UI` borrow would abort the process.
+///
+/// **Scope, stated rather than implied**: this makes the row agree with the
+/// backdrop at every moment the backdrop is re-resolved, and no more. A
+/// transition the window is not told about -- entering a remote session,
+/// which raises `WM_WTSSESSION_CHANGE` and not `WM_THEMECHANGED` -- leaves
+/// BOTH stale until the next `apply_system_state`, and that is one defect
+/// about `SM_REMOTESESSION` rather than two about this row.
+fn refresh_transparency_row(hwnd: HWND) {
+    let t = Transparency::resolve(
+        crate::prefs::transparency_block_now(),
+        crate::prefs::opacity(),
+    );
+    unsafe { render_transparency_row(hwnd, t) };
 }
 
 /// The target triple this binary was built for, stamped in by `build.rs`.
@@ -5633,10 +5689,14 @@ const TARGET_TRIPLE: &str = env!("BECKON_TARGET");
 /// `GetModuleFileNameW`, which returns the launch path with `\current\` still
 /// in it, and that is what the row must show.
 ///
-/// The two timestamps behind the verdict: `GetProcessTimes` for when this
-/// process started, and one `stat` for when the file at that path was last
-/// written. `beckon_core::settings::image_age` decides what they mean, and
-/// its doc is where the one-sidedness of that comparison is written down.
+/// The verdict has two halves and they answer different failures.
+/// `GetProcessTimes` against one `stat` is the CLOCK half, which catches an
+/// in-place overwrite; `QueryFullProcessImageNameW` against a `canonicalize`
+/// of the launch path is the IDENTITY half, which catches a repointed
+/// junction and is the only one that can see the a14 incident.
+/// `beckon_core::settings::image_age` decides what they mean together, and
+/// its doc carries the measurement showing why the clock half alone was not
+/// enough.
 fn about_now() -> AboutState {
     let exe = std::env::current_exe().ok();
     // `Written` / `Gone` / `Unknown` are three different answers to the
@@ -5651,14 +5711,80 @@ fn about_now() -> AboutState {
         Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => ImageOnDisk::Gone,
         _ => ImageOnDisk::Unknown,
     };
+    // **Both sides go through `canonicalize`, and that is what makes an
+    // untested Win32 reading safe to ship.** `std::fs::canonicalize` on
+    // Windows is `GetFinalPathNameByHandleW`, so each side becomes a
+    // `\\?\`-prefixed path with every junction resolved. If
+    // `QueryFullProcessImageNameW` gives back the resolved image (documented)
+    // the two differ whenever the junction has moved; if it gives back the
+    // launch path (what `MainModule.FileName` showed on a14) the two
+    // canonicalise to the same string and the answer is `Same`. The
+    // pessimistic reading costs silence, never a false alarm -- see
+    // `ImageIdentity`.
+    //
+    // Note what is NOT canonicalised: `exe` itself, which goes to the row
+    // unresolved. Resolving it there is the exact simplification design §3.4
+    // forbids, because `…\current\` is the string the row must show.
+    let running = running_image_path().and_then(|p| std::fs::canonicalize(p).ok());
+    let target_now = exe.as_ref().and_then(|p| std::fs::canonicalize(p).ok());
     about_state(AboutInputs {
         version: env!("CARGO_PKG_VERSION"),
         target: TARGET_TRIPLE,
         exe: exe.as_deref(),
         started: process_start_time(),
         disk,
+        identity: image_identity(running.as_deref(), target_now.as_deref()),
         licence: env!("CARGO_PKG_LICENSE"),
     })
+}
+
+/// The path of the executable file this process is running, as the kernel
+/// records it.
+///
+/// **Not `current_exe()`**, which is `GetModuleFileNameW` and returns the
+/// LAUNCH path -- `…\scoop\apps\beckon\current\beckon-serve.exe` with the
+/// junction still in it. That string is what the `Location` row must show and
+/// is exactly why it cannot also answer "which file am I". This is the other
+/// question, and `QueryFullProcessImageNameW` is documented to answer it
+/// about the process rather than about a module handle.
+///
+/// **`PROCESS_NAME_WIN32`, not `PROCESS_NAME_NATIVE`**: the native form is a
+/// `\Device\HarddiskVolume3\…` NT path, which `canonicalize` cannot compare
+/// against a drive-letter path without a volume-name lookup this row does not
+/// need. Same flag `window_ops::get_process_info` passes.
+///
+/// **`None` on any failure**, which `image_identity` reads as "no claim".
+/// A pseudo-handle to our own process cannot realistically be refused; the
+/// arm exists because this runs from a wndproc, where a panic crosses an
+/// `extern "system"` boundary and aborts -- `process_start_time`'s rule.
+///
+/// **Unverified on hardware.** Nothing on the host this was written on can
+/// run a Windows process, so what this returns for a junction launch is read
+/// from documentation. `about_now` is built so that the wrong reading costs
+/// silence rather than a wrong verdict, and `measure_about` in
+/// `examples/settings_probe.rs` is where a run would settle it.
+fn running_image_path() -> Option<std::path::PathBuf> {
+    // MAX_PATH is not the limit here -- a long path is legal in the buffer
+    // this fills -- so it is sized past it and the call reports how much it
+    // used.
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    unsafe {
+        QueryFullProcessImageNameW(
+            GetCurrentProcess(),
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .ok()?;
+    }
+    let len = len as usize;
+    if len == 0 || len > buf.len() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(String::from_utf16_lossy(
+        &buf[..len],
+    )))
 }
 
 /// When this process started, as a `SystemTime`.
@@ -5753,6 +5879,18 @@ unsafe fn render_about(hwnd: HWND, st: &AboutState) {
     set_text_if_changed(hwnd, IDC_ABOUT_LICENCE_VALUE, &st.licence.shown);
 }
 
+/// Push a snapshot into the controls. The only path that changes what is on
+/// screen; the window never reads the model.
+///
+/// **REATTACHED 2026-08-15.** These two lines spent a day above
+/// `opacity_slot`, because the System pass inserted that function and four
+/// others between this doc and its own item -- the same slip that moved
+/// `reload`'s borrow-safety block onto `set_autostart` in `serve.rs`, in the
+/// same commit. It read as a claim that a `format!` of two strings is "the
+/// only path that changes what is on screen", which is the opposite of what
+/// that sentence exists to say: `opacity_slot` is one of the two SPELLINGS
+/// of one row's caption, and this is the entry point that pushes every
+/// Shortcuts control at once.
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
     let Some((hwnd, list, combo, app, notes, filter, banner, reload, keep, tap)) = UI.with(|u| {
         u.borrow().as_ref().map(|x| {
@@ -7110,6 +7248,14 @@ unsafe fn on_theme_changed(hwnd: HWND) {
     // SetWindowLong calls underneath are idempotent, so running it every time
     // costs nothing.
     apply_current_backdrop(hwnd);
+    // The System page's transparency row reads the SAME predicate the tier
+    // above does (`theme::transparency_block`), so it has to be re-read at
+    // the same moments or it starts describing a window that no longer
+    // exists. Above the `!changed` return for `apply_current_backdrop`'s own
+    // reason, and it is not a hypothetical here either: an
+    // `EnableTransparency` flip is precisely a broadcast that moves the block
+    // and not the `Theme`.
+    refresh_transparency_row(hwnd);
     if !changed {
         return;
     }

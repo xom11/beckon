@@ -1033,6 +1033,77 @@ pub enum ImageOnDisk {
     Unknown,
 }
 
+/// Whether the file this process is RUNNING is the file its launch path
+/// names today.
+///
+/// **This is the identity half of the stale-image verdict, and it is the half
+/// that can see the recorded failure.** The clock half (`image_age`'s
+/// `started` vs `disk` comparison) provably cannot -- see the measurement in
+/// `image_age`'s own doc. On a scoop install the launch path is
+/// `…\apps\beckon\current\beckon-serve.exe`, a junction; a `scoop update`
+/// repoints it at a new version directory while a running process goes on
+/// executing the old one. Comparing the two resolutions is the question
+/// "am I the file my own path names?", which is what the a14 incident was.
+///
+/// **The comparison FAILS SAFE, and that is load-bearing**, because what
+/// `QueryFullProcessImageNameW` returns for a junction launch has not been
+/// measured on hardware. Both sides are canonicalised before comparison, so:
+///
+/// - if it returns the RESOLVED image path (the documented reading), the old
+///   version directory canonicalises to itself, today's launch path
+///   canonicalises to the new one, and the two differ -- `Diverged`;
+/// - if it returns the UNRESOLVED launch path (`GetModuleFileNameW`'s
+///   behaviour, which is what PowerShell's `MainModule.FileName` showed on
+///   a14), canonicalising it yields today's target, both sides are the same
+///   string, and the answer is `Same`.
+///
+/// The pessimistic reading therefore degrades to **silence**, never to a
+/// false alarm. That matters more than the optimistic gain: a check that
+/// cried `updated on disk, restart to run it` at every scoop user on every
+/// open would be worse than the row not existing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageIdentity {
+    /// Both resolve to the same file.
+    Same,
+    /// They resolve to different files. The launch path has been repointed
+    /// and this process is still executing what it used to name.
+    Diverged,
+    /// One of the two could not be resolved -- no `current_exe()`, no
+    /// process image path, or a `canonicalize` that failed. Includes the
+    /// ordinary case where `scoop cleanup` has deleted the version directory
+    /// this process is running from, so the running image's own path no
+    /// longer resolves.
+    Unknown,
+}
+
+/// Compare the running image's path against what the launch path resolves to
+/// now.
+///
+/// **Both arguments must already be canonicalised, by the same call, on the
+/// same machine** -- that is the caller's job because canonicalisation is an
+/// OS operation and this crate compiles on three of them. See `ImageIdentity`
+/// for why canonicalising both is what makes the answer fail safe.
+///
+/// The comparison is ASCII-case-insensitive: Windows paths are, and both
+/// strings come out of the same API on the same volume so the fold is a belt
+/// rather than a decision.
+pub fn image_identity(
+    running: Option<&std::path::Path>,
+    launch_target: Option<&std::path::Path>,
+) -> ImageIdentity {
+    match (running, launch_target) {
+        (Some(a), Some(b)) => {
+            let (a, b) = (a.to_string_lossy(), b.to_string_lossy());
+            if a.eq_ignore_ascii_case(&b) {
+                ImageIdentity::Same
+            } else {
+                ImageIdentity::Diverged
+            }
+        }
+        _ => ImageIdentity::Unknown,
+    }
+}
+
 /// Whether the process is still running the image that is on disk.
 ///
 /// **This row exists because of a recorded failure, not a hypothetical
@@ -1040,13 +1111,25 @@ pub enum ImageOnDisk {
 /// hours while `beckon --version` said 0.9.0 and scoop's `current` junction
 /// pointed at 0.9.0 -- **both obvious surfaces lied**, because both were
 /// answering about the file on disk and the question was about the process.
+///
+/// **CORRECTED 2026-08-15: for one day this enum's only producer could not
+/// see that failure.** The paragraph above says why the row exists and was
+/// read as saying the row covers it. It did not: `image_age` was a clock
+/// comparison alone, and the measurement in its doc shows the clock answers
+/// `Current` -- silence -- on the exact a14 timeline. `ImageIdentity` is the
+/// second producer, added to close it; the clock is kept because it catches
+/// a different case (an in-place overwrite, where the path never changes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageAge {
     /// Nothing says the file has been replaced. **Not a clean bill of
     /// health** -- see `note`.
     Current,
-    /// The file at the launch path was written after this process started, so
-    /// what is on disk is not what is running.
+    /// What is on disk is not what is running. **Two producers, and they
+    /// catch different failures**: the launch path now resolves to a
+    /// different file from the one this process is executing
+    /// (`ImageIdentity::Diverged` -- a moved scoop junction), or the file at
+    /// the launch path was written after this process started (the clock --
+    /// an in-place overwrite). Neither subsumes the other.
     Replaced,
     /// There is no file at the launch path any more.
     Missing,
@@ -1059,12 +1142,13 @@ impl ImageAge {
     ///
     /// **`Current` and `Unknown` both say nothing, and that is rule 2 rather
     /// than laziness**: silence is the healthy state, and the alternative
-    /// here is worse than merely noisy. The comparison below is ONE-SIDED --
-    /// `Replaced` is reliable, `Current` is only "no evidence of
-    /// replacement" -- so a row that printed *up to date* would be making the
-    /// exact kind of confident claim the a14 incident is about. Saying
-    /// nothing costs a missed warning; saying "up to date" would cost the
-    /// reader the reason they came to this row.
+    /// here is worse than merely noisy. Both tests behind `image_age` are
+    /// ONE-SIDED -- `Replaced` is reliable, `Current` is only "no evidence of
+    /// replacement", and `image_age`'s doc measures a real case where that
+    /// evidence is absent by construction -- so a row that printed *up to
+    /// date* would be making the exact kind of confident claim the a14
+    /// incident is about. Saying nothing costs a missed warning; saying "up
+    /// to date" would cost the reader the reason they came to this row.
     pub fn note(self) -> Option<&'static str> {
         match self {
             ImageAge::Current | ImageAge::Unknown => None,
@@ -1076,39 +1160,90 @@ impl ImageAge {
     }
 }
 
-/// Compare when the process started against when its image was last written.
+/// Decide the verdict from an identity test and a clock comparison.
 ///
-/// **Why time rather than identity.** The strong test would be "is the file
-/// at this path the same file this process mapped", and Win32 has no cheap
-/// way to ask it: `current_exe()` is `GetModuleFileNameW`, which returns the
-/// UNRESOLVED launch path -- exactly what design §3.4 wants shown, because
-/// resolving it through `GetFinalPathNameByHandleW` reports *today's* junction
-/// target, which is the thing that lied. So the comparison available is
-/// coarse.
+/// **STRUCK 2026-08-15, and the measurement is below.** This function used to
+/// take two arguments and carry this claim: *"Why time rather than identity.
+/// The strong test would be 'is the file at this path the same file this
+/// process mapped', and Win32 has no cheap way to ask it … So the comparison
+/// available is coarse."* The identity test is one call
+/// (`QueryFullProcessImageNameW`) plus two `canonicalize`s and is now the
+/// first thing this function asks; see `image_identity`, and note that its
+/// untested half degrades to silence rather than to a false alarm, which is
+/// what made building it cheaper than continuing to name it.
 ///
-/// **And it is one-sided; do not read `Current` as a guarantee.** An archive
-/// extractor that preserves the stored timestamp -- which is what scoop's
-/// unpack does -- gives the newly installed exe an mtime from the release
-/// build, i.e. BEFORE this process started, and the replacement goes
-/// unnoticed. That is why `ImageAge::note` is silent for `Current`: a false
+/// # The clock half cannot fire on the incident this row exists for
+///
+/// Not reasoned -- **measured on the artifact itself, 2026-08-15**, by
+/// downloading `beckon-0.9.0-aarch64-pc-windows-msvc.zip` from the release
+/// that a14 updated to and reading the entry timestamps out of the zip
+/// directory:
+///
+/// ```text
+/// beckon-serve.exe  2026-08-12T22:37:14
+/// beckon.exe        2026-08-12T22:37:18
+/// ```
+///
+/// Those are the stored `LastWriteTime`s that `Compress-Archive` put in
+/// (`.github/workflows/release.yml`, the Windows packaging step), and every
+/// extractor scoop uses restores them.
+///
+/// The a14 timeline (`a14-upgrade-verify-running-image`): the watchdog
+/// started beckon at 05:40:01 and scoop created `…\apps\beckon\0.9.0` at
+/// 05:40:05 -- **four seconds later**. scoop cannot have unpacked an artifact
+/// before that artifact existed, so the process started at most four seconds
+/// before something that necessarily follows 22:37:18Z. Therefore
+/// `written < started`, in every timezone, and the clock comparison answers
+/// `Current`, whose `note()` is `None`. **The row said nothing at all for the
+/// three hours it existed to describe.** No arithmetic about a14's clock is
+/// needed to reach that; the ordering is forced by the causality.
+///
+/// Two mechanisms put it there and either is sufficient:
+///
+/// 1. **The mtime is the release build's**, as measured above -- so a
+///    freshly unpacked image and a months-old one are indistinguishable by
+///    it. The doc under `ImageAge` already said scoop's unpack preserves
+///    stored timestamps; what nobody did was join that sentence to the row's
+///    coverage claim.
+/// 2. **The `stat` follows the junction anyway.** `disk` comes from
+///    `metadata(current_exe())`, and path traversal resolves `\current\` at
+///    open time -- so the file being timed is the NEW image, never the one
+///    actually running. The clock half is structurally answering a question
+///    about a file this process is not executing.
+///
+/// **What the clock half IS still for**, and why it is kept: an in-place
+/// overwrite, where the launch path never changes and identity therefore says
+/// `Same`. `cargo build` over a running binary's own path is the everyday
+/// case, and a non-scoop install updated by copying a new exe over the old is
+/// the shipped one.
+///
+/// **And it is one-sided; do not read `Current` as a guarantee.** For the
+/// reason measured above, `Current` means only "neither test found evidence
+/// of a replacement". That is why `ImageAge::note` is silent for it: a false
 /// negative costs a missing warning, a false positive would cost the row its
 /// credibility.
-///
-/// **Untested stronger route, for whoever has hardware.**
-/// `QueryFullProcessImageNameW` is documented to return the path of the
-/// executable file *of the process*, which for a launch through a junction
-/// should be the RESOLVED target as it was at load time -- i.e. the version
-/// directory actually running. Comparing that against today's resolution of
-/// the launch path would be an identity test rather than a clock one. Nothing
-/// on the host this was written on can run a Windows process, so it is named
-/// here rather than built.
 ///
 /// Equality is `Current`: the image has to exist before it can be executed,
 /// so `written == started` is the ordinary case on a fast machine, not a
 /// replacement in the same tick.
-pub fn image_age(started: Option<std::time::SystemTime>, disk: ImageOnDisk) -> ImageAge {
+///
+/// **Order: `Gone`, then identity, then the clock.** `Gone` first because a
+/// path that resolves to nothing makes both other tests meaningless.
+/// Identity before the clock because it is the reliable one -- and note that
+/// `ImageIdentity::Same` does NOT short-circuit to `Current`: it is not
+/// evidence against an in-place overwrite, only against a repointed path.
+pub fn image_age(
+    started: Option<std::time::SystemTime>,
+    disk: ImageOnDisk,
+    identity: ImageIdentity,
+) -> ImageAge {
+    if let ImageOnDisk::Gone = disk {
+        return ImageAge::Missing;
+    }
+    if let ImageIdentity::Diverged = identity {
+        return ImageAge::Replaced;
+    }
     match (started, disk) {
-        (_, ImageOnDisk::Gone) => ImageAge::Missing,
         (Some(start), ImageOnDisk::Written(w)) => {
             if w > start {
                 ImageAge::Replaced
@@ -1137,10 +1272,15 @@ pub struct AboutInputs<'a> {
     /// `std::env::current_exe()`, deliberately UNRESOLVED. `None` when it
     /// could not be read at all.
     pub exe: Option<&'a std::path::Path>,
-    /// When this process started, for `image_age`.
+    /// When this process started, for `image_age`'s clock half.
     pub started: Option<std::time::SystemTime>,
-    /// What is at `exe` now, for `image_age`.
+    /// What is at `exe` now, for `image_age`'s clock half.
     pub disk: ImageOnDisk,
+    /// Whether the image this process is executing is the file `exe` names
+    /// today -- `image_age`'s identity half, and the only half that can see
+    /// a moved scoop junction. The caller resolves both paths; see
+    /// `image_identity`.
+    pub identity: ImageIdentity,
     /// `env!("CARGO_PKG_LICENSE")`.
     pub licence: &'a str,
 }
@@ -1163,7 +1303,7 @@ pub struct AboutState {
 /// Build the page. Every branch is a decision the design argues for and the
 /// two CI jobs that never compile a wndproc can check.
 pub fn about_state(i: AboutInputs) -> AboutState {
-    let age = image_age(i.started, i.disk);
+    let age = image_age(i.started, i.disk, i.identity);
     // `None` from `current_exe()` is a real state -- the call can fail -- and
     // an empty row would read as a rendering fault. `unknown` is short,
     // value-shaped and true, the same shape `system_state` uses for a log
@@ -2965,11 +3105,32 @@ pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035
 /// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
 ///
 /// It drives ANOTHER process across a process boundary, so it cannot link
-/// this crate and cannot be recompiled into agreement: these fifteen are
+/// this crate and cannot be recompiled into agreement: these forty-four are
 /// fixed points, and `probe_pinned_ids_have_not_moved` is what says so out
 /// loud.
 ///
-/// Fifteen, and the spec's three **pinned** rows
+/// **WIDENED 2026-08-15, from fifteen to forty-four**, on review. This list
+/// used to hold only the `const IDC_*` declarations at the top of the probe,
+/// and the sentence below still counts them that way -- `grep -c "const
+/// IDC_"` is 15 and stays 15. That was never the rule the list claimed to
+/// enforce. `measure_system` transcribes 1070-1083 and `measure_about`
+/// transcribes 1100-1114 as **bare literals in `ROWS` tables**, plus
+/// literals in the arms that read them (`SWITCHES`, the `id == 1074`
+/// trackbar arm, `shown(1071)`, the four log-row `shown(…)` calls, the three
+/// copy glyphs, `text(1106)`, `text(1111)`). A literal in a table is a fixed
+/// point across a process boundary in exactly the way a `const` is; the
+/// spelling is not the property. So the twenty-nine System and About numbers
+/// are here too.
+///
+/// **The NAME in each pair is `CONTROL_IDS`' name, not the probe's printed
+/// label**, and for the About block the two differ: `CONTROL_IDS` says
+/// `ABOUT_MARK` where the probe's `ROWS` prints `MARK`, because that column
+/// is width-limited and the prefix is redundant once the section heading
+/// says `About page`. What is pinned is the NUMBER; the label is how a human
+/// reads the run. A test that matched labels instead would fail on a
+/// cosmetic column change and say nothing about a renumber.
+///
+/// Of the original fifteen: the spec's three **pinned** rows
 /// (`docs/superpowers/specs/2026-08-14-four-doors-phase-0-spec.md:141-145`
 /// -- 1001-1008, 1012/1013, 1028-1031) account for only fourteen of them.
 /// The fifteenth is `IDC_TAP 1025`, which that same table files under
@@ -2977,7 +3138,8 @@ pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035
 /// `settings_probe.rs:249` hard-codes it regardless. Counted from the probe
 /// rather than from the spec:
 /// `grep -c "const IDC_" crates/beckon-windows/examples/settings_probe.rs`
-/// is 15.
+/// is 15 -- which is the count of DECLARATIONS, and is why that grep on its
+/// own missed the twenty-nine literals the widening above added.
 ///
 /// The spec's 1001-1008 row cites `settings_probe.rs:229-242` as its
 /// evidence -- evidence for that row alone, not for the pinned set, since
@@ -3019,6 +3181,42 @@ pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
     ("MOD_WIN", 1029),
     ("MOD_ALT", 1030),
     ("MOD_SHIFT", 1031),
+    // -- `measure_system`'s `ROWS`, transcribed as bare literals -----------
+    // 1084 (`SYS_PLACEHOLDER`) is deliberately absent from the probe and so
+    // from here: it is RETIRED, and `retired_ids_stay_retired` is what covers
+    // a number nothing looks for any more.
+    ("PAUSE", 1070),
+    ("AUTOSTART", 1071),
+    ("SYS_RELOAD", 1072),
+    ("DARK", 1073),
+    ("OPACITY", 1074),
+    ("OPACITY_VALUE", 1075),
+    ("CONFIG_NAME", 1076),
+    ("CONFIG_DIR", 1077),
+    ("CONFIG_OPEN", 1078),
+    ("CONFIG_SHOW", 1079),
+    ("LOG_NAME", 1080),
+    ("LOG_SIZE", 1081),
+    ("LOG_OPEN", 1082),
+    ("LOG_SHOW", 1083),
+    // -- `measure_about`'s `ROWS`, same shape ------------------------------
+    // The probe prints these without the `ABOUT_` prefix; see the doc above
+    // for why the pin is on the number and not on the label.
+    ("ABOUT_MARK", 1100),
+    ("ABOUT_NAME", 1101),
+    ("ABOUT_BUILD_LABEL", 1102),
+    ("ABOUT_BUILD_VALUE", 1103),
+    ("ABOUT_BUILD_COPY", 1104),
+    ("ABOUT_LOCATION_LABEL", 1105),
+    ("ABOUT_LOCATION_VALUE", 1106),
+    ("ABOUT_LOCATION_COPY", 1107),
+    ("ABOUT_LICENCE_LABEL", 1108),
+    ("ABOUT_LICENCE_VALUE", 1109),
+    ("ABOUT_LICENCE_COPY", 1110),
+    ("ABOUT_DISCLOSURE", 1111),
+    ("ABOUT_GITHUB", 1112),
+    ("ABOUT_RELEASES", 1113),
+    ("ABOUT_BUG", 1114),
 ];
 
 #[cfg(test)]
@@ -5373,6 +5571,38 @@ mod tests {
         }
     }
 
+    /// The doc comment on `PROBE_PINNED_IDS` counts the list out loud, and
+    /// **that count has been wrong twice** -- once when the list was fifteen
+    /// and the prose said fourteen, and again when `measure_system` and
+    /// `measure_about` transcribed twenty-nine more numbers and the prose
+    /// still said fifteen. A number in prose beside a list is a claim nothing
+    /// checks, so this checks it: the failure message names the line to edit.
+    ///
+    /// The two uniqueness assertions ride along because this list is
+    /// maintained by hand from another file, which is the shape a copy-paste
+    /// duplicate arrives in. A duplicated pair is not merely untidy -- it
+    /// makes the count claim above true for the wrong reason.
+    #[test]
+    fn probe_pinned_ids_count_matches_its_doc() {
+        assert_eq!(
+            PROBE_PINNED_IDS.len(),
+            44,
+            "`PROBE_PINNED_IDS` changed length. Its own doc comment says how \
+             many there are (\"these forty-four are fixed points\") -- update \
+             the word as well as the list"
+        );
+        let mut ids: Vec<i32> = PROBE_PINNED_IDS.iter().map(|(_, v)| *v).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "`PROBE_PINNED_IDS` repeats an id");
+        let mut names: Vec<&str> = PROBE_PINNED_IDS.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "`PROBE_PINNED_IDS` repeats a name");
+    }
+
     // -- The System page ---------------------------------------------------
 
     /// **Built from components, never from a literal with backslashes in
@@ -5582,13 +5812,25 @@ mod tests {
         .collect()
     }
 
+    /// The clock half on its own -- identity says `Same`, which is what a
+    /// machine whose launch path is not a junction reports.
     fn about(exe: &std::path::Path, started: Option<SystemTime>, disk: ImageOnDisk) -> AboutState {
+        about_with(exe, started, disk, ImageIdentity::Same)
+    }
+
+    fn about_with(
+        exe: &std::path::Path,
+        started: Option<SystemTime>,
+        disk: ImageOnDisk,
+        identity: ImageIdentity,
+    ) -> AboutState {
         about_state(AboutInputs {
             version: "0.9.3",
             target: "aarch64-pc-windows-msvc",
             exe: Some(exe),
             started,
             disk,
+            identity,
             licence: "MIT OR Apache-2.0",
         })
     }
@@ -5640,9 +5882,126 @@ mod tests {
     #[test]
     fn an_image_written_in_the_same_tick_is_not_a_replacement() {
         assert_eq!(
-            image_age(Some(t(1_000)), ImageOnDisk::Written(t(1_000))),
+            image_age(
+                Some(t(1_000)),
+                ImageOnDisk::Written(t(1_000)),
+                ImageIdentity::Same
+            ),
             ImageAge::Current
         );
+    }
+
+    /// **The a14 incident, as a test, with the artifact's own numbers.**
+    ///
+    /// Measured 2026-08-15 out of the v0.9.0 arm64 release zip: the stored
+    /// `LastWriteTime` of `beckon.exe` is `2026-08-12T22:37:18`. The watchdog
+    /// started the stale process at 05:40:01 and scoop unpacked four seconds
+    /// later, which cannot precede the artifact -- so `written < started` no
+    /// matter what a14's clock reads. Here that is `w = 900`, `start = 1_000`.
+    ///
+    /// **The clock half answers `Current`, and the row is silent.** That is
+    /// the defect: this is the one timeline the row was built for. The
+    /// identity half is what makes the same inputs speak, and the second
+    /// assertion is the only difference between the two calls.
+    ///
+    /// Falsified by deleting the `Diverged` arm from `image_age`: the second
+    /// assertion fails and the first still passes, which is exactly how this
+    /// went unnoticed for a day.
+    #[test]
+    fn the_a14_timeline_is_silent_on_the_clock_and_loud_on_identity() {
+        let exe = exe_path();
+        let (start, written) = (t(1_000), t(900));
+
+        let clock_only = about_with(
+            &exe,
+            Some(start),
+            ImageOnDisk::Written(written),
+            ImageIdentity::Same,
+        );
+        assert_eq!(
+            clock_only.image,
+            ImageAge::Current,
+            "the clock comparison is expected to MISS this; if it starts \
+             catching it, the measurement in `image_age`'s doc has changed \
+             and both should be revisited"
+        );
+        assert_eq!(clock_only.location.shown, clock_only.location.copy);
+
+        let with_identity = about_with(
+            &exe,
+            Some(start),
+            ImageOnDisk::Written(written),
+            ImageIdentity::Diverged,
+        );
+        assert_eq!(with_identity.image, ImageAge::Replaced);
+        assert!(
+            with_identity.location.shown.contains("restart"),
+            "the incident the row exists for said nothing: {}",
+            with_identity.location.shown
+        );
+    }
+
+    /// `Same` is not evidence against an in-place overwrite, and `Gone`
+    /// outranks everything.
+    ///
+    /// Three orderings in one place because each is a decision rather than a
+    /// consequence: identity beats the clock (it is the reliable half), the
+    /// clock still runs under `Same` (a `cargo build` over a running binary
+    /// never moves the path), and `Gone` beats both (a path that resolves to
+    /// nothing makes either comparison meaningless).
+    #[test]
+    fn the_two_halves_of_the_verdict_do_not_shadow_each_other() {
+        assert_eq!(
+            image_age(
+                Some(t(1_000)),
+                ImageOnDisk::Written(t(1_100)),
+                ImageIdentity::Same
+            ),
+            ImageAge::Replaced
+        );
+        assert_eq!(
+            image_age(None, ImageOnDisk::Unknown, ImageIdentity::Diverged),
+            ImageAge::Replaced
+        );
+        assert_eq!(
+            image_age(Some(t(1_000)), ImageOnDisk::Gone, ImageIdentity::Diverged),
+            ImageAge::Missing
+        );
+        // Unknown identity leaves the clock exactly as it was.
+        assert_eq!(
+            image_age(
+                Some(t(1_000)),
+                ImageOnDisk::Written(t(900)),
+                ImageIdentity::Unknown
+            ),
+            ImageAge::Current
+        );
+    }
+
+    /// The fail-safe property, which is what lets an unmeasured Win32 reading
+    /// ship at all.
+    ///
+    /// If `QueryFullProcessImageNameW` turns out to return the UNRESOLVED
+    /// launch path, `about_now` canonicalises both sides and hands this
+    /// function two equal strings -- so the answer is `Same`, the verdict
+    /// falls back to the clock, and nothing on screen changes. A missing
+    /// side is `Unknown` for the same reason: `scoop cleanup` deletes the
+    /// version directory a stale process is running from, and a path that
+    /// will not canonicalise must not be read as a divergence.
+    #[test]
+    fn an_unresolvable_or_identical_image_path_never_cries_wolf() {
+        let a: std::path::PathBuf = ["v", "0.9.0", "beckon.exe"].iter().collect();
+        let b: std::path::PathBuf = ["v", "0.8.0", "beckon.exe"].iter().collect();
+        assert_eq!(image_identity(Some(&a), Some(&a)), ImageIdentity::Same);
+        assert_eq!(image_identity(Some(&a), Some(&b)), ImageIdentity::Diverged);
+        assert_eq!(image_identity(None, Some(&a)), ImageIdentity::Unknown);
+        assert_eq!(image_identity(Some(&a), None), ImageIdentity::Unknown);
+        assert_eq!(image_identity(None, None), ImageIdentity::Unknown);
+        // Windows paths are case-insensitive, and both sides come back from
+        // the same API -- but a fold that only worked by luck would be a
+        // divergence reported on every open.
+        let upper: std::path::PathBuf = ["V", "0.9.0", "BECKON.EXE"].iter().collect();
+        assert_eq!(image_identity(Some(&a), Some(&upper)), ImageIdentity::Same);
     }
 
     /// What is copied is the payload, never the annotated string.
@@ -5675,6 +6034,7 @@ mod tests {
             exe: None,
             started: None,
             disk: ImageOnDisk::Unknown,
+            identity: ImageIdentity::Unknown,
             licence: "MIT OR Apache-2.0",
         });
         assert_eq!(st.location.shown, "unknown");

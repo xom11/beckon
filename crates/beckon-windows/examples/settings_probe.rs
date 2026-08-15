@@ -1437,6 +1437,18 @@ mod win {
     ///   resolved version directory. A path containing a version number is
     ///   the tell that something started resolving it, which is exactly the
     ///   surface that lied on a14.
+    /// - **Whether the verdict fires at all after an update.** Since
+    ///   2026-08-15 the verdict has two producers and only one of them can
+    ///   see a moved scoop junction (`beckon_core::settings::image_age`, and
+    ///   its doc measures why the clock half cannot). The identity half rests
+    ///   on `QueryFullProcessImageNameW` returning the RESOLVED image path
+    ///   for a junction launch, which is read from documentation and has
+    ///   never been run. **The run that settles it is: `scoop update beckon`
+    ///   with an old `beckon-serve.exe` still running, then open About.** A
+    ///   verdict means the documented reading holds; silence means it returns
+    ///   the launch path instead, which is the reading `about_now` is built
+    ///   to survive -- not a regression, but the answer, and worth writing
+    ///   down either way.
     /// - **The name row's version**, which is the running IMAGE's. Compare it
     ///   against `beckon --version` typed at a shell: they are allowed to
     ///   disagree, and when they do, THIS one is the truth and an update is
@@ -1505,7 +1517,12 @@ mod win {
         if loc.contains("(updated on disk") || loc.contains("(no longer on disk") {
             println!("    location verdict: PRESENT -- the running image is not the file on disk");
         } else {
-            println!("    location verdict: silent (Current or Unknown -- see `image_age`)");
+            println!(
+                "    location verdict: silent (Current or Unknown -- see `image_age`). \
+                 On a run made straight after `scoop update` with the OLD serve still \
+                 alive, this line is the answer to whether QueryFullProcessImageNameW \
+                 resolves a junction: silence there means it does not."
+            );
         }
         // The disclosure's two halves, both of which design 3.4 requires. The
         // second is the negative claim, which nothing but the words can make.

@@ -630,21 +630,6 @@ fn watch_config(
     Ok(watcher)
 }
 
-/// Re-read `config`, replace the shortcut table, and (unless paused)
-/// re-register every hotkey.
-///
-/// **Borrow safety**: the `Ok` arm below holds `mgr.borrow_mut()` live
-/// across two calls to `set_tray_status` (Windows: `hotkey::set_status`,
-/// which bottoms out in `Shell_NotifyIconW(NIM_MODIFY)`). That is sound:
-/// `NIM_MODIFY` is an in-process icon update, not the out-of-process shell
-/// activation `ShellExecuteW` performs, so it does not pump this thread's
-/// message queue and cannot let a reentrant call back into this same
-/// `RefCell` while it is already borrowed -- the `BorrowMutError`-across-
-/// `extern "system"` hazard the module doc above describes. Contrast
-/// `beckon_windows::shell::open_path` (`ShellExecuteW`), which DOES pump:
-/// see `install_tray_menu`, where every call site clones what it needs and
-/// drops its borrow first, before calling it. `set_paused` holds the same
-/// two borrows across the same non-pumping calls, for the same reason.
 /// Write or clear the `HKCU\…\Run` value, and say so if it fails.
 ///
 /// **One function, two call sites**: the tray menu's `Start with Windows` row
@@ -778,6 +763,30 @@ fn open_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings:
 #[cfg(all(target_os = "macos", not(target_os = "windows")))]
 fn reveal_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings::Target) {}
 
+/// Re-read `config`, replace the shortcut table, and (unless paused)
+/// re-register every hotkey.
+///
+/// **Borrow safety**: the `Ok` arm below holds `mgr.borrow_mut()` live
+/// across two calls to `set_tray_status` (Windows: `hotkey::set_status`,
+/// which bottoms out in `Shell_NotifyIconW(NIM_MODIFY)`). That is sound:
+/// `NIM_MODIFY` is an in-process icon update, not the out-of-process shell
+/// activation `ShellExecuteW` performs, so it does not pump this thread's
+/// message queue and cannot let a reentrant call back into this same
+/// `RefCell` while it is already borrowed -- the `BorrowMutError`-across-
+/// `extern "system"` hazard the module doc above describes. Contrast
+/// `beckon_windows::shell::open_path` (`ShellExecuteW`), which DOES pump:
+/// see `install_tray_menu`, where every call site clones what it needs and
+/// drops its borrow first, before calling it. `set_paused` holds the same
+/// two borrows across the same non-pumping calls, for the same reason.
+///
+/// **REATTACHED 2026-08-15.** This block spent a day above `set_autostart`:
+/// the System pass inserted that function, `open_target` and `reveal_target`
+/// between this doc and its own item, so rustdoc read a borrow-safety
+/// argument about `mgr.borrow_mut()` as documentation for a registry write
+/// that takes no `mgr` at all -- while `reload`, which `set_paused`'s doc
+/// cross-references BY NAME for exactly this reasoning ("see `reload`'s doc
+/// comment"), had none. That cross-reference is what makes the orphaning a
+/// defect rather than a tidiness point: it pointed at an empty place.
 fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let config = state.borrow().config.clone();
     let parsed = std::fs::read_to_string(&config)
@@ -984,17 +993,45 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                     }
                 }
             }
+            // No `refresh_settings` here and that is not an omission: the
+            // `Ok` arm of `reload` ends in `settings_saw_external_change`,
+            // which is the RIGHT answer for a reload -- the file may have
+            // moved under an open window, and a plain re-projection would
+            // redraw a stale model against a fresh registration map. The
+            // `Err` arm reaches `settings_retry_unreadable`. Both directions
+            // are covered; see the two arms.
             MENU_RELOAD => reload(&st, &mg),
+            // **The push back to an open settings window, added 2026-08-15.**
+            // Pause and autostart are now on TWO surfaces -- this menu and
+            // design §3.3's switches -- so without it the window goes on
+            // showing the state the switch had before the tray changed it,
+            // and the two disagree on screen with no way to tell which is
+            // real. Pushed from here rather than pulled by the window: the
+            // window has nothing to pull on (it runs no timer, and Windows
+            // broadcasts nothing when beckon's own flag moves), so a pull
+            // would mean a timer ticking for the ~always that the window is
+            // closed. `refresh_settings` already returns immediately when
+            // there is no window, so the push costs a `RefCell` read.
+            //
+            // AFTER the mutator and never inside it: `set_paused` returns
+            // holding no borrow, and a `refresh_settings` called while
+            // `mgr.borrow_mut()` was still live would put a `SendMessageW`
+            // fan-out inside that borrow -- the shape this module's own doc
+            // rules out. This is the same order `on_command`'s two arms use.
             MENU_PAUSE => {
                 let now = !st.borrow().paused;
                 set_paused(&st, &mg, now);
+                refresh_settings(&st);
             }
             // The menu row is a TOGGLE with no state of its own, so what it
             // wants is the opposite of what the registry currently says. The
             // settings window's switch knows its own new state and passes it
             // straight through; both end in `set_autostart`, which is what
             // keeps "what a Run value looks like" a single answer.
-            MENU_AUTOSTART => set_autostart(&st, !beckon_windows::autostart::is_enabled()),
+            MENU_AUTOSTART => {
+                set_autostart(&st, !beckon_windows::autostart::is_enabled());
+                refresh_settings(&st);
+            }
             MENU_QUIT => {
                 eprintln!("beckon serve: quit requested from the tray menu");
                 hotkey::request_quit();
@@ -1036,9 +1073,17 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let on_click = Box::new(move |id: u32| match id {
         MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
         MENU_RELOAD => reload(&st, &mg),
+        // The Windows arm's push, and it earns its place here for a weaker
+        // but real reason: this window has no System page and so no pause
+        // SWITCH, but every Shortcuts row's status word is derived from
+        // `RuntimeStatus::paused`, and `set_paused` clears `registered`. So
+        // a pause from the menu bar leaves an open window claiming nineteen
+        // rows are registered. `settings_saw_external_change` is Windows-only
+        // and is about the FILE, so it does not cover this.
         MENU_PAUSE => {
             let now = !st.borrow().paused;
             set_paused(&st, &mg, now);
+            refresh_settings(&st);
         }
         MENU_QUIT => {
             eprintln!("beckon serve: quit requested from the menu bar");

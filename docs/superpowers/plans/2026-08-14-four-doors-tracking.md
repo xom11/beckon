@@ -9,7 +9,8 @@ Status words: **done** (landed and gated) · **partial** (some of it) ·
 **open** (not started) · **changed** (the design was wrong or was overruled —
 each one says why).
 
-Last updated: 2026-08-15, branch `four-doors-phase-0`.
+Last updated: 2026-08-15, branch `four-doors-phase-0`. The most recent entry
+is *What the 2026-08-15 review pass changed*, after the About section.
 
 ---
 
@@ -24,7 +25,7 @@ Last updated: 2026-08-15, branch `four-doors-phase-0`.
 | `MIN_HEIGHT` 560 unchanged | **changed** | kept at 560 through two re-derivations, and the constant has not moved in either. Its **four-row guarantee is withdrawn** — design §4 makes the list scroll, so a row count is not what a floor should promise — and the arithmetic under it has now swung from *two* rows to **eight**: 2026-08-15 returned 110 px to the list (the keyboard card's cross-page reservation, the editor caption, the column header) and deleted the cap that would have absorbed it. The two-row point is **412**, so the floor clears its own standard by 148 px. **Not moved, deliberately**: the standard is met at both ends so it cannot choose, the slack points the safe way (too high costs draggability, too low ships a one-row list), and `MIN_WIDTH` is frozen until G1 for the same class of reason. Numbers for whoever lowers it are in `MIN_HEIGHT`'s own comment — 412 / 456 / 500 for two / four / six rows |
 | `WINDOW_HEIGHT` 600 unchanged | **done** | and re-derived 2026-08-15: it buys **13 rows** banner-down where it bought 7. Left alone on purpose — the only argument for a shorter window is that the mock-up's page is ~436 px, and the mock-up is drawn **without a command bar**, which is design §6's job, not this pass's |
 | Defaults to **dark** | **done** | 2026-08-15, and it is the behaviour change design §5.2 flags rather than a tidy-up. `theme::read_inputs`' `apps_use_light_theme` is no longer `Themes\Personalize\AppsUseLightTheme` — it is `Some(u32::from(!prefs::dark()))`, i.e. beckon's own `HKCU\Software\beckon\DarkMode`, absent meaning DARK. A user on light Windows now gets a dark window. High contrast still outranks it, unchanged, in `theme::resolve` — that is the OS enforcing a choice rather than expressing one. The field keeps its registry-shaped name on purpose: core knows the SHAPE of the answer and the Windows crate knows where it comes from, and a second `ThemeInputs` field would have been two ways to say one thing plus a rule about which wins |
-| Transparency slider 85-100 %, default 96 % | **done** | 2026-08-15. `IDC_OPACITY` is a `msctls_trackbar32` with `TBS_NOTICKS`, range set from `OPACITY_MIN`/`OPACITY_MAX`, page size 5. **The tier stays core's and only the LEVEL is the user's**: `apply_current_backdrop` matches `backdrop(...)`, and substitutes `opacity_alpha(prefs::opacity())` for `TIER2_ALPHA` on the `Alpha` arm alone — so a blocked machine (`transparency_block`) never reaches the substitution and the slider can never make an opaque window transparent. Applied on every step of a drag, not on `TB_ENDTRACK`: the window's own alpha is what the user is judging the value by, so a slider you have to let go of to see is not one |
+| Transparency slider 85-100 %, default 96 % | **done** | 2026-08-15. `IDC_OPACITY` is a `msctls_trackbar32` with `TBS_NOTICKS`, range set from `OPACITY_MIN`/`OPACITY_MAX`, page size 5. **The tier stays core's and only the LEVEL is the user's**: `apply_current_backdrop` matches `backdrop(...)`, and substitutes `opacity_alpha(prefs::opacity())` for `TIER2_ALPHA` on the `Alpha` arm alone — so a blocked machine (`transparency_block`) never reaches the substitution and the slider can never make an opaque window transparent. Applied on every step of a drag, not on `TB_ENDTRACK`: the window's own alpha is what the user is judging the value by, so a slider you have to let go of to see is not one. **The row went STALE on a live change for one day** — its answer was pushed only by `apply_system_state`, which only `serve` calls, while `on_theme_changed` re-resolved the backdrop and left the row alone. So turning high contrast on (or an `EnableTransparency` flip, which broadcasts `ImmersiveColorSet` without moving `Theme` at all) made the window opaque while the row went on offering a live slider and a percentage. Closed 2026-08-15 by `refresh_transparency_row`, called from `on_theme_changed` beside `apply_current_backdrop` and above its `!changed` return, for that function's own stated reason. It needs nothing from `serve` — the block is a `GetSystemMetrics` plus a registry read, the level is `HKCU\Software\beckon` — and no `UI` borrow, which is what makes it safe at that point in a wndproc. **One predicate with two readers is worth nothing if only one of them is ever asked again**, which is the general form and the reason this is written here rather than only in the code. **Scope, stated rather than implied**: the row now agrees with the backdrop at every moment the backdrop is re-resolved, and no more — entering a remote session raises `WM_WTSSESSION_CHANGE`, not `WM_THEMECHANGED`, and leaves BOTH stale until the next `apply_system_state`. That is one open defect about `SM_REMOTESESSION`, not two about this row |
 | Strip sits below the title bar, never inside the caption | **done** | and **verified free**: `chrome::nchittest` returns `HTCLIENT` below `TITLEBAR_H`, so no drag-zone arithmetic was needed |
 | Tokens `TABSTRIP_H 36`, `TAB_PAD_X 14`, `TAB_PAD_Y 2`, `TAB_VISUAL 26`, `FOCUS_SLACK 3` | **done** | `layout.rs` `mod tok` |
 | New palette tokens `strip` / `strip_hover` with `pairs()` rows | **changed** | done, but `LIGHT.strip_hover` moved `#CBD1DE` → `#C2C9D8`: the design's value measures **1.126** against the trough, under its own 1.2 floor |
@@ -214,11 +215,18 @@ nineteen rows claiming to be registered while nothing was. `Start with
 Windows` goes the same way, to a new `set_autostart` extracted from the tray's
 own menu arm so the Run-key command line has one author.
 
+**One function, two callers — but for a day only ONE of the two ends pushed
+the result back.** Sharing the mutator makes the two surfaces agree about what
+happens; it does not make them agree about what is on screen. The window's
+`SettingsCommand` arms ended in `refresh_settings` and the tray's arms did
+not, so a pause from the tray left the System page showing the old switch. See
+*What the 2026-08-15 review pass changed*.
+
 | Piece | Decided where | Note |
 |---|---|---|
 | Which rows exist | `settings::system_state` | `None` omits; the window reads `is_some()` |
 | What the transparency slot says | `Transparency::slot` | a percentage, or `TransparencyBlock::reason()` |
-| Whether the slider is live | `theme::transparency_block` | **the same predicate `theme::backdrop` uses**, factored out rather than copied — `the_slider_is_blocked_exactly_when_the_window_is_opaque` walks all eight combinations |
+| Whether the slider is live | `theme::transparency_block` | **the same predicate `theme::backdrop` uses**, factored out rather than copied — `the_slider_is_blocked_exactly_when_the_window_is_opaque` walks all eight combinations. Re-read on every theme change since 2026-08-15 (`refresh_transparency_row`); before that only `serve` ever asked it again, and the row could say the opposite of what the window was doing |
 | The opacity range and its alpha | `OPACITY_MIN`/`MAX`/`DEFAULT`, `clamp_opacity`, `opacity_alpha` | clamped on the way out of the registry too: anything can write that value |
 | How a size reads | `settings::size_label` | `112 KB`, Explorer's units |
 | Which half of a file row is the label | `system_state` | the file's own NAME; the value slot is the directory or the size |
@@ -334,7 +342,8 @@ rather than as a shorter promise.**
 |---|---|---|
 | What each row shows | `settings::about_state` | `AboutValue { shown, copy }` — the type is what says the two can differ |
 | What each copy button copies | `settings::copy_text` | the row's **bare payload**: an annotated path fails in the only two places a copied path goes |
-| Whether the running image is stale | `settings::image_age` | one-sided on purpose; see below |
+| Whether the running image is stale | `settings::image_age` | two producers since 2026-08-15 — an identity test and a clock — and only the first can see the recorded failure; see below |
+| Whether the running image IS the launch path's file | `settings::image_identity` | fails safe: the untested Win32 reading costs silence, never a false alarm |
 | What the verdict says | `ImageAge::note` | `None` for `Current` AND `Unknown` — rule 2 |
 | Where the three links go | `Target::url` | three https URLs under `xom11/beckon`, with a test that no two are equal |
 | The disclosure's wording | `settings::HOOK_DISCLOSURE` | both halves pinned by a test |
@@ -346,24 +355,84 @@ reports today's junction target, which is precisely the surface that lied on
 a14 when a watchdog-started beckon ran the 0.8.0 image for three hours while
 `--version` and scoop's `current` both said 0.9.0.
 
-**The verdict is one-sided, and `ImageAge::note` is silent about it in the
+~~**The verdict is one-sided, and `ImageAge::note` is silent about it in the
 right direction.** `Replaced` (the image's mtime is after this process's start
 time, from `GetProcessTimes`) is reliable; `Current` is only *no evidence of
 replacement*, because an extractor that preserves an archive's stored
 timestamp — which scoop's unpack does — gives a newly installed exe an mtime
 from the release build. So the row says nothing at all for `Current` and for
-`Unknown`: a false negative costs a missing warning, while printing *up to
-date* would cost the row the only thing it has. **`Missing` is the third
-verdict and is fully reliable** — a launch path that no longer resolves is a
-process running an orphaned image, which `scoop cleanup` produces.
+`Unknown`.~~
 
-*Named but not built, for whoever has hardware:*
+~~*Named but not built, for whoever has hardware:*
 `QueryFullProcessImageNameW` is documented to return the executable path **of
 the process**, which for a launch through a junction should be the resolved
 target as it was at load time — the version directory actually running.
 Comparing that against today's resolution would be an identity test rather
 than a clock one. Nothing on this host can run a Windows process, so it is
-written down rather than guessed at.
+written down rather than guessed at.~~
+
+**STRUCK 2026-08-15 on review, and the second half is now BUILT. Every
+sentence above is true and together they say something the row never said out
+loud: the clock comparison could not fire on the incident the row exists
+for.** Both paragraphs sat two lines apart and nobody joined them.
+
+**Measured, not reasoned.** `beckon-0.9.0-aarch64-pc-windows-msvc.zip` was
+downloaded from the release a14 updated to and its zip directory read:
+
+```
+beckon-serve.exe  2026-08-12T22:37:14
+beckon.exe        2026-08-12T22:37:18
+```
+
+Those are the `LastWriteTime`s `Compress-Archive` stored
+(`.github/workflows/release.yml`, Windows packaging step), and every extractor
+scoop uses restores them. The a14 timeline: the watchdog started beckon at
+05:40:01 and scoop created `…\apps\beckon\0.9.0` **four seconds later**. scoop
+cannot unpack an artifact before it exists, so the process started at most
+four seconds before something that necessarily follows 22:37:18Z — therefore
+`written < started` **in every timezone**, the comparison answers `Current`,
+and `note()` is `None`. **The row said nothing for the three hours it was
+built to describe.** No arithmetic about a14's clock is needed; the ordering
+is forced by the causality.
+
+Two mechanisms put it there, either sufficient. (1) The mtime is the release
+BUILD's, so a freshly unpacked image and a months-old one look the same to it.
+(2) `metadata(current_exe())` follows the `current` junction, so the file
+being timed is the NEW image — the clock half is structurally timing a file
+this process is not executing.
+
+**What was built instead: `settings::image_identity`, and the reason it could
+be shipped unmeasured is that it fails SAFE.** `QueryFullProcessImageNameW`
+against `canonicalize(current_exe())`, both sides canonicalised. If it returns
+the resolved image (documented), the two differ whenever the junction has
+moved — `Diverged`, and the row speaks. If it returns the launch path (which
+is what `MainModule.FileName` showed on a14), canonicalising it yields today's
+target, the two are equal, and the answer is `Same` — silence, exactly today's
+behaviour. **The pessimistic reading costs a missed warning, never a false
+alarm**, which is what makes an untested Win32 reading cheaper to build than to
+go on naming. A wrong identity check would cry *restart to run it* at every
+scoop user on every open.
+
+**The clock half is KEPT, and not out of caution**: it catches an in-place
+overwrite, where the path never moves and identity therefore says `Same`.
+`cargo build` over a running binary is the everyday case; a non-scoop install
+updated by copying a new exe over the old is the shipped one. `Same` does not
+short-circuit to `Current`, and
+`the_two_halves_of_the_verdict_do_not_shadow_each_other` is what says so.
+
+**`Missing` is the third verdict and is fully reliable** — a launch path that
+no longer resolves is a process running an orphaned image, which `scoop
+cleanup` produces.
+
+**Still unrun, and now cheap to run:**
+`the_a14_timeline_is_silent_on_the_clock_and_loud_on_identity` pins both
+halves against those numbers on all three CI jobs, but whether
+`QueryFullProcessImageNameW` resolves a junction is a fact about Windows that
+no test here can reach. The run is `scoop update beckon` with an old
+`beckon-serve.exe` still alive, then open About: a verdict means the
+documented reading holds, silence means it does not. `measure_about` says so
+in its own output now, so a person running the probe does not have to know
+this document.
 
 **Five things this pass did that the design did not ask for.**
 
@@ -425,6 +494,77 @@ retired id reclaimed, 1115 now among them). `examples/settings_probe.rs`
 gained a `measure_about` section — and it is the only check there will ever be
 on `COPY_GLYPH`, the third and least certain non-ASCII string this window
 draws.
+
+## What the 2026-08-15 review pass changed
+
+Five defects, each verified against the tree before being touched; none was
+rejected. Four are above in their own sections; the two that are only here:
+
+**The tray and the window could disagree on screen, and only one direction of
+the refresh existed.** `SettingsCommand::SetPaused` / `SetAutostart` end in
+`refresh_settings`, so a switch flipped in the window reaches `serve` and comes
+back. The tray's own `MENU_PAUSE` and `MENU_AUTOSTART` did not — and design
+§3.3 put those same two controls on the System page, so from that day the two
+surfaces could show opposite states with nothing to say which was real.
+
+**Closed by pushing, not by pulling, and the direction is the whole decision.**
+The window has nothing to pull on: it runs no timer, and Windows broadcasts
+nothing when beckon's own `paused` flag moves — so a pull would mean a timer
+ticking for the ~always that the window is closed. The push is one line at each
+of the two arms that already own the mutation, and `refresh_settings` returns
+immediately when there is no window, so it costs a `RefCell` read. It goes
+AFTER the mutator and never inside it: `set_paused` returns holding no borrow,
+while a call from inside would put a `SendMessageW` fan-out inside
+`mgr.borrow_mut()` — the shape `serve.rs`'s module doc rules out. Same order
+`on_command` already uses.
+
+**`MENU_RELOAD` needed nothing and that is checked rather than assumed**: the
+`Ok` arm of `reload` already ends in `settings_saw_external_change` and the
+`Err` arm in `settings_retry_unreadable`. Both directions were covered by the
+watcher's own path.
+
+**macOS gets the push too, for a weaker but real reason.** That window has no
+System page and so no pause switch — but every Shortcuts row's status word
+comes from `RuntimeStatus::paused`, and `set_paused` CLEARS `registered`. A
+pause from the menu bar left an open window claiming nineteen rows were
+registered. `settings_saw_external_change` is Windows-only and is about the
+FILE, so it never covered this.
+
+**Two doc comments had come loose**, both in commit `1e7c33a`, both by the same
+slip: a function inserted between a doc block and the item it documented.
+`reload`'s **borrow-safety argument** ended up on `set_autostart` — a
+paragraph about holding `mgr.borrow_mut()` across `set_tray_status`,
+documenting a registry write that takes no `mgr` at all — while `set_paused`'s
+own doc says *"see `reload`'s doc comment"* and pointed at an empty place.
+That cross-reference is what makes it a defect rather than a tidiness point.
+`apply_state`'s two-line summary ended up on `opacity_slot`, where "the only
+path that changes what is on screen" described a `format!` of two strings.
+
+**Both found by a mechanical scan, and the scan is the part worth keeping**:
+for every commit on this branch, an ADDED item line (`fn` / `pub` / `#[…]`)
+whose immediately preceding line is an unchanged `///` context line. That
+found exactly these two and nothing else. A static pass over the same files
+(a one-line `///` paragraph wedged before a blank `///`) turned up nine
+candidates, of which seven are ordinary continuation sentences — so the
+git-shaped scan is the one with a usable signal-to-noise ratio, and it is
+recorded here because this is the second time this failure mode has been found
+in these files (`split_app_cell`'s doc, `settings.rs:275`, carries the first).
+
+**`PROBE_PINNED_IDS` widened from fifteen to forty-four.** The list held only
+the probe's `const IDC_*` declarations, and its own doc counted them by
+`grep -c "const IDC_"`. But `measure_system` transcribes 1070-1083 and
+`measure_about` transcribes 1100-1114 as **bare literals** in `ROWS` tables
+and in the arms that read them — the same fixed points across the same process
+boundary, differing only in spelling. The twenty-nine are now pinned. Note the
+names are `CONTROL_IDS`' (`ABOUT_MARK`), not the probe's printed labels
+(`MARK`): what is pinned is the number, and a test that matched labels would
+fail on a cosmetic column change while saying nothing about a renumber.
+
+**The doc's count claim now has a test**, because it has been wrong twice —
+`probe_pinned_ids_count_matches_its_doc`, whose failure message quotes the
+words to edit, plus two uniqueness assertions since the list is maintained by
+hand from another file (a duplicated pair would make the count true for the
+wrong reason).
 
 ## The vertical stack is page-dependent — taken 2026-08-15, after two defers
 
@@ -668,7 +808,13 @@ infer:
   `\current\` still in it; a version number in that string is the tell that
   something started resolving it, which is the surface that lied on a14.
 - **The verdict**, present or silent, so a run on a machine that has just been
-  updated says so instead of leaving the reader to compare timestamps.
+  updated says so instead of leaving the reader to compare timestamps. **Since
+  2026-08-15 this line is also the answer to an open question about Windows**:
+  run straight after `scoop update beckon` with the OLD `beckon-serve.exe`
+  still alive, a verdict means `QueryFullProcessImageNameW` resolves a
+  junction and silence means it returns the launch path instead. Either is a
+  result; the identity check is built so that the second costs silence rather
+  than a wrong answer. The probe prints that instruction itself.
 - **The disclosure**, both halves and a character count — a control whose text
   comes back truncated is a promise half-made.
 
