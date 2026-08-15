@@ -1,5 +1,11 @@
 # `beckon check --resolve` Implementation Plan
 
+> **SUPERSEDED 2026-08-15** by `2026-08-15-check-resolve-tiers.md`. Task 1 shipped
+> (`beckon_core::certainty`); Tasks 2-5 were written before `check --resolve`
+> existed and would build a second, parallel implementation of it — do not
+> execute them. Task 7 (the `~/.nix` flake pin) is untouched and still
+> outstanding; do it from here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `beckon check` able to tell you, per binding, which tier each app
