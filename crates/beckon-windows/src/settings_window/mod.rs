@@ -413,7 +413,7 @@ const PUSH_BUTTONS: [i32; 9] = [
     IDC_RELOAD,
     IDC_KEEPMINE,
     IDC_RECORD,
-    IDC_RESET,
+    IDC_REVERT,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -514,25 +514,22 @@ fn tab_id_of(page: Page) -> i32 {
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 28] = [
+const PAGE_CONTROLS: [(i32, Page); 23] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
-    (IDC_LBL_SECTION, Page::Shortcuts),
-    (IDC_LBL_COUNT, Page::Shortcuts),
+    // The head row's `Shortcuts` heading (`IDC_LBL_SECTION`, 1020) left this
+    // table with the control on 2026-08-15; the row itself is unchanged.
     (IDC_FILTER, Page::Shortcuts),
     (IDC_REMOVE, Page::Shortcuts),
     (IDC_ADD, Page::Shortcuts),
     (IDC_LIST, Page::Shortcuts),
-    (IDC_GRP_EDITOR, Page::Shortcuts),
-    (IDC_LBL_APP, Page::Shortcuts),
     (IDC_APP, Page::Shortcuts),
-    (IDC_LBL_SHORTCUT, Page::Shortcuts),
     (IDC_MOD_CTRL, Page::Shortcuts),
     (IDC_MOD_WIN, Page::Shortcuts),
     (IDC_MOD_ALT, Page::Shortcuts),
     (IDC_MOD_SHIFT, Page::Shortcuts),
     (IDC_COMBO, Page::Shortcuts),
     (IDC_RECORD, Page::Shortcuts),
-    (IDC_RESET, Page::Shortcuts),
+    (IDC_REVERT, Page::Shortcuts),
     (IDC_NOTES, Page::Shortcuts),
     // -- Keyboard: the Caps line, and nothing else yet.
     (IDC_GRP_KEYBOARD, Page::Keyboard),
@@ -601,17 +598,22 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
 /// | `C` | Close | `W` | **W**in (hold chip) |
 /// | `O` | Open config file | `L` | A**l**t (hold chip) |
 /// | `S` | **S**ave | `D` | Recor**d** |
-/// | `E` | R**e**set | | |
+/// | `E` | R**e**vert | | |
 ///
 /// **Mnemonic uniqueness is maintained by hand.** There is no test for it,
 /// so verify by inspection before adding new captions.
 ///
-/// `Record` and `Reset` are why this table has an awkward corner. `R` is
+/// `Record` and `Revert` are why this table has an awkward corner. `R` is
 /// `Reload`'s, `S` is Save's, `T` is the Ctrl chip's, `O` is Open's and `C`
 /// is Close's -- so between them the two captions have exactly two letters
 /// left, `d` and `e`, and taking the obvious `e` for `Record` would leave
-/// `Reset` with nothing (`r`, `e`, `s`, `t` are then all spoken for). Hence
-/// `Recor&d` and `R&eset` rather than the other way round.
+/// the other with nothing. Hence `Recor&d` and `R&evert` rather than the
+/// other way round.
+///
+/// **The 2026-08-15 rename of `Reset` to `Revert` deliberately kept `e`**,
+/// even though `Revert` has a free `v` that `Reset` did not: this table has
+/// no test, so the safe rename is the one that changes no key at all. See
+/// `cap::REVERT`.
 ///
 /// `Stop`, which `Record` reads while a capture is armed, deliberately
 /// carries NO mnemonic and needs none: while armed the `WH_KEYBOARD_LL` hook
@@ -621,10 +623,15 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
 ///
 /// `Remove` cannot take `R` because `Reload` has it, and `Reload` is the
 /// one that appears without warning -- a banner the user did not ask for is
-/// the worse place to make someone hunt for a letter. The two field labels
-/// (`App`, `Shortcut`) deliberately carry NO mnemonic: a STATIC's mnemonic
-/// moves focus to the next control in tab order, so each one would have to
-/// hold a letter for a control that is already one Tab away.
+/// the worse place to make someone hunt for a letter.
+///
+/// **CORRECTED 2026-08-15: the paragraph here used to close on the editor's
+/// two field labels** (`App`, `Shortcut`) carrying no mnemonic, because a
+/// STATIC's mnemonic only moves focus to the next control in tab order.
+/// Design §3.1 deleted both labels, so the reasoning has nothing left to be
+/// about -- but it is still the rule for `IDC_LBL_HOLD` and `IDC_LBL_TAP`,
+/// which is why it is restated rather than dropped: a label that names the
+/// control after it buys nothing by holding a letter for it.
 ///
 /// **The editor strip's four modifier chips carry no mnemonic either**, and
 /// that is this table's doing rather than an oversight. `Ctrl`, `Win` and
@@ -673,8 +680,22 @@ mod cap {
     pub const MOD_SHIFT: &str = "Shift";
     /// The editor strip's two commands. See the mnemonic table above for why
     /// the letters are `d` and `e` rather than the obvious ones.
+    ///
+    /// **`Revert`, not `Reset`, since 2026-08-15** (design 3.1). `Reset`
+    /// named the mechanism -- it clears a field -- and `Revert` names the
+    /// effect the user wanted, which is rule 1 read for a button: a caption is
+    /// a name for what happens, not for how.
+    ///
+    /// **It keeps `e`, and that is a decision rather than an oversight.**
+    /// Design 10 forbids new `Alt` mnemonics until a uniqueness `#[test]`
+    /// lands, and the collision table above is hand-maintained with no test at
+    /// all. `Re&vert` would have claimed `v`, which is free -- and free is not
+    /// the test; the test is whether anything checks. `R&evert` reuses the
+    /// letter this button already had, so the table's row changes its caption
+    /// and not its key, and the awkward-corner paragraph above still holds
+    /// exactly as written: `d` for Record, `e` for this.
     pub const RECORD: &str = "Recor&d";
-    pub const RESET: &str = "R&eset";
+    pub const REVERT: &str = "R&evert";
     /// What `Record` reads while a capture is armed. No mnemonic -- see the
     /// table -- and deliberately NARROWER than `Record`, which is what makes
     /// it safe for `layout` to size the button once, from `RECORD`, and never
@@ -688,19 +709,31 @@ mod cap {
     pub const TAP_ITEMS: [&str; 3] = ["Caps Lock", "Esc", "Nothing"];
     /// The filter box's placeholder. ASCII, like every display string.
     pub const FILTER_CUE: &str = "Filter";
-    /// The editor group's caption in **two of its three states**. No row
-    /// selected is `EDITOR_NONE`; a row with no app name yet is
-    /// `EDITOR_UNNAMED`; a named row gets `Editing "<app>"`, which is built
-    /// in `apply_state` rather than living here because it interpolates.
+    /// The App combo's placeholder, and design §3.1's replacement for the
+    /// `App` label that used to sit beside it (`IDC_LBL_APP`, retired).
     ///
-    /// **No `&` on either constant.** A group box caption's mnemonic moves
-    /// focus to the next control in tab order, which is the same reason the
-    /// `App` and `Shortcut` labels carry none -- and the collision table
-    /// above has no room to spare. The third caption cannot rely on that,
-    /// since the catalog supplies its text: `apply_state` doubles any `&`
-    /// before writing it, and says there why.
-    pub const EDITOR_NONE: &str = "No shortcut selected";
-    pub const EDITOR_UNNAMED: &str = "Editing this shortcut";
+    /// **A cue banner, not a caption**, which is what makes the swap a
+    /// deletion rather than a move: it costs no width at all, and it is gone
+    /// the moment the field has content -- so the word is on screen exactly
+    /// while the field cannot say what it is for itself. The filter box has
+    /// worked this way since Task 9 and this is the same trade, one card down.
+    ///
+    /// It rides on `CB_SETCUEBANNER`, which needs an edit child, which is why
+    /// the key list beside it gets no equivalent: a `CBS_DROPDOWNLIST` has no
+    /// edit control, so §3.1 places it "at the end of the modifier run, where a
+    /// key goes" and lets the position carry the meaning.
+    ///
+    /// **Unverified, and it is the focus case rather than the empty case.**
+    /// `EM_SETCUEBANNER` takes an lParam saying whether to keep the cue while
+    /// the control has focus; `CB_SETCUEBANNER` takes no such flag and does not
+    /// document which it picks. So "empty" is certain and "empty AND unfocused"
+    /// is possible. Either reading satisfies §3.1 -- a focused App field is one
+    /// the user is already typing into -- and nothing on this host can display
+    /// the window to check. Gate G1's run would see it in passing.
+    ///
+    /// No `&`: a cue banner is not a caption and owns no mnemonic. It is drawn
+    /// verbatim, so an `&` here would appear as one.
+    pub const APP_CUE: &str = "App";
     /// The four tab pills, in strip order. Read through `TABS`, which pairs
     /// each with its control id and its `Page`; they are here rather than
     /// inline in that table so this module stays what its own header says it
@@ -718,11 +751,15 @@ mod cap {
     /// than by taste (spec 3.3). `Ctrl+1`..`Ctrl+4` is the keyboard route
     /// instead.
     ///
-    /// One of these repeats a string: `IDC_LBL_SECTION`'s caption is also
-    /// `Shortcuts`, written as a literal at its creation and measured as one
-    /// in `layout`. Two controls that happen to be named the same thing, not
-    /// one caption used twice -- the heading names the card, the pill names
-    /// the door, and either could be renamed without the other.
+    /// **These four are now the ONLY `Shortcuts` on screen.** The word used to
+    /// appear twice on the Shortcuts page: this pill, and `IDC_LBL_SECTION`'s
+    /// Subtitle heading two lines below it. The argument for keeping both was
+    /// that they are two controls that happen to be named the same thing --
+    /// the heading names the card, the pill names the door -- which is true
+    /// and was not the question. The design's drawing and the mock-up both
+    /// open that card with the filter and two buttons, and a reader looking at
+    /// a heading directly under an identically captioned pill learns nothing
+    /// from the second one. 1020 is retired; see `ids.rs`.
     pub const TAB_SHORTCUTS: &str = "Shortcuts";
     pub const TAB_KEYBOARD: &str = "Keyboard";
     pub const TAB_SYSTEM: &str = "System";
@@ -787,6 +824,14 @@ fn title_base(config: &std::path::Path) -> String {
 
 /// ListView columns, in order: title and text alignment.
 ///
+/// **The titles are not drawn anywhere.** `IDC_LIST` carries
+/// `LVS_NOCOLUMNHEADER` since 2026-08-15 (design §3.1), so `"App"` and
+/// `"Shortcut"` reach `LVM_INSERTCOLUMNW` and stop there. They stay because a
+/// column's text is its name to anything that asks the control about a
+/// subitem, and because the array is still the one place the two columns are
+/// declared -- the ALIGNMENT below is live and is what puts the chord flush
+/// right against the app name.
+///
 /// **Widths are deliberately absent.** They are a proportion of the live
 /// list width, computed once per `layout` from the control's own client
 /// rect minus a scroll bar — which is what makes the §A.3 overflow
@@ -846,9 +891,12 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //
 // **What 680 does to the widths, derived here rather than carried over from
 // the spec.** A card's interior is `w - 2*tok::PAD - 2*tok::CARD_PAD` = **638**
-// px at 96 DPI, and that one number is `cw1`, `grp_w` and `kb_w` alike
+// px at 96 DPI, and that one number is `cw1`, `ed_w` and `kb_w` alike
 // (`layout.rs`) -- the three cards share a width because they share both
-// insets.
+// insets. `ed_w` was `grp_w` and its contents sat one `tok::GAP` inside it,
+// clearance for a group box's frame; design §3.1 took the caption and the
+// frame with it on 2026-08-15, so the editor card's contents now start at the
+// same x as the list's.
 //
 // Inside the list that leaves `col_app` at **421**, not the design's ~438.
 // `layout` subtracts `GetSystemMetricsForDpi(SM_CXVSCROLL, dpi)` from the
@@ -863,24 +911,36 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 //
 // **Which terms compose the height, in order** -- the part of the old block
 // that was worth keeping, restated against the shipped tokens. This is a map
-// of what a token change spends, not a claim about the total:
+// of what a token change spends, not a claim about the total.
 //
+// **It is PER PAGE since 2026-08-15**, because the stack is
+// (`compute_card_rects`): the keyboard card used to be bottom-anchored and to
+// reserve its height on every page, so one list served all four doors. Now
+// every page pays the chrome and then only for what it draws.
+//
+//   -- chrome, every page --------------------------------------------
 //   title bar (chrome::TITLEBAR_H)                     34
 //   tab strip (tok::TABSTRIP_H)                        36
-//   gap_card                                            8
-//   card 0  banner -- NO height unless it is up      0/48
-//           (plus one gap_card, 8, when it is)
-//   card 1  Shortcuts: 2*CARD_PAD, head CTL, GAP,
-//           header (~21) + ROWS * row (~22)           251
-//   gap_card                                            8
-//   card 2  editor: 2*CARD_PAD, caption s(24),
-//           2*CTL, 2*GAP, notes_height, GAP    116 + notes
-//   gap_card                                            8
-//   card 3  keyboard: 2*CARD_PAD, caption s(24),
-//           CTL, GAP                                   78
-//   gap_card                                            8
+//   gap_card, above the first card                      8
+//   gap_card, below the last card                       8
 //   command bar (CTL, not a card)                      26
 //   pad                                                10
+//                                                     ---
+//                                                     122
+//
+//   -- Shortcuts -----------------------------------------------------
+//   card 0  banner -- NO height unless it is up      0/48
+//           (plus one gap_card, 8, when it is)
+//   card 1  2*CARD_PAD, head CTL, GAP, list_h    54 + list
+//   gap_card                                            8
+//   card 2  editor: 2*CARD_PAD, 2*CTL, 2*GAP,
+//           notes_height, GAP                    92 + notes
+//
+//   -- Keyboard ------------------------------------------------------
+//   card 3  2*CARD_PAD, caption s(24), CTL, GAP         78
+//
+//   -- System, About -------------------------------------------------
+//   one STATIC at the content origin, no card           26
 //
 // **There is no frame term, and the list above is the whole window.**
 // `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
@@ -897,23 +957,34 @@ const LVIS_CHECKED: u32 = 2 << 12; // 0x2000
 // falsifies it. Every figure in the paragraph below moved with the row.
 //
 // `notes_height` is a live font measurement (`2 * Caption line + 4`), so it
-// does not scale by 1.5 between DPIs and no total here is unconditional. The
-// one conditional total worth writing down, since it is what the constant is
-// answerable for: at 96 DPI with a 16 px Caption line -- `notes_height` 36 --
-// and the banner down, the terms above sum to a **619** px window, so the
-// shipped 600 is **19 px short** of a full eight rows. Re-derived from
-// `compute_card_rects` for this comment, not carried over: its room-based cap
-// for the list evaluates to `h - 386 - notes_h` = **178** px against a `want`
-// of 197, which is seven whole rows and 3 px of an eighth.
+// does not scale by 1.5 between DPIs and no total here is unconditional.
 //
-// **That total was 585, and the slack was 15 px the other way, until the tab
-// strip landed.** The band spends 34 -- `TABSTRIP_H` 36 plus a `gap_card` 8,
-// less the `pad` 10 it displaced -- and the whole of it comes out of the
-// list, because the list is the one figure in the window that flexes
-// (`compute_card_rects`, and `MIN_HEIGHT` below at length). 600 is left
-// deliberately: the design makes the list scroll, so the constant stops being
-// answerable for showing every row. (Both figures were 8 lower again -- 593
-// and 204 -- while the frame row stood.)
+// **The constant is no longer answerable for a row count, and that is the
+// 2026-08-15 change** (design 4, `tok::ROWS` deleted). The list used to be
+// capped at eight rows, so the interesting question about 600 was whether it
+// was tall enough to show all eight; it now takes whatever the page leaves,
+// so the question is simply how many rows 600 buys. Re-derived from
+// `compute_card_rects` for this comment, at 96 DPI with a 16 px Caption line
+// (`notes_height` 36):
+//
+//   banner down:  list room = h - 276 - notes_h = **288**  -> 13 rows (286)
+//   banner up:    list room = h - 332 - notes_h = **232**  -> 10 rows (220)
+//
+// The remainder in each case is the whole-row snap, and it lands between the
+// editor card and the command bar: 2 px and 12 px respectively.
+//
+// **It was seven rows and a 178 px cap the day before**, with an 86 px
+// keyboard-card reservation and a 24 px editor caption above it. Those two,
+// plus the header band's ~21, are the 110 px the list gained. The window is
+// the same size; the page stopped spending its height on things it does not
+// draw.
+//
+// **600 is left where it is, deliberately.** Nothing in the four changes
+// forces it, and the one number that would argue for a shorter window -- the
+// mock-up's own page, which is roughly 436 px tall -- is drawn WITHOUT a
+// command bar, because design 6 replaces it with auto-save. That is 44 px of
+// chrome this window still pays (`CTL` + `pad` + a `gap_card`) and a decision
+// that belongs to whoever builds 6.
 //
 // `compute_card_rects` (`layout.rs`) is the arithmetic; this is a reading of
 // it, and the direction of that dependency is not negotiable.
@@ -1029,7 +1100,7 @@ const WINDOW_HEIGHT: i32 = 600;
 ///
 /// The standard in that last sentence stands and is not what changed. What
 /// changed is underneath it: the tab strip takes 34 px out of the list
-/// (`compute_card_rects`' `y`), which leaves the floor two rows rather than
+/// (`compute_card_rects`' `y`), which left the floor two rows rather than
 /// four — and design §4 makes the list **short and scrolling** instead of a
 /// list the window grows to fit. Once it scrolls, a floor's job stops being
 /// "enough rows to see context" and becomes "enough rows to see that it is a
@@ -1038,48 +1109,67 @@ const WINDOW_HEIGHT: i32 = 600;
 /// withdrawn here in writing rather than left to be discovered as a window
 /// that no longer does what its own comment claims.
 ///
-/// The alternatives were costed and rejected in the spec (§2.3), and both of
-/// its figures move when re-derived from the table below — check them before
-/// reopening either. Raising the floor to keep four rows spends draggability
-/// on a promise design §4 has already retired; the spec puts that floor at
-/// 596, and solving the table for four rows gives **587**. Waiting instead
-/// for the Shortcuts workstream to return the editor's `Editing "…"` caption
-/// line (the `s(24)` inside `grp_content_h`) couples two landings that are
-/// otherwise independent; the spec says 572 then suffices, and the same solve
-/// with that `s(24)` struck out gives **563**. Neither gap changes which
-/// option was taken — both lose on their own terms rather than on a pixel —
-/// but neither of the spec's two numbers should be quoted onward as measured.
+/// **The withdrawal stands even though the arithmetic has swung back past
+/// it.** Since 2026-08-15 the floor buys **eight** rows, not four — the
+/// page-dependent stack, the deleted editor caption and the deleted column
+/// header returned 110 px, and `tok::ROWS` going means all of it reaches the
+/// list. That is the constant clearing an old promise by a wide margin, which
+/// is not the same as the promise being back: `MIN_HEIGHT` is answerable for
+/// what it GUARANTEES, and design §4's scrolling list is still the reason a
+/// row count is not the thing to guarantee. Restoring the four-row wording
+/// would re-couple this constant to a number the design deliberately let go.
+///
+/// **RE-DERIVED 2026-08-15, after the four §3.1/§4 deletions.** The paragraph
+/// that stood here costed the spec's two §2.3 alternatives against a table
+/// that no longer describes this function: it put "raise the floor to keep
+/// four rows" at 587 and "wait for the Shortcuts workstream to return the
+/// editor's `Editing "…"` caption" at 563. That workstream landed, and it did
+/// not return the caption — it deleted it, along with the column header, the
+/// field labels and the keyboard card's cross-page reservation. Both figures
+/// are history; the table below is the current one and gives four rows at
+/// **456**. Neither alternative is live any more, because the floor now clears
+/// four rows by 104 px without moving.
 ///
 /// ```text
 ///   Derived from `compute_card_rects` (`layout.rs`) at 96 DPI, banner UP,
-///   with the shipped tokens. Solving that function for the client height
-///   `h` at which the list gets exactly two rows:
+///   Shortcuts page, with the shipped tokens. Solving that function for the
+///   client height `h` at which the list gets exactly two rows:
 ///
-///     bar_y     = h - PAD - CTL                       = h - 36
-///     kb_card_h = 2*CARD_PAD + (24 + CTL + GAP)       = 78
-///     kb_y      = bar_y - GAP_CARD - kb_card_h        = h - 122
-///     card2_h   = 2*CARD_PAD + (24 + 2*CTL + 2*GAP
-///                 + notes_h + GAP)                    = 116 + notes_h
-///     y0        = TITLEBAR_H + TABSTRIP_H + GAP_CARD  = 78
-///     card0     = 2*CARD_PAD + CTL = 48, so y         = 134
-///     list_top  = y + CARD_PAD + CTL + GAP            = 177
-///     room      = kb_y - GAP_CARD - list_top          = h - 307
-///     list_h    = room - GAP_CARD - CARD_PAD - card2_h
-///               = h - 442 - notes_h
+///     bar_y          = h - PAD - CTL                  = h - 36
+///     content_bottom = bar_y - GAP_CARD               = h - 44
+///     card2_h        = 2*CARD_PAD + (2*CTL + 2*GAP
+///                      + notes_h + GAP)               = 92 + notes_h
+///     y0             = TITLEBAR_H + TABSTRIP_H
+///                      + GAP_CARD                     = 78
+///     card0          = 2*CARD_PAD + CTL = 48,
+///                      so content_top                 = 134
+///     list_top       = content_top + CARD_PAD
+///                      + CTL + GAP                    = 177
+///     room           = content_bottom - list_top      = h - 221
+///     avail          = room - GAP_CARD - CARD_PAD
+///                      - card2_h                      = h - 332 - notes_h
+///     list_h         = avail - avail % row_h
 ///
-///   Two rows is `list_header_height` (21) + 2 * `list_row_height` (22)
-///   = 65, and `notes_h` is 36 when the Caption line is 16 px, so
+///   Two rows is 2 * `list_row_height` (22) = 44 -- there is no header term
+///   any more -- and `notes_h` is 36 when the Caption line is 16 px, so
 ///
-///     h = 442 + 36 + 65 = 543  client == window (see below)
+///     h = 332 + 36 + 44 = 412  client == window (see below)
 /// ```
 ///
-/// **543, and the constant stays 560.** The spec (§2.3) puts it as "560 is
-/// where two rows stop fitting"; solving the function says 543 is, and 560
-/// clears two rows by 17 px. The decision the spec was recording is
-/// unaffected — nothing here argues for lowering the floor to its exact
-/// two-row point, any more than the previous derivation argued for 553 — but
-/// the sentence is off by 17 px and this is the file that has to be right
-/// about it. Three rows need 87, so 560 misses a third by 5.
+/// **412, and the constant stays 560**, which is a much larger gap than the
+/// 17 px it was and wants saying out loud: the floor is no longer anywhere
+/// near its own derivation. At 560 the list gets `560 - 332 - 36` = 192 px
+/// with the banner up, which snaps to **eight** whole rows.
+///
+/// **Nothing forces a move, so it does not move.** The standard the floor is
+/// held to ("enough rows to see that it is a list") is met at 412 and met at
+/// 560, so the standard cannot choose; and the direction the slack points is
+/// the safe one — a floor that is too high costs draggability, a floor that is
+/// too low ships a window whose list is one row. `MIN_WIDTH` is frozen until
+/// gate G1 runs for the same class of reason, and moving either costs an edit
+/// to `examples/settings_probe.rs`'s transcribed copy, which exists to be
+/// checked on hardware nobody can reach today. Whoever does lower it has the
+/// number: 412 for two rows, 456 for four, 500 for six.
 ///
 /// **The client rect IS the window rect, so there is no frame term.**
 /// `chrome::nccalcsize` returns `LRESULT(0)` without calling `DefWindowProcW`
@@ -1101,20 +1191,23 @@ const WINDOW_HEIGHT: i32 = 600;
 /// other half of why four rows are gone and is not a reason to re-open this
 /// half.
 ///
-/// The floor's margin is now **17 px** — `list_h = 560 - 442 - 36 = 82`
-/// against the 65 two rows need — and `notes_h`'s honest error is what eats
-/// into it, since that is a live font measurement: `notes_h = 2L + 4`, so
-/// every extra pixel of Caption line `L` costs the list two. `L = 24` leaves
-/// one pixel of the seventeen; `L = 25` takes the second row. **Nothing
-/// on the machine this was derived on can display the window**, and
+/// The floor's margin is now **148 px** — `avail = 560 - 332 - 36 = 192`
+/// against the 44 two rows need — where it was 17. `notes_h`'s honest error
+/// still eats into it and is still the only term here that is not a token:
+/// `notes_h = 2L + 4`, so every extra pixel of Caption line `L` costs the list
+/// two. It used to take the second row at `L = 25`; it would now have to reach
+/// `L = 90` to do that, which is not a font size. **Nothing on the machine
+/// this was derived on can display the window**, and
 /// `examples/settings_probe.rs`'s `measure_geometry` already prints
 /// `GetClientRect` beside `GetWindowRect` with a verdict, so the reading
 /// above costs one a14 run to confirm rather than a new probe.
 ///
-/// The two row figures are `list_row_height` / `list_header_height`'s own
-/// 96-DPI fallbacks (`tok::ROW_H` and a literal 21). They are the honest
-/// numbers to derive from: comctl32 picks the real ones from the live font
-/// at the live DPI, which is exactly why neither is a token.
+/// The row figure is `list_row_height`'s own 96-DPI fallback (`tok::ROW_H`).
+/// It is the honest number to derive from: comctl32 picks the real one from
+/// the live font at the live DPI, which is exactly why it is not a token here.
+/// **The header's 21 px partner is gone** — `list_header_height` was deleted
+/// with the column headers on 2026-08-15, and a table that still subtracted
+/// its fallback would be paying for a control the window does not create.
 ///
 /// **Card 0 is in the table, and that is what the number is for.** The
 /// banner contributes no height until the config file moves under us, so
@@ -1128,36 +1221,39 @@ const WINDOW_HEIGHT: i32 = 600;
 ///
 /// **What the floor and the shipped size actually buy, re-traced through
 /// `compute_card_rects` for this pass rather than carried over.** With the
-/// banner down the stack starts 56 px higher, so the list's cap is
-/// `h - 386 - notes_h` instead of `h - 442 - notes_h`, and `want` is
-/// `21 + 8*22 = 197`:
+/// banner down the stack starts 56 px higher, so the list's room is
+/// `h - 276 - notes_h` instead of `h - 332 - notes_h`, and there is no cap:
+/// whatever is left goes to the list, snapped down to whole rows.
 ///
 /// - at the floor (client 560, which IS `MIN_HEIGHT` — see above), banner up:
-///   82 px, two whole rows and 17 px of a third;
-/// - at the floor, banner down: 138 px, five whole rows and 7 px of a sixth;
-/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: the cap is 178,
-///   19 px **below** `want`, so it binds — seven whole rows and 3 px of an
-///   eighth. The list no longer reaches `tok::ROWS` at the shipped size, and
-///   that is the strip being paid for rather than a regression: design §4
-///   makes the list scroll.
+///   192 px, **eight** whole rows and 16 px over;
+/// - at the floor, banner down: 248 px, **eleven** rows and 6 px over;
+/// - at `WINDOW_HEIGHT` (client 600, likewise), banner down: 288 px,
+///   **thirteen** rows and 2 px over.
 ///
-/// **CORRECTED 2026-08-14** — all three bullets moved twice in one day, and
-/// the record of the first move is worth as much as the numbers. They read
-/// `client 552`, `client 592`, `108`, `164` and `204` while an 8 px bottom
-/// frame was subtracted from the constant beside each; that subtraction
-/// described `chrome::nccalcsize` as it was before `c523e8e` (2026-08-13),
-/// and removing it (`0098457`) made the client heights the constants
-/// themselves and every cap 8 px larger — 116 / 172 / 212. The tab strip then
-/// took 34 off all three. The first bullet's "the one-pixel shortfall above"
-/// went with the first move and has not come back.
+/// **RE-DERIVED 2026-08-15, and all three bullets changed by more than any
+/// previous correction.** They read 82 / 138 / 178 the day before — two rows,
+/// five, seven — because the page reserved 86 px for a keyboard card it did
+/// not draw, the editor card reserved 24 px for a caption, the list reserved
+/// ~21 px for a column header, and `tok::ROWS` capped the result at eight
+/// anyway. All four went in one pass (design §3.1 and §4).
 ///
-/// The last of those is the same 19 px `WINDOW_HEIGHT`'s own comment reports
-/// as a shortfall, measured the other way, and it is a property of these
-/// particular numbers rather than anything designed in — a future change to
-/// `notes_height`, `card2_h` or the row/header fallbacks moves it in either
-/// direction — so re-check it by the same hand trace rather than assuming it
-/// survives. Simulated, not seen: nothing on the machine this was written
-/// on can display the window.
+/// **CORRECTED 2026-08-14** — the same three bullets moved twice in one day
+/// before that, and the record is worth keeping because it is the reason every
+/// figure here is spelled as arithmetic. They read `client 552`, `client 592`,
+/// `108`, `164` and `204` while an 8 px bottom frame was subtracted from the
+/// constant beside each; that subtraction described `chrome::nccalcsize` as it
+/// was before `c523e8e` (2026-08-13), and removing it (`0098457`) made the
+/// client heights the constants themselves and every cap 8 px larger —
+/// 116 / 172 / 212. The tab strip then took 34 off all three.
+///
+/// The remainder in each bullet is the whole-row snap and it lands between the
+/// editor card and the command bar — a margin of at most `row_h - 1`, which is
+/// a property of these particular numbers rather than anything designed in. A
+/// future change to `notes_height`, `card2_h` or the row fallback moves it, so
+/// re-check it by the same hand trace rather than assuming it survives.
+/// Simulated, not seen: nothing on the machine this was written on can display
+/// the window.
 const MIN_WIDTH: i32 = 660;
 const MIN_HEIGHT: i32 = 560;
 
@@ -1170,6 +1266,15 @@ const MIN_HEIGHT: i32 = 560;
 enum Role {
     /// The title-bar app name. Read by `chrome::paint`.
     Title,
+    /// **Nothing constructs this since 2026-08-15**, and the `allow` is that
+    /// fact rather than an oversight. Its one reader was `IDC_LBL_SECTION`,
+    /// the `Shortcuts` card heading, which design §3.1 does not have; the role
+    /// and its 18 px semibold font stay because §B.3 names seven roles and
+    /// About's name row (`ABOUT_NAME`, 1101) is the next control that wants
+    /// one. `#[expect]` would say this better -- it fails once the variant is
+    /// constructed again, so the attribute cannot outlive its reason -- but it
+    /// stabilised in 1.81 and the workspace floor is 1.75.
+    #[allow(dead_code)]
     Subtitle,
     /// Card captions, the ListView column headers, and the `Save` caption.
     BodyStrong,
@@ -1193,33 +1298,44 @@ enum Role {
 /// the one that drifts.
 fn role_of(id: i32) -> Role {
     match id {
-        // The one band heading. Subtitle exists so the list reads as a
-        // section of the window rather than as the whole of it.
-        IDC_LBL_SECTION => Role::Subtitle,
-        // Card captions and the Save caption. `IDC_GRP_EDITOR` /
-        // `IDC_GRP_KEYBOARD` are the two card heads -- reclassed from
-        // `BS_GROUPBOX` to a plain caption `STATIC` in Task 8's review pass
-        // (see `child`'s creation calls for both ids): a themed group-box
-        // frame nested inside the new rounded `card()` background drew as
-        // two frames around one set of controls, and the fix is a coordinate
-        // shift plus a control-class change, not a renumbering -- both ids
-        // are unchanged, and `settings_probe` still reads their caption with
-        // `WM_GETTEXT`, which a `STATIC` answers identically to a `BUTTON`.
+        // **No arm returns `Role::Subtitle` since 2026-08-15.** Its one reader
+        // was `IDC_LBL_SECTION`, the `Shortcuts` heading, and design §3.1's
+        // card has no heading. The role and its font stay: §B.3 names seven
+        // roles, and About's own name row (`ABOUT_NAME`, 1101) is the next
+        // control that will want an 18 px semibold. Nothing DRAWS in it today,
+        // and that is a fact about this window rather than about the type
+        // scale.
+        //
+        // The one card caption left, and the Save caption. `IDC_GRP_KEYBOARD`
+        // was reclassed from `BS_GROUPBOX` to a plain caption `STATIC` in Task
+        // 8's review pass (see `child`'s creation call): a themed group-box
+        // frame nested inside the new rounded `card()` background drew as two
+        // frames around one set of controls, and the fix is a coordinate shift
+        // plus a control-class change, not a renumbering.
         // `IDC_APPLY` reads its font through this same mapping even though
         // it is custom-drawn -- `paint::button` asks the button for its own
         // `WM_GETFONT` rather than picking a role directly, so this arm is
-        // the only place its weight is decided. The ListView's OWN column
-        // headers are a comctl32-owned Header control, never a child of
-        // `hwnd` and therefore never routed through `role_of` at all --
-        // `build_children` and `WM_DPICHANGED` each set that font directly.
-        IDC_GRP_EDITOR | IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
+        // the only place its weight is decided.
+        //
+        // **`IDC_GRP_EDITOR` shared this arm until 2026-08-15**, when design
+        // §3.1 deleted the editor card's caption outright. Nothing replaced it:
+        // the row being edited is the row the list above highlights, so the
+        // card's first line is now the App field itself.
+        //
+        // The ListView's column headers used to be named here as the one text
+        // this mapping cannot reach -- a comctl32-owned Header control, never a
+        // child of `hwnd`. **There is no Header any more** (`LVS_NOCOLUMNHEADER`,
+        // same design bullet), so `role_of` now covers every string in the
+        // window that is not painted by `paint.rs` directly.
+        IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
         // Secondary prose, at Caption size. The banner is deliberately NOT
         // here: it announces that the file moved under us, which is the
         // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
-        // joins because B draws the count small and grey beside a Subtitle
-        // heading -- one STATIC has one font, which is the whole reason it
-        // is a second control.
-        IDC_NOTES | IDC_LBL_COUNT => Role::Caption,
+        // used to share this arm -- B drew the count small and grey beside a
+        // Subtitle heading, and one STATIC has one font, which was the whole
+        // reason it was a second control. It is retired (design 2 moved the
+        // count to the pill), so `IDC_NOTES` is alone here now.
+        IDC_NOTES => Role::Caption,
         // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
         // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
         // same font -- the draw font and the measuring font move together,
@@ -1530,14 +1646,23 @@ struct Ui {
     /// the guard is what stops it mattering more, not less.** A shortfall
     /// used to be absorbed by the notes strip, which flexed into whatever
     /// the bands above left; the notes are a fixed line inside the editor
-    /// group now (`notes_height`), so nothing absorbs anything -- any gap
-    /// between the fallback and the true row height pushes `y`, therefore
-    /// `grp_y`, therefore the whole editor group, eating slack above the
-    /// keyboard group and, near `MIN_HEIGHT`, running into `y.min(kb_y)`.
+    /// card now (`notes_height`), so nothing absorbs anything -- any gap
+    /// between the fallback and the true row height pushes the editor card
+    /// down, eating slack above the command bar and, near `MIN_HEIGHT`,
+    /// running into `compute_card_rects`' `.min(content_bottom)`.
     /// The other reason it is guarded rather than tolerated is unchanged:
     /// `list_row_height`'s own comment used to justify the fallback by
     /// saying `apply_state` re-lays-out the instant a row appears, which
     /// `shown_external` made false.
+    ///
+    /// **2026-08-15 made this guard MORE load-bearing, not less, and design
+    /// §12 q2 predicted the alternative.** `list_h` used to be
+    /// `want.min(room)` with `want` carrying `row_h * tok::ROWS`; deleting
+    /// `ROWS` would have taken `row_h` out of the arithmetic entirely and left
+    /// this field guarding nothing. It is still an input because
+    /// `compute_card_rects` snaps the room down to whole rows -- which is
+    /// exactly the "keep the whole-row snap or delete the guard" choice §12 q2
+    /// puts, answered by keeping the snap.
     ///
     /// Empty-vs-not is the whole condition: every non-empty list measures the
     /// same row, so no other transition changes the answer.
@@ -2069,7 +2194,7 @@ fn default_button_of(id: i32) -> DefaultButton {
         IDC_RELOAD => DefaultButton::Reload,
         IDC_KEEPMINE => DefaultButton::KeepMine,
         IDC_RECORD => DefaultButton::Record,
-        IDC_RESET => DefaultButton::Reset,
+        IDC_REVERT => DefaultButton::Revert,
         _ => DefaultButton::HOME,
     }
 }
@@ -2086,7 +2211,7 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::Reload => IDC_RELOAD,
         DefaultButton::KeepMine => IDC_KEEPMINE,
         DefaultButton::Record => IDC_RECORD,
-        DefaultButton::Reset => IDC_RESET,
+        DefaultButton::Revert => IDC_REVERT,
     }
 }
 
@@ -2111,7 +2236,7 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
 /// `DM_GETDEFID` still answered `IDC_RELOAD` after the banner was dismissed,
 /// and Enter pressed a button that was not on screen). A page switch reaches
 /// the identical defect by another route, and with four buttons rather than
-/// two: `Add`, `Remove`, `Record` and `Reset` are all Shortcuts-page controls
+/// two: `Add`, `Remove`, `Record` and `Revert` are all Shortcuts-page controls
 /// and all four are in `PUSH_BUTTONS`.
 ///
 /// Two repairs, in this order, because the first can make the second
@@ -2603,7 +2728,7 @@ fn show_notes(notes_hwnd: HWND, body: Vec<Note>) {
 ///    control raises no focus notification at all, so without it the ring
 ///    and the focus are left on an off-screen button and Enter presses it --
 ///    the measured a14 defect, reached through a door instead of through the
-///    banner. `Add`, `Remove`, `Record` and `Reset` are all Shortcuts-page
+///    banner. `Add`, `Remove`, `Record` and `Revert` are all Shortcuts-page
 ///    controls and all four are in `PUSH_BUTTONS`. It runs after step 3
 ///    rather than before it, because `ShowWindow(SW_HIDE)` on the focused
 ///    control is what usually moves focus in the first place.
@@ -3417,8 +3542,12 @@ unsafe fn build_children(hwnd: HWND) {
     // terminator still terminates. That is how `GetNextDlgGroupItem` reads,
     // and it is NOT something this branch has run on hardware. If the arrow
     // keys are ever seen to escape the strip, suspect this first;
-    // `IDC_LBL_SECTION` -- always visible -- is the fallback boundary, at the
-    // cost of taking the banner's two buttons into the strip's group.
+    // `IDC_FILTER` -- created next after this control, and visible whenever
+    // the Shortcuts door is open -- is the fallback boundary, at the cost of
+    // taking the banner's two buttons into the strip's group. (That fallback
+    // named `IDC_LBL_SECTION` until 2026-08-15, when the heading was deleted.
+    // `IDC_FILTER` is the weaker stand-in of the two: it is hidden behind the
+    // other three doors, where this hidden banner is the only terminator left.)
     let banner = child(
         hwnd,
         w!("STATIC"),
@@ -3458,26 +3587,16 @@ unsafe fn build_children(hwnd: HWND) {
     // hiding them beside their creation would be a second, page-blind
     // spelling of a rule that has to be total to be worth anything.
 
-    // -- Band 2: the section head, the filter, then Remove and Add.
-    child(
-        hwnd,
-        w!("STATIC"),
-        "Shortcuts",
-        SS_CENTERIMAGE_STYLE,
-        IDC_LBL_SECTION,
-        &fonts,
-    );
-    // `SS_NOPREFIX` because the text is a COUNT, not a caption: `&` cannot
-    // appear in it today, but a static that would silently eat one is a
-    // trap, and this one carries no mnemonic by design.
-    child(
-        hwnd,
-        w!("STATIC"),
-        "",
-        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
-        IDC_LBL_COUNT,
-        &fonts,
-    );
+    // -- Band 2: the head row -- the filter, then Remove and Add.
+    //
+    // **Two STATICs used to open this row and neither is left.** The
+    // `· 18 bindings` count went first (design 2: the count belongs on the
+    // pill, where all four doors can read it), and the `Shortcuts` heading
+    // itself went on 2026-08-15 (design §3.1's drawing and the mock-up both
+    // open the card with the filter). Ids 1035 and 1020 are RETIRED, not
+    // freed. `layout` leaves the width they occupied blank and moves the
+    // filter into it -- see the placement loop.
+    //
     // `WS_BORDER` off: this is a field-styled control now, and its border is
     // `paint::field_border`, drawn from the PARENT's `WM_PAINT` outside the
     // control's own rect (Task 9) via `WM_CTLCOLOREDIT` for the fill/ink and
@@ -3526,12 +3645,35 @@ unsafe fn build_children(hwnd: HWND) {
     // Shortcuts card), the same move Task 9 already made for `IDC_FILTER`
     // and `IDC_APP`. `LVM_GETITEMRECT`/`layout`'s own `border` term drops
     // with it -- see `compute_card_rects`'s comment in `layout.rs`.
+    //
+    // **`LVS_NOCOLUMNHEADER` since 2026-08-15** -- design §3.1's "no column
+    // headers: keycap chips look like keys and app names look like app names".
+    // The STYLE and not `ShowWindow` on the Header, deliberately: the style is
+    // what makes `LVM_GETCOUNTPERPAGE` and the list's own client rect agree
+    // that the header height is zero, so no arithmetic anywhere has to
+    // subtract a band nobody can see. Hiding the window instead leaves
+    // comctl32 still reserving the row and every reader of that rect still
+    // believing in it.
+    //
+    // The COLUMNS stay, and `LVS_REPORT` with them: two columns are what put
+    // the chord flush right against the app name, which is the whole shape of
+    // a row. Only the caption band goes.
+    //
+    // It also retires a defect nobody could fix. `theme_list`'s own comment
+    // records a measurement from a14 2026-08-13: in dark mode the Header
+    // painted BRIGHT WHITE across the card, because `DarkMode_ItemsView` is
+    // inert until the process opts in through uxtheme's undocumented ordinals
+    // -- which the 2026-08-11 spec rejected -- and the `NM_CUSTOMDRAW` path
+    // meant to owner-draw it was not firing either. The 2026-08-14 photograph
+    // shows that white band. A control that is not created cannot be painted
+    // the wrong colour.
     let list = child(
         hwnd,
         w!("SysListView32"),
         "",
-        WINDOW_STYLE(LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER)
-            | WS_TABSTOP,
+        WINDOW_STYLE(
+            LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | LVS_NOCOLUMNHEADER,
+        ) | WS_TABSTOP,
         IDC_LIST,
         &fonts,
     );
@@ -3556,6 +3698,13 @@ unsafe fn build_children(hwnd: HWND) {
     refresh_high_contrast();
     // No LVCF_WIDTH: `layout` owns every column width, so there is exactly
     // one place a column can be made too wide for its list.
+    //
+    // `LVCF_TEXT` stays even though `LVS_NOCOLUMNHEADER` means the titles are
+    // never drawn: a column's text is what the control reports as that
+    // column's name when anything asks it about a subitem, and dropping it
+    // would change what the window says about itself to save two string
+    // literals. Reasoned from the API, not measured -- nothing on the host
+    // this was written on can run a screen reader against the window.
     for (i, (title, fmt)) in LIST_COLUMNS.iter().enumerate() {
         let mut t = wide(title);
         let col = LVCOLUMNW {
@@ -3572,58 +3721,15 @@ unsafe fn build_children(hwnd: HWND) {
             Some(LPARAM(&col as *const _ as isize)),
         );
     }
-    // The Header is comctl32's own child of the ListView, never a child of
-    // `hwnd` -- so it never goes through `child()` and never gets a font
-    // via `role_of`. `set_header_font` is the one place that sets it, so
-    // creation here and the `WM_DPICHANGED` rebroadcast cannot disagree.
-    set_header_font(list, fonts.get(Role::BodyStrong));
-
-    // -- Band 4: the editor group. The strip's two lines live inside it and
-    // its caption names the row, so seven controls read as one thing (spec
-    // A.1).
+    // -- Band 4: the editor strip.
     //
-    // Created BEFORE its children, same order kept across the reclass below:
-    // the caption line at the top of the card should read first regardless
-    // of z-order.
+    // **Three controls used to be created here and are not** (2026-08-15,
+    // design §3.1): `IDC_GRP_EDITOR`, the card's `Editing "…"` caption, and
+    // the `App` / `Shortcut` STATICs that labelled the two field lines. All
+    // three are in `RETIRED_IDS`. The card's first line is the App field
+    // itself now, and the two words it lost are carried by the field's own cue
+    // banner and by where the key list sits.
     //
-    // Not a tab stop: it is not operable, so it must never take the default
-    // ring.
-    //
-    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`** (review
-    // finding on Task 8, not a Task 8 original): a themed group-box frame,
-    // drawn inside the new rounded `card()` background, read as two frames
-    // around one set of controls. The id is unchanged (1034) --
-    // `settings_probe` still finds it there and reads its caption with
-    // `WM_GETTEXT`, which a `STATIC` answers the same way a `BUTTON` does.
-    // `SS_CENTERIMAGE_STYLE`, the same single-line style every other label
-    // in this window uses, and deliberately no `BS_NOTIFY` any more --
-    // that style only ever meant something on a `BUTTON`. `&` in the
-    // caption still needs doubling: a plain `STATIC` reads a lone `&` as a
-    // mnemonic prefix exactly like a `BUTTON` caption did, unless
-    // `SS_NOPREFIX` is given -- deliberately not given here, so the
-    // doubling logic at `apply_state` needed no change. `layout.rs` places
-    // this at `grp_x, grp_y, grp_w, s(24)` now, not the group's old full
-    // interior height -- see `compute_card_rects`' and `layout`'s own
-    // comments on why `card2_h`'s budget does not move.
-    child(
-        hwnd,
-        w!("STATIC"),
-        cap::EDITOR_NONE,
-        SS_CENTERIMAGE_STYLE,
-        IDC_GRP_EDITOR,
-        &fonts,
-    );
-
-    // -- Band 4: the editor strip. App first, then the shortcut, mirroring
-    // the row above it (B.1: "laid out to mirror a row").
-    child(
-        hwnd,
-        w!("STATIC"),
-        "App",
-        SS_CENTERIMAGE_STYLE,
-        IDC_LBL_APP,
-        &fonts,
-    );
     // CBS_DROPDOWN, not CBS_DROPDOWNLIST: beckon deliberately supports apps
     // with no Start Menu entry, so free typing must stay possible even once
     // the catalog has loaded.
@@ -3639,13 +3745,17 @@ unsafe fn build_children(hwnd: HWND) {
     // how tall the drop-down is; this does. Without it the list opens at
     // the default 30 items regardless of the height layout computes.
     SendMessageW(app, CB_SETMINVISIBLE, Some(WPARAM(8)), Some(LPARAM(0)));
-    child(
-        hwnd,
-        w!("STATIC"),
-        "Shortcut",
-        SS_CENTERIMAGE_STYLE,
-        IDC_LBL_SHORTCUT,
-        &fonts,
+    // The `App` label's replacement -- see `cap::APP_CUE`. `CB_SETCUEBANNER`
+    // rather than `EM_SETCUEBANNER_MSG`: the message goes to the COMBOBOX,
+    // which forwards it to its own edit child, and the edit child's handle is
+    // not one this function holds. Same buffer-lifetime rule as the filter
+    // box's -- the string must outlive the call, so it is bound.
+    let app_cue = wide(cap::APP_CUE);
+    SendMessageW(
+        app,
+        CB_SETCUEBANNER,
+        Some(WPARAM(0)),
+        Some(LPARAM(app_cue.as_ptr() as isize)),
     );
     // The four modifier chips, created BEFORE the key list, because
     // creation order IS tab order: Ctrl -> Win -> Alt -> Shift -> key, left
@@ -3744,7 +3854,7 @@ unsafe fn build_children(hwnd: HWND) {
     }
     // The two commands, created AFTER the key list because creation order is
     // tab order and the strip reads left to right: App -> chips -> key ->
-    // Record -> Reset.
+    // Record -> Revert.
     //
     // `BS_NOTIFY` and membership in `PUSH_BUTTONS`, like every other push
     // button here, and on this pair it is load-bearing rather than uniform:
@@ -3752,7 +3862,7 @@ unsafe fn build_children(hwnd: HWND) {
     // onto them, `IsDialogMessageW` falls through to `DM_GETDEFID`, and
     // Enter on a focused `Record` would SAVE. That is the `Reload` defect
     // one band higher.
-    for (caption, id) in [(cap::RECORD, IDC_RECORD), (cap::RESET, IDC_RESET)] {
+    for (caption, id) in [(cap::RECORD, IDC_RECORD), (cap::REVERT, IDC_REVERT)] {
         child(
             hwnd,
             w!("BUTTON"),
@@ -3799,12 +3909,17 @@ unsafe fn build_children(hwnd: HWND) {
     // the group was glued to the first option -- so the other two did not
     // read as answers to it, and `Hold` had no representation at all.
     //
-    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`**, same
-    // review finding and same reasoning as `IDC_GRP_EDITOR` just above: a
-    // themed group-box frame inside the new rounded `card()` background read
-    // as two frames around one set of controls. Id unchanged (1019), no
-    // `SS_NOPREFIX` (this caption carries no `&` today, but if one is ever
-    // added it needs the same doubling `IDC_GRP_EDITOR`'s caption does).
+    // **Reclassed from `BS_GROUPBOX` to a plain caption `STATIC`** on the same
+    // Task 8 review finding that reclassed the editor card's caption: a themed
+    // group-box frame inside the new rounded `card()` background read as two
+    // frames around one set of controls. Id unchanged (1019), no
+    // `SS_NOPREFIX` -- this caption carries no `&` today, and one added later
+    // would have to be doubled, since a plain `STATIC` reads a lone `&` as a
+    // mnemonic prefix exactly as a `BUTTON` caption did.
+    //
+    // **This is the LAST card caption in the window.** The editor's went on
+    // 2026-08-15 with `IDC_GRP_EDITOR` (design §3.1), which is why the
+    // reasoning above no longer points at a sibling.
     // `layout.rs` places this at `kb_x, kb_y, kb_w, s(24)` now, not the
     // card's full interior height -- see `compute_card_rects`'s and
     // `layout`'s own comments on why `kb_card_h`'s budget does not move.
@@ -4362,56 +4477,23 @@ unsafe fn list_row_height(list: HWND, dpi: u32) -> i32 {
     scale(tok::ROW_H, dpi)
 }
 
-/// Give the ListView's own Header control a font.
-///
-/// comctl32 does not propagate a `WM_SETFONT` sent to the ListView down to
-/// its Header child -- the two are separate windows -- so without this the
-/// column headers stay on whatever font the Header was born with. Called
-/// once at creation (`build_children`) and again on every `WM_DPICHANGED`,
-/// because the Header is a child of `list`, not of `hwnd`, and so is never
-/// reached by that handler's `GW_CHILD` / `GW_HWNDNEXT` walk.
-unsafe fn set_header_font(list: HWND, font: HFONT) {
-    let hdr = HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _);
-    if !hdr.is_invalid() {
-        SendMessageW(
-            hdr,
-            WM_SETFONT,
-            Some(WPARAM(font.0 as usize)),
-            Some(LPARAM(1)),
-        );
-    }
-}
-
-/// The ListView's Header child, by `HWND` rather than by dialog control id --
-/// the Header carries none of its own, so this is the only way to name it
-/// from a `WM_NOTIFY`'s bare `hwndFrom` (Task 10's header custom draw).  Same
-/// `LVM_GETHEADER` round trip `set_header_font` / `list_header_height` already
-/// pay; a fourth call site rather than a cache, because it is only reached on
-/// a custom-draw notification that neither `IDC_LIST` nor a push button
-/// already claimed -- at most once per repaint.
-unsafe fn header_of(hwnd: HWND) -> HWND {
-    let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) else {
-        return HWND::default();
-    };
-    HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _)
-}
-
-/// The ListView's header, in physical pixels at the live DPI. Measured 31
-/// at 144 DPI, which is 20.67 at 96 — a non-integer for the same reason a
-/// row is, so it is asked for rather than tabulated.
-unsafe fn list_header_height(list: HWND, dpi: u32) -> i32 {
-    let hdr = HWND(SendMessageW(list, LVM_GETHEADER, Some(WPARAM(0)), Some(LPARAM(0))).0 as *mut _);
-    if !hdr.is_invalid() {
-        let mut rc = RECT::default();
-        if GetWindowRect(hdr, &mut rc).is_ok() {
-            let h = rc.bottom - rc.top;
-            if h > 0 {
-                return h;
-            }
-        }
-    }
-    scale(21, dpi)
-}
+// **Three Header helpers stood here until 2026-08-15 and all three are gone**
+// with the Header itself (design §3.1, `LVS_NOCOLUMNHEADER` at the list's
+// creation): `set_header_font`, which pushed `Role::BodyStrong` down to a
+// control `WM_SETFONT` does not reach on its own; `header_of`, which named it
+// by `HWND` for the one `WM_NOTIFY` arm that could not use an `idFrom`; and
+// `list_header_height`, whose 96-DPI fallback of 21 was a live input to
+// `compute_card_rects`.
+//
+// **The last of those is why the style was the right lever and hiding the
+// window was not.** A hidden Header still answers `LVM_GETHEADER` and still
+// has a rect, so `list_header_height` would have gone on returning 21 for a
+// band nobody could see -- a term in the vertical arithmetic paying for
+// nothing, which is exactly the kind of figure this window has had to correct
+// twice already. With no header there is no term: `want` used to be
+// `list_header_height(..) + row_h * ROWS` and the whole expression is gone
+// (see `compute_card_rects`, which now measures the room and snaps it to whole
+// rows).
 
 /// Replace `list`'s checkbox state image list with one tall enough to force
 /// `tok::ROW_H` rows -- a ListView's row height comes from its image list,
@@ -4890,64 +4972,32 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 show_notes(notes, body);
             }
         }
-        // The card head's caption, and it is a TEXT write, not a geometry
-        // one: it must never reach `layout`, because `layout` means
-        // `SetWindowPos` on the populated App combo -- the measured
-        // data-loss call (`Ui::shown_external`). A caption is never measured
-        // by `layout`, so there is no second path back in.
+        // **The editor card's caption is gone, and nothing replaced it here**
+        // (2026-08-15, design §3.1). It said `Editing "<app>"`, or
+        // `No shortcut selected` with no row -- which the list one card up
+        // already says by highlighting a row or highlighting none, and which
+        // the App field below already says by holding the name or being empty.
         //
-        // **`&` is DOUBLED here, and only here.** `IDC_GRP_EDITOR` is a
-        // plain caption `STATIC` since the review fix on Task 8 (was
-        // `BS_GROUPBOX`, a BUTTON -- see the creation comment in
-        // `build_children`), and a `STATIC` reads a lone `&` as a mnemonic
-        // prefix the same way a `BUTTON` caption does, unless `SS_NOPREFIX`
-        // is given: it is not drawn, and the letter after it gets an
-        // underline that steals a key. The two static captions
-        // (`cap::EDITOR_NONE` / `EDITOR_UNNAMED`) need no escape because
-        // they simply contain no `&` -- see the note on them. This third
-        // caption is the only one in the window fed from the CATALOG, and
-        // Start Menu names really do carry ampersands:
-        // `SS_NOPREFIX_STYLE`'s comment names `Notes & To Do` and
-        // `Arts & Crafts` for exactly this reason. Unescaped, the first
-        // draws as `Editing "Notes  To Do"` with **T** underlined --
-        // colliding with the `Ctrl` hold chip -- and the second underlines
-        // **C**, colliding with `Close`. `SS_NOPREFIX` would also fix this,
-        // and is now available where it was not before the reclass -- but
-        // switching to it is a different change from the reclass this
-        // comment documents, and doubling already works, so it stays.
+        // **What went with it was a rule, not just three lines.** This was the
+        // only caption in the window fed from the CATALOG, so it was the only
+        // one that had to double an `&` before writing it: a `STATIC` reads a
+        // lone `&` as a mnemonic prefix unless `SS_NOPREFIX` is given, and
+        // Start Menu names really do carry ampersands (`SS_NOPREFIX_STYLE`'s
+        // own comment names `Notes & To Do` and `Arts & Crafts`). Unescaped,
+        // the first drew as `Editing "Notes  To Do"` with **T** underlined,
+        // colliding with the `Ctrl` hold chip. Nothing in the window writes
+        // catalog text into a caption any more -- the App combo's edit field
+        // is an EDIT, which draws `&` literally -- so the rule has no
+        // remaining subject. Reinstate it with any future control that puts an
+        // app name in a `STATIC` or a `BUTTON`.
         //
-        // **Not `shown()`**: that helper does the INVERSE (it strips markers
-        // so `layout` measures ink, not `&`), and running it here would drop
-        // the ampersand instead of drawing it. `set_text_if_changed` stays
-        // correct because it compares the same escaped string it writes.
-        let editor_caption = match &st.detail {
-            None => cap::EDITOR_NONE.to_string(),
-            Some(d) if d.app.trim().is_empty() => cap::EDITOR_UNNAMED.to_string(),
-            Some(d) => format!("Editing \"{}\"", d.app.trim().replace('&', "&&")),
-        };
-        set_text_if_changed(hwnd, IDC_GRP_EDITOR, &editor_caption);
-
-        // The count beside the heading. A TEXT write like the caption above,
-        // and safe for the same reason: `layout` measures `IDC_LBL_SECTION`
-        // from the constant `"Shortcuts"` and gives this control the leftover,
-        // so its own text is never a layout input and can never reach
-        // `SetWindowPos` on the App combo.
-        //
-        // Counts what the LIST shows -- `st.items` is already filtered -- so
-        // under a filter it describes the rows on screen rather than the
-        // file. Empty rather than `· 0 bindings` when there is nothing:
-        // the list says that better than a number does, and B's mock-up puts
-        // a count next to a populated list.
-        let count = st.items.len();
-        set_text_if_changed(
-            hwnd,
-            IDC_LBL_COUNT,
-            &match count {
-                0 => String::new(),
-                1 => "\u{b7} 1 binding".to_string(),
-                n => format!("\u{b7} {n} bindings"),
-            },
-        );
+        // **The count beside the heading is gone, and nothing replaced it
+        // here.** It read `st.items.len()`, which is the FILTERED list, while
+        // the Shortcuts pill's badge reads `st.binding_count`, which is the
+        // file -- so the window carried two numbers that disagreed under a
+        // filter and were both correct. Design 2 moved the count to the pill
+        // so it reads from all four doors; `set_pill_badge` below is the one
+        // that survived. See `RETIRED_IDS` for why 1035 is not reusable.
 
         // The editor strip's two commands. `Record` stays live while a
         // capture is armed even if the row went away underneath it: it reads
@@ -4955,12 +5005,12 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // mouse -- the hook is swallowing every keystroke, so there is no
         // keyboard route to fall back on.
         //
-        // `Reset` is greyed while armed for the same reason the five typed
+        // `Revert` is greyed while armed for the same reason the five typed
         // controls are: it writes the value the hook is in the middle of
         // recording.
         let row = st.detail.is_some();
         enable(hwnd, IDC_RECORD, capturing || (st.editable && row));
-        enable(hwnd, IDC_RESET, st.editable && row && !capturing);
+        enable(hwnd, IDC_REVERT, st.editable && row && !capturing);
         // Guarded by a read, like every other write in this function.
         set_text_if_changed(
             hwnd,
@@ -5702,7 +5752,7 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
 fn tier_of(id: i32, hwnd_item: HWND) -> BtnTier {
     match id {
         IDC_APPLY => BtnTier::Accent,
-        IDC_RESET => BtnTier::Outline,
+        IDC_REVERT => BtnTier::Outline,
         IDC_RECORD if text_of(hwnd_item) == cap::STOP => BtnTier::Danger,
         IDC_RECORD => BtnTier::Outline,
         _ => BtnTier::Secondary,
@@ -6059,11 +6109,21 @@ unsafe fn theme_list(hwnd: HWND, dark: bool) {
     };
     let _ = SetWindowTheme(list, name, None);
 
-    // **The header and the four fields need their own theme class, and
-    // nothing else reaches them.** Measured on a14 2026-08-13: with only the
-    // work above, the shipped dark window had a BRIGHT WHITE header band
-    // across it and three white combo faces, because those parts are painted
-    // by the visual style rather than by anything this window controls.
+    // **The four fields need their own theme class, and nothing else reaches
+    // them.** Measured on a14 2026-08-13: with only the work above, the
+    // shipped dark window had three white combo faces, because that part is
+    // painted by the visual style rather than by anything this window
+    // controls.
+    //
+    // **The same measurement covered a fourth surface, and it is gone rather
+    // than fixed.** The run recorded a BRIGHT WHITE Header band across the
+    // card, and the 2026-08-14 photograph shows it. Nothing here could reach
+    // it -- `DarkMode_ItemsView` is inert without the uxtheme ordinals, and
+    // the `NM_CUSTOMDRAW` route meant to owner-draw it was not firing -- so
+    // design §3.1's `LVS_NOCOLUMNHEADER` closed it by removing the control.
+    // The `SetWindowTheme` call that used to sit here went with it. The
+    // measurement is kept because it is what says the remaining three faces
+    // are still wrong.
     //
     // `WM_CTLCOLOR*` cannot fix either: a `CBS_DROPDOWNLIST` has no edit
     // child to answer for, and its closed face comes from the theme, not from
@@ -6087,20 +6147,13 @@ unsafe fn theme_list(hwnd: HWND, dark: bool) {
     // on them having worked -- see the caller's own note. The scrollbar call
     // above is in the same position: it may or may not be doing anything.
     //
-    // What this leaves: in dark mode the ListView header and the three combo
-    // faces render light. Fixing it needs one of — owner-drawing the header
-    // (possible, and the NM_CUSTOMDRAW path meant to do it is not firing),
-    // replacing the combos with owner-drawn controls, or reopening the
-    // ordinals decision. That is a design call, not a code one.
-    let header = header_of(list);
-    if !header.is_invalid() {
-        let hname = if dark {
-            w!("DarkMode_ItemsView")
-        } else {
-            w!("ItemsView")
-        };
-        let _ = SetWindowTheme(header, hname, None);
-    }
+    // What this leaves: in dark mode the three combo faces render light.
+    // Fixing it needs one of — replacing the combos with owner-drawn controls,
+    // or reopening the ordinals decision. That is a design call, not a code
+    // one. (The list of remedies used to lead with "owner-drawing the header
+    // (possible, and the NM_CUSTOMDRAW path meant to do it is not firing)".
+    // The header is gone, so that route has nothing left to fix.)
+    //
     // `CFD` is the combo/edit family. The filter box is a plain EDIT and takes
     // the same class.
     let fname = if dark { w!("DarkMode_CFD") } else { w!("CFD") };
@@ -6246,11 +6299,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     );
                     child = GetWindow(child, GW_HWNDNEXT).unwrap_or_default();
                 }
-                // The Header is `list`'s child, not `hwnd`'s, so the walk
-                // above never reaches it -- same reason `build_children`
-                // sets it separately rather than through `role_of`.
+                // A `set_header_font` call stood here, for the Header the walk
+                // above could never reach -- it is `list`'s child, not
+                // `hwnd`'s. There is no Header since 2026-08-15
+                // (`LVS_NOCOLUMNHEADER`, design §3.1), so the exception is
+                // gone and the walk really does cover every control.
                 if let Ok(list) = GetDlgItem(Some(hwnd), IDC_LIST) {
-                    set_header_font(list, fonts.get(Role::BodyStrong));
                     // The state image list is sized in DEVICE pixels
                     // (Task 10), so a monitor move needs a fresh one at the
                     // new DPI for the same reason the font does. Known
@@ -6652,17 +6706,18 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if nm.idFrom == IDC_LIST as usize && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(list_custom_draw(hwnd, lp.0 as *const NMLVCUSTOMDRAW));
                 }
-                // The ListView's own Header (Task 10): a child of `IDC_LIST`,
-                // never of `hwnd` -- `set_header_font`'s own reason -- so its
-                // `WM_NOTIFY`s carry `hwndFrom` equal to the HEADER's own
-                // HWND rather than `IDC_LIST`'s, and `idFrom` cannot tell the
-                // two custom-draw sources apart the way it does above.
-                // Answered here, before `suppressed()`, for the same reason
-                // the list's own custom draw is: pure painting, no callback,
-                // cannot recurse into `apply_state`.
-                if nm.code == NM_CUSTOMDRAW && nm.hwndFrom == header_of(hwnd) {
-                    return LRESULT(header_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
-                }
+                // **An arm for the ListView's own Header (Task 10) stood here
+                // and is gone** with the control (design §3.1,
+                // `LVS_NOCOLUMNHEADER`). It matched on `hwndFrom` rather than
+                // `idFrom`, because the Header is a child of `IDC_LIST` and
+                // carries no dialog id -- so it was the one custom-draw source
+                // in the window that could not be told apart by number.
+                //
+                // Worth knowing before anything else is dispatched by handle:
+                // that arm was **measured not to fire** on a14 2026-08-13
+                // (`theme_list`'s note), and nobody found out why. Deleting it
+                // removes a suspect rather than a working path.
+                //
                 // Every push button paints through here now, `Save` included
                 // -- Task 9 widened this from `Save` alone to all nine of
                 // `PUSH_BUTTONS`.
@@ -6765,7 +6820,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_CTLCOLORSTATIC => {
                 // **Every on-card STATIC, group box and check box, by id.**
-                // Before Task 8 this arm answered for `IDC_LBL_COUNT` alone
+                // Before Task 8 this arm answered for the retired
+                // `IDC_LBL_COUNT` alone
                 // and let `DefWindowProcW` cover the rest, on the strength of
                 // a comment that read: "the group boxes and the window share
                 // the same `bg` token, and letting the parent's paint show
@@ -6800,9 +6856,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // banned from this window's drawing code (see the comment at
                 // the top of `paint.rs`).
                 //
-                // `IDC_LBL_COUNT` alone keeps the dimmer `text_faint` ink
-                // Task 6 gave it -- it sits beside a Subtitle heading, not
-                // inside a run of body text.
+                // Every id below now takes the same `text` ink. `IDC_LBL_COUNT`
+                // was the one exception -- `text_faint`, because a count
+                // sitting beside a Subtitle heading is not body text -- and it
+                // went with the control on 2026-08-15. The token itself is
+                // still in use elsewhere (the disabled App combo and filter,
+                // and `Mark::Unknown` notes), so no `theme::pairs` row lost
+                // its subject.
                 let ctl = HWND(lp.0 as *mut core::ffi::c_void);
                 let id = GetDlgCtrlID(ctl);
                 // **`IDC_APP` / `IDC_FILTER`, disabled.** Windows routes a
@@ -6890,18 +6950,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // nine buttons never were in it either. `paint::draw_notes`
                 // paints this control's background itself, through
                 // `WM_DRAWITEM`.
+                // Four ids left this list on 2026-08-15 with the controls
+                // themselves: `IDC_GRP_EDITOR`, `IDC_LBL_APP`,
+                // `IDC_LBL_SHORTCUT` (design §3.1) and `IDC_LBL_SECTION` (the
+                // `Shortcuts` heading). Every STATIC that sits on a
+                // card still has to be here -- falling through to
+                // `DefWindowProcW` draws it as a `COLOR_3DFACE` rectangle,
+                // which is the defect that once hit eight controls at once.
                 let on_card = matches!(
                     id,
-                    IDC_LBL_SECTION
-                        | IDC_LBL_COUNT
-                        | IDC_BANNER
-                        | IDC_GRP_EDITOR
-                        | IDC_LBL_APP
-                        | IDC_LBL_SHORTCUT
-                        | IDC_GRP_KEYBOARD
-                        | IDC_CAPS
-                        | IDC_LBL_HOLD
-                        | IDC_LBL_TAP
+                    IDC_BANNER | IDC_GRP_KEYBOARD | IDC_CAPS | IDC_LBL_HOLD | IDC_LBL_TAP
                 );
                 if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
@@ -6915,11 +6973,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     // pair latent only because the four shipped HC schemes
                     // happen to make those two indices equal.
                     let card = theme_col(|p| p.card, COLOR_WINDOW);
-                    let text = if id == IDC_LBL_COUNT {
-                        theme_col(|p| p.text_faint, COLOR_GRAYTEXT)
-                    } else {
-                        theme_col(|p| p.text, COLOR_WINDOWTEXT)
-                    };
+                    let text = theme_col(|p| p.text, COLOR_WINDOWTEXT);
                     SetTextColor(hdc, text);
                     SetBkColor(hdc, card);
                     SetBkMode(hdc, OPAQUE);
@@ -7354,7 +7408,7 @@ unsafe fn show_capture(hwnd: HWND) {
     for id in SHORTCUT_CONTROLS {
         enable(hwnd, id, false);
     }
-    enable(hwnd, IDC_RESET, false);
+    enable(hwnd, IDC_REVERT, false);
     // `Stop` must never be out of reach: it is the only way to end a
     // recording with the mouse, and while armed the hook swallows every
     // keystroke, so there is no keyboard route to fall back on.
@@ -7391,7 +7445,7 @@ unsafe fn end_overlay(hwnd: HWND) {
     for id in SHORTCUT_CONTROLS {
         enable(hwnd, id, true);
     }
-    enable(hwnd, IDC_RESET, true);
+    enable(hwnd, IDC_REVERT, true);
 }
 
 /// Give the hook back and take the armed state down. **Safe to call when
@@ -7819,7 +7873,7 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 start_capture(hwnd);
             }
         },
-        // Spec F.3: `Reset` clears the combo and leaves the row without a
+        // Spec F.3: `Revert` clears the combo and leaves the row without a
         // shortcut. An empty string is exactly what `Model::add_row` gives a
         // new row, so this is a state the model, the renderer and
         // `combo_view` all already handle.
@@ -7828,7 +7882,7 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // and there is no chord here to ask about. That is also why this
         // does not go through `push_shortcut`, which reads the five controls
         // and sends NOTHING while no key is selected -- see `shortcut_shown`.
-        (IDC_RESET, _) => with_cb(|cb| (cb.on_edit_combo)(String::new())),
+        (IDC_REVERT, _) => with_cb(|cb| (cb.on_edit_combo)(String::new())),
         (IDC_APPLY, _) => {
             // Ctrl+S reaches this arm too, and `TranslateAcceleratorW` does
             // not care whether the button it names is enabled -- it sends

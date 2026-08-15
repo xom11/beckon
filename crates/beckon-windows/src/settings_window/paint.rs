@@ -375,8 +375,8 @@ unsafe fn draw_keycaps(
 /// least-wrong stand-ins, not as a considered high-contrast answer.
 ///
 /// **`None` means no pill**, and the caller leaves comctl32's own text
-/// showing. That is what `FlagTone::Neutral` gets -- `custom`, which is true
-/// and not a problem -- and it is also what the caller substitutes in high
+/// showing. That is what `FlagTone::Neutral` gets -- `other chord`, which is
+/// true and not a problem -- and it is also what the caller substitutes in high
 /// contrast and on a selected row, where a pale fill would be either a lie
 /// about the theme or unreadable on the accent.
 fn flag_colours(t: FlagTone) -> Option<(COLORREF, COLORREF)> {
@@ -768,97 +768,25 @@ pub(super) unsafe fn list_custom_draw(hwnd: HWND, p: *const NMLVCUSTOMDRAW) -> i
     CDRF_SKIPDEFAULT as isize
 }
 
-/// Paint one Header item -- `IDC_LIST`'s own column-header row (Task 10): a
-/// `card` ground, its caption in `text_muted` at `Role::BodyStrong`, and a
-/// 1 px `divider` along the bottom, so the header reads as part of the card
-/// rather than as the system's own grey button strip. No sort glyphs:
-/// `IDC_LIST` already carries `LVS_NOSORTHEADER`, and `CDRF_SKIPDEFAULT`
-/// below means comctl32 never gets to draw one regardless.
-///
-/// **Reached through message reflection, not a dedicated control id.** The
-/// Header is a child of `IDC_LIST`, never of `hwnd` -- `set_header_font`'s
-/// own reason -- so its `WM_NOTIFY`s carry `hwndFrom` equal to the HEADER's
-/// own HWND rather than `IDC_LIST`'s; `mod.rs`'s dispatcher (`header_of`)
-/// tells the two custom-draw sources apart by handle, not by `idFrom`.
-///
-/// **The caption comes from `LIST_COLUMNS`, not a live read of the
-/// control.** The same reason `draw_combo_item` reads `key_table()` /
-/// `cap::TAP_ITEMS` rather than the control they populated: this text
-/// cannot go stale because nothing ever rewrites it after `build_children`
-/// inserts the two columns from this exact array. The alignment
-/// (`LVCFMT_RIGHT` for Shortcut) comes from the same array, so the header
-/// caption and the column's own cells can never disagree about which way
-/// they lean.
-pub(super) unsafe fn header_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
-    let cd = &*p;
-    if cd.dwDrawStage == CDDS_PREPAINT {
-        return CDRF_NOTIFYITEMDRAW as isize;
-    }
-    if cd.dwDrawStage != CDDS_ITEMPREPAINT {
-        return CDRF_DODEFAULT as isize;
-    }
-    let Some((title, fmt)) = LIST_COLUMNS.get(cd.dwItemSpec).copied() else {
-        return CDRF_DODEFAULT as isize;
-    };
-
-    let hdc = cd.hdc;
-    let rc = cd.rc;
-    FillRect(hdc, &rc, theme_brush(theme_col(|p| p.card, COLOR_WINDOW)));
-
-    // The bottom pixel row, in the divider colour: one line per column, and
-    // every column shares the same top/bottom, so the sum reads as one rule
-    // the width of the header rather than a dashed one.
-    let div = RECT {
-        top: rc.bottom - 1,
-        ..rc
-    };
-    FillRect(
-        hdc,
-        &div,
-        theme_brush(theme_col(|p| p.divider, COLOR_BTNSHADOW)),
-    );
-
-    // The control's own font (`set_header_font` puts `Role::BodyStrong` on
-    // it, at creation and on every `WM_DPICHANGED`), read back rather than
-    // asked of `Fonts` -- `draw_combo_item`'s own reason: a paint can arrive
-    // while `UI` is borrowed, and it does.
-    let font = HFONT(
-        SendMessageW(
-            cd.hdr.hwndFrom,
-            WM_GETFONT,
-            Some(WPARAM(0)),
-            Some(LPARAM(0)),
-        )
-        .0 as *mut core::ffi::c_void,
-    );
-    let prev = if font.is_invalid() {
-        HGDIOBJ::default()
-    } else {
-        SelectObject(hdc, HGDIOBJ(font.0))
-    };
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, theme_col(|p| p.text_muted, COLOR_WINDOWTEXT));
-    let dpi = GetDpiForWindow(hwnd).max(96);
-    let pad = scale(6, dpi);
-    let right = fmt == LVCFMT_RIGHT;
-    let mut tr = RECT {
-        left: rc.left + if right { 0 } else { pad },
-        right: rc.right - if right { pad } else { 0 },
-        ..rc
-    };
-    let mut t = wide(title);
-    let n = t.len() - 1;
-    DrawTextW(
-        hdc,
-        &mut t[..n],
-        &mut tr,
-        (if right { DT_RIGHT } else { DT_LEFT }) | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-    );
-    if !prev.is_invalid() {
-        SelectObject(hdc, prev);
-    }
-    CDRF_SKIPDEFAULT as isize
-}
+// **`header_custom_draw` stood here until 2026-08-15 and is gone** with the
+// control it painted: design 3.1 deletes the column headers, and
+// `build_children` now creates `IDC_LIST` with `LVS_NOCOLUMNHEADER`, so there
+// is no Header window to send an `NM_CUSTOMDRAW` at all.
+//
+// It is worth one paragraph rather than a silent deletion, because what it was
+// for is still true of the rest of this file. The Header is comctl32's own
+// child of the ListView and carries no dialog control id, so it was the ONE
+// custom-draw source in this window that `mod.rs`'s dispatcher had to tell
+// apart by `hwndFrom` rather than by `idFrom`. Every painter left here is
+// reached by id.
+//
+// And it never worked. `theme_list`'s note in `mod.rs` records the a14
+// 2026-08-13 run: in dark mode the Header painted BRIGHT WHITE across the card
+// -- which is what the 2026-08-14 photograph shows -- with this function
+// installed and the `NM_CUSTOMDRAW` path "not firing". Nobody established why.
+// So the deletion removes an unexplained non-working path, not a working one,
+// and a later attempt to owner-draw a Header should start from that fact
+// rather than from this code.
 
 /// Paint one toggle chip as a keycap. The four modifier chips and the three
 /// `Hold` chips, and nothing else in this window is owner-draw.
@@ -987,7 +915,7 @@ const BTN_RADIUS: i32 = 6;
 ///
 /// `Accent` is `Save` alone. `Secondary` is every plain command (`Add`,
 /// `Remove`, `Reload`, `Open config file`, `Close`, `Keep mine`). `Outline`
-/// and `Danger` are the capture strip's two commands -- `Reset` is always
+/// and `Danger` are the capture strip's two commands -- `Revert` is always
 /// `Outline`; `Record` is `Outline` while idle and `Danger` once armed,
 /// wearing `Stop`. Neither carries a fill, which is what keeps the strip
 /// reading lighter than the command bar around it.
@@ -1006,7 +934,7 @@ pub(super) enum BtnTier {
 /// comment used to claim that; it is false, and `button` (the sole caller,
 /// below) disproves it in its own first line: it fills the WHOLE control
 /// rect with `p.bg` before this function is even called, unconditionally,
-/// every tier, every state. So a resting `Record`/`Reset` is a solid `bg`
+/// every tier, every state. So a resting `Record`/`Revert` is a solid `bg`
 /// box on the `card` ground six of the nine push buttons (and all seven
 /// chips) sit on -- dark `#15171C` on `#1D2027` -- and every OTHER tier
 /// leaks that same `bg` at its four rounded corners, since `RoundRect`'s
@@ -1048,7 +976,7 @@ pub(super) enum BtnTier {
 ///
 /// **`accent_hover` earns its keep on `Outline` instead.** Its own ink, on
 /// its own resting fill-less surface (the card), is exactly the pairing it
-/// is calibrated for: hovering/pressing brightens `Record`/`Reset`'s
+/// is calibrated for: hovering/pressing brightens `Record`/`Revert`'s
 /// border+text from `accent` (5.17:1 Light / 5.36:1 Dark on card) to
 /// `accent_hover` (6.66:1 / 6.77:1) -- an improvement, not a risk, in both
 /// themes. Pressed additionally washes the fill to `accent_soft`, an
@@ -2250,8 +2178,9 @@ const NOTE_DOT_D: i32 = 7;
 
 /// The gap between the dot's right edge and where a note's text starts.
 /// Matches `pad` everywhere else in this file a leading glyph precedes body
-/// text (`draw_combo_item`, `header_custom_draw`'s title, the Shortcut
-/// column's own ellipsis fallback) -- one number, not a fresh guess here.
+/// text (`draw_combo_item` and the Shortcut column's own ellipsis fallback --
+/// `header_custom_draw`'s title was the third until it went with the Header on
+/// 2026-08-15) -- one number, not a fresh guess here.
 const NOTE_TEXT_GAP: i32 = 6;
 
 /// A severity WORD for `IDC_NOTES` under high contrast ONLY, prepended to a

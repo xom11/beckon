@@ -981,16 +981,11 @@ OS metadata on every call.
   `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`.
 
   **Shape: bands stacked top to bottom, not a split pane** (landing 2a,
-  `settings_window.rs::layout`). Banner (external change; contributes no
-  height when hidden) / `Shortcuts` head with the filter, Remove and Add /
-  the list / editor strip / suggestion row (nothing built for it yet) /
-  keyboard group / command bar. The 45/55 column split it replaced put 561 px of fixed
+  `settings_window.rs::layout`). The 45/55 column split it replaced put 561 px of fixed
   columns inside a 482 px pane, so beckon shipped a horizontal scroll bar
   and a clipped App column; widths are now a proportion of the live list
   width, which is why that cannot recur. **App leads, Shortcut follows** —
-  the app is what the user is looking for. The list is a **fixed eight
-  rows** (`tok::ROWS`) at every DPI, measured rather than scaled from a
-  token, so it does not grow with the config. Per-row `LVS_EX_CHECKBOXES`
+  the app is what the user is looking for. Per-row `LVS_EX_CHECKBOXES`
   ride in column 0's state image and make Remove a multi-delete: the whole
   decision is `Model::remove_pressed` — **ticks win, the selection is the
   fallback** — because clicking a tick also moves the highlight, so a
@@ -1014,6 +1009,37 @@ OS metadata on every call.
   point of two earlier fixes: Enter on a focused `Reload` used to save and
   overwrite the external change the banner existed to protect. **Only
   `Ctrl+S` is unconditional.**
+
+  **CORRECTED 2026-08-15 (branch `four-doors-phase-0`): the band list above
+  and the list's row count were both wrong, and each was wrong in its own
+  way.**
+
+  The band list read *"Banner (external change; contributes no height when
+  hidden) / `Shortcuts` head with the filter, Remove and Add / the list /
+  editor strip / suggestion row (nothing built for it yet) / keyboard group /
+  command bar."* Two things falsify it. **The stack is page-dependent**:
+  `compute_card_rects` used to reserve the keyboard card's height on every
+  page, so Shortcuts carried a card-shaped hole above the command bar; the
+  Shortcuts door now stacks banner / list card / editor card down to the
+  command bar and the Keyboard door puts its own card at the same origin and
+  nothing else. And the **`Shortcuts` head has no heading in it** — the STATIC
+  that said the word (`IDC_LBL_SECTION`, 1020) sat in Subtitle directly beneath
+  a tab pill captioned `Shortcuts`, and design §3.1's drawing has no such
+  heading. The row survives; the filter leads it and Remove/Add close it.
+
+  The list read *"a **fixed eight rows** (`tok::ROWS`) at every DPI, measured
+  rather than scaled from a token, so it does not grow with the config."*
+  **`tok::ROWS` is deleted.** `list_h` was `want.min(room)` with `want =
+  list_header_height + row_h * ROWS`, i.e. a cap, and design §4 makes the list
+  take the room the page leaves and scroll. The cap had to go in the same
+  commit as the four deletions above it: they return 110 px at 96 DPI, and with
+  the cap in place every one of those pixels would have re-appeared as empty
+  space *below* the editor card — the same void, moved down the window. What
+  survives of it is the whole-row **snap** (`list_h = avail − avail % row_h`),
+  which is what keeps `Ui::shown_empty` guarding a real transition.
+
+  Neither correction touches `MIN_HEIGHT` (560) or `MIN_WIDTH` (660); both are
+  frozen for reasons of their own, recorded at the constants.
 
   **The filter box is a view, and the mapping is the feature.** `IDC_FILTER`
   (1021, cue banner `Filter`, no label) matches case-insensitively against
@@ -1065,17 +1091,33 @@ OS metadata on every call.
   row is empty and would match nothing.
 
   **The status vocabulary is four words, and a healthy row says nothing.**
-  `paused` > `key in use` > `not installed` > `custom`, and that order IS
+  `paused` > `in use` > `missing` > `other chord`, and that order IS
   the precedence — a row can be several at once while the cell holds one
   word. `paused` sits above the registration map deliberately: `serve`
   CLEARS that map when it pauses, so consulting the map first would render
   every row "not registered yet" and never say why. **One function,
   `beckon_core::settings::row_condition`, produces the list flag AND the
-  editor's notes**, and derives `mark` from the notes at the end rather
+  editor's notes**, and derives `mark` at the end rather
   than assigning it along the way — so "the cell and the note cannot
   disagree" is true by construction rather than by discipline. It was not:
   `items` used to read only the registration map while `detail` read the
   catalog too, and they contradicted each other.
+
+  **CORRECTED 2026-08-15 (branch `four-doors-phase-0`), twice over.** The four
+  words were `paused` > `key in use` > `not installed` > `custom`; design §3.1
+  reworded three of them to the shorter forms above, and the precedence did not
+  move. All three renames are shorter than what they replace on purpose — the
+  word rides *inside* the App cell (`app_cell`), so every character it spends
+  is one the app name does not get.
+
+  And *"derives `mark` from the notes at the end"* stopped being the whole
+  rule: design §3.1 also deleted the note that merely repeated each word, so
+  three of the four words now say their piece in the cell and nowhere else, and
+  `mark` folds **the notes and every condition the row earned**. Fold only the
+  word that WON the cell and a paused row whose app is missing reports `Warn`
+  where it used to report `Bad` — the precedence is for the cell, not a claim
+  that the outranked problem stopped existing.
+  `a_paused_row_whose_app_is_missing_is_still_bad` is the pin.
 
   **`beckon-serve.exe` starts on a config that does not parse** (commit
   `4f82b94`). It installs the tray, registers no hotkeys, arms no Caps

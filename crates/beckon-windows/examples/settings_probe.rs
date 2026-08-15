@@ -37,7 +37,7 @@ mod win {
     // any more. See `chip_armed`.
     use windows::Win32::UI::Controls::{
         BCM_GETIDEALSIZE, LVIF_TEXT, LVIR_BOUNDS, LVITEMW, LVM_GETCOLUMNWIDTH, LVM_GETCOUNTPERPAGE,
-        LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW,
+        LVM_GETHEADER, LVM_GETITEMCOUNT, LVM_GETITEMRECT, LVM_GETITEMTEXTW, LVS_NOCOLUMNHEADER,
     };
     use windows::Win32::UI::HiDpi::{
         GetAwarenessFromDpiAwarenessContext, GetDpiForSystem, GetDpiForWindow,
@@ -732,9 +732,10 @@ mod win {
     /// Does this list cell agree with what the field it mirrors says?
     ///
     /// The App column appends the row's flag after three spaces
-    /// (`Notepad   not installed`), so the field's text is a PREFIX of the
+    /// (`Notepad   missing`), so the field's text is a PREFIX of the
     /// cell rather than the whole of it -- which is what the second arm
-    /// allows for.
+    /// allows for. The separator is what this reads, never the word, so the
+    /// 2026-08-15 rewording of the four flags did not touch the logic.
     ///
     /// **The Shortcut column is NOT the combo verbatim.** It used to be, and
     /// this comment used to say so; the column now shows the chord as a
@@ -833,16 +834,48 @@ mod win {
             }
         );
 
+        // **The header is meant to be ABSENT** since 2026-08-15 (design 3.1),
+        // and this block flipped from measuring it to checking that it is not
+        // there. `LVS_NOCOLUMNHEADER` is the lever `build_children` pulls, so
+        // the STYLE is the primary reading and the window is the corroboration
+        // -- comctl32 is not documented to destroy the Header window when the
+        // style is set, only to stop showing it, so a live `SysHeader32` HWND
+        // here is not by itself a failure. A VISIBLE one is.
+        //
+        // Its height is still printed when there is one, because that is the
+        // number `compute_card_rects` stopped subtracting: `list_header_height`
+        // is deleted and `want`'s header term with it, so a header with a
+        // non-zero height on screen means the list is overlapping the rows the
+        // arithmetic thinks it has.
+        let style = unsafe { GetWindowLongPtrW(list, GWL_STYLE) } as u32;
+        println!(
+            "      LVS_NOCOLUMNHEADER:   {}  {}",
+            style & LVS_NOCOLUMNHEADER != 0,
+            if style & LVS_NOCOLUMNHEADER != 0 {
+                "ok"
+            } else {
+                "<<< FAIL -- the column headers are back"
+            }
+        );
         let hdr = HWND(send(list, LVM_GETHEADER, 0, 0) as *mut c_void);
         if hdr.0.is_null() {
-            println!("      header:               MISSING -- LVM_GETHEADER returned null");
+            println!("      header:               none -- LVM_GETHEADER returned null");
         } else {
+            let shown = unsafe { IsWindowVisible(hdr) }.as_bool();
             let (_, _, hw, hh) = box_in_client(parent, hdr);
-            if hh == RECT_FAIL {
-                println!("      header SysHeader32:   RECTFAIL  => HEADER HEIGHT RECTFAIL");
+            let size = if hh == RECT_FAIL {
+                "RECTFAIL".to_string()
             } else {
-                println!("      header SysHeader32:   {hw}x{hh}  => HEADER HEIGHT {hh}");
-            }
+                format!("{hw}x{hh}")
+            };
+            println!(
+                "      header SysHeader32:   exists, visible {shown}, {size}  {}",
+                if shown {
+                    "<<< FAIL -- a header band is on screen"
+                } else {
+                    "ok -- window exists, draws nothing"
+                }
+            );
         }
     }
 
@@ -1935,6 +1968,12 @@ mod win {
     /// are really 29 and 31 -- two numbers that look 8 px apart and are 2.
     /// One awareness for the whole probe, so every number below is in
     /// physical pixels.
+    ///
+    /// **The header half of that example is history too** -- design 3.1
+    /// deleted the column headers on 2026-08-15 and `measure_listview` now
+    /// checks the band is absent rather than measuring it. The example is kept
+    /// because the hazard it illustrates is about mixing coordinate spaces,
+    /// not about that particular pair.
     ///
     /// **The 29 is history, not today's row.** It is the row measured while
     /// `tok::ROW_H` was 20 (see the twice-corrected `Ui::shown_empty`

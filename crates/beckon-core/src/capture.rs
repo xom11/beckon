@@ -43,13 +43,35 @@ pub enum Refusal {
     NoModifier,
     /// A key the 81-key table cannot name: numpad, media, IME.
     UnknownKey,
-    /// A chord beckon cannot bind. Two unrelated reasons wear this one
-    /// variant -- see `is_reserved`: `Win+L` and `Ctrl+Alt+Del` are Windows'
-    /// own (measured on a14, the hook sees `Win+L` but cannot suppress it,
-    /// so recording it would hand the user a binding that can never fire),
-    /// while the three lock keys are beckon's own limit, their light having
-    /// already toggled by the time the hook runs.
+    /// A chord beckon cannot bind, with **no mechanism it may name**.
+    ///
+    /// The three lock keys are beckon's own limit: the light toggles before
+    /// the hook runs, so swallowing the key cannot undo it. `Ctrl+Alt+Del`
+    /// is here on scope rather than on mechanism -- spec F.5 records it as
+    /// unverified and says to treat it as refused until it is measured, and
+    /// nothing here claims what the hook would see.
+    ///
+    /// **SPLIT 2026-08-15.** This variant used to carry `Win+L` as well, and
+    /// its hint therefore had to say something true of both families at once
+    /// -- which is why it says nothing about why. Design 3.1 asks for the
+    /// `Win+L` fact at the moment `Record` hears it, and a hint cannot carry
+    /// a fact the variant does not distinguish. `SystemChord` is that split.
     Reserved,
+    /// A chord Windows handles itself, so no program can bind it.
+    ///
+    /// **`Win+L` alone, and the membership is bounded by the measurement
+    /// rather than by the category.** `docs/superpowers/measurements/
+    /// 2026-08-11-landing-1-a14.md` §48 recorded `SEEN=True SWALLOWED=True
+    /// ACTED=True`: the hook is delivered the key-down on the normal desktop
+    /// and returning 1 does not stop the lock. That is the whole evidence
+    /// for "no program can take it", and it exists for `Win+L` and for
+    /// nothing else here -- `Ctrl+Alt+Del` reads like a member and stays in
+    /// `Reserved` because its half of the story was never measured.
+    ///
+    /// **`HINT_SYSTEM_CHORD` names the chord in words**, which is only
+    /// honest while this family has one member. A second member means that
+    /// string stops naming one.
+    SystemChord,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +140,7 @@ impl Outcome {
             Outcome::Refused(Refusal::NoModifier) => 6,
             Outcome::Refused(Refusal::UnknownKey) => 7,
             Outcome::Refused(Refusal::Reserved) => 8,
+            Outcome::Refused(Refusal::SystemChord) => 9,
         }
     }
 
@@ -136,6 +159,7 @@ impl Outcome {
             6 => Outcome::Refused(Refusal::NoModifier),
             7 => Outcome::Refused(Refusal::UnknownKey),
             8 => Outcome::Refused(Refusal::Reserved),
+            9 => Outcome::Refused(Refusal::SystemChord),
             _ => return None,
         })
     }
@@ -184,29 +208,57 @@ fn modifier_of(vk: u32) -> Option<Modifier> {
     }
 }
 
-/// Chords capture must refuse rather than record.
+/// Chords capture must refuse rather than record, and **which refusal each
+/// one is**.
 ///
-/// `Win+L` is here because of a measurement, not a document:
+/// One function rather than a predicate plus a second predicate that
+/// re-spells one of its clauses: the refused set and the vocabulary that
+/// explains it are the same fact, and splitting them is how the two drift.
+///
+/// `Win+L` is `SystemChord` because of a measurement, not a document:
 /// `docs/superpowers/measurements/2026-08-11-landing-1-a14.md` §48 recorded
 /// `SEEN=True SWALLOWED=True ACTED=True` -- the hook is delivered the
 /// key-down on the normal desktop, and returning 1 does not stop the lock.
 /// So nothing prevents capture from writing `super+l` into the TOML except
 /// this list, and the user would be left with a binding that can never fire.
+/// That measurement is also what licenses `HINT_SYSTEM_CHORD` to say so out
+/// loud, which is design 3.1's requirement: the `Win+L` fact is not a bullet
+/// anywhere, it is what `Record` says at the moment you press `Win+L`.
+///
+/// **The two arms are disjoint today, so the order costs nothing -- which is
+/// exactly why it is written down.** `VK_L` is neither a lock key nor
+/// `delete`, so no chord reaches both blocks and swapping them changes no
+/// answer. That makes the intended precedence invisible, and an ordering
+/// nobody can see is one a later edit can reverse for free: give a lock key a
+/// modifier rule, or add a second `SystemChord` that happens to be a lock key,
+/// and the arm below would start answering for it.
+/// `the_windows_key_arm_outranks_the_lock_keys` states the intent so the
+/// reversal is a failure rather than a silent rewording of what the window
+/// says.
 ///
 /// The three lock keys are refused as main keys for a different reason,
 /// unchanged from spec F.5: the lock state toggles before the hook runs, so
-/// swallowing the key cannot undo the light.
+/// swallowing the key cannot undo the light. That is beckon's limit, not a
+/// Windows reservation, so they stay `Reserved` -- whose hint names no
+/// mechanism.
 ///
-/// `Ctrl+Alt+Del` is here on scope, not on mechanism. Spec F.5 records it as
-/// **unverified** and says to treat it as refused until it is measured; no
-/// explanation of what the hook would see is offered here, and none should
+/// `Ctrl+Alt+Del` is `Reserved` on scope, not on mechanism. Spec F.5 records
+/// it as **unverified** and says to treat it as refused until it is measured;
+/// no explanation of what the hook would see is offered here, and none should
 /// be added without a measurement, because the story this family used to
-/// share was disproved for `Win+L` (measurements §48). `delete` is in the
+/// share was disproved for `Win+L` (measurements §48). It reads like a
+/// `SystemChord` and is not one for exactly that reason. `delete` is in the
 /// 81-key table, so without this arm the chord is recordable.
-fn is_reserved(vk: u32, mods: Mods) -> bool {
-    matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL)
-        || (mods.super_ && vk == VK_L)
+fn refusal_for(vk: u32, mods: Mods) -> Option<Refusal> {
+    if mods.super_ && vk == VK_L {
+        return Some(Refusal::SystemChord);
+    }
+    if matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL)
         || (mods.ctrl && mods.alt && vk == VK_DELETE)
+    {
+        return Some(Refusal::Reserved);
+    }
+    None
 }
 
 /// Everything one recording session needs to remember.
@@ -379,7 +431,7 @@ impl CaptureState {
 ///   auto-repeat of a held Ctrl both fills a second slot and answers
 ///   `Partial` instead of `Ignored`, which wakes the UI thread once per
 ///   repeat -- the exact cost `Outcome::post` exists to avoid.
-/// - `Refusal::Reserved` must be decided before `Refusal::UnknownKey`.
+/// - `refusal_for` must be consulted before `Refusal::UnknownKey`.
 ///   `VK_CAPITAL` has no name in the 81-key table, so with the reserved arm
 ///   gone a lock key comes back `Refused(UnknownKey)` -- true, but it sends
 ///   the user to the Key list for a key that is refused no matter how it is
@@ -476,10 +528,10 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState, live: Mods) -> Outcome {
         st.refused_vk = Some(ev.vk);
         return Outcome::Refused(Refusal::NoModifier);
     }
-    if is_reserved(ev.vk, mods) {
+    if let Some(refusal) = refusal_for(ev.vk, mods) {
         st.refused_keycap = keycap;
         st.refused_vk = Some(ev.vk);
-        return Outcome::Refused(Refusal::Reserved);
+        return Outcome::Refused(refusal);
     }
     let Some(key) = keycap else {
         st.refused_keycap = None;
@@ -531,22 +583,61 @@ const HINT_UNKNOWN_KEY: &str = "beckon has no name for that key. Pick one from t
 
 /// Not from spec F.3, which gives no wording for `Refusal::Reserved` -- only
 /// F.5's instruction that a refused chord arrives "with the help line saying
-/// so". The one invented string in this module, so what it may claim is
-/// bounded by what is true of all five chords `is_reserved` covers.
+/// so". An invented string, so what it may claim is bounded by what is true
+/// of every chord `refusal_for` sends here.
 ///
-/// **It names no mechanism, because the five do not share one.** An earlier
-/// draft read `Windows reserves that shortcut.`, which is true of `Win+L`
-/// and `Ctrl+Alt+Del` and false of the three lock keys: those are refused
-/// because the lock state toggles before the hook runs, so swallowing the
-/// key cannot undo the light. That is beckon's limit, not a Windows
-/// reservation, and stating it the other way is a confidently-worded wrong
-/// sentence shown to the user -- worse, in this project, than saying less.
+/// **It names no mechanism, because its members do not share one.** An
+/// earlier draft read `Windows reserves that shortcut.`, which is true of
+/// `Ctrl+Alt+Del` as far as anyone knows and false of the three lock keys:
+/// those are refused because the lock state toggles before the hook runs, so
+/// swallowing the key cannot undo the light. That is beckon's limit, not a
+/// Windows reservation, and stating it the other way is a confidently-worded
+/// wrong sentence shown to the user -- worse, in this project, than saying
+/// less.
+///
+/// **The 2026-08-15 split did not widen what this may claim.** `Win+L` left
+/// for `SystemChord`, so the family is now three lock keys plus one
+/// unverified chord -- which is *less* shared ground, not more. Anyone
+/// tempted to enrich this sentence now that "the measured one has gone" has
+/// it backwards.
 ///
 /// It also drops that draft's `Press Record and try again.` tail. A refusal
 /// leaves the field Armed (see `step`), so there is nothing to press; the
 /// mandated bare-key line carries the same tail and is copied verbatim
 /// anyway, because F.3 fixes its wording and does not fix this one.
 const HINT_RESERVED: &str = "beckon cannot bind that shortcut. Try a different one.";
+
+/// What `Record` says at the moment you press `Win+L` -- design 3.1's
+/// requirement, in the one place that can meet it.
+///
+/// **The fact used to have no home on this path.** It was written down in
+/// `settings::probe_notes`' `CaptureSawNothing` sentence, a verdict nothing
+/// produces, describing a situation `Win+L` cannot reach: capture *does* see
+/// `Win+L` (measurements §48), so it is refused here rather than missed
+/// there. A fact filed under the wrong outcome is a fact the user never
+/// reads, which is why design 3.1 says it is not a bullet anywhere -- it is
+/// this line.
+///
+/// **It names the chord in words**, which is honest only while
+/// `Refusal::SystemChord` has one member; see that variant. It also stops at
+/// what §48 measured: Windows keeps the chord and no program takes it. It
+/// does not say the lock cannot be suppressed, or by what -- the hint is not
+/// where a mechanism gets explained, and the measurement covers the effect
+/// rather than the cause.
+///
+/// **Length is bounded by truncation, not by wrapping**, and the difference
+/// decides how it fails. `paint::draw_notes` draws every note with
+/// `DT_SINGLELINE | DT_END_ELLIPSIS`, so a sentence wider than the card does
+/// not wrap onto the second line `notes_height` reserves -- it is cut with an
+/// ellipsis, and the tail is lost silently. Keeping it short is therefore
+/// about the sentence surviving at all, not about fitting a line budget.
+///
+/// 79 characters, against the shipped `Refusal::NoModifier` line's 86 at its
+/// longest -- so it is inside a length this window already draws. Not
+/// measured: no string in this window has been through
+/// `GetTextExtentPoint32W` on hardware, which is gate G1's own scope.
+const HINT_SYSTEM_CHORD: &str =
+    "Windows keeps Win+L for itself, so no program can bind it. Try a different one.";
 
 /// The hint line for one `step` outcome. `None` means the line is idle --
 /// recording has ended (or never started) and there is nothing to say.
@@ -578,6 +669,7 @@ pub fn hint(outcome: Outcome, refused_keycap: Option<&KeyDef>) -> Option<String>
         }),
         Outcome::Refused(Refusal::UnknownKey) => Some(HINT_UNKNOWN_KEY.to_string()),
         Outcome::Refused(Refusal::Reserved) => Some(HINT_RESERVED.to_string()),
+        Outcome::Refused(Refusal::SystemChord) => Some(HINT_SYSTEM_CHORD.to_string()),
         Outcome::Ignored
         | Outcome::PassThrough
         | Outcome::Captured
@@ -836,12 +928,50 @@ mod tests {
     /// it saw nothing -- but returning 1 does not stop the lock. So capture
     /// would happily record a chord that can never fire, and has to refuse
     /// it explicitly.
+    ///
+    /// `SystemChord`, not `Reserved`, since 2026-08-15: it is the one member
+    /// of the refused set whose "no program can take it" is measured, and
+    /// the hint is allowed to say so only because the variant separates it.
     #[test]
     fn a_reserved_chord_is_refused_rather_than_recorded() {
         let mut st = CaptureState::armed();
         down(&mut st, VK_LWIN);
-        assert_eq!(down(&mut st, VK_L), Outcome::Refused(Refusal::Reserved));
+        assert_eq!(down(&mut st, VK_L), Outcome::Refused(Refusal::SystemChord));
         assert!(st.captured().is_none());
+    }
+
+    /// Which refusal each family gets, stated rather than left implicit.
+    ///
+    /// **This does not test the ARM ORDER, and cannot**: the two blocks in
+    /// `refusal_for` are disjoint today, so reversing them keeps every
+    /// assertion below green. What it pins is the mapping -- `Win+L` is the
+    /// measured `SystemChord`, a lock key is `Reserved` however it is
+    /// modified, and a bare `VK_L` is not refused at all -- so a later edit
+    /// that lets one family swallow the other has to change a test to do it.
+    #[test]
+    fn the_windows_key_arm_outranks_the_lock_keys() {
+        assert_eq!(
+            super::refusal_for(
+                VK_L,
+                Mods {
+                    super_: true,
+                    ..Mods::default()
+                }
+            ),
+            Some(Refusal::SystemChord)
+        );
+        assert_eq!(
+            super::refusal_for(
+                VK_CAPITAL,
+                Mods {
+                    super_: true,
+                    ..Mods::default()
+                }
+            ),
+            Some(Refusal::Reserved),
+            "a lock key is beckon's own limit however it is modified"
+        );
+        assert_eq!(super::refusal_for(VK_L, Mods::default()), None);
     }
 
     /// Spec F.5 carries `Ctrl+Alt+Del` forward as **unverified**, and says
@@ -897,12 +1027,14 @@ mod tests {
              identifiable, or its auto-repeat beeps once per repeat"
         );
 
-        // Reserved.
+        // Refused as a chord Windows owns. Both refused arms of
+        // `refusal_for` run through the same two lines of `step`, so one is
+        // enough to show the key is remembered.
         let mut reserved = CaptureState::armed();
         down(&mut reserved, VK_LWIN);
         assert_eq!(
             down(&mut reserved, VK_L),
-            Outcome::Refused(Refusal::Reserved)
+            Outcome::Refused(Refusal::SystemChord)
         );
         assert_eq!(reserved.refused_vk(), Some(VK_L));
 
@@ -1244,7 +1376,7 @@ mod tests {
 
         // A bare lock key lands in the same arm for the same reason, and
         // NOT in the reserved arm: `mods.any()` is tested before
-        // `is_reserved`.
+        // `refusal_for`.
         let mut caps = CaptureState::armed();
         let out = down(&mut caps, VK_CAPITAL);
         assert_eq!(out, Outcome::Refused(Refusal::NoModifier));
@@ -1254,24 +1386,28 @@ mod tests {
         );
     }
 
-    /// The one invented string, so the test is what bounds what it may
-    /// claim: `is_reserved` covers two unrelated families and the sentence
-    /// has to be true of both.
+    /// An invented string, so the test is what bounds what it may claim:
+    /// every chord `refusal_for` sends to `Reserved` has to make it true.
     ///
-    /// `Windows reserves that shortcut.` was not. It is true of `Win+L` and
-    /// `Ctrl+Alt+Del`, and false of the three lock keys -- those are refused
-    /// because the light toggles before the hook runs, which is beckon's
-    /// limit. Both halves below assert the same sentence deliberately.
+    /// `Windows reserves that shortcut.` did not. It is false of the three
+    /// lock keys -- those are refused because the light toggles before the
+    /// hook runs, which is beckon's limit, not a reservation. Both halves
+    /// below assert the same sentence deliberately.
+    ///
+    /// **`Win+L` moved out of this test on 2026-08-15** and is asserted
+    /// separately below. Its measured mechanism is what the split exists to
+    /// let the window say.
     #[test]
     fn the_reserved_hint_is_true_of_both_reserved_families() {
-        let mut win_l = CaptureState::armed();
-        down(&mut win_l, VK_LWIN);
-        let out = down(&mut win_l, VK_L);
+        let mut ctrl_alt_del = CaptureState::armed();
+        down(&mut ctrl_alt_del, VK_CONTROL);
+        down(&mut ctrl_alt_del, VK_MENU);
+        let out = down(&mut ctrl_alt_del, VK_DELETE);
         assert_eq!(out, Outcome::Refused(Refusal::Reserved));
         assert_eq!(
-            hint(out, win_l.refused_keycap()).as_deref(),
+            hint(out, ctrl_alt_del.refused_keycap()).as_deref(),
             Some("beckon cannot bind that shortcut. Try a different one."),
-            "Windows' own reservation"
+            "unverified -- the sentence must not explain what nobody measured"
         );
 
         let mut lock = CaptureState::armed();
@@ -1282,6 +1418,31 @@ mod tests {
             hint(out, lock.refused_keycap()).as_deref(),
             Some("beckon cannot bind that shortcut. Try a different one."),
             "beckon's own limit -- the sentence must not blame Windows here"
+        );
+    }
+
+    /// Design 3.1: the `Win+L` fact is not a bullet anywhere, it is what
+    /// `Record` says at the moment you press `Win+L`. This is that moment,
+    /// asserted end to end -- the keystroke, the outcome and the sentence --
+    /// rather than as a string constant, because the fact's whole value is
+    /// that it arrives on the one keypress it is about.
+    ///
+    /// It names the chord, which the generic reserved sentence cannot do and
+    /// which is only honest while `SystemChord` has one member.
+    #[test]
+    fn record_says_windows_keeps_win_l_at_the_moment_you_press_it() {
+        let mut st = CaptureState::armed();
+        down(&mut st, VK_LWIN);
+        let out = down(&mut st, VK_L);
+        assert_eq!(out, Outcome::Refused(Refusal::SystemChord));
+        let said = hint(out, st.refused_keycap()).expect("a refusal always says something");
+        assert_eq!(
+            said,
+            "Windows keeps Win+L for itself, so no program can bind it. Try a different one.",
+        );
+        assert!(
+            said.contains("Win+L"),
+            "the fact is worth nothing if the user has to work out which chord it is about"
         );
     }
 
@@ -1322,22 +1483,32 @@ mod tests {
         assert!(Outcome::Refused(Refusal::NoModifier).post());
     }
 
+    /// Every `Outcome` there is, listed by hand.
+    ///
+    /// Hand-listed rather than generated, because the property below is that
+    /// no two share a code and a loop over `code()` could not prove that.
+    /// Shared with `an_unknown_code_decodes_to_nothing`, which used to carry
+    /// the literal `9` as "a code beckon never wrote" -- and `SystemChord`
+    /// then took 9, so that test failed on a change that had broken nothing.
+    /// It now asks this list where the used range ends.
+    const ALL: [Outcome; 10] = [
+        Outcome::Ignored,
+        Outcome::Partial,
+        Outcome::Captured,
+        Outcome::Cancelled,
+        Outcome::Disarmed,
+        Outcome::PassThrough,
+        Outcome::Refused(Refusal::NoModifier),
+        Outcome::Refused(Refusal::UnknownKey),
+        Outcome::Refused(Refusal::Reserved),
+        Outcome::Refused(Refusal::SystemChord),
+    ];
+
     /// Every outcome survives the trip through a `WPARAM` and comes back as
-    /// itself. Listed rather than generated: the point is that no two share
-    /// a code, and a `for` loop over `code()` could not prove that.
+    /// itself.
     #[test]
     fn every_outcome_round_trips_through_its_code() {
-        let all = [
-            Outcome::Ignored,
-            Outcome::Partial,
-            Outcome::Captured,
-            Outcome::Cancelled,
-            Outcome::Disarmed,
-            Outcome::PassThrough,
-            Outcome::Refused(Refusal::NoModifier),
-            Outcome::Refused(Refusal::UnknownKey),
-            Outcome::Refused(Refusal::Reserved),
-        ];
+        let all = ALL;
         for o in all {
             assert_eq!(
                 Outcome::from_code(o.code()),
@@ -1357,9 +1528,15 @@ mod tests {
 
     /// A code beckon never wrote decodes to nothing rather than to the first
     /// variant. `WM_APP + n` is private by convention only.
+    ///
+    /// The unused code is DERIVED from `ALL` rather than written down. It was
+    /// the literal `9` until `Refusal::SystemChord` claimed 9, at which point
+    /// this test failed while `from_code` was behaving exactly as intended --
+    /// a false alarm on the one test whose job is to catch a real one.
     #[test]
     fn an_unknown_code_decodes_to_nothing() {
-        assert_eq!(Outcome::from_code(9), None);
+        let unused = ALL.iter().map(|o| o.code()).max().unwrap() + 1;
+        assert_eq!(Outcome::from_code(unused), None);
         assert_eq!(Outcome::from_code(usize::MAX), None);
     }
 }

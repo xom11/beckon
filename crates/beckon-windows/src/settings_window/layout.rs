@@ -97,20 +97,27 @@ pub(super) mod tok {
     /// The right-aligned `Shortcut` column, the editor field under it, and
     /// the key list's ceiling.
     ///
-    /// **A ceiling in four places, and at 680 px only two of them still
-    /// bind.** Re-derived at 96 DPI when `WINDOW_WIDTH` moved 760 -> 680,
-    /// because "a ceiling" and "the width that is actually used" are
-    /// different claims and only the first is a property of this token:
+    /// **A ceiling in four places, and at 680 px three of them bind.**
+    /// Re-derived at 96 DPI when `WINDOW_WIDTH` moved 760 -> 680, because "a
+    /// ceiling" and "the width that is actually used" are different claims and
+    /// only the first is a property of this token:
     ///
     /// - `filter_w` -- other term `cw1 / 3` = **212**. Binds, and does so
     ///   down to a card interior of 600, i.e. a window of 642.
     /// - `col_shortcut` -- other term `inner / 2` = **310**. Binds.
-    /// - `key_w` (the editor's key list) -- **stopped binding at 680**, and
-    ///   that needs no font to show. Binding wants `mx <= 265`, while `mx` is
-    ///   `61 + lw_lbl + the four chips` and the chips alone floor at
-    ///   `4 * CHIP_MIN` = 184 -- so it would need `"Shortcut"` to measure
-    ///   16 px. At 760 the same term was 545 - `mx` and cleared 200 by
-    ///   roughly 40 px.
+    /// - `key_w` (the editor's key list) -- **binds again as of 2026-08-15**,
+    ///   and the recovery needs no font either. This entry read "stopped
+    ///   binding at 680", correctly: the run was `220 - lw_lbl`, so any label
+    ///   column wider than 20 px put it under the ceiling and `"Shortcut"` is
+    ///   wider than that at every DPI (`lw_lbl` is that caption plus `s(4)`,
+    ///   so the threshold on the caption itself is 16 px -- which is what the
+    ///   version of this entry before the four-doors rewrite said, derived
+    ///   from the other end). Design §3.1 deleted the label column
+    ///   (and the editor card's `gap` inset with it), which makes the run
+    ///   `450 - the four chips` -- 242 at the chips' `CHIP_MIN` floor, so the
+    ///   ceiling binds with 42 px to spare. `layout`'s `key_w` line carries
+    ///   the full derivation, including the correction: `212 - lw_lbl` and
+    ///   "12 px" were transcribed here and are wrong by 8 px.
     /// - `tap_w` (the Caps line's `Tap` list) -- does not bind at 680: its run
     ///   is `653 - kx`, and `kx` is 279 px of fixed terms (the three `Hold`
     ///   chips at their `CHIP_MIN` floor, the toggle's own `s(50)` budget, and
@@ -129,9 +136,22 @@ pub(super) mod tok {
     /// A modifier chip is never narrower than this, nor than its own caption
     /// plus `glyph` -- direction B's `.wtog { min-width:46px }`.
     pub const CHIP_MIN: i32 = 46;
-    /// List rows visible without scrolling. Fixed at every DPI, not scaled,
-    /// not derived from the config.
-    pub const ROWS: i32 = 8;
+    // **`ROWS` (8) is gone, 2026-08-15** -- design 4, "the list is short and
+    // scrolls". It was the list's CAP: `want` was `list_header_height(..) +
+    // row_h * ROWS` and `list_h` was `want.min(room)`, so the list never grew
+    // past eight rows however tall the window was dragged.
+    //
+    // It had to go in the same pass as the three deletions above it, not a
+    // landing later. Removing the column header, the editor caption and the
+    // field labels hands the list 110 px at 96 DPI, and with the cap still in
+    // place all 110 would have arrived as EMPTY SPACE below the editor card --
+    // the same void this pass exists to close, moved down the window rather
+    // than removed. `compute_card_rects` now takes the room it has and snaps
+    // it down to whole rows.
+    //
+    // `ROW_H` below is NOT its replacement and survives on its own reader
+    // (`rebuild_state_image_list`); the snap reads `list_row_height`, which
+    // asks the control.
     /// Widest a tooltip may draw before it wraps. Comfortably narrower than
     /// `MIN_WIDTH`, so the balloon never overhangs the window that owns it.
     pub const TOOLTIP_MAX: i32 = 420;
@@ -143,9 +163,15 @@ pub(super) mod tok {
     /// The list's row height, fed to `ImageList_Create` for the state image
     /// list a row's height is actually derived from -- see
     /// `rebuild_state_image_list` in `mod.rs` (Task 10), the lever this
-    /// token exists for. Left as a token from Task 8 rather than invented
-    /// later because Task 8 is what sizes the list's card around
-    /// `tok::ROWS`, and the two numbers belong beside each other.
+    /// token exists for. It is also `list_row_height`'s fallback while the
+    /// list is empty, and therefore a LOWER BOUND on the live row rather than
+    /// the live row (`Ui::shown_empty` is the guard that exists for the
+    /// difference).
+    ///
+    /// It arrived beside `tok::ROWS`, which sized the list's card at eight of
+    /// these; `ROWS` went on 2026-08-15 and this one did not, because the two
+    /// answered different questions -- how tall a row is, and how many of them
+    /// to show.
     pub const ROW_H: i32 = 22;
 
     /// A tab pill's drawn height.
@@ -290,9 +316,14 @@ pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
     }
 }
 
-/// The four card rects, top to bottom: the external-change banner, the
-/// Shortcuts card (head row plus the list), the editor card, the keyboard
-/// card.
+/// The four card rects: the external-change banner, the Shortcuts card (head
+/// row plus the list), the editor card, the keyboard card.
+///
+/// **Cards 1-2 and card 3 belong to different pages, so they are alternatives
+/// rather than a stack of four.** Cards 0, 1 and 2 stack top to bottom on the
+/// Shortcuts page; card 3 sits alone at the same origin card 1 would take, on
+/// the Keyboard page. A card behind a closed door gets zero height, so the
+/// array is always four long and never four tall.
 ///
 /// **The ONE arithmetic `layout` and `card_rects` both run.** `layout`
 /// places every control `tok::CARD_PAD` inside whichever of these four
@@ -321,51 +352,54 @@ pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
 /// rounded, bordered rectangle with nothing in it, which reads as a page
 /// that failed to load rather than as a page that is not on screen.
 ///
-/// **What this does NOT do is re-stack the window per page.** The keyboard
-/// card stays bottom-anchored above the command bar and still reserves its
-/// height on every page, so the Shortcuts page keeps a card-shaped gap above
-/// the command bar and the Keyboard page keeps a larger one below the strip.
+/// **The stack is PAGE-DEPENDENT since 2026-08-15: a page reserves only what
+/// it draws.** Every card starts from the same content origin (the strip's
+/// bottom, past the banner if it is up) and the page decides which ones follow
+/// it; the command bar is the only thing anchored to the bottom edge, and
+/// `content_bottom` -- one `gap_card` above it -- is where the cards must stop.
+/// So the Shortcuts page is banner / card 1 / card 2 down to `content_bottom`,
+/// and the Keyboard page is card 3 alone at the origin.
 ///
-/// **DECIDED 2026-08-14, Task 7, and deferred again.** This paragraph used to
-/// end "System and About are where it stops being tolerable -- both are a
-/// single line with no card at all yet -- so the page that adds them is the
-/// one that should re-stack." That page is this one, and it did not. The
-/// reasons, worst-case first:
+/// **REVERSED, Task 7 having weighed the same change and deferred it twice.**
+/// The keyboard card used to be bottom-anchored and to reserve
+/// `gap_card + kb_card_h` = 86 px at 96 DPI **on every page**, so the Shortcuts
+/// page carried a card-shaped hole above the command bar and the Keyboard page
+/// carried a larger one below the strip. Both are visible in
+/// `docs/superpowers/measurements/2026-08-14-four-doors-shell-a14-dark.png`,
+/// and the first is the largest single difference between that photograph and
+/// the mock-up.
 ///
-/// - **The re-stack is a change to the SHORTCUTS page's vertical geometry, and
-///   that geometry is another workstream's open subject.** Design §4 uncaps
-///   the list and deletes `tok::ROWS`; design §3.1 deletes the editor card's
-///   `Editing "…"` caption, which is the `s(24)` inside `grp_content_h` and so
-///   an input to `card2_h`. `MIN_HEIGHT`'s own comment already names that
-///   caption as pending and solves the table with it struck out. Re-deriving
-///   the table now means re-deriving it again a landing later, and the second
-///   pass would be checking the first pass's arithmetic rather than the
-///   window's.
-/// - **Nothing on the host this is written on can display the window.** Every
-///   vertical figure in `MIN_HEIGHT` and beside `WINDOW_HEIGHT` is a hand
-///   trace of this function; those figures were corrected twice on 2026-08-13
-///   and 2026-08-14 and re-derived once more when the strip landed, and each
-///   pass is where a stale number gets written down as fact. Two STATICs are
-///   not worth a fourth.
+/// Task 7's two reasons for deferring were good and are both spent:
 ///
-/// **What deferring costs, re-derived here rather than asserted.** The
-/// keyboard card's reservation is `gap_card + kb_card_h` = 8 + 78 = 86 px at
-/// 96 DPI, which the list would otherwise get: `list_h` would go from
-/// `h - 386 - notes_h` to `h - 300 - notes_h` with the banner down. At the
-/// shipped client height of 600 with `notes_h` 36, that is a cap of 178 rather
-/// than 264, against a `want` of `21 + 8*22` = 197 -- so today the cap binds
-/// at seven whole rows and 3 px of an eighth, and after a re-stack `want`
-/// would bind at eight. **One row at the shipped size, plus the 86 px gap
-/// above the command bar**, which is the visible half and is on the page the
-/// user lives on. At `MIN_HEIGHT` with the banner up it is larger -- 82 px
-/// (two rows) against 168 (six) -- but nobody sits at the floor.
+/// - *"The re-stack changes the Shortcuts page's vertical geometry, which is
+///   another workstream's open subject -- design §4 uncaps the list, design
+///   §3.1 deletes the editor caption, so doing it now means deriving the table
+///   twice."* Both of those landed in the SAME pass as this one, which is
+///   precisely the condition Task 7 was waiting for. The table is derived once,
+///   after all four changes.
+/// - *"Nothing on the host can display the window; every vertical figure is a
+///   hand trace corrected twice already."* Still true, and still the reason
+///   every number below is spelled out as arithmetic rather than asserted. It
+///   argues for deriving carefully, not for deferring again -- the cost of a
+///   pass is the same whenever it is taken.
 ///
-/// **What System and About needed instead, and got.** A page whose entire
-/// content is one line has no stack to re-derive: `layout` puts each waiting
-/// line at the content origin (card 0's top, which on those two pages is the
-/// origin -- see that block) and the emptiness below it is the page being
-/// empty rather than the line being misplaced. That is what "waiting" is
-/// supposed to look like.
+/// **What the re-stack gives back, derived rather than asserted.** With the
+/// 86 px reservation gone and the editor caption's `s(24)` gone with it, the
+/// list's room goes from `h - 442 - notes_h` to `h - 332 - notes_h` with the
+/// banner up (110 px), and from `h - 386 - notes_h` to `h - 276 - notes_h` with
+/// it down. At the shipped client height of 600 with `notes_h` 36 that is 288
+/// px where it was 178 -- and since `tok::ROWS` went with the same pass, all of
+/// it reaches the list instead of stopping at eight rows. See `MIN_HEIGHT` for
+/// the full table.
+///
+/// **System and About needed none of this and are unchanged.** A page whose
+/// entire content is one line has no stack: `layout` puts each waiting line at
+/// the content origin (card 0's top, which on those two pages is the origin)
+/// and the emptiness below it is the page being empty rather than the line
+/// being misplaced. The Keyboard page now reads the same way, which is the
+/// second half of why the re-stack was worth taking: one card at the origin
+/// and space below it is a page with one thing on it, while one card at the
+/// bottom and space above it is a page that failed to lay out.
 unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 4] {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
@@ -401,13 +435,22 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // 3 is the Keyboard page. **System and About own none of them and are not
     // waiting for one**: each shows a single line with no card behind it, so
     // all four rects stay at zero height there and `layout` places that line
-    // against the content origin directly. See the doc comment above on the
-    // re-stack this landing decided against.
+    // against the content origin directly.
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
 
-    // The two bottom bands are anchored, not stacked, so the window's
-    // bottom edge is where they stay however tall the content above is.
+    // The command bar is anchored, not stacked, so the window's bottom edge is
+    // where it stays however tall the content above is. `content_bottom` is
+    // the stop every stacked card shares: one `gap_card` above the bar, which
+    // is the same gap two cards keep between themselves.
+    //
+    // **It replaced `kb_y - gap_card`, which was the stop when the keyboard
+    // card was reserved on every page.** One expression, one meaning, on all
+    // four doors -- which is what makes "a page reserves only what it draws"
+    // true by construction rather than by four `if`s agreeing.
+    let bar_y = clamp(h - pad - ctl);
+    let content_bottom = clamp(bar_y - gap_card);
+
     // The keyboard card's CONTENT keeps `kb_h`'s exact pre-Task-8 shape --
     // caption inset, one control line, a bottom inset the size of `gap` --
     // because that shape was always the caption's own `s(24)` line plus one
@@ -417,28 +460,23 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // `build_children`) -- only the CONTROL drawing that first `s(24)`
     // changed, not its height. Only the card's own `CARD_PAD` wrapping
     // around it is new, same as before that reclass.
-    let bar_y = clamp(h - pad - ctl);
     let kb_content_h = s(24) + ctl + gap;
     let kb_card_h = card_pad * 2 + kb_content_h;
-    let kb_y = clamp(bar_y - gap_card - kb_card_h);
-    // `kb_y` is computed on EVERY page, and only the rect is page-bound: it
-    // is the bottom stop the Shortcuts list measures its room against, and
-    // making that stop move with the door is the re-stack this function's doc
-    // comment weighs and defers. THIS line is the one to change when it is
-    // taken -- the reservation is `gap_card + kb_card_h`, 86 px at 96 DPI, and
-    // everything under `MIN_HEIGHT` and beside `WINDOW_HEIGHT` moves with it.
-    let card3 = card(kb_y, if keyboard { kb_card_h } else { 0 });
 
-    // The editor card's content keeps `grp_h`'s exact pre-Task-8 shape too
-    // -- caption inset, two lines, the notes, a bottom inset -- for the same
-    // reason as `kb_content_h` above: `IDC_GRP_EDITOR`'s caption `s(24)` line
-    // is the same height whether a `BS_GROUPBOX` or a plain caption `STATIC`
-    // draws it, and the review fix that reclassed it changed the control,
-    // not this arithmetic. Computed HERE, before the banner and card 1,
-    // because card 1 has to yield to it below and the two must not each
-    // hold an opinion about how tall the editor card is.
+    // The editor card's content is `grp_h`'s pre-Task-8 shape MINUS its
+    // caption: two lines, the notes, a bottom inset. Computed HERE, before the
+    // banner and card 1, because card 1 has to yield to it below and the two
+    // must not each hold an opinion about how tall the editor card is.
+    //
+    // **The leading `s(24)` went on 2026-08-15** with `IDC_GRP_EDITOR` (design
+    // §3.1, "no `Editing "…"` caption on the editor card"). It was the caption
+    // line's own height, unchanged across the Task 8 review's reclass from
+    // `BS_GROUPBOX` to a plain `STATIC` because that changed which control drew
+    // the line rather than how tall it was -- and now there is no line. 24 px
+    // at 96 DPI, all of it to the list. `kb_content_h` above keeps its `s(24)`
+    // because the Keyboard card keeps its caption.
     let notes_h = notes_height(hwnd, ui, dpi);
-    let grp_content_h = s(24) + ctl + gap + ctl + gap + notes_h + gap;
+    let grp_content_h = ctl + gap + ctl + gap + notes_h + gap;
     let card2_h = card_pad * 2 + grp_content_h;
 
     // Offset by the client-drawn title bar (Task 7) and the tab strip's
@@ -481,12 +519,18 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
         card(y, 0)
     };
 
+    // The content origin: where the FIRST card of whichever page is open
+    // starts. Card 1 takes it on Shortcuts and card 3 takes it on Keyboard --
+    // they are alternatives, never neighbours, so one name serves both and
+    // neither can drift from the other.
+    let content_top = y;
+
     // -- Card 1: the Shortcuts card, head row plus the list. The list is
-    // the one thing that flexes -- it wants `header + tok::ROWS rows` and
-    // gives that up rather than let anything overlap when the window is
-    // short: a shrunk list scrolls, an overlapped control is unreachable.
-    // Everything below it (card 2, card 3) is fixed, which is what makes it
-    // the thing that must yield.
+    // the one thing that flexes -- it takes whatever the fixed cards below it
+    // leave, and gives room up rather than let anything overlap when the
+    // window is short: a shrunk list scrolls, an overlapped control is
+    // unreachable. Card 2 is fixed, which is what makes card 1 the thing that
+    // must yield.
     //
     // No `+ border` term any more (Task 10). That used to be
     // `2 * SM_CYBORDER`, the two pixels `WS_BORDER` drew OUTSIDE the list's
@@ -494,51 +538,94 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // content that a border-less control no longer spends. The list's
     // border is the card's now (`paint::card`), so there is nothing left
     // for that term to pay for.
-    let row_h = list_row_height(ui.list, dpi);
-    let want = list_header_height(ui.list, dpi) + row_h * tok::ROWS;
+    //
+    // **No `want` term either, since 2026-08-15** (design §4, and see
+    // `tok`'s own record of `ROWS` going). The list used to ask for
+    // `list_header_height + ROWS * row_h` and take the SMALLER of that and the
+    // room -- a cap, which at the shipped size would now leave 112 px of
+    // nothing below the editor card. It takes the room instead.
+    //
+    // `.max(1)` on the row height is not defensive dressing: `list_row_height`
+    // cannot return zero today (both arms are positive), but the snap below
+    // DIVIDES by it, and a division by zero inside a wndproc is a panic across
+    // an `extern "system"` boundary, which aborts the process rather than
+    // unwinding -- the same failure mode a second `RefCell` borrow has, and
+    // the same reason it is made unrepresentable rather than argued about.
+    let row_h = list_row_height(ui.list, dpi).max(1);
     // Where the LIST ITSELF starts: past card 1's own top inset, the head
     // row and the control gap below it. The direct analogue of the
     // pre-Task-8 `y` this same computation read, which was already past
     // band 2's head row for the same reason -- a bare band's content sat
     // right at `y` with no inset of its own, which is what let the old
     // formula skip this step.
-    let list_top = y + card_pad + ctl + gap;
+    let list_top = content_top + card_pad + ctl + gap;
     // `editor_min` is card 2's WHOLE footprint, `CARD_PAD` included -- not
     // just `grp_content_h` -- because that whole footprint is the room card
-    // 2 actually needs to sit in below card 1. `room` reserves one
-    // `gap_card`: the guaranteed clearance between card 2's bottom and card
-    // 3's top, the same role a `band` gap played here before cards existed.
-    // The second subtraction below, `- card_pad`, is new: it reserves card
-    // 1's OWN bottom inset, a fixed cost the old bare band 3 never had.
-    // Miss it and the guard below cannot save it: at `MIN_HEIGHT`, where
-    // this floor is exact-fit by construction, the list would be handed
-    // `card_pad` (11 px at 96 DPI) more room than the card can actually
-    // afford, and card 2 draws exactly that far over card 3 -- worst with
-    // the banner up, where there is no slack left to absorb it, because the
-    // 56 px card 0 would otherwise have taken (its own 48 plus the
-    // `gap_card` below it) swallows a shortfall that small with room to
-    // spare. Simulated, not seen: nothing on the machine this was written
-    // on can display the window.
+    // 2 actually needs to sit in below card 1. `room` runs from the list's
+    // own top down to `content_bottom`, the stop every card shares. The two
+    // subtractions after it are card 1's OWN bottom inset (`card_pad`) and the
+    // `gap_card` between card 1 and card 2.
+    //
+    // Miss the `card_pad` and the guard below cannot save it: near the floor,
+    // the list would be handed 11 px at 96 DPI more room than the card can
+    // afford and card 2 would draw exactly that far past `content_bottom`,
+    // i.e. into the command bar. Simulated, not seen: nothing on the machine
+    // this was written on can display the window.
     let editor_min = card2_h;
-    let room = clamp(kb_y - gap_card - list_top);
-    let list_h = clamp(want.min(clamp(room - gap_card - card_pad - editor_min)));
+    let room = clamp(content_bottom - list_top);
+    let avail = clamp(room - gap_card - card_pad - editor_min);
+    // **Snapped DOWN to whole rows**, which is the half of `tok::ROWS`' job
+    // worth keeping. Two reasons, and the second is the load-bearing one:
+    //
+    // - A list whose last row is sliced horizontally reads as a rendering
+    //   fault rather than as a scroll affordance; comctl32 clips, it does not
+    //   scale.
+    // - It keeps `row_h` an INPUT to this function, and therefore keeps
+    //   `Ui::shown_empty` a live guard. Design §12 q2 puts it exactly that
+    //   way: "keep the whole-row snap or delete the guard -- do not leave a
+    //   guard that guards nothing." `list_row_height` falls back to
+    //   `tok::ROW_H` while the list is empty, which is a LOWER BOUND on the
+    //   real row, so the first row to arrive can change this answer and the
+    //   layout has to be recomputed when it does. That is the whole of what
+    //   `shown_empty` is for.
+    //
+    // The remainder -- at most `row_h - 1`, so 21 px at 96 DPI -- lands
+    // between card 2's bottom and the command bar. It is a margin, not the
+    // void this pass closed: that one was a fixed 86 px card reservation on a
+    // page that drew no card.
+    let list_h = avail - avail % row_h;
     let card1_h = card_pad * 2 + ctl + gap + list_h;
     // The height is computed either way and spent only on its own page, so
     // the arithmetic above has exactly one shape rather than one per door.
-    let card1 = card(y, if shortcuts { card1_h } else { 0 });
-    y += card1_h + gap_card;
-    // `y.min(kb_y)`: bounds card 2's TOP, and only its top. `card2_h` is
-    // fixed -- not something `clamp` shrinks the way it shrinks `list_h`
-    // above -- so this line cannot pull card 2's BOTTOM back up off card 3;
-    // what keeps the bottom clear at and above `MIN_HEIGHT` is `editor_min`
-    // reserving the whole of `card2_h` before the list takes any height at
-    // all. Reachable in the state where `room` itself clamped negative --
-    // an intermediate resize below `MIN_HEIGHT` that `WM_DPICHANGED`'s
-    // suggested rect can hand this function without asking
-    // `WM_GETMINMAXINFO` first (dragging can't reach it; a 0x0 client rect
-    // clamps everything to 0 and is fine).
-    y = y.min(kb_y);
-    let card2 = card(y, if shortcuts { card2_h } else { 0 });
+    let card1 = card(content_top, if shortcuts { card1_h } else { 0 });
+    // `.min(content_bottom)`: bounds card 2's TOP, and only its top. `card2_h`
+    // is fixed -- not something `clamp` shrinks the way it shrinks `list_h`
+    // above -- so this line cannot pull card 2's BOTTOM back up; what keeps
+    // the bottom clear at and above `MIN_HEIGHT` is `editor_min` reserving the
+    // whole of `card2_h` before the list takes any height at all. Reachable in
+    // the state where `room` itself clamped negative -- an intermediate resize
+    // below `MIN_HEIGHT` that `WM_DPICHANGED`'s suggested rect can hand this
+    // function without asking `WM_GETMINMAXINFO` first (dragging can't reach
+    // it; a 0x0 client rect clamps everything to 0 and is fine).
+    //
+    // It was `.min(kb_y)`, which is `content_bottom - kb_card_h`: a tighter
+    // bound, on a page that was reserving the keyboard card whether or not it
+    // drew one. Both are only reachable below the floor.
+    let card2_y = (content_top + card1_h + gap_card).min(content_bottom);
+    let card2 = card(card2_y, if shortcuts { card2_h } else { 0 });
+
+    // -- Card 3: the Keyboard page's only card, at the SAME content origin
+    // card 1 takes on its own page. It was bottom-anchored above the command
+    // bar until 2026-08-15 and reserved its height on every page; see this
+    // function's doc comment for the re-stack and what it cost to defer.
+    //
+    // No clamp against `content_bottom`, and none is wanted. This card is a
+    // FIXED 78 px at 96 DPI against a floor of 560, so it cannot reach the
+    // command bar at any size `WM_GETMINMAXINFO` allows; below the floor -- the
+    // `WM_DPICHANGED` path card 2's own `.min` covers -- clamping its top
+    // downward would push it INTO the bar rather than away from it, which is
+    // why the two cards are treated differently rather than uniformly.
+    let card3 = card(content_top, if keyboard { kb_card_h } else { 0 });
 
     [card0, card1, card2, card3]
 }
@@ -561,20 +648,20 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
     compute_card_rects(hwnd, &ui, dpi)
 }
 
-/// Four cards, top to bottom: the external-change banner (no height when
-/// hidden), the Shortcuts card (head row plus the list), the editor card,
-/// the keyboard card — then the command bar, anchored to the bottom and NOT
-/// a card (Task 8 keeps it a flat band, same as before).
+/// Four cards — the external-change banner (no height when hidden), the
+/// Shortcuts card (head row plus the list), the editor card, the keyboard
+/// card — then the command bar, anchored to the bottom and NOT a card (Task 8
+/// keeps it a flat band, same as before).
 ///
 /// Everything is placed from the client rect at the current DPI, so a
 /// 150 % display is not an afterthought — `GetDpiForWindow` scales the
 /// tokens rather than the tokens assuming 96.
 ///
-/// **Vertical shape.** The command bar is anchored to the bottom and the
-/// keyboard card sits directly above it; the top cards stack downward.
-/// `compute_card_rects` resolves all of that once; this function reads the
-/// four rects back and places every control `tok::CARD_PAD` inside
-/// whichever card it belongs to.
+/// **Vertical shape.** The command bar is the only thing anchored to the
+/// bottom; every card stacks downward from the content origin, and each page
+/// stacks only the cards it draws. `compute_card_rects` resolves all of that
+/// once; this function reads the four rects back and places every control
+/// `tok::CARD_PAD` inside whichever card it belongs to.
 ///
 /// **Only the CURRENT page's controls are placed, and that is a correctness
 /// requirement rather than an optimisation.** The one call this function
@@ -614,7 +701,7 @@ pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
 /// this function.
 ///
 /// **The LIST is the one thing that flexes.** See `compute_card_rects`'s
-/// own comment on why, and on `editor_min`/`room`/`y.min(kb_y)` — that
+/// own comment on why, and on `editor_min` / `room` / `.min(content_bottom)` — that
 /// arithmetic lives there now, not here; this function only reads
 /// `card1`'s already-resolved height back out.
 ///
@@ -701,10 +788,14 @@ pub(super) unsafe fn layout(hwnd: HWND) {
 
     // Body, with two named exceptions: every OTHER string measured in this
     // function labels or captions a Body control -- the three command-bar
-    // buttons, Add / Remove / Reload / Keep mine, the two field labels, the
-    // App/Shortcut/Tap row and the "Ag" that sizes the EDIT. The `Shortcuts`
-    // heading is the one Subtitle in the window and its width is never
-    // measured; it takes whatever Add and Remove leave it. The exceptions
+    // buttons, Add / Remove / Reload / Keep mine, Record / Revert, the four
+    // modifier chips, the Caps line's own three words and the "Ag" that sizes
+    // the EDIT. (The editor's `App` and `Shortcut` labels were on this list
+    // until design §3.1 deleted them on 2026-08-15, and the `Shortcuts`
+    // heading -- the window's one Subtitle, and the one string `layout`
+    // measured in a third font -- went the same day, which is why `text_size`
+    // is now reached only through `tw`, `tw_kc` and the `"Ag"` below.) The
+    // exceptions
     // are the three `Hold` chips (`IDC_HOLD_CTRL`/`WIN`/`ALT`), measured
     // through `tw_kc` below: they draw in `Role::Keycap` (Task 8), and a
     // chip sized for 14 px Body text while 11 px Keycap text is drawn into
@@ -945,8 +1036,8 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // focus at all, so without this the combo would be resized while it is
     // focused, populated, and holding half-typed text.
     if shortcuts {
-        // -- Card 1: the Shortcuts card. `Shortcuts` leading, then the filter,
-        // then Remove and Add right-aligned; the list directly below.
+        // -- Card 1: the Shortcuts card. The filter leading, then Remove and
+        // Add right-aligned; the list directly below.
         let cx1 = card1.left + card_pad;
         let cy1 = card1.top + card_pad;
         let cw1 = clamp(card1.right - card1.left - card_pad * 2);
@@ -954,13 +1045,32 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         let bw_add = btn(cap::ADD);
         let bw_remove = btn(cap::REMOVE);
         // Capped at a third of the CARD's interior width, the same ceiling the
-        // key list puts on itself in card 2. The HEADING takes what is left,
-        // which makes it -- not the filter -- the first thing to run out.
-        // Every subtraction is clamped, so an intermediate rect `WM_DPICHANGED`
-        // can suggest below `MIN_WIDTH` produces a hidden heading rather than a
-        // negative width.
+        // key list puts on itself in card 2. Nothing competes with it for the
+        // rest of the row any more, so the cap is what keeps a filter box from
+        // running the width of the card at every size.
+        //
+        // **Both STATICs that used to open this row are gone**, and the second
+        // one moved an edge where the first did not. The `· 18 bindings` count
+        // went first and `layout` did nothing with the space, correctly: the
+        // heading beside it was sized from its OWN caption and only clamped by
+        // where the filter started, so the count's departure freed a gap
+        // between two controls and moved neither. The `Shortcuts` heading then
+        // went on 2026-08-15 (design §3.1, and `ids.rs` for why), and that one
+        // was the row's leading control -- leaving it out without moving
+        // anything would open the card with a hole where the design's drawing
+        // and the mock-up both put the filter. So the filter takes the card's
+        // own left edge, `Add` and `Remove` do not move at all, and the space
+        // between them is where the row grows.
+        //
+        // The filter's `x` is a plain `cx1` now rather than a clamped
+        // subtraction, because it no longer depends on the row's
+        // right-hand run -- which is why the local that held it is gone. What is
+        // NOT guarded, and was not before either: at a card interior under
+        // about 282 px the filter's third overlaps `Remove`. `MIN_WIDTH`
+        // leaves 618, and every intermediate rect `WM_DPICHANGED` can suggest
+        // is clamped elsewhere, so this is the same exposure the previous
+        // arithmetic carried, not a new one.
         let filter_w = s(tok::SHORTCUT_COL).min(clamp(cw1 / 3));
-        let filter_x = cx1 + clamp(cw1 - bw_add - gap - bw_remove - gap - filter_w);
         place(IDC_ADD, cx1 + clamp(cw1 - bw_add), cy1, bw_add, ctl);
         place(
             IDC_REMOVE,
@@ -969,25 +1079,12 @@ pub(super) unsafe fn layout(hwnd: HWND) {
             bw_remove,
             ctl,
         );
-        place_h(ui.filter, filter_x, cy1 + edit_dy, filter_w, edit_h);
-        // **The heading is measured now**, where it never used to be: it shares
-        // its line with the count, so it has to end somewhere definite rather
-        // than taking everything up to the filter. Measured in SUBTITLE -- the
-        // only string in `layout` that is not Body or Keycap, and `tw` would
-        // under-measure it by a third and put the count on top of it.
-        let head_w = text_size(hwnd, ui.fonts.get(Role::Subtitle), dpi, "Shortcuts").0 + s(4);
-        let head_w = head_w.min(clamp(filter_x - gap - cx1));
-        place(IDC_LBL_SECTION, cx1, cy1, head_w, ctl);
-        place(
-            IDC_LBL_COUNT,
-            cx1 + head_w + lblgap,
-            cy1,
-            clamp(filter_x - gap - (cx1 + head_w + lblgap)),
-            ctl,
-        );
-        // A control gap, not a card gap: the head labels the list directly
-        // below it, so the two read as one group even though both now sit
-        // inside one card.
+        place_h(ui.filter, cx1, cy1 + edit_dy, filter_w, edit_h);
+        // A control gap, not a card gap: the head row belongs to the list
+        // directly below it, so the two read as one group even though both sit
+        // inside one card. The row is still `ctl` tall -- the buttons in it
+        // decide that, not the heading that used to lead it -- so nothing
+        // below this line moved when the heading went.
         let list_y = cy1 + ctl + gap;
         // The flexing height, already resolved by `compute_card_rects` into
         // `card1`'s own height -- read back by subtraction rather than
@@ -1038,46 +1135,35 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         set_column_width(ui.list, 0, col_app);
         set_column_width(ui.list, 1, col_shortcut);
 
-        // -- Card 2: the editor card. A caption line, then TWO lines of fields,
-        // then the notes on a third line below that -- unchanged internally
-        // from before Task 8; only its origin now comes from card 2 instead of
-        // a running `y` cursor.
+        // -- Card 2: the editor card. TWO lines of fields, then the notes on a
+        // third line below them.
         //
-        //   +- Editing "Windows Terminal" ----------------------------------+
-        //   |  App       [ ..................................... v ]        |
-        //   |  Shortcut  [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]  [R] [R]  |
-        //   |  ok  Registered. Press Ctrl + Win + Alt + T to focus it.      |
-        //   +---------------------------------------------------------------+
+        //   +----------------------------------------------------------------+
+        //   |  [ Windows Terminal ............................... v ]        |
+        //   |  [ ]Ctrl [ ]Win [ ]Alt [ ]Shift [ key v ]  [Record] [Revert]   |
+        //   |  ok  Registered. Press Ctrl + Win + Alt + T to focus it.       |
+        //   +----------------------------------------------------------------+
         //
-        // Bound once, and named rather than left as `y`, because the caption's
-        // top edge is a coordinate other controls are placed against.
+        // **Three things left this card on 2026-08-15** (design §3.1): the
+        // `Editing "…"` caption (`IDC_GRP_EDITOR`), and the `App` / `Shortcut`
+        // labels that used to open each field line. With them went the `s(24)`
+        // caption line out of `card2_h` and the label column out of the width.
         //
-        // `IDC_GRP_EDITOR` is placed at `grp_x, grp_y, grp_w, s(24)` -- ITS OWN
-        // caption line, not the card's whole interior -- since the review fix
-        // that reclassed it from `BS_GROUPBOX` to a plain caption `STATIC` (see
-        // the creation comment in `build_children`). Before that fix this
-        // control was the group box's own frame and got the full `grp_h`,
-        // `card2.bottom - card2.top - card_pad * 2`; a `STATIC` paints no frame
-        // at all, so giving it that same full height bought nothing and cost a
-        // click-through dead zone over the fields below it. `card2_h` (in
-        // `compute_card_rects`) still budgets `s(24)` for this line -- the
-        // reclass moved which control draws it, not how tall it is.
-        let grp_y = card2.top + card_pad;
-        let grp_x = card2.left + card_pad;
-        let grp_w = clamp(card2.right - card2.left - card_pad * 2);
-        let ins_x = grp_x + gap;
-        let ins_w = clamp(grp_w - gap * 2);
-        place(IDC_GRP_EDITOR, grp_x, grp_y, grp_w, s(24));
+        // **And so did the `gap` inset the group box needed.** `ins_x` was
+        // `grp_x + gap` and `ins_w` was `grp_w - 2*gap`: clearance from a
+        // `BS_GROUPBOX`'s drawn frame, kept through the Task 8 review that
+        // reclassed the caption to a plain `STATIC` because the caption still
+        // wanted to sit outside its own contents. There is no caption and no
+        // frame now, so the inset had nothing left to clear -- and it was
+        // MISALIGNING the two cards, since card 1's contents start at
+        // `card1.left + card_pad` with no such inset. One name (`ed_x` / `ed_w`)
+        // where there were two.
+        let ed_x = card2.left + card_pad;
+        let ed_y = card2.top + card_pad;
+        let ed_w = clamp(card2.right - card2.left - card_pad * 2);
 
-        // Both lines share one label column, so `App` and `Shortcut` left-align
-        // with each other instead of each starting wherever its own line does.
-        let lw_lbl = tw("Shortcut").max(tw("App")) + s(4);
-        let fld_x = ins_x + lw_lbl + lblgap;
-        let fld_w = clamp(ins_x + ins_w - fld_x);
-
-        // Line 1: App, full width.
-        let mut ly = grp_y + s(24);
-        place(IDC_LBL_APP, ins_x, ly, lw_lbl, ctl);
+        // Line 1: the App field, the full width of the card.
+        let mut ly = ed_y;
         // **Two guards, and they answer two different questions.**
         //
         // `combo_needs_placing` is "should this call be made at all". The
@@ -1108,9 +1194,9 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // harmless controls would make the ones on the dangerous control look
         // like tidiness.
         let want_app = ComboSpot {
-            x: fld_x,
+            x: ed_x,
             y: ly + edit_dy,
-            cx: fld_w,
+            cx: ed_w,
         };
         if combo_needs_placing(want_app, app_seen) {
             place_app_combo(ui.app, want_app.x, want_app.y, want_app.cx, field_h * 9);
@@ -1119,17 +1205,18 @@ pub(super) unsafe fn layout(hwnd: HWND) {
 
         // Line 2: the shortcut. Chips left, then the key list, then the two
         // commands right-aligned -- the same "commands close the line" rule the
-        // Shortcuts card's Add/Remove follow.
-        place(IDC_LBL_SHORTCUT, ins_x, ly, lw_lbl, ctl);
+        // Shortcuts card's Add/Remove follow. The line opens at the card's own
+        // left edge now that `Shortcut` is not standing in front of it.
+        //
         // Sized from `RECORD`, never from `STOP`: the armed caption is the
         // narrower of the two, so a caption flip cannot clip and `layout` never
         // has to run on the capture path -- which matters, because `layout`
         // means `SetWindowPos` on the populated App combo, the measured
         // data-loss call (`Ui::shown_external`).
         let bw_record = btn(cap::RECORD);
-        let bw_reset = btn(cap::RESET);
-        let res_x = ins_x + clamp(ins_w - bw_reset);
-        let rec_x = ins_x + clamp(ins_w - bw_reset - gap - bw_record);
+        let bw_reset = btn(cap::REVERT);
+        let res_x = ed_x + clamp(ed_w - bw_reset);
+        let rec_x = ed_x + clamp(ed_w - bw_reset - gap - bw_record);
         // Each chip is its caption plus `glyph`, floored at `tok::CHIP_MIN` --
         // the same rule the keyboard card's `Hold` chips follow, same two
         // constants. `chip` is declared above so both rows read from it (or
@@ -1141,7 +1228,7 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // Chips and key list share the fields' midline (`edit_dy`) and their
         // height, so App, the key list and the filter are ONE box repeated
         // rather than three boxes that happen to be concentric.
-        let mut mx = fld_x;
+        let mut mx = ed_x;
         place(IDC_MOD_CTRL, mx, ly + edit_dy, w_mod_ctrl, edit_h);
         mx += w_mod_ctrl + gap;
         place(IDC_MOD_WIN, mx, ly + edit_dy, w_mod_win, edit_h);
@@ -1152,6 +1239,38 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         mx += w_mod_shift + gap;
         // The key list takes what is between the chips and the commands, under
         // the shortcut column's ceiling.
+        //
+        // **The ceiling binds again at 680 px, which it had stopped doing**
+        // (`tok::SHORTCUT_COL`'s own note records it as one of two that no
+        // longer bound). Deleting the label column returned it. The `before`
+        // half of that needs no font at all: the run was
+        // `rec_x - gap - mx` = `(ins_w - bw_reset - gap - bw_record) - gap -
+        // (lw_lbl + lblgap + chips)`, and with `ins_w` 626, both buttons at
+        // their `tok::BTN` floor of 88, `lblgap` = `tok::LABEL` = 10 and the
+        // four chips at their `tok::CHIP_MIN` floor (`4*46 + 4*gap` = 208),
+        // that is `626 - 176 - 12 - 10 - 208` = `220 - lw_lbl` -- under the
+        // 200 ceiling for ANY label column wider than 20 px. `lw_lbl` is
+        // `tw("Shortcut").max(tw("App")) + s(4)`, so that is `"Shortcut"`
+        // measuring more than 16 px, which it does at every DPI.
+        //
+        // **CORRECTED 2026-08-15: this said `212 - lw_lbl` and "wider than
+        // 12 px".** Both were transcription, not derivation -- substituting
+        // into the run written on the line above gives 220 and 20, and the
+        // pre-rewrite entry in `tok::SHORTCUT_COL` had independently derived
+        // the same threshold from the other end ("it would need `"Shortcut"`
+        // to measure 16 px"), which is the cross-check that settles it. The
+        // conclusion does not move: 20 px is still a label column `"Shortcut"`
+        // exceeds everywhere, so the ceiling still did not bind.
+        //
+        // After: `ins_w` becomes `ed_w` 638 (the group inset went too), the
+        // label column is gone, and the run is `638 - 182 - 6 - chips` = `450 -
+        // chips`. So the ceiling binds while the four chips total 250 px or
+        // less -- 208 at their floor, i.e. 42 px of headroom, and any ONE of
+        // `Ctrl`/`Win`/`Alt`/`Shift` measuring more than 22 px in Body starts
+        // spending it (a chip is `tw(c) + glyph` floored at `CHIP_MIN`, and
+        // `glyph` is `s(24)`). A THRESHOLD, not a measurement: no string in
+        // this window has been through `GetTextExtentPoint32W` on hardware
+        // (gate G1).
         let key_w = s(tok::SHORTCUT_COL).min(clamp(rec_x - gap - mx));
         // `cy` is the DROPPED-DOWN height here too, capped by the same
         // CB_SETMINVISIBLE(8) the App combo carries.
@@ -1160,7 +1279,7 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // `ctl` directly and sit on the band line rather than on the fields'
         // midline -- the same rule the command bar's three follow.
         place(IDC_RECORD, rec_x, ly, bw_record, ctl);
-        place(IDC_RESET, res_x, ly, bw_reset, ctl);
+        place(IDC_REVERT, res_x, ly, bw_reset, ctl);
         ly += ctl + gap;
 
         // Line 3: the notes, inside the card and beside what they describe.
@@ -1170,14 +1289,15 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // disagree between the two calls -- same `hwnd`, `ui`, `dpi` -- and
         // `card_rects`' interface is `[RECT; 4]`, not a richer struct.
         let notes_h = notes_height(hwnd, &ui, dpi);
-        place_h(ui.notes, ins_x, ly, ins_w, notes_h);
+        place_h(ui.notes, ed_x, ly, ed_w, notes_h);
     }
 
     // -- Card 3: the Keyboard page. A caption line, then ONE content line,
     // left to right: the check box, then `Hold` and its three chips, then
-    // `Tap` and its combo. The only card behind that door today, and it keeps
-    // its bottom anchor there rather than rising to the top -- see
-    // `compute_card_rects` on the re-stack this landing does not do.
+    // `Tap` and its combo. The only card behind that door today, and since
+    // 2026-08-15 it sits at the page's content origin like every other first
+    // card rather than clinging to the command bar -- see `compute_card_rects`
+    // for the re-stack.
     //
     // Skipped off-page for the same reason cards 1 and 2 are, though the
     // stakes are lower: `IDC_TAP` is a `CBS_DROPDOWNLIST`, which has no edit

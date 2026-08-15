@@ -284,11 +284,13 @@ The window is bands stacked top to bottom, not panes side by side:
 
 - a banner, only when the file changed on disk under you — **Reload** or
   **Keep mine**;
-- **Shortcuts**, with **Remove** and **Add** on the same line;
-- the list itself, eight rows tall and staying eight rows tall whatever is in
-  it. **App** leads and **Shortcut** follows, because the app is what you are
-  looking for. Every row carries a checkbox: tick as many as you like and
-  **Remove** takes them all at once;
+- a head row: a **Filter** box on the left, **Remove** and **Add** on the
+  right;
+- the list itself, as tall as the window leaves room for — drag the window
+  taller and you see more bindings, shorter and it scrolls. **App** leads and
+  **Shortcut** follows, because the app is what you are looking for. Every row
+  carries a checkbox: tick as many as you like and **Remove** takes them all
+  at once;
 - an editor strip — **App** as a combo box you can type into or pick from,
   **Shortcut** as plain text — plus a notes line explaining the selected row;
 - a command bar: **Open config file** on the left, then **Close** and
@@ -300,18 +302,25 @@ The window is bands stacked top to bottom, not panes side by side:
   **`Ctrl+S` saves unconditionally**, wherever focus is.
 
 Rows say nothing when they are fine. When they are not, the App cell carries
-one word, and the notes line under the editor says the rest:
+one word:
 
 | Flag | Means |
 |---|---|
-| `key in use` | Windows refused the chord — something else already owns it |
-| `not installed` | no app of that Name on this machine |
+| `in use` | Windows refused the chord — something else already owns it |
+| `missing` | no app of that Name on this machine |
 | `paused` | beckon is paused, so nothing is active |
-| `custom` | the chord does not match your Caps Lock hold, so Caps cannot reach it |
+| `other chord` | the chord does not match your Caps Lock hold, so Caps cannot reach it |
 
 A row can be more than one of these; the flag shows the first that applies, in
-the order above, and the notes line lists them all. Both come out of one
-function, so the cell and the note cannot tell you different things.
+the order above.
+
+**The word is usually the whole message.** The notes line under the editor
+adds a sentence only where there is something the word cannot say — `in use`
+gets *"Another program owns this key. Windows will not say which."*, because
+Windows does not tell beckon which program and no amount of looking will find
+out. The others say nothing further, and a healthy row says nothing at all.
+The flag and the notes come out of one function, so the cell and the line
+cannot tell you different things.
 
 The App combo box types freely — it does not autocomplete or jump to a
 catalogue entry as you type. Apps with no Start Menu entry are typed in by

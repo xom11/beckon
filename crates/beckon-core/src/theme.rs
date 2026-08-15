@@ -302,7 +302,7 @@ mod tests {
             // Shortcut cell whose caps did not fit and fell back to plain
             // text).
             ("body text on accent_soft fill", p.text, p.accent_soft, 4.5),
-            // `paint.rs`'s `BtnTier::Outline` (`Record` idle, `Reset`),
+            // `paint.rs`'s `BtnTier::Outline` (`Record` idle, `Revert`),
             // hovered or pressed-but-not-filled: ink is `accent_hover`.
             //
             // **Ground is `bg`, not `card`.** The pre-fix version of this

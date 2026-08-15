@@ -120,7 +120,38 @@ pub struct ListItem {
 /// Every word `row_condition` can put in `ListItem::flag`. The vocabulary is
 /// four words and this is the list -- see `split_app_cell`, which is what
 /// needs it to be closed.
-pub const FLAGS: [&str; 4] = ["paused", "key in use", "not installed", "custom"];
+///
+/// **REWORDED 2026-08-15 to design 3.1's four:** `key in use` -> `in use`,
+/// `not installed` -> `missing`, `custom` -> `other chord`. `paused` was
+/// already right. The precedence did not move -- it is the order the words are
+/// claimed in `row_condition`, and that order was already the design's.
+///
+/// The three replacements are each shorter than what they replace, which is
+/// not incidental: the flag rides INSIDE the App cell (`app_cell`), so every
+/// character it spends is a character the app name does not get, and
+/// `col_app` is 421 px at 96 DPI with long PWA names already in it.
+///
+/// **REFUTED 2026-08-15: "no word may be a suffix of another".** This entry
+/// said that, and cited `in use` beside the word it replaced, `key in use`, as
+/// a pair that would make `split_app_cell` hand the painter `key` as part of
+/// the app name. **Traced against the function, and it does not**:
+/// `split_app_cell` strips the flag AND then requires `FLAG_SEP` in front of
+/// what is left, so on `Notepad   key in use` the `in use` arm strips to
+/// `Notepad   key `, fails the separator test on a single trailing space, and
+/// falls through to the `key in use` arm, which splits correctly. A bare suffix
+/// is harmless at every position.
+///
+/// What is NOT harmless is a word that ends with `FLAG_SEP` followed by another
+/// word -- there the separator test passes on the wrong boundary and the
+/// earlier entry in this table wins. That requirement is real, and it is
+/// checked where it can be checked honestly: by
+/// `split_app_cell_inverts_app_cell_for_every_flag`, which runs the actual
+/// round trip over the whole vocabulary rather than restating a syntactic rule
+/// beside it. The syntactic guard that used to sit here
+/// (`no_flag_word_is_a_suffix_of_another`) is deleted -- it rejected a
+/// superset it did not need to reject and covered nothing the round trip does
+/// not.
+pub const FLAGS: [&str; 4] = ["paused", "in use", "missing", "other chord"];
 
 /// What separates an app name from its flag inside one App cell.
 ///
@@ -136,8 +167,10 @@ pub const FLAG_SEP: &str = "   ";
 /// **One cell, not two columns**, because B.2 names exactly two columns and
 /// B.1 draws the flag inline. The cell text is also the accessible name, so
 /// the flag has to be IN it rather than painted over it -- a screen reader
-/// that cannot hear "not installed" is worse than a flag that is not
-/// coloured.
+/// that cannot hear "missing" is worse than a flag that is not coloured.
+/// Since 2026-08-15 that is not merely better, it is the only route: three of
+/// the four words no longer push a note either, so the cell is the ONLY place
+/// they are said at all.
 ///
 /// ASCII, because the face is a text font, not a symbol one. A healthy row
 /// says nothing at all -- `flag` is `None` and the name stands alone, which
@@ -147,6 +180,83 @@ pub fn app_cell(app: &str, flag: Option<&str>) -> String {
     match flag {
         Some(f) => format!("{app}{FLAG_SEP}{f}"),
         None => app.to_string(),
+    }
+}
+
+/// How a flag is COLOURED. Not the same question as `Mark`, and that is the
+/// whole reason it exists.
+///
+/// `in use` and `missing` are both `Mark::Bad` -- see `flag_mark` -- so
+/// severity cannot tell them apart, while the design deliberately does: a
+/// chord another program has taken is red, an app beckon cannot find is
+/// amber. Severity answers "how bad"; this answers "which of the four words
+/// is it", which is a property of the closed vocabulary rather than a second
+/// opinion about how serious anything is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagTone {
+    /// Something else owns the key. Nothing beckon can do from here.
+    Bad,
+    /// Worth saying, not worth stopping for.
+    Warn,
+    /// True, and not a problem. No pill at all.
+    Neutral,
+}
+
+/// The tone for one flag word. Unknown words are `Neutral`, which is the safe
+/// direction: a word nobody assigned a colour to must not shout.
+pub fn flag_tone(flag: &str) -> FlagTone {
+    match flag {
+        "in use" => FlagTone::Bad,
+        "missing" | "paused" => FlagTone::Warn,
+        _ => FlagTone::Neutral,
+    }
+}
+
+/// How SERIOUS one flag word is, which is what `ListItem::mark` reports.
+///
+/// **This function is what design 3.1's silent notes cost.** `mark` used to
+/// be derived from the notes alone, and the doc for that derivation called it
+/// what makes "the list and the editor cannot disagree" true by construction.
+/// Three of the four words then lost their note -- a note that only repeated
+/// the word is exactly what rule 2 deletes -- and with nothing left to derive
+/// from, a `missing` row would have come back `Mark::Ok`. Not a visible
+/// regression today, because nothing in either window reads `ListItem::mark`,
+/// which is precisely why it would have gone unnoticed until something did.
+///
+/// The marks below are the ones the deleted notes carried, so the split is
+/// behaviour-preserving on `mark` rather than a new opinion:
+/// `the_deleted_notes_did_not_take_the_marks_with_them` is what says so.
+///
+/// **CORRECTED 2026-08-15: "behaviour-preserving on `mark`" was false for one
+/// combination, and this function was only half the repair.** A row that is
+/// PAUSED and whose app is MISSING used to carry both deleted notes -- `Warn`
+/// for the pause, `Bad` for the app -- and came out `Mark::Bad`. Feeding the
+/// winning FLAG in here instead reports `flag_mark("paused")`, i.e. `Warn`,
+/// because `paused` outranks `missing` in the cell and the loser stopped being
+/// visible to the severity fold at all. The four words are a precedence for the
+/// CELL; they are not a claim that a lower-precedence problem went away. The
+/// fix is in `row_condition`, which now collects EVERY condition it finds and
+/// folds this function over all of them -- see the `conditions` vector there --
+/// and `a_paused_row_whose_app_is_missing_is_still_bad` is what fails on the
+/// half-repair.
+///
+/// **Takes one word, not an `Option`, since that fix.** There is no longer a
+/// "the row's flag" to hand it: there is a list of conditions, each of which
+/// has a severity, and the empty list means nothing to fold rather than a word
+/// meaning `Ok`.
+///
+/// **Not derivable from `FlagTone`, and the two must not be merged.** They
+/// disagree on `missing` (`Bad` here, `Warn` there) and on `other chord`
+/// (`Warn` here, `Neutral` there), because one answers "how bad is this row"
+/// and the other answers "which of the four words is this" -- see `FlagTone`.
+/// A row on a chord Caps cannot reach is worth a `Warn` and worth no colour.
+fn flag_mark(flag: &str) -> Mark {
+    match flag {
+        "in use" | "missing" => Mark::Bad,
+        "paused" | "other chord" => Mark::Warn,
+        // A word nobody assigned a severity to must not raise one, the same
+        // safe direction `flag_tone` takes for colour.
+        _ => Mark::Ok,
     }
 }
 
@@ -162,37 +272,20 @@ pub fn app_cell(app: &str, flag: Option<&str>) -> String {
 /// the last run of spaces would make any app whose name ends in three spaces
 /// grow a flag, and would silently colour whatever followed. Testing the
 /// suffix against the closed vocabulary means the worst case is an app
-/// genuinely named `... key in use`, which is not a name.
-/// How a flag is COLOURED. Not the same question as `Mark`, and that is the
-/// whole reason it exists.
+/// genuinely named `...   missing`, which is not a name.
 ///
-/// `key in use` and `not installed` are both `Mark::Bad` -- each pushes a
-/// `Bad` note and the row's mark is the worst of them -- so severity cannot
-/// tell them apart, while the design deliberately does: a chord another
-/// program has taken is red, an app beckon cannot find is amber. Severity
-/// answers "how bad"; this answers "which of the four words is it", which is
-/// a property of the closed vocabulary rather than a second opinion about
-/// how serious anything is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FlagTone {
-    /// Something else owns the key. Nothing beckon can do from here.
-    Bad,
-    /// Worth saying, not worth stopping for.
-    Warn,
-    /// True, and not a problem. No pill at all.
-    Neutral,
-}
-
-/// The tone for one flag word. Unknown words are `Neutral`, which is the safe
-/// direction: a word nobody assigned a colour to must not shout.
-pub fn flag_tone(flag: &str) -> FlagTone {
-    match flag {
-        "key in use" => FlagTone::Bad,
-        "not installed" | "paused" => FlagTone::Warn,
-        _ => FlagTone::Neutral,
-    }
-}
-
+/// **The separator test is the second half and is what makes the vocabulary
+/// safe against itself**, not a rule about suffixes: a word that is a bare
+/// suffix of another (`in use` inside `key in use`) fails it on the space that
+/// precedes it and falls through to the longer word, so the two can coexist.
+/// See `FLAGS`, which used to claim the opposite.
+///
+/// **CORRECTED 2026-08-15: this comment was attached to the wrong item.** It
+/// sat above `FlagTone` with no blank line between the two blocks, so
+/// rustdoc read the whole run as `FlagTone`'s -- an enum about colour
+/// documented as "Take an App cell back apart" -- and this function had no
+/// doc at all. Only the placement moved; the words are unchanged apart from
+/// the flag rename and the sentence above.
 pub fn split_app_cell(cell: &str) -> (&str, Option<&str>) {
     for f in FLAGS {
         if let Some(rest) = cell.strip_suffix(f) {
@@ -229,9 +322,14 @@ pub struct ControlState {
     /// filter (see `Model::visible`) -- so under a filter it is a count of
     /// what is on screen. The Shortcuts pill's count badge is read from three
     /// pages that have no filter box at all, where "the rows matching a filter
-    /// the user cannot see" is not a number that means anything. `IDC_LBL_COUNT`
-    /// keeps counting `items` and stays right about the list it sits under;
-    /// this one is right about the file.
+    /// the user cannot see" is not a number that means anything.
+    ///
+    /// **There is now exactly one count on screen, and this is it.** A second
+    /// STATIC (`LBL_COUNT`, id 1035, retired) used to say `· 18 bindings`
+    /// beside the Shortcuts heading from `items.len()`, so the window showed
+    /// the same number twice and the two could differ under a filter while
+    /// both were right. Design 2 moved the count to the pill precisely to end
+    /// that; the heading's copy went on 2026-08-15.
     ///
     /// A row added and not yet saved counts. The badge follows the model
     /// rather than the disk for the same reason the title bar's `*` does:
@@ -1329,10 +1427,18 @@ pub fn probe_notes(r: &ProbeResult, paused: bool) -> Vec<Note> {
         // the catalog scan is running, the row has not been registered yet)
         // from `Warn` ("beckon knows, and it is worth saying"). Capture
         // having run and seen nothing is knowledge, so it is `Warn`.
+        // **`Win+L` used to be this sentence's example and is not any more.**
+        // Design 3.1 puts that fact at the moment `Record` hears the chord,
+        // and `capture::HINT_SYSTEM_CHORD` is where it went. Keeping it here
+        // as well would be worse than a duplicate: `Win+L` cannot reach this
+        // verdict at all -- capture DOES see it (measurements §48) and refuses
+        // it as `Refusal::SystemChord` -- so the one chord this sentence named
+        // was the one it could never be about. The general fact survives; the
+        // example does not.
         Availability::CaptureSawNothing => (
             Mark::Warn,
-            "Windows handled that shortcut itself, so beckon never saw it. A few shortcuts, like \
-             Win+L, cannot be reassigned by any program."
+            "Windows handled that shortcut itself, so beckon never saw it. Some shortcuts cannot \
+             be reassigned by any program."
                 .to_string(),
         ),
     };
@@ -1365,15 +1471,57 @@ pub fn probe_notes(r: &ProbeResult, paused: bool) -> Vec<Note> {
 /// `detail` read the catalog as well.
 ///
 /// A row can be several things at once while `flag` is a single word, so the
-/// order in which `flag` is claimed below IS the precedence:
-/// `paused` > `key in use` > `not installed` > `custom` > none. `paused`
+/// order in which conditions are PUSHED below IS the precedence:
+/// `paused` > `in use` > `missing` > `other chord` > none, and the flag is
+/// whichever came first. `paused`
 /// sits above the registration map deliberately: `serve` CLEARS that map
 /// when it pauses, so consulting the map first would render every row as
 /// "not registered yet" and never say why.
 ///
-/// `mark` is derived from the notes at the end rather than assigned along
-/// the way, which is what makes "the list and the editor cannot disagree"
-/// true by construction instead of by discipline.
+/// **Every condition is kept, not just the winning word**, which is the
+/// difference between a precedence for the CELL and a claim that the losers
+/// stopped existing. `conditions` is the whole list; `flag` is its head.
+///
+/// `mark` is derived from the notes AND every condition at the end rather than
+/// assigned along the way, which is what makes "the list and the editor
+/// cannot disagree" true by construction instead of by discipline. The
+/// condition half is new -- see `flag_mark` -- and is what kept that true when
+/// the notes went quiet.
+///
+/// **CORRECTED 2026-08-15: it folded the FLAG rather than the conditions, and
+/// that lost a severity.** A paused row whose app is missing pushes both
+/// `paused` and `missing`; `paused` wins the cell, and folding only the winner
+/// reported `Mark::Warn` for a row that carried a `Mark::Bad` before the notes
+/// went quiet. Nothing on screen reads `ListItem::mark` today, so it would have
+/// stayed hidden until something did.
+/// `a_paused_row_whose_app_is_missing_is_still_bad` is the pin, and it fails on
+/// the version this replaces.
+///
+/// **Design 3.1: notes appear only for a condition the status word does not
+/// already state, and a healthy row says nothing at all.** Four sentences
+/// went, and which four is the whole of the rule:
+///
+/// | Was | Why it went |
+/// |---|---|
+/// | `Registered and working.` | the healthy state. Deleted by name in 3.1 -- rule 2, silence IS the report |
+/// | `Another program already has this shortcut.` | kept, REWORDED. The word `in use` says a program has it; the mock-up's sentence adds the half the word cannot -- that beckon will never be able to name which |
+/// | `No installed app has this name.` | `missing` says exactly that, in one word, on the row the user is looking at |
+/// | `Uses a different chord.` | `other chord` says exactly that |
+/// | `beckon is paused, so no shortcut is active.` | `paused` says it on every row at once, which is what makes a per-row sentence noise rather than news |
+///
+/// What SURVIVED is the test of the rule, because each says something no
+/// status word does: `Pick a key and an app.` (an unfinished row claims no
+/// flag), `Not registered yet.` and `Checking installed apps...` (both are
+/// "beckon does not know", which is not a condition of the row), the
+/// availability verdicts (about the chord in the editor right now, not about
+/// the row), and every `Problem` the validator produces verbatim.
+///
+/// **The risk this takes, named rather than argued away:** three conditions
+/// now speak in one word each, and 3.1 §7 records the same worry -- the old
+/// draft shouted at everyone, this one risks whispering to nobody. The
+/// mitigation is not in this function: it is that the four words survive at
+/// all, which §7 lists under *what must never be cut*, because `in use` and
+/// `missing` are the same severity and need completely different fixes.
 fn row_condition(
     m: &Model,
     i: usize,
@@ -1397,31 +1545,48 @@ fn row_condition(
     }
 
     let mut notes: Vec<Note> = Vec::new();
-    let mut flag: Option<String> = None;
+    // Every status word this row earns, in precedence order because that is
+    // the order they are pushed in. The CELL shows the first; the severity
+    // fold at the bottom sees all of them.
+    let mut conditions: Vec<&'static str> = Vec::new();
     let combo = Combo::parse(&r.combo);
 
     // 1. The key.
     if rt.paused {
-        flag = Some("paused".into());
-        notes.push(Note {
-            mark: Mark::Warn,
-            text: "beckon is paused, so no shortcut is active.".into(),
-        });
+        // No note. Pausing is true of the WINDOW, and `paused` already lands
+        // on every row at once -- a sentence per row is the noisiest possible
+        // place to say a thing that is not about any one of them.
+        //
+        // **What is meant to carry it instead does not exist yet.** Design
+        // 6.4's service line (`Serving · 18 of 19` / `Paused`) is on all four
+        // pages and is unbuilt, so until it lands the whole of what a paused
+        // beckon says is the word on each row. `probe_notes` still appends
+        // its own paused sentence, but that one is about how far to trust a
+        // verdict and only appears while a probe is showing.
+        conditions.push("paused");
     } else if let Ok(c) = &combo {
         match rt.registered.get(&c.canonical()) {
-            Some(Ok(())) => notes.push(Note {
-                mark: Mark::Ok,
-                text: "Registered and working.".into(),
-            }),
+            // Healthy. Nothing to say -- design 3.1 deletes
+            // `Registered and working.` by name, and rule 2 is that silence
+            // is the report.
+            Some(Ok(())) => {}
             Some(Err(_)) => {
-                flag = Some("key in use".into());
+                conditions.push("in use");
+                // The mock-up's sentence, verbatim. The second half is why
+                // this note survived the cut while three others did not: the
+                // word `in use` says a program has the chord, and only the
+                // sentence says beckon can never tell you which -- which is
+                // the difference between a user who picks another key and a
+                // user who goes hunting for a culprit no API will name.
                 notes.push(Note {
                     mark: Mark::Bad,
-                    text: "Another program already has this shortcut.".into(),
+                    text: "Another program owns this key. Windows will not say which.".into(),
                 });
             }
             // In the file but not in the last registration pass -- an edit
-            // that has not been saved and reloaded yet. Honest, not a fault.
+            // that has not been saved and reloaded yet. Honest, not a fault,
+            // and no status word claims it: this is "beckon does not know",
+            // which is not a condition of the row.
             None => notes.push(Note {
                 mark: Mark::Unknown,
                 text: "Not registered yet.".into(),
@@ -1467,11 +1632,13 @@ fn row_condition(
             // catalog miss -- "no installed app has this name" is a strange
             // thing to say about no name at all.
             if !want.is_empty() && !names.iter().any(|n| n.to_lowercase() == want) {
-                flag.get_or_insert_with(|| "not installed".into());
-                notes.push(Note {
-                    mark: Mark::Bad,
-                    text: "No installed app has this name.".into(),
-                });
+                // No note: `missing` is the sentence, in one word, on the row
+                // the user is already looking at. `flag_mark` keeps the
+                // `Mark::Bad` the deleted note used to carry -- and it is
+                // PUSHED rather than inserted-if-absent, so a paused row is
+                // still `Bad` for an app that is not installed even though the
+                // cell can only say `paused`.
+                conditions.push("missing");
             }
         }
     }
@@ -1488,11 +1655,10 @@ fn row_condition(
     //    elsewhere (the keycap-dimming rule).
     if let Ok(c) = &combo {
         if !combo_is_caps_chord(c, &m.keyboard.caps_hold) {
-            flag.get_or_insert_with(|| "custom".into());
-            notes.push(Note {
-                mark: Mark::Warn,
-                text: "Uses a different chord.".into(),
-            });
+            // No note, for the same reason as `missing`: `other chord` is the
+            // sentence. The word was `custom`, which named a property of the
+            // binding; `other chord` names what the reader can see about it.
+            conditions.push("other chord");
         }
     }
 
@@ -1507,16 +1673,27 @@ fn row_condition(
         });
     }
 
-    let mark = if notes.iter().any(|n| n.mark == Mark::Bad) {
+    // The worst thing said anywhere about this row -- by a note, or by any
+    // condition on its own now that three of the four words carry no note.
+    // Conditions are folded in as extra voices rather than consulted first,
+    // because a `Problem` from the validator can be worse than any of them and
+    // an unfinished row is `Unknown` with no condition at all.
+    //
+    // **All of them, not `flag`.** The cell shows one word; the row can have
+    // earned several, and a word that lost the cell did not stop being true --
+    // see this function's own correction note.
+    let worst =
+        |m: Mark| notes.iter().any(|n| n.mark == m) || conditions.iter().any(|c| flag_mark(c) == m);
+    let mark = if worst(Mark::Bad) {
         Mark::Bad
-    } else if notes.iter().any(|n| n.mark == Mark::Warn) {
+    } else if worst(Mark::Warn) {
         Mark::Warn
-    } else if notes.iter().any(|n| n.mark == Mark::Unknown) {
+    } else if worst(Mark::Unknown) {
         Mark::Unknown
     } else {
         Mark::Ok
     };
-    (mark, flag, notes)
+    (mark, conditions.first().map(|c| (*c).to_string()), notes)
 }
 
 pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
@@ -1616,7 +1793,12 @@ pub enum DefaultButton {
     /// would SAVE. That is the defect this whole module was written for,
     /// respelled one band higher.
     Record,
-    Reset,
+    /// Was `Reset` until 2026-08-15, in the enum as well as on the button:
+    /// design 3.1 renames the caption to name the effect rather than the
+    /// mechanism, and a variant still called `Reset` would leave the window's
+    /// own vocabulary two words for one control. The id NUMBER did not move --
+    /// `IDC_REVERT` is still 1033 -- because that is what a probe reads.
+    Revert,
 }
 
 impl DefaultButton {
@@ -1633,7 +1815,7 @@ impl DefaultButton {
         DefaultButton::Reload,
         DefaultButton::KeepMine,
         DefaultButton::Record,
-        DefaultButton::Reset,
+        DefaultButton::Revert,
     ];
 
     /// Where the ring rests, and the one button `default_button` will fall
@@ -1666,12 +1848,12 @@ impl DefaultButton {
             DefaultButton::Save | DefaultButton::OpenFile | DefaultButton::Close => true,
             DefaultButton::Reload | DefaultButton::KeepMine => banner_shown(external_change, page),
             // Shortcuts-page controls. `Add` and `Remove` sit on the list's
-            // head row; `Record` and `Reset` close the editor strip's second
+            // head row; `Record` and `Revert` close the editor strip's second
             // line.
             DefaultButton::Add
             | DefaultButton::Remove
             | DefaultButton::Record
-            | DefaultButton::Reset => page == Page::Shortcuts,
+            | DefaultButton::Revert => page == Page::Shortcuts,
         }
     }
 
@@ -1698,7 +1880,7 @@ impl DefaultButton {
                 // exactly as the comment above promises.
                 //
                 // **Neither knows a capture is armed, and that is not a
-                // hole.** While armed the window greys `Reset` (two writers
+                // hole.** While armed the window greys `Revert` (two writers
                 // on one value is what §C.4 forbids) while this still calls
                 // it pressable, so for those seconds the two disagree. It
                 // cannot be observed: the `WH_KEYBOARD_LL` hook swallows
@@ -1708,7 +1890,7 @@ impl DefaultButton {
                 // F.4's focus layers have already disarmed. Modelling it here
                 // would mean `ControlState` carrying a runtime fact that
                 // exists for seconds at a time.
-                DefaultButton::Record | DefaultButton::Reset => st.editable && st.detail.is_some(),
+                DefaultButton::Record | DefaultButton::Revert => st.editable && st.detail.is_some(),
                 // The two escape routes are enabled in every state,
                 // including read only -- that is what makes them escapes.
                 // The banner's two answers are enabled whenever the banner is
@@ -1995,10 +2177,11 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("BANNER", 1014),
     ("RELOAD", 1015),
     ("KEEPMINE", 1016),
-    ("LBL_SHORTCUT", 1017),
-    ("LBL_APP", 1018),
+    // 1017 and 1018 were `LBL_SHORTCUT` and `LBL_APP`, the editor's two field
+    // labels. Retired, not free -- see `RETIRED_IDS`.
     ("GRP_KEYBOARD", 1019),
-    ("LBL_SECTION", 1020),
+    // 1020 was `LBL_SECTION`, the `Shortcuts` heading at the top of the
+    // Shortcuts card. Retired, not free -- see `RETIRED_IDS`.
     ("FILTER", 1021),
     ("HOLD_CTRL", 1022),
     ("HOLD_WIN", 1023),
@@ -2011,9 +2194,10 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("MOD_ALT", 1030),
     ("MOD_SHIFT", 1031),
     ("RECORD", 1032),
-    ("RESET", 1033),
-    ("GRP_EDITOR", 1034),
-    ("LBL_COUNT", 1035),
+    ("REVERT", 1033),
+    // 1034 was `GRP_EDITOR`, the editor card's `Editing "…"` caption, and 1035
+    // was `LBL_COUNT`, the `· 18 bindings` beside the Shortcuts heading.
+    // Retired, not free -- see `RETIRED_IDS`.
     // -- shell: the tab strip and the command bar --------------------------
     ("TAB_SHORTCUTS", 1040),
     ("TAB_KEYBOARD", 1041),
@@ -2075,7 +2259,47 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
 ///
 /// 1009-1011 were the three `Tapping Caps alone` radios. A probe built
 /// against an older binary would find a control it thinks it recognises.
-pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011];
+///
+/// **1035 was `LBL_COUNT`**, the `· 18 bindings` STATIC beside the Shortcuts
+/// heading, deleted 2026-08-15. Design 2 moved the count onto the Shortcuts
+/// pill so it reads from all four doors, and the photograph of the shipped
+/// window shows the number in both places at once -- which is the state that
+/// move existed to END, not a stage on the way to it. The pill's badge is
+/// `ControlState::binding_count` and counts the FILE; this one counted the
+/// filtered list, so they could also disagree while both were right.
+///
+/// It is retired rather than deleted outright, and the distinction is the
+/// point: `retired_ids_stay_retired` fails if anything reclaims 1035, so a
+/// later page cannot quietly take a number that a `settings_probe` built
+/// against today's binary is still looking for. Deleting the row from
+/// `CONTROL_IDS` alone would have left 1035 looking free to every reader and
+/// every test.
+///
+/// **1017, 1018 and 1034 went on 2026-08-15**, all three for design §3.1's
+/// "no `Editing "…"` caption, no field labels": 1017 `LBL_SHORTCUT`, 1018
+/// `LBL_APP`, 1034 `GRP_EDITOR`. The App combo's cue banner says `App` while
+/// it is empty and the key list sits at the end of the modifier run, so the
+/// two words were each naming a control that already says what it is; the
+/// caption named a row the list above it already highlights.
+///
+/// **They are the first RETIRED ids that give geometry back rather than only
+/// a number**, which is why the entry says so here as well as in `layout.rs`:
+/// the caption was the `s(24)` line inside `grp_content_h` and the labels were
+/// the editor's whole label column. A later page reclaiming one of these three
+/// would not merely confuse a probe, it would collide with a control whose
+/// absence the vertical arithmetic now depends on.
+///
+/// **1020 was `LBL_SECTION`**, the `Shortcuts` heading at the top of the
+/// Shortcuts card, deleted 2026-08-15 for the same reason as 1035 and by the
+/// same reading of the same picture: neither design 3.1's drawing nor the
+/// mock-up has a heading there, and the window drew one -- in Subtitle, at the
+/// top of the card -- directly under a tab pill whose caption is the same word.
+/// The pill names the door and is on screen from all four; a second
+/// `Shortcuts` two lines below it named nothing the reader could not already
+/// see. Unlike 1017/1018/1034 it gives NO geometry back: the head row it
+/// opened is still there, still `ctl` tall, still holding the filter and the
+/// two buttons.
+pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035];
 
 /// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
 ///
@@ -2322,20 +2546,26 @@ mod tests {
         assert_eq!(note.mark, Mark::Unknown);
     }
 
+    /// The pair to the test above, and the contrast is the point: a scan that
+    /// has not finished says `Checking installed apps...` because "beckon does
+    /// not know" is not a condition any status word claims, while a FINISHED
+    /// scan that found nothing says `missing` and nothing else.
+    ///
+    /// It used to read the `Bad` off the note it no longer has. `Bad` is now
+    /// on the row, from `flag_mark`, which is the same severity reached
+    /// without repeating the word -- see `row_condition`.
     #[test]
     fn an_app_missing_from_a_scanned_catalog_is_marked_bad() {
         let mut m = model();
         m.set_app(0, "Nonexistent App");
         m.selected = Some(0);
         let cs = control_state(&m, &status_all_ok());
-        let note = cs
-            .detail
-            .unwrap()
-            .notes
-            .into_iter()
-            .find(|n| n.text.contains("installed"))
-            .unwrap();
-        assert_eq!(note.mark, Mark::Bad);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+        assert!(
+            cs.detail.unwrap().notes.is_empty(),
+            "one word, no sentence repeating it"
+        );
     }
 
     #[test]
@@ -2435,14 +2665,22 @@ mod tests {
         assert_eq!(cs.items[0].flag, None, "healthy rows must be silent");
     }
 
+    /// Design 3.1, rule 2: a healthy row says nothing at all -- no flag AND
+    /// no note. This test used to assert the opposite, that a healthy row
+    /// said `Registered and working.`; 3.1 deletes that sentence by name.
+    ///
+    /// It asserts on the empty `Vec`, not on "contains no such string": a
+    /// note that had merely been REWORDED would pass the second and is
+    /// exactly what the rule forbids.
     #[test]
-    fn a_healthy_row_says_registered_and_working_and_nothing_about_the_catalog() {
+    fn a_healthy_row_says_nothing_at_all() {
         let mut m = model();
         m.selected = Some(0);
-        let notes = control_state(&m, &status_all_ok()).detail.unwrap().notes;
-        assert_eq!(notes.len(), 1, "one sentence, not a report: {notes:?}");
-        assert_eq!(notes[0].text, "Registered and working.");
-        assert_eq!(notes[0].mark, Mark::Ok);
+        let cs = control_state(&m, &status_all_ok());
+        let notes = cs.detail.unwrap().notes;
+        assert!(notes.is_empty(), "silence is the healthy state: {notes:?}");
+        assert_eq!(cs.items[0].flag, None);
+        assert_eq!(cs.items[0].mark, Mark::Ok);
     }
 
     #[test]
@@ -2497,19 +2735,39 @@ mod tests {
         assert_eq!(note.mark, Mark::Unknown);
     }
 
-    /// The list mark and the editor note are computed by ONE function, so they
-    /// cannot contradict each other -- which they can today.
+    /// The list flag and the row's mark are computed by ONE function, so they
+    /// cannot contradict each other.
+    ///
+    /// **REWRITTEN 2026-08-15, and the old body would now pass for the wrong
+    /// reason.** It asserted that a `missing` row had a `Mark::Bad` NOTE --
+    /// true while `No installed app has this name.` existed, and design 3.1
+    /// deletes it (`missing` already says that). What survives the deletion is
+    /// the actual invariant: the row still reports `Mark::Bad`, now from
+    /// `flag_mark` rather than from a sentence. Asserting the note again here
+    /// would pin the very duplication rule 2 removes.
     #[test]
     fn the_list_and_the_editor_cannot_disagree_about_a_row() {
         let mut m = model();
         m.set_app(0, "Nonexistent App");
         m.selected = Some(0);
         let cs = control_state(&m, &status_all_ok());
-        assert!(cs.items[0].flag.is_some(), "the list must show the problem");
-        let notes = cs.detail.unwrap().notes;
+        assert_eq!(
+            cs.items[0].flag.as_deref(),
+            Some("missing"),
+            "the list must show the problem"
+        );
+        assert_eq!(
+            cs.items[0].mark,
+            Mark::Bad,
+            "and the row's severity must agree it is one, with or without a note"
+        );
         assert!(
-            notes.iter().any(|n| n.mark == Mark::Bad),
-            "and the editor must agree it is one"
+            !cs.detail
+                .unwrap()
+                .notes
+                .iter()
+                .any(|n| n.text.contains("installed app")),
+            "the note repeated the word and is deleted"
         );
     }
 
@@ -2521,13 +2779,18 @@ mod tests {
         let mut m = model();
         m.selected = Some(0);
         let cs = control_state(&m, &st);
-        assert_eq!(cs.items[0].flag.as_deref(), Some("key in use"));
+        assert_eq!(cs.items[0].flag.as_deref(), Some("in use"));
         assert_eq!(cs.items[0].mark, Mark::Bad);
         let notes = cs.detail.unwrap().notes;
+        // The mock-up's sentence, verbatim. This is the ONE flagged
+        // condition that keeps a note, and the second half is why: the word
+        // `in use` says a program has the chord; only the sentence says
+        // beckon can never tell you which, which is what stops the user
+        // hunting for a name no Windows API returns.
         assert!(
             notes
                 .iter()
-                .any(|n| n.text == "Another program already has this shortcut."),
+                .any(|n| n.text == "Another program owns this key. Windows will not say which."),
             "{notes:?}"
         );
     }
@@ -2546,14 +2809,14 @@ mod tests {
     }
 
     /// `flag` is a single word but a row can be several things at once.
-    /// Highest wins: paused, then key in use, then not installed, then
-    /// custom. `paused` sits above the registration map on purpose --
-    /// `serve` CLEARS that map when it pauses, so a paused row would
-    /// otherwise read as "not registered yet" and say nothing about why.
+    /// Highest wins: paused, then in use, then missing, then other chord.
+    /// `paused` sits above the registration map on purpose -- `serve` CLEARS
+    /// that map when it pauses, so a paused row would otherwise read as "not
+    /// registered yet" and say nothing about why.
     #[test]
-    fn the_flag_precedence_is_paused_then_key_in_use_then_not_installed_then_custom() {
+    fn the_flag_precedence_is_paused_then_in_use_then_missing_then_other_chord() {
         let mut m = model();
-        m.set_caps(true); // realistic config; `custom` does not need this on
+        m.set_caps(true); // realistic config; `other chord` does not need this on
         m.set_combo(0, "ctrl+alt+t"); // not the caps_hold chord
         m.set_app(0, "Nonexistent App"); // not in the catalog
         let mut rt = status_all_ok();
@@ -2564,16 +2827,16 @@ mod tests {
         let flag = |m: &Model, rt: &RuntimeStatus| control_state(m, rt).items[0].flag.clone();
         assert_eq!(flag(&m, &rt).as_deref(), Some("paused"));
         rt.paused = false;
-        assert_eq!(flag(&m, &rt).as_deref(), Some("key in use"));
+        assert_eq!(flag(&m, &rt).as_deref(), Some("in use"));
         rt.registered.insert("ctrl+alt+t".into(), Ok(()));
-        assert_eq!(flag(&m, &rt).as_deref(), Some("not installed"));
+        assert_eq!(flag(&m, &rt).as_deref(), Some("missing"));
         m.set_app(0, "Terminal");
-        assert_eq!(flag(&m, &rt).as_deref(), Some("custom"));
+        assert_eq!(flag(&m, &rt).as_deref(), Some("other chord"));
         m.set_combo(0, "ctrl+super+alt+t");
         assert_eq!(flag(&m, &rt), None);
     }
 
-    /// `custom` answers one question: "does this combo match
+    /// `other chord` answers one question: "does this combo match
     /// `keyboard.caps_hold`?" -- decided purely by comparing modifiers, with
     /// NO dependency on whether `keyboard.caps` itself is on. A gate on
     /// `keyboard.caps` was tried and reverted: the README's own
@@ -2582,21 +2845,21 @@ mod tests {
     /// block at all, so the gate would have left the spec's own example
     /// silently unflagged.
     #[test]
-    fn custom_follows_caps_hold_regardless_of_whether_caps_is_on() {
+    fn other_chord_follows_caps_hold_regardless_of_whether_caps_is_on() {
         let mut m = model();
         m.set_combo(0, "ctrl+alt+t"); // not the default caps_hold (ctrl+super+alt)
         let mut rt = status_all_ok();
         rt.registered.insert("ctrl+alt+t".into(), Ok(()));
         assert_eq!(
             control_state(&m, &rt).items[0].flag.as_deref(),
-            Some("custom"),
-            "Caps off must not silence `custom`"
+            Some("other chord"),
+            "Caps off must not silence `other chord`"
         );
 
         m.set_caps(true);
         assert_eq!(
             control_state(&m, &rt).items[0].flag.as_deref(),
-            Some("custom"),
+            Some("other chord"),
             "and turning Caps on changes nothing about it"
         );
 
@@ -2604,7 +2867,7 @@ mod tests {
         assert_eq!(
             control_state(&m, &rt).items[0].flag,
             None,
-            "the chord is configurable, so `custom` must follow it"
+            "the chord is configurable, so `other chord` must follow it"
         );
     }
 
@@ -3110,7 +3373,7 @@ mod tests {
         let rest = rest_state();
         assert!(rest.detail.is_none(), "precondition: nothing is selected");
         assert!(!DefaultButton::Record.pressable(&rest, false, Page::Shortcuts));
-        assert!(!DefaultButton::Reset.pressable(&rest, false, Page::Shortcuts));
+        assert!(!DefaultButton::Revert.pressable(&rest, false, Page::Shortcuts));
         assert_eq!(
             default_button(DefaultButton::Record, &rest, false, Page::Shortcuts),
             DefaultButton::Save,
@@ -3120,7 +3383,7 @@ mod tests {
         let busy = busy_state();
         assert!(busy.detail.is_some(), "precondition: a row is selected");
         assert!(DefaultButton::Record.pressable(&busy, false, Page::Shortcuts));
-        assert!(DefaultButton::Reset.pressable(&busy, false, Page::Shortcuts));
+        assert!(DefaultButton::Revert.pressable(&busy, false, Page::Shortcuts));
         assert_eq!(
             default_button(DefaultButton::Record, &busy, false, Page::Shortcuts),
             DefaultButton::Record
@@ -3130,7 +3393,7 @@ mod tests {
         // off for the same reason every other mutating control is.
         let ro = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
         assert!(!DefaultButton::Record.pressable(&ro, false, Page::Shortcuts));
-        assert!(!DefaultButton::Reset.pressable(&ro, false, Page::Shortcuts));
+        assert!(!DefaultButton::Revert.pressable(&ro, false, Page::Shortcuts));
     }
 
     #[test]
@@ -3201,7 +3464,7 @@ mod tests {
             DefaultButton::Add,
             DefaultButton::Remove,
             DefaultButton::Record,
-            DefaultButton::Reset,
+            DefaultButton::Revert,
         ] {
             assert!(
                 b.visible(false, Page::Shortcuts),
@@ -3383,8 +3646,10 @@ mod tests {
         }
     }
 
-    /// The badge counts the file; `IDC_LBL_COUNT` counts the list. A filter
-    /// separates them, which is the whole reason the field exists.
+    /// The badge counts the file, never the filtered list. A filter separates
+    /// the two, which is the whole reason the field exists -- and since
+    /// 2026-08-15 the badge is the only count on screen, so being right about
+    /// the file is the only thing it can be right about.
     #[test]
     fn the_badge_counts_the_file_not_the_filtered_list() {
         let mut m = model();
@@ -4232,6 +4497,18 @@ mod tests {
 
     /// The pair has to round-trip for EVERY flag, because the painter takes
     /// the cell apart with no other information about it.
+    ///
+    /// **This is also the guard on the vocabulary being safe against itself**,
+    /// a job `no_flag_word_is_a_suffix_of_another` claimed until 2026-08-15.
+    /// That test asserted no word is a suffix of another and justified itself
+    /// with `in use` beside `key in use` -- a pair `split_app_cell` handles
+    /// correctly, because it demands `FLAG_SEP` in front of the word it
+    /// strips and `key in use` offers one space there, not three. The rule it
+    /// enforced was a superset of the real one and the real one is behavioural,
+    /// so it lives here instead: add a word ending in `FLAG_SEP` plus another
+    /// word and this loop returns the wrong pair for it. Deleted rather than
+    /// corrected, because two tests over the same table invite the reader to
+    /// trust the cheaper one.
     #[test]
     fn split_app_cell_inverts_app_cell_for_every_flag() {
         for f in FLAGS {
@@ -4247,21 +4524,126 @@ mod tests {
     /// vocabulary closed rather than merely documented as closed.
     #[test]
     fn every_flag_row_condition_produces_is_in_the_table() {
-        for f in ["paused", "key in use", "not installed", "custom"] {
+        for f in ["paused", "in use", "missing", "other chord"] {
             assert!(FLAGS.contains(&f), "{f:?} missing from FLAGS");
         }
     }
 
+    /// **The notes went quiet and took no severity with them.**
+    ///
+    /// Three of the four words lost the note that only repeated them (design
+    /// 3.1), and `mark` was derived from the notes alone -- so without
+    /// `flag_mark` every one of these rows would now report `Mark::Ok`.
+    /// Nothing in either window reads `ListItem::mark` today, so that
+    /// regression would have been invisible until something did read it.
+    ///
+    /// The expected marks are the ones the DELETED notes carried, which is
+    /// what makes this a before/after assertion rather than a fresh opinion.
+    #[test]
+    fn the_deleted_notes_did_not_take_the_marks_with_them() {
+        // `in use`: was a `Bad` note, still `Bad`. It is also the one word
+        // that kept a note, so it is the control -- if this row alone were
+        // right, the mark would be coming from the note as before.
+        let mut taken = status_all_ok();
+        taken
+            .registered
+            .insert("ctrl+super+alt+t".into(), Err("0x581".into()));
+        assert_eq!(control_state(&model(), &taken).items[0].mark, Mark::Bad);
+
+        // `missing`: was a `Bad` note, now no note at all.
+        let mut gone = model();
+        gone.set_app(0, "Nonexistent App");
+        let cs = control_state(&gone, &status_all_ok());
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+
+        // `other chord`: was a `Warn` note, now no note at all.
+        let mut other = model();
+        other.set_combo(0, "ctrl+alt+t");
+        let mut rt = status_all_ok();
+        rt.registered.insert("ctrl+alt+t".into(), Ok(()));
+        let cs = control_state(&other, &rt);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("other chord"));
+        assert_eq!(cs.items[0].mark, Mark::Warn);
+
+        // `paused`: was a `Warn` note on every row, now no note at all.
+        let paused = RuntimeStatus {
+            paused: true,
+            ..status_all_ok()
+        };
+        let cs = control_state(&model(), &paused);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("paused"));
+        assert_eq!(cs.items[0].mark, Mark::Warn);
+    }
+
+    /// **The precedence is for the CELL. It does not delete the conditions it
+    /// outranks.**
+    ///
+    /// The one combination the note deletion got wrong, and the reason
+    /// `row_condition` keeps a `conditions` vector rather than a single
+    /// `Option<String>`. Before the notes went quiet, a paused row whose app is
+    /// missing carried two of them -- `Warn` for the pause and `Bad` for the
+    /// app -- and `mark` was `Bad`. Afterwards `paused` won the cell, `missing`
+    /// was never recorded anywhere, and folding the winning WORD alone reported
+    /// `Warn` for a row that had been `Bad`: a silent severity drop on the one
+    /// pair where the two problems are independent.
+    ///
+    /// It fails on that version, which is what makes it a regression pin rather
+    /// than a restatement. The other three flag rows in
+    /// `the_deleted_notes_did_not_take_the_marks_with_them` pass either way,
+    /// because each of them is a row with exactly one condition.
+    ///
+    /// The controls are below it: pausing on its own is still `Warn` (so this
+    /// is not "paused became Bad"), and the missing app on its own is still
+    /// `Bad` with the cell reading `missing` (so the precedence itself did not
+    /// move).
+    #[test]
+    fn a_paused_row_whose_app_is_missing_is_still_bad() {
+        let mut m = model();
+        m.set_app(0, "Nonexistent App");
+        let paused = RuntimeStatus {
+            paused: true,
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &paused);
+        assert_eq!(
+            cs.items[0].flag.as_deref(),
+            Some("paused"),
+            "the cell still shows the highest-precedence word"
+        );
+        assert_eq!(
+            cs.items[0].mark,
+            Mark::Bad,
+            "the app is missing whether or not beckon is paused, and that was \
+             a `Mark::Bad` note before design 3.1 deleted the sentence"
+        );
+
+        // Control 1: the pause alone is a `Warn`, so the `Bad` above comes
+        // from the app rather than from the pause changing severity.
+        let cs = control_state(&model(), &paused);
+        assert_eq!(cs.items[0].mark, Mark::Warn);
+
+        // Control 2: the missing app alone still reads `missing` in the cell,
+        // so the assertion above is about the FOLD and not about precedence.
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+    }
+
     /// **The two `Mark::Bad` flags must not share a tone.** This is the whole
-    /// reason `flag_tone` is not derived from `Mark`: `key in use` and
-    /// `not installed` are both `Bad`, and the design draws one red and the
+    /// reason `flag_tone` is not derived from `Mark`: `in use` and `missing`
+    /// are both `Bad` (see `flag_mark`), and the design draws one red and the
     /// other amber. A refactor that "simplifies" the tone away to severity
     /// makes them identical and this test goes red.
+    ///
+    /// It reads `flag_mark` rather than restating "both are Bad", so the two
+    /// tables are compared instead of both being transcribed here.
     #[test]
     fn the_two_bad_flags_are_told_apart_by_tone() {
-        assert_eq!(flag_tone("key in use"), FlagTone::Bad);
-        assert_eq!(flag_tone("not installed"), FlagTone::Warn);
-        assert_ne!(flag_tone("key in use"), flag_tone("not installed"));
+        assert_eq!(flag_mark("in use"), flag_mark("missing"));
+        assert_eq!(flag_tone("in use"), FlagTone::Bad);
+        assert_eq!(flag_tone("missing"), FlagTone::Warn);
+        assert_ne!(flag_tone("in use"), flag_tone("missing"));
     }
 
     /// An unknown word must be silent rather than shout in a colour nobody
@@ -4269,18 +4651,18 @@ mod tests {
     #[test]
     fn an_unknown_flag_word_is_neutral() {
         assert_eq!(flag_tone("something new"), FlagTone::Neutral);
-        assert_eq!(flag_tone("custom"), FlagTone::Neutral);
+        assert_eq!(flag_tone("other chord"), FlagTone::Neutral);
     }
 
     /// An app name that merely CONTAINS a flag word keeps it. Only a whole
     /// suffix behind the separator counts.
     #[test]
     fn an_app_named_after_a_flag_word_is_not_split() {
-        assert_eq!(split_app_cell("Custom"), ("Custom", None));
+        assert_eq!(split_app_cell("Missing"), ("Missing", None));
         assert_eq!(split_app_cell("paused"), ("paused", None));
         assert_eq!(
-            split_app_cell("Key In Use Manager"),
-            ("Key In Use Manager", None)
+            split_app_cell("Files In Use Manager"),
+            ("Files In Use Manager", None)
         );
     }
 
