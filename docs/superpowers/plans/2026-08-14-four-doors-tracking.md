@@ -609,6 +609,19 @@ the answer:
   the rest of the arithmetic in this document trustworthy enough to change
   constants on.
 
+**The repaired window has NOT been photographed.** a14 was offline for this
+pass (`tailscale status`: *offline, last seen 26m ago*), and the design's own
+note applies — the machine cannot be woken into a signed-in state unattended,
+so this needs a person. Everything above is arithmetic checked against the
+photographs of the window **before** the repair; the numbers agreed to within
+3 px on three doors, which is why the constants were moved on it, and is not
+the same as having seen the result. What is owed:
+`C:\Users\kln\hwpass\run-fourdoors.ps1` (session 1, scheduled task, both
+`-AllowStartIfOnBatteries -Priority 4`), then all four doors against
+`specs/2026-08-14-four-doors-mockup.html` page by page. Kill `beckon*` before
+`cargo build` or the link fails on the locked exe and leaves the old binary
+in place.
+
 **Not closed, and named so it is not mistaken for done:** the Keyboard door
 carries the LARGEST gap of the three — its card is a fixed 78 px at 96 DPI —
 and that is design §3.2 being unbuilt rather than a layout fault. It draws one
