@@ -10,7 +10,8 @@ Status words: **done** (landed and gated) · **partial** (some of it) ·
 each one says why).
 
 Last updated: 2026-08-15, branch `four-doors-phase-0`. The most recent entry
-is *What the 2026-08-15 review pass changed*, after the About section.
+is *The four visual gaps*, before the page-dependent-stack section — the first
+pass driven by photographs of all four doors rather than by reading.
 
 ---
 
@@ -22,8 +23,8 @@ is *What the 2026-08-15 review pass changed*, after the About section.
 | `BS_AUTORADIOBUTTON \| BS_PUSHLIKE`, not `BS_OWNERDRAW` | **done** | and **measured**: gate G2 on a14, `CDIS_HOT` reaches it under comctl32 6.16 |
 | Window narrows 760 → **680** | **done** | Task 8, deliberately last so every earlier task's arithmetic was written and checked at 760 and this is the one change that re-tests all of it. One constant plus the probe's transcribed copy — and `ids::geometry_matches_the_probe` failed on the unedited copy, on the dev machine, which is exactly the drift that test was built for. A card interior is 638 at 96 DPI (`cw1` / `ed_w` / `kb_w` alike — `ed_w` was `grp_w`, and its contents sat a further `tok::GAP` inside it until 2026-08-15 deleted the group box's caption and with it the inset), and **`col_app` is 421, not the design's ~438** — `layout` subtracts `SM_CXVSCROLL` from the list's client width whether or not a bar is up, so it is `638 − 17 − 200`, and 404 with one actually up. `MIN_WIDTH` did not move; `layout.rs` states that as a rule until G1 runs |
 | `MIN_WIDTH` 660 unchanged | **done** | and must not move until G1 runs — `layout.rs` states that as a rule |
-| `MIN_HEIGHT` 560 unchanged | **changed** | kept at 560 through two re-derivations, and the constant has not moved in either. Its **four-row guarantee is withdrawn** — design §4 makes the list scroll, so a row count is not what a floor should promise — and the arithmetic under it has now swung from *two* rows to **eight**: 2026-08-15 returned 110 px to the list (the keyboard card's cross-page reservation, the editor caption, the column header) and deleted the cap that would have absorbed it. The two-row point is **412**, so the floor clears its own standard by 148 px. **Not moved, deliberately**: the standard is met at both ends so it cannot choose, the slack points the safe way (too high costs draggability, too low ships a one-row list), and `MIN_WIDTH` is frozen until G1 for the same class of reason. Numbers for whoever lowers it are in `MIN_HEIGHT`'s own comment — 412 / 456 / 500 for two / four / six rows |
-| `WINDOW_HEIGHT` 600 unchanged | **done** | and re-derived 2026-08-15: it buys **13 rows** banner-down where it bought 7. Left alone on purpose — the only argument for a shorter window is that the mock-up's page is ~436 px, and the mock-up is drawn **without a command bar**, which is design §6's job, not this pass's |
+| `MIN_HEIGHT` 560 unchanged | **changed** | **560 → 480 on 2026-08-15 (second pass), and the derivation changed SUBJECT rather than value.** Every earlier version of this row, and of the constant's own comment, solved the SHORTCUTS page for a row count. That cannot be the binding constraint: card 1's list gives room up before anything else moves, so the door that runs out of room first is one of the three whose card is fixed — and it is About, whose height is the only one on any page that moves with a text measurement. The floor is now `content_top + about_card_h + gap + bar` at a **three-line disclosure** = 478, rounded to 480. Two lines is what the shipped string measures at every DPI the window is drawn at; three is one line of headroom; four does not fit, and what it collides with is nothing, because the command bar draws no buttons on that door since the store split. The list at the new floor is 7 rows banner-down and 5 banner-up. **The previous row's reasoning is falsified rather than superseded**: "not moved, deliberately … the standard is met at both ends so it cannot choose" was true of a standard about the list, and what forced the move is `WINDOW_HEIGHT` — 500 cannot be the default size of a window whose minimum is 560. Its parting numbers (412 / 456 / 500 for two / four / six rows) were banner-up figures for the old rhythm and are history |
+| `WINDOW_HEIGHT` 600 unchanged | **changed** | **600 → 500 on 2026-08-15 (second pass).** This row's own argument for leaving it is what fell: *"the only argument for a shorter window is that the mock-up's page is ~436 px, and the mock-up is drawn **without a command bar**"*. The mock-up **has** a command bar — `.cmdbar` is a sibling of the four `.page` divs, outside all of them, 47 px tall, carrying the service line, `Saved` and `Undo` on every door (design §6.4's replacement, not its absence). Measured in headless Chrome at the drawn 680 px rather than read off the drawing: `.win` is **496.9 px** tall — 34 title bar, 47 strip, 336–374 page, 47 bar — against the 600 its own hint line claims. Design §2's table says 600 and derives only the WIDTH; the height is carried over from the pre-Four-Doors window unexamined. That 103 px is the larger half of the void the System and About doors shipped with (the other half is `tok::ROW_GAP`). Costs the list 13 rows → 8, which is more than the drawing shows and is the right side to lose on: the list is the one thing that flexes, so a taller window is one drag away, while no drag helps a door whose card is fixed |
 | Defaults to **dark** | **done** | 2026-08-15, and it is the behaviour change design §5.2 flags rather than a tidy-up. `theme::read_inputs`' `apps_use_light_theme` is no longer `Themes\Personalize\AppsUseLightTheme` — it is `Some(u32::from(!prefs::dark()))`, i.e. beckon's own `HKCU\Software\beckon\DarkMode`, absent meaning DARK. A user on light Windows now gets a dark window. High contrast still outranks it, unchanged, in `theme::resolve` — that is the OS enforcing a choice rather than expressing one. The field keeps its registry-shaped name on purpose: core knows the SHAPE of the answer and the Windows crate knows where it comes from, and a second `ThemeInputs` field would have been two ways to say one thing plus a rule about which wins |
 | Transparency slider 85-100 %, default 96 % | **done** | 2026-08-15. `IDC_OPACITY` is a `msctls_trackbar32` with `TBS_NOTICKS`, range set from `OPACITY_MIN`/`OPACITY_MAX`, page size 5. **The tier stays core's and only the LEVEL is the user's**: `apply_current_backdrop` matches `backdrop(...)`, and substitutes `opacity_alpha(prefs::opacity())` for `TIER2_ALPHA` on the `Alpha` arm alone — so a blocked machine (`transparency_block`) never reaches the substitution and the slider can never make an opaque window transparent. Applied on every step of a drag, not on `TB_ENDTRACK`: the window's own alpha is what the user is judging the value by, so a slider you have to let go of to see is not one. **The row went STALE on a live change for one day** — its answer was pushed only by `apply_system_state`, which only `serve` calls, while `on_theme_changed` re-resolved the backdrop and left the row alone. So turning high contrast on (or an `EnableTransparency` flip, which broadcasts `ImmersiveColorSet` without moving `Theme` at all) made the window opaque while the row went on offering a live slider and a percentage. Closed 2026-08-15 by `refresh_transparency_row`, called from `on_theme_changed` beside `apply_current_backdrop` and above its `!changed` return, for that function's own stated reason. It needs nothing from `serve` — the block is a `GetSystemMetrics` plus a registry read, the level is `HKCU\Software\beckon` — and no `UI` borrow, which is what makes it safe at that point in a wndproc. **One predicate with two readers is worth nothing if only one of them is ever asked again**, which is the general form and the reason this is written here rather than only in the code. **Scope, stated rather than implied**: the row now agrees with the backdrop at every moment the backdrop is re-resolved, and no more — entering a remote session raises `WM_WTSSESSION_CHANGE`, not `WM_THEMECHANGED`, and leaves BOTH stale until the next `apply_system_state`. That is one open defect about `SM_REMOTESESSION`, not two about this row |
 | Strip sits below the title bar, never inside the caption | **done** | and **verified free**: `chrome::nchittest` returns `HTCLIENT` below `TITLEBAR_H`, so no drag-zone arithmetic was needed |
@@ -566,6 +567,55 @@ words to edit, plus two uniqueness assertions since the list is maintained by
 hand from another file (a duplicated pair would make the count true for the
 wrong reason).
 
+## The four visual gaps — 2026-08-15, from the first photographs of all four doors
+
+`measurements/fd-dark-{shortcuts,keyboard,system,about}.png` (a14, 1020×900 @
+144 DPI) are the first pictures of the finished doors, and they carry four
+faults that **no test in the tree could have failed on**, which is the fact
+worth keeping rather than the four faults.
+
+| # | What the photograph shows | Status |
+|---|---|---|
+| 1 | `Open config file` / `Close` / `Save` under all four doors | **done** — design §1's store split is now `Page::writes_config` + `command_bar_shown`. The half that was not cosmetic: `Ctrl+S` is a WINDOW accelerator, so it wrote `apps.toml` from System and About with no Save on screen. `DefaultButton::HOME` became `home(page)` and `default_button` returns `Option` — its own doc had named that early return as the line that would break |
+| 2 | 224 px of ground under the System card, 210 under About | **done** — two causes, both closed: `WINDOW_HEIGHT` 600 → 500 (the drawing is 497, measured) and the setting-row pitch 32 → 46 via `tok::ROW_GAP` (the drawing's `.srow` is 46). Leaves 52 px and 38 px. `MIN_HEIGHT` 560 → 480, re-derived from the tallest FIXED page |
+| 3 | Three bindings in a ~400 px list | **done, as a decision not to change the list** — see the §4 row. The list is a function of the client rect; the photograph is a three-binding config; a cap would move the void rather than close it. The window height change takes it to eight rows |
+| 4 | `\\?\C:\Users\kln\.config\beckon\` on the System page | **done** — one `canonicalize` in `cmd_serve_app` fed four consumers, two of them `ShellExecuteW` and `explorer /select,`, which do not take that spelling. `beckon_core::paths::plain`, applied at the origin. NOT applied in `lockfile::acquire`, which hashes its own canonical path into the lock file's name |
+
+**What made all four invisible, and it is one thing.** `layout.rs` had **zero
+tests** — no `#[cfg(test)]`, no `#[test]` — and it is `cfg`-gated to Windows,
+so the entire vertical geometry of the window was untestable on two of the
+three CI jobs and unrunnable on the machine it is written on. Nothing anywhere
+could fail on a card height, a token, or a band order. The evidence that this
+is the cause rather than a coincidence: `layout.rs` carried a comment claiming
+the System card is "262 px of interior" when the real figure was **232**, and
+no reading of the code produced 262. It had been wrong since the row was
+written.
+
+Closed by moving `system_plan` and `about_plan` — pure integer arithmetic with
+no Win32 in them — to `beckon_core::page_plan`, where seven tests run on all
+three jobs, and by giving `layout.rs` its first five tests (Windows job only),
+one of which is gap #2 stated as an assertion with a 60 px bound.
+
+**Two things were measured rather than reasoned this pass**, and both changed
+the answer:
+
+- **The mock-up rendered in headless Chrome at its own 680 px.** `.win` is
+  496.9 px tall, not the 600 its hint line claims; `.cmdbar` is a sibling of
+  the four pages and is on all of them; `.srow` is 46 px; the System card is
+  364 in a 374 px page. The previous pass's argument for keeping 600 rested on
+  "the mock-up is drawn without a command bar", which the file falsifies.
+- **The hand-traced geometry against the photographs.** Card bottoms land
+  within 3 px on System, About and Keyboard at 144 DPI, which is what makes
+  the rest of the arithmetic in this document trustworthy enough to change
+  constants on.
+
+**Not closed, and named so it is not mistaken for done:** the Keyboard door
+carries the LARGEST gap of the three — its card is a fixed 78 px at 96 DPI —
+and that is design §3.2 being unbuilt rather than a layout fault. It draws one
+row where the design has three sections, two dividers and an expander, and its
+card is captioned `Keyboard` directly under a pill captioned `Keyboard`, which
+is the same duplication §3.1 deleted on the Shortcuts door.
+
 ## The vertical stack is page-dependent — taken 2026-08-15, after two defers
 
 `compute_card_rects` used to reserve the keyboard card's height on **every**
@@ -621,6 +671,7 @@ horizontally, which reads as a rendering fault.
 | Uncap the list so it follows window height | **done** — 2026-08-15, and this row was **wrong before**: it read "already true before this work", citing a fix that had landed. The design's own §4 gives the falsifying evidence in the same breath — `let want = list_header_height(..) + row_h * tok::ROWS;` was still in `layout.rs`, and `list_h` was `want.min(room)`, so the list was capped at eight rows at every window height. What had landed was something else. `want` is gone; `list_h` is the room the page leaves |
 | `tok::ROWS` should be deleted | **done** — 2026-08-15, and forced rather than chosen: the other three §3.1 deletions return 110 px, and with the cap in place all of it would have re-appeared as empty space below the editor card. `tok::ROW_H` is NOT its replacement and stays on its own reader (`rebuild_state_image_list`) |
 | Keep the whole-row snap or delete `Ui::shown_empty` | **done** — 2026-08-15, **snap kept**. `list_h = avail − avail % row_h`, so `list_row_height` is still an input to `compute_card_rects` and `shown_empty` still guards a real transition: the fallback `tok::ROW_H` is a LOWER BOUND on the live row, so the first row to arrive can change the answer. Deleting the guard instead would have been the larger change — it is one of `layout`'s six guarded inputs |
+| "The list is tall and empty" (`fd-dark-shortcuts.png`) — is the design wrong, or the drawing? | **done, and the answer is NEITHER: the list is right and the SCREENSHOT is a three-binding config.** Written out because the prompt that raised it asked for a side to be taken out loud rather than by silence. The photograph shows three rows in a ~400 px box, which reads as a sizing fault and is not one: `list_h` is a function of the client rect, the DPI and the row height, and `st.items.len()` never enters `compute_card_rects` — a grep of `layout.rs` for `items` returns nothing. Thirty bindings in that window fill it. **A soft cap is the one thing that must not be tried**: it is `tok::ROWS` respelled, it is what §4 deleted three rows above, and it does not remove the void — it MOVES it, because a capped list shrinks card 1 and the leftover falls between the editor card and the command bar instead (`layout.rs` says so at the `want` deletion: "at the shipped size would now leave 112 px of nothing below the editor card"). What the drawing actually shows is a **six-row config in a 497 px window**, which is a different window rather than a different list — closed by the `WINDOW_HEIGHT` row in §2, after which the same page offers eight rows rather than thirteen. If it ever does need a ceiling, the honest one is a ceiling on the WINDOW, not on the list |
 
 ## §5 Two reversals
 

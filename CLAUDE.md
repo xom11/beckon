@@ -959,6 +959,22 @@ notify    = "6"      # beckon-cli:  watch it for live reload
 fs4       = "0.8"    # beckon-cli:  flock, one serve per config path
 ```
 
+**The config path is canonicalised once and then SIMPLIFIED**, in
+`cmd_serve_app` (`serve.rs`). `Path::canonicalize` on Windows is
+`GetFinalPathNameByHandleW` and always returns `\\?\C:\…`; that spelling
+reached the startup log, the `Open config file` tooltip, the System page's
+config row — where `SS_PATHELLIPSIS` elides from the MIDDLE, so the prefix is
+the part that never shortens — and, less visibly, `ShellExecuteW` and
+`explorer.exe /select,`, which are the classic non-acceptors of it.
+`beckon_core::paths::plain` undoes it at the origin, conservatively: a volume
+GUID path, a UNC with no share, or any component Win32 would rewrite once
+unprotected (trailing dot or space, `.`/`..`, a DOS device name) keeps the
+prefix, because the verbatim form is what every Win32 call accepts.
+**Deliberately NOT applied inside `lockfile::acquire`**, which canonicalises
+independently one line earlier and hashes the result into the lock file's
+NAME — renaming the lock would let an old and a new binary both serve. Long
+paths are unaffected: the manifest declares `longPathAware`.
+
 The **only** file beckon reads is the `serve` shortcuts TOML — and since the
 settings window, the only file it writes. There is still
 no config for `beckon <id>` itself and no resolve cache — ids resolve against
@@ -1076,8 +1092,47 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   focus, so Enter saves from the fields, the list and the check boxes, but
   Enter on a tabbed-to `Close` closes and on `Reload` reloads. That is the
   point of two earlier fixes: Enter on a focused `Reload` used to save and
-  overwrite the external change the banner existed to protect. **Only
-  `Ctrl+S` is unconditional.**
+  overwrite the external change the banner existed to protect.
+
+  **CORRECTED 2026-08-15: "Only `Ctrl+S` is unconditional" is no longer true,
+  and it was the defect rather than the design.** `Ctrl+S` is an accelerator
+  on the WINDOW, so from the System or About door it reached
+  `handle_command`'s `IDC_APPLY` arm and wrote `apps.toml` with no Save on
+  screen — two doors that write no part of that file. `enabled()` could not
+  have stopped it: `apply_enabled` is `dirty && no errors` with no page term,
+  and a hidden button is not a disabled one. It is inert on those two doors
+  now; the model stays dirty, so the keystroke is waiting one `Ctrl+1` away
+  rather than lost.
+
+  **The command bar follows design §1's split by STORE**
+  (`beckon_core::settings::command_bar_shown`, from `Page::writes_config`):
+  `Save` / `Close` / `Open config file` are drawn on Shortcuts and Keyboard,
+  and on neither of the other two. `Close` and `Open config file` go with
+  `Save` rather than staying — `Close` is where "discard" lives (the dirty
+  prompt is in `WM_CLOSE`) and `Open config file` is a second route to a file
+  the System page already lists with its own two glyphs. **The BAND stays on
+  all four**: `compute_card_rects` reserves `pad + ctl` whatever the page
+  says, so `content_bottom` is one expression with one meaning, and an empty
+  bar is indistinguishable from the window ground it is painted on.
+
+  Two consequences that are not obvious and are load-bearing:
+
+  - **`DefaultButton::HOME` is gone, replaced by `home(page) ->
+    Option<DefaultButton>`**, and `default_button` returns `Option`. The old
+    constant's own doc named this: *"`Save` is on every page — if it ever
+    stops being, this early return is the line that breaks."* `None` is a real
+    answer, not a missing one: System and About have no primary action, so
+    Enter does nothing there until the user tabs onto a button. `NO_DEFAULT`
+    (0) is the id that carries "nowhere" through `Ui::defid`.
+  - **`repair_default_button`'s successor is page-dependent.** It named
+    `IDC_CLOSE` unconditionally — "always present" — which is now a hidden
+    control on half the doors, and a repair that moves focus onto a hidden
+    control is the exact fault it exists for. It falls back to the open door's
+    own pill, which is `show_page`'s successor and is chrome.
+
+  Every door keeps two ways out: the caption `X` is chrome, and Escape arrives
+  as `IDCANCEL` from the dialog manager rather than from the button, so hiding
+  `Close` does not disarm the key.
 
   **CORRECTED 2026-08-15 (branch `four-doors-phase-0`): the band list above
   and the list's row count were both wrong, and each was wrong in its own
@@ -1107,8 +1162,42 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   survives of it is the whole-row **snap** (`list_h = avail − avail % row_h`),
   which is what keeps `Ui::shown_empty` guarding a real transition.
 
-  Neither correction touches `MIN_HEIGHT` (560) or `MIN_WIDTH` (660); both are
-  frozen for reasons of their own, recorded at the constants.
+  Neither correction touches `MIN_HEIGHT` or `MIN_WIDTH`; both were frozen for
+  reasons of their own, recorded at the constants.
+
+  **CORRECTED 2026-08-15: `MIN_HEIGHT` is 480, `WINDOW_HEIGHT` is 500, and
+  `MIN_HEIGHT`'s freeze was lifted by arithmetic rather than by preference.**
+  The first photographs of all four doors show the System card ending 224 px
+  above the command bar and the About card 210 — a third of the window, on two
+  doors out of four. Two causes:
+
+  - **The window was 103 px taller than the drawing.** Measured in headless
+    Chrome at the mock-up's own 680 px, `.win` is **496.9** — not the 600 its
+    hint line claims. Design §2's table says 600 and derives only the width;
+    the height came across from the pre-Four-Doors window unexamined.
+  - **The setting-row pitch was 32 where the drawing is 46.** `tok::ROW_GAP`
+    (20) and `tok::DIV_GAP` (10) are that rhythm, for the System and About
+    cards only. **Not** a regrid of `CTL` / `ROW_H` / `CARD_PAD` — design §10
+    rules those out because `ROW_H` feeds `ImageList_Create` and so moves the
+    tick's cell.
+
+  `MIN_HEIGHT` also changed SUBJECT. Every earlier derivation solved the
+  Shortcuts page for a row count, which cannot be the binding constraint —
+  card 1's list gives room up before anything else moves, so the door that
+  runs out of room first is one of the three whose card is FIXED. It is About,
+  the only page whose height depends on a text measurement, at a three-line
+  disclosure: `78 + 356 + 44` = 478, rounded to 480. The list's rows are a
+  consequence now (eight at 500, seven at the floor), not the derivation.
+  `MIN_WIDTH` is untouched and still waits on gate G1.
+
+  **`system_plan` and `about_plan` now live in `beckon_core::page_plan`.**
+  They were pure integer arithmetic inside a `cfg(windows)` module that had
+  **zero tests** — so the whole vertical geometry of four doors was untestable
+  on two of the three CI jobs and unrunnable on the dev machine. The evidence
+  that this was the cause and not a coincidence: `layout.rs` claimed the System
+  card is "262 px of interior" when the figure was 232, and no reading of the
+  code produced 262. `layout.rs` now has its first five tests (Windows job
+  only); the seven in core run everywhere.
 
   **The filter box is a view, and the mapping is the feature.** `IDC_FILTER`
   (1021, cue banner `Filter`, no label) matches case-insensitively against

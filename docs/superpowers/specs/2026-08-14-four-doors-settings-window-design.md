@@ -49,12 +49,35 @@ System and About write `HKCU\Software\beckon`, the Run key, or nothing.
 
 | | |
 |---|---|
-| Size | **680 × 600** at 100 % DPI (was 760 × 600) |
-| Minimum | 660 × 560 unchanged — **but see §9 gate G1**, it may need to fall |
+| Size | **680 × 500** at 100 % DPI (was 760 × 600, then 680 × 600) |
+| Minimum | 660 × **480** (width unchanged — **see §9 gate G1**, it may still need to fall) |
 | Chrome | extended client, client-drawn 34 px title bar (`chrome.rs`, unchanged) |
 | Maximize | still off. `WS_MAXIMIZEBOX` absent; `chrome.rs:99` records that the maximized `WM_NCCALCSIZE` correction is deliberately absent *because* the state is unreachable |
 | Backdrop | opaque by default; a transparency slider, see §5 |
 | Theme | **dark by default** — a behaviour change, see §5 |
+
+**AMENDED 2026-08-15: the HEIGHT was never derived, and 600 was inherited.**
+The table above said `680 × 600` and the paragraph below derives the width at
+length — 638 px of card interior, 200 for the shortcut column, ~438 left for
+an app name — while saying nothing at all about 600, which came across from the
+pre-Four-Doors window. Measured in headless Chrome at its own stated 680 px,
+**the mock-up beside this file is 496.9 px tall**: 34 title bar, 47 strip,
+336–374 page, 47 command bar. Its own hint line says `680 × 600` and is wrong
+about its own drawing.
+
+That 103 px is the larger half of a defect the first photographs of all four
+doors made plain: at 600 the System card ended 224 px above the command bar
+and the About card 210 — a third of the window, on two doors out of four. The
+other half is the row rhythm; see §3.3. Both closed 2026-08-15;
+`plans/2026-08-14-four-doors-tracking.md` §*The four visual gaps* carries the
+numbers.
+
+The **minimum** moved with it and changed subject while it did. Every earlier
+derivation of `MIN_HEIGHT` solved the SHORTCUTS page for a row count, which
+cannot be the binding constraint: the list gives room up before anything else
+moves, so the door that runs out of room first is one of the three whose card
+is fixed. It is About — the only page on any door whose height depends on a
+text measurement — at a three-line disclosure.
 
 **680 px is affordable, and the reason I first gave for it was wrong.** The
 first draft claimed the Caps shorthand paid for the narrowing. It does not: that
@@ -212,6 +235,23 @@ parse.
 
 Five rows. No Save is drawn; every row applies on change.
 
+**"No Save is drawn" became true on 2026-08-15**, ahead of §6 and independently
+of it. This sentence had been aspirational: the command bar's three buttons
+were created once and placed on every door, so System and About drew a Save
+that had nothing to save — and `Ctrl+S`, being an accelerator on the window
+rather than on the page, wrote `apps.toml` from both of them. §1's split by
+store is now `Page::writes_config` in core. §6 still owns deleting the bar
+from the two doors that DO save; this only stopped it appearing on the two
+that never did.
+
+**The row rhythm is `CTL + ROW_GAP` (46 px at 96 DPI), not `CTL + GAP` (32).**
+Measured off the drawing rather than chosen: `.srow` is 46 px there, and the
+card it builds is 364 in a 374 px page. At 32 the shipped card was 254 and left
+224 px of ground under it. `ROW_GAP` and its half-sized `DIV_GAP` belong to
+this page and About; they are **not** a regrid of `CTL` / `ROW_H` / `CARD_PAD`,
+which §10 puts out of scope and which would move the list's tick cell through
+`ImageList_Create`.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Pause shortcuts                                 (══● )  │
@@ -311,6 +351,28 @@ and line 238 is its only consumer.
 **Open**: with the snap gone, `list_h` stops depending on `row_h`, which makes
 `Ui::shown_empty` (`mod.rs:1116-1157`) an inert guard. Keep the whole-row snap
 or delete the guard — do not leave a guard that guards nothing.
+**Settled 2026-08-15: snap kept.**
+
+**AMENDED 2026-08-15 — "short" is the WINDOW's job, and this section must not
+be read as licensing a cap.** The first photograph of the Shortcuts door shows
+three bindings in a ~400 px list, which reads as a sizing fault and is not one.
+Both halves of this section are doing what they say: `list_h` is a function of
+the client rect, the DPI and the row height, and `st.items.len()` never enters
+`compute_card_rects`. Thirty bindings fill that same box.
+
+What made the photograph look wrong is that the window was 103 px taller than
+the drawing (§2), so the page had room for thirteen rows where the drawing
+shows six. The drawing is **a six-row config in a 497 px window**, not a
+shorter list in a 600 px one — a different window, not a different list. Fixing
+it in §2 leaves eight.
+
+**A soft cap is the one repair that must not be attempted.** It is `tok::ROWS`
+respelled, it is what this section deleted, and it does not remove the
+emptiness — it moves it: a capped list shrinks card 1, and the leftover falls
+between the editor card and the command bar instead. `layout.rs` states the
+figure at the deletion site: at the shipped size a cap "would now leave 112 px
+of nothing below the editor card". If the list ever does need a ceiling, the
+honest one is a ceiling on the window.
 
 ---
 
@@ -569,9 +631,12 @@ silently tests stale code.
 
 1. `MIN_WIDTH` at 680 px — G1 decides whether the minimum must fall below 660.
 2. Keep the whole-row snap, or delete `Ui::shown_empty` (§4).
-3. Where `Page` lives. If it goes in `beckon-core`,
-   `DefaultButton::visible(external_change, page)` becomes testable on all three
-   CI jobs, which is the stated reason `DefaultButton` is in core at all.
+3. ~~Where `Page` lives.~~ **Settled: `beckon-core`**, and the argument earned
+   its keep twice more on 2026-08-15. `command_bar_shown(page)` and
+   `DefaultButton::home(page)` are both testable on all three jobs because of
+   it — and the same reasoning moved `system_plan` / `about_plan` to
+   `beckon_core::page_plan`, after `layout.rs` turned out to have **zero**
+   tests while owning the whole vertical geometry of four doors.
 4. What the macOS settings window does with the new `ControlState` fields. Both
    compile there for free; whether macOS should *draw* the service line is a
    cross-platform call nobody has made.
