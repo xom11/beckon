@@ -29,24 +29,10 @@ pub enum Certainty {
 }
 
 impl Certainty {
-    /// The leading glyph of a `check --resolve` row.
-    ///
-    /// `Exact` is blank on purpose. The mark is what the eye scans down the
-    /// left edge; twenty ticks with two warnings among them reads as noise,
-    /// while two marks against blank rows reads as two problems.
-    ///
-    /// ASCII, like every other mark in a columnar beckon output: a wide glyph
-    /// shifts every column after it on the row it appears in.
-    pub fn mark(self) -> char {
-        match self {
-            Certainty::Exact => ' ',
-            Certainty::Guess => '!',
-            Certainty::NoMatch => 'x',
-        }
-    }
-
-    /// The word for this grade, for the summary line and for a row that has no
-    /// tier to name.
+    /// The word for this grade. `Summary::line()` is the one caller today;
+    /// `check --resolve`'s per-binding rows print `tier` instead, since a
+    /// tier says which of an OS's several substring rules fired, which is
+    /// strictly more than this three-way grade names.
     pub fn word(self) -> &'static str {
         match self {
             Certainty::Exact => "exact",
@@ -64,6 +50,11 @@ pub struct NameReport {
     pub certainty: Certainty,
     /// What it resolved to — bundle id, AUMID or exe, `.desktop` id. `None`
     /// when `certainty` is `NoMatch`.
+    ///
+    /// Nothing prints this today. It exists as the resolved identity itself
+    /// — the thing `certainty` and `tier` are *about* — and each backend's
+    /// tests assert it as half of the one-report-per-name contract: a given
+    /// name resolves to exactly one target, or it does not resolve at all.
     pub target: Option<String>,
     /// The backend's own words: `MatchType::describe()`. Displayed, never
     /// parsed — which is why it is a borrowed `&'static str` and not an enum
@@ -81,7 +72,14 @@ pub struct NameReport {
     pub suggestions: Vec<String>,
 }
 
-/// Counts for the one-line tail of a `check --resolve` run.
+/// Counts of each `Certainty` across a batch of `NameReport`s.
+///
+/// Built and tested, but nothing prints this today — `check --resolve`
+/// prints the two problem blocks (`unresolved_report`, `guess_report`) and
+/// stops there. `Summary` and `line()` exist for the per-binding `match`
+/// floor the spec describes as the next step (`match = "exact"` refusing a
+/// file with any `Guess` in it), which needs the count of each grade to
+/// decide anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Summary {
     pub exact: usize,
@@ -90,31 +88,35 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// The closing line.
+    /// One sentence naming every count, in `Certainty::word()` order.
     ///
-    /// The table above prints only the problem rows, so this line carries the
-    /// whole picture — without the exact count a reader cannot tell twenty
-    /// bindings from two. When nothing is wrong it says so in three words
-    /// rather than making anyone count blank rows.
+    /// Not printed by anything shipped — see the struct doc. Calls
+    /// `Certainty::word()` rather than repeating "exact" / "guess" /
+    /// "no match" as literals, so the two cannot drift: a fourth variant
+    /// changes `word()` once and this line follows without a second edit.
     pub fn line(&self) -> String {
         let total = self.exact + self.guess + self.no_match;
         if total == 0 {
             return "nothing to resolve".to_string();
         }
         if self.guess == 0 && self.no_match == 0 {
-            return format!("all {} exact", self.exact);
+            return format!("all {} {}", self.exact, Certainty::Exact.word());
         }
-        let mut parts = vec![format!("{} exact", self.exact)];
+        let mut parts = vec![format!("{} {}", self.exact, Certainty::Exact.word())];
         if self.guess > 0 {
-            parts.push(format!("{} guess", self.guess));
+            parts.push(format!("{} {}", self.guess, Certainty::Guess.word()));
         }
         if self.no_match > 0 {
-            parts.push(format!("{} no match", self.no_match));
+            parts.push(format!("{} {}", self.no_match, Certainty::NoMatch.word()));
         }
         parts.join(", ")
     }
 }
 
+/// Tally a batch of reports into a `Summary`. The `match` here is exhaustive
+/// on purpose: it is the compiler nudge that forces a decision in this
+/// shared crate, rather than in only two of the three backends, if a fourth
+/// `Certainty` variant is ever added.
 pub fn summarize(reports: &[NameReport]) -> Summary {
     let mut s = Summary::default();
     for r in reports {
@@ -142,24 +144,14 @@ mod tests {
         }
     }
 
-    // ---------- marks ----------
+    // ---------- word ----------
 
-    /// The mark is what the eye scans down the left edge, so `Exact` must be
-    /// blank rather than a tick: twenty ticks and two warnings reads as noise,
-    /// two warnings against blank rows reads as two warnings.
+    /// ASCII, exhaustively. Every columnar beckon output assumes a narrow
+    /// glyph; a wide one shifts every following column on the row it
+    /// appears in.
     #[test]
-    fn only_the_problems_carry_a_mark() {
-        assert_eq!(Certainty::Exact.mark(), ' ');
-        assert_eq!(Certainty::Guess.mark(), '!');
-        assert_eq!(Certainty::NoMatch.mark(), 'x');
-    }
-
-    /// ASCII, exhaustively. The table is columnar and a wide glyph shifts
-    /// every following column on the row it appears in.
-    #[test]
-    fn marks_and_words_are_ascii() {
+    fn words_are_ascii() {
         for c in [Certainty::Exact, Certainty::Guess, Certainty::NoMatch] {
-            assert!(c.mark().is_ascii(), "{c:?}");
             assert!(c.word().is_ascii(), "{c:?}");
         }
     }
@@ -192,9 +184,9 @@ mod tests {
         assert_eq!((s.exact, s.guess, s.no_match), (2, 1, 1));
     }
 
-    /// When something is wrong the tail must carry the whole picture, because
-    /// the table above it prints only the problem rows — without the exact
-    /// count the reader cannot tell twenty bindings from two.
+    /// If this line is ever printed, it has to carry the whole picture on
+    /// its own — without the exact count a reader cannot tell twenty
+    /// bindings from two.
     #[test]
     fn line_reports_every_count_when_something_is_wrong() {
         let s = Summary {
