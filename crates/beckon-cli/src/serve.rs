@@ -645,6 +645,119 @@ fn watch_config(
 /// see `install_tray_menu`, where every call site clones what it needs and
 /// drops its borrow first, before calling it. `set_paused` holds the same
 /// two borrows across the same non-pumping calls, for the same reason.
+/// Write or clear the `HKCU\…\Run` value, and say so if it fails.
+///
+/// **One function, two call sites**: the tray menu's `Start with Windows` row
+/// and the System page's switch (design §3.3). The command line a Run value
+/// has to carry -- the scoop `current` junction rather than a version
+/// directory, the config path, the `--log` -- is `serve_app`'s policy, and
+/// two callers building it separately is exactly how one of them ends up
+/// writing a value that starts a binary that no longer exists.
+///
+/// **`on` is the state wanted, not a toggle.** The menu row has no state of
+/// its own and passes `!is_enabled()`; the window's switch has already
+/// flipped itself and passes what it now shows. A function that toggled
+/// would make the second caller's own state a lie whenever the two
+/// disagreed -- which is the ordinary case the moment anything else writes
+/// that key, and Task Manager's Startup tab is exactly such a thing.
+#[cfg(target_os = "windows")]
+fn set_autostart(state: &Rc<RefCell<ServeState>>, on: bool) {
+    let result = if !on {
+        beckon_windows::autostart::disable()
+    } else {
+        match std::env::current_exe() {
+            Ok(exe) => {
+                let exe = crate::serve_app::scoop_current_path(&exe);
+                let s = state.borrow();
+                let (cfg, log) = s
+                    .autostart
+                    .as_ref()
+                    .map(|a| (a.config.as_deref(), a.log.as_deref()))
+                    .unwrap_or((None, None));
+                let cmd = crate::serve_app::run_key_command_line(&exe, cfg, log);
+                drop(s);
+                beckon_windows::autostart::enable(&cmd)
+            }
+            Err(e) => Err(format!("cannot find our own path: {e}")),
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("beckon serve: autostart: {e}");
+        // The user just clicked this; tell them every time.
+        crate::notify::report(
+            &format!("could not change autostart: {e}"),
+            crate::notify::Cause::HumanAction,
+        );
+    }
+}
+
+/// macOS has no autostart to set: login lifecycle belongs to `brew services`
+/// / launchd there, and beckon must not write a competing LaunchAgent behind
+/// it (`MenuModel::autostart` is `None` for the same reason). The System page
+/// does not exist on that window either, so nothing can reach this -- it is
+/// here because `on_command`'s `match` is compiled on both platforms and an
+/// arm that only exists on one would be a `cfg` inside the callback.
+#[cfg(all(target_os = "macos", not(target_os = "windows")))]
+fn set_autostart(_state: &Rc<RefCell<ServeState>>, _on: bool) {}
+
+/// Open one of the window's files with whatever is registered for it.
+///
+/// **The three URL targets are NOT handled and that is deliberate.**
+/// `Target::{Github, Releases, BugReport}` belong to the About page (design
+/// §3.4), which has no controls yet; answering them here would be dead code
+/// whose only test is that it compiles, and a link that opens the wrong page
+/// is worse than one that is not built. The `_` arm is where they land, and
+/// whoever builds About owns turning it into three.
+///
+/// **Every borrow is dropped before the call.** `ShellExecuteW` performs an
+/// out-of-process shell activation and pumps this thread's message queue, so
+/// a live `RefCell` borrow across it is the abort-across-`extern "system"`
+/// hazard this module's own doc describes. The path is cloned out first, the
+/// same discipline `install_tray_menu`'s `MENU_LOG` arm already follows.
+#[cfg(target_os = "windows")]
+fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
+    use beckon_core::settings::Target;
+    let path = match target {
+        Target::Config => Some(state.borrow().config.clone()),
+        Target::Log => state.borrow().log.clone(),
+        _ => None,
+    };
+    if let Some(p) = path {
+        if let Err(e) = beckon_windows::shell::open_path(&p) {
+            eprintln!("beckon serve: {e}");
+        }
+    }
+}
+
+/// Show one of the window's files in Explorer, selected.
+///
+/// The second glyph on each file row. Same target set, same borrow
+/// discipline, and the same silence about the three URL targets as
+/// `open_target` above -- there is nothing to reveal about a URL.
+#[cfg(target_os = "windows")]
+fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
+    use beckon_core::settings::Target;
+    let path = match target {
+        Target::Config => Some(state.borrow().config.clone()),
+        Target::Log => state.borrow().log.clone(),
+        _ => None,
+    };
+    if let Some(p) = path {
+        if let Err(e) = beckon_windows::shell::reveal_path(&p) {
+            eprintln!("beckon serve: {e}");
+        }
+    }
+}
+
+/// The macOS window has no System page, so neither command can arrive there.
+/// Present for `set_autostart`'s reason: the `match` is compiled on both
+/// platforms.
+#[cfg(all(target_os = "macos", not(target_os = "windows")))]
+fn open_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings::Target) {}
+
+#[cfg(all(target_os = "macos", not(target_os = "windows")))]
+fn reveal_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings::Target) {}
+
 fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let config = state.borrow().config.clone();
     let parsed = std::fs::read_to_string(&config)
@@ -842,7 +955,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // ShellExecuteW pumps this thread's queue, so the path is cloned
             // out and every borrow is dropped BEFORE the call -- the same
             // rule the module doc states for backend.beckon().
-            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_settings(&st),
+            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
             MENU_LOG => {
                 let path = st.borrow().log.clone();
                 if let Some(path) = path {
@@ -856,35 +969,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                 let now = !st.borrow().paused;
                 set_paused(&st, &mg, now);
             }
-            MENU_AUTOSTART => {
-                let result = if beckon_windows::autostart::is_enabled() {
-                    beckon_windows::autostart::disable()
-                } else {
-                    match std::env::current_exe() {
-                        Ok(exe) => {
-                            let exe = crate::serve_app::scoop_current_path(&exe);
-                            let s = st.borrow();
-                            let (cfg, log) = s
-                                .autostart
-                                .as_ref()
-                                .map(|a| (a.config.as_deref(), a.log.as_deref()))
-                                .unwrap_or((None, None));
-                            let cmd = crate::serve_app::run_key_command_line(&exe, cfg, log);
-                            drop(s);
-                            beckon_windows::autostart::enable(&cmd)
-                        }
-                        Err(e) => Err(format!("cannot find our own path: {e}")),
-                    }
-                };
-                if let Err(e) = result {
-                    eprintln!("beckon serve: autostart: {e}");
-                    // The user just clicked this; tell them every time.
-                    crate::notify::report(
-                        &format!("could not change autostart: {e}"),
-                        crate::notify::Cause::HumanAction,
-                    );
-                }
-            }
+            // The menu row is a TOGGLE with no state of its own, so what it
+            // wants is the opposite of what the registry currently says. The
+            // settings window's switch knows its own new state and passes it
+            // straight through; both end in `set_autostart`, which is what
+            // keeps "what a Run value looks like" a single answer.
+            MENU_AUTOSTART => set_autostart(&st, !beckon_windows::autostart::is_enabled()),
             MENU_QUIT => {
                 eprintln!("beckon serve: quit requested from the tray menu");
                 hotkey::request_quit();
@@ -924,7 +1014,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let st = Rc::clone(state);
     let mg = Rc::clone(mgr);
     let on_click = Box::new(move |id: u32| match id {
-        MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st),
+        MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
         MENU_RELOAD => reload(&st, &mg),
         MENU_PAUSE => {
             let now = !st.borrow().paused;
@@ -1158,8 +1248,34 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     };
     let external = s.external_change;
     let catalog = s.catalog.clone();
+    // The System page's two facts, read in the SAME borrow as everything
+    // above and used after it is dropped. `paused` is the flag `set_paused`
+    // owns; `autostart` is capability first and state second -- `None` omits
+    // the row entirely, and `is_enabled()` only decides the tick, which is
+    // `MenuModel::autostart`'s own distinction and the reason it is spelled
+    // the same way here.
+    #[cfg(target_os = "windows")]
+    let autostart = s
+        .autostart
+        .as_ref()
+        .map(|_| beckon_windows::autostart::is_enabled());
+    let paused = s.paused;
     drop(s);
     swin::apply_state(&cs, external, catalog.as_deref());
+    // **A second push, and design §1's split by store is why.** The System
+    // page writes `HKCU\Software\beckon`, the Run key, or nothing -- never
+    // `apps.toml` -- so it must keep working in the one state
+    // `unreadable_state` describes, where there is no `Model` to project a
+    // `ControlState` out of at all. Riding on the projection above would have
+    // made a theme switch hostage to a TOML error.
+    //
+    // Windows only, and not through a `swin` alias: the macOS settings window
+    // has no System page, so a no-op there would be a function whose only
+    // purpose is to be called.
+    #[cfg(target_os = "windows")]
+    swin::apply_system_state(paused, autostart);
+    #[cfg(not(target_os = "windows"))]
+    let _ = paused;
 }
 
 /// Decide whether `combo` is free for the row being edited, asking the OS
@@ -1466,7 +1582,7 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn open_settings(state: &Rc<RefCell<ServeState>>) {
+fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     use beckon_core::settings::SettingsCommand;
 
     // Already open: raise it, do not build a second model.
@@ -1704,6 +1820,7 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
         // that follow fill the rest.
         on_command: Box::new({
             let st = Rc::clone(state);
+            let mg = Rc::clone(mgr);
             move |c| match c {
                 // Remembered, not acted on: the window has already switched
                 // itself by the time this arrives, and what the caller owns
@@ -1711,14 +1828,57 @@ fn open_settings(state: &Rc<RefCell<ServeState>>) {
                 // unconditionally -- a page switch is a mouse click, not a
                 // keystroke.
                 SettingsCommand::ShowPage(p) => st.borrow_mut().settings_page = p,
-                SettingsCommand::SetPaused(_)
-                | SettingsCommand::SetAutostart(_)
-                | SettingsCommand::ReloadNow
-                | SettingsCommand::SetDarkMode(_)
-                | SettingsCommand::SetOpacity(_)
-                | SettingsCommand::SetCapsShorthand(_)
-                | SettingsCommand::Open(_)
-                | SettingsCommand::Reveal(_)
+                // **The tray's own two, and that is the point of routing
+                // them through here rather than letting the window act.**
+                // `set_paused` does five ordered things -- unregister, set
+                // the flag, rewrite the status phrase, CLEAR `registered`,
+                // sync the Caps hook -- and the cleared map is what makes the
+                // `paused` status word load-bearing on every Shortcuts row.
+                // A parallel implementation in the window would flip a flag
+                // and leave nineteen rows claiming to be registered.
+                //
+                // Both end in `refresh_settings`, which is what puts the
+                // consequence back on screen: the switch's own state, the
+                // status words on the Shortcuts list, and the pill's count.
+                SettingsCommand::SetPaused(on) => {
+                    set_paused(&st, &mg, on);
+                    refresh_settings(&st);
+                }
+                SettingsCommand::ReloadNow => {
+                    reload(&st, &mg);
+                    // The file may have changed under the window as well as
+                    // under `serve`, so the model is re-read rather than
+                    // merely re-projected. This is the same call the banner's
+                    // `Reload` makes, and here it is safe without a prompt
+                    // for a different reason: the user pressed a button
+                    // captioned `Reload` on a page about the service, not one
+                    // that appeared to warn them.
+                    reload_settings_from_disk(&st);
+                }
+                // The Run value, written by the same code the tray menu's
+                // own row writes -- `set_autostart` is that shared function,
+                // and both call sites report a failure the same way.
+                SettingsCommand::SetAutostart(on) => {
+                    set_autostart(&st, on);
+                    refresh_settings(&st);
+                }
+                // **Applied by the window, recorded by nobody here yet.**
+                // Both are the settings window's own look, stored in
+                // `HKCU\Software\beckon` by the window itself -- see
+                // `beckon_windows::prefs`. The commands exist so the caller
+                // CAN react (a tray that follows the same theme is the
+                // obvious next reader) and so the channel is exercised by
+                // the control that raises it; there is nothing for `serve`
+                // to do about either today, and inventing a second store for
+                // them here would be a second place they could disagree.
+                SettingsCommand::SetDarkMode(_) | SettingsCommand::SetOpacity(_) => {}
+                SettingsCommand::Open(t) => open_target(&st, t),
+                SettingsCommand::Reveal(t) => reveal_target(&st, t),
+                // Keyboard's shorthand toggle (§3.2) and auto-save's undo
+                // (§6) -- neither control exists yet, so neither command can
+                // arrive. Left as an empty arm rather than folded into a
+                // `_`, so the day one is built the compiler names this site.
+                SettingsCommand::SetCapsShorthand(_)
                 | SettingsCommand::Copy(_)
                 | SettingsCommand::Undo => {}
             }

@@ -129,24 +129,58 @@ pub(super) const IDC_TAB_KEYBOARD: i32 = 1041;
 pub(super) const IDC_TAB_SYSTEM: i32 = 1042;
 pub(super) const IDC_TAB_ABOUT: i32 = 1043;
 
-/// The one line System and About each show while they are waiting.
+/// The System page (design §3.3), in the order the rows are drawn.
 ///
-/// **From the reserved TAIL of each page's range, not the next free number.**
-/// 1070-1083 and 1100-1114 are already named in `CONTROL_IDS` for controls
-/// Phase 0 specified and nothing has built, and a placeholder is the one
-/// control on either page that is meant to be *deleted* -- taking a number out
-/// of the middle of a block would leave a hole in that page's numbering the day
-/// it goes.
+/// **Not chosen here either.** Phase 0 fixed all fourteen, and the page is
+/// built from exactly that list -- no number was picked, skipped or reused
+/// while the rows were written.
 ///
-/// **Neither sits on a card, so neither is in the `on_card` match** in
-/// `mod.rs`'s `WM_CTLCOLORSTATIC` arm. Both pages leave all four card rects at
-/// zero height (`compute_card_rects`), so the ground under these two is the
-/// window's own `bg`; they are answered by their own branch of that arm, above
-/// the `on_card` one. Falling through to `DefWindowProcW` would draw either as
-/// a `COLOR_3DFACE` rectangle -- the defect that once hit eight controls at
-/// once -- and joining `on_card` would paint a card-coloured strip on a page
-/// with no card behind it.
-pub(super) const IDC_SYS_PLACEHOLDER: i32 = 1084;
+/// Three of them are switches drawn by `paint::toggle` and one is a
+/// `msctls_trackbar32`; the rest are `STATIC`s and push buttons. What binds
+/// them together is `SYS_ROWS` (`mod.rs`), which says which of the two
+/// CONDITIONAL rows are on screen -- `IDC_AUTOSTART`, and the log row's four.
+///
+/// **`IDC_SYS_RELOAD` is not `IDC_RELOAD` (1015)**, and the two must never be
+/// merged: 1015 is the external-change banner's *reload from disk*, which
+/// discards the window's unsaved edits, while this one is the tray's own
+/// *reload now*, which re-reads the file and re-registers the hotkeys. Same
+/// word, opposite blast radius.
+pub(super) const IDC_PAUSE: i32 = 1070;
+pub(super) const IDC_AUTOSTART: i32 = 1071;
+pub(super) const IDC_SYS_RELOAD: i32 = 1072;
+pub(super) const IDC_DARK: i32 = 1073;
+pub(super) const IDC_OPACITY: i32 = 1074;
+pub(super) const IDC_OPACITY_VALUE: i32 = 1075;
+pub(super) const IDC_CONFIG_NAME: i32 = 1076;
+pub(super) const IDC_CONFIG_DIR: i32 = 1077;
+pub(super) const IDC_CONFIG_OPEN: i32 = 1078;
+pub(super) const IDC_CONFIG_SHOW: i32 = 1079;
+pub(super) const IDC_LOG_NAME: i32 = 1080;
+pub(super) const IDC_LOG_SIZE: i32 = 1081;
+pub(super) const IDC_LOG_OPEN: i32 = 1082;
+pub(super) const IDC_LOG_SHOW: i32 = 1083;
+
+/// The one line About shows while it is waiting.
+///
+/// **From the reserved TAIL of the page's range, not the next free number.**
+/// 1100-1114 are already named in `CONTROL_IDS` for controls Phase 0
+/// specified and nothing has built, and a placeholder is the one control on a
+/// page that is meant to be *deleted* -- taking a number out of the middle of
+/// a block would leave a hole in that page's numbering the day it goes.
+///
+/// **That reasoning has now been paid off once.** System's own placeholder
+/// was 1084, out of 1084-1099, and design §3.3's fourteen rows replaced it on
+/// 2026-08-15 with 1070-1083 intact and no gap in them. 1084 is RETIRED in
+/// `beckon_core::settings::RETIRED_IDS`, not freed.
+///
+/// **It does not sit on a card, so it is not in the `on_card` match** in
+/// `mod.rs`'s `WM_CTLCOLORSTATIC` arm. The About page leaves all four card
+/// rects at zero height (`compute_card_rects`), so the ground under it is the
+/// window's own `bg`; it is answered by its own branch of that arm, above the
+/// `on_card` one. Falling through to `DefWindowProcW` would draw it as a
+/// `COLOR_3DFACE` rectangle -- the defect that once hit eight controls at once
+/// -- and joining `on_card` would paint a card-coloured strip on a page with
+/// no card behind it.
 pub(super) const IDC_ABOUT_PLACEHOLDER: i32 = 1115;
 
 /// `Ctrl+Tab` and `Ctrl+Shift+Tab`: "the next door" and "the one before it".
@@ -216,7 +250,20 @@ mod tests {
         ("TAB_KEYBOARD", super::IDC_TAB_KEYBOARD),
         ("TAB_SYSTEM", super::IDC_TAB_SYSTEM),
         ("TAB_ABOUT", super::IDC_TAB_ABOUT),
-        ("SYS_PLACEHOLDER", super::IDC_SYS_PLACEHOLDER),
+        ("PAUSE", super::IDC_PAUSE),
+        ("AUTOSTART", super::IDC_AUTOSTART),
+        ("SYS_RELOAD", super::IDC_SYS_RELOAD),
+        ("DARK", super::IDC_DARK),
+        ("OPACITY", super::IDC_OPACITY),
+        ("OPACITY_VALUE", super::IDC_OPACITY_VALUE),
+        ("CONFIG_NAME", super::IDC_CONFIG_NAME),
+        ("CONFIG_DIR", super::IDC_CONFIG_DIR),
+        ("CONFIG_OPEN", super::IDC_CONFIG_OPEN),
+        ("CONFIG_SHOW", super::IDC_CONFIG_SHOW),
+        ("LOG_NAME", super::IDC_LOG_NAME),
+        ("LOG_SIZE", super::IDC_LOG_SIZE),
+        ("LOG_OPEN", super::IDC_LOG_OPEN),
+        ("LOG_SHOW", super::IDC_LOG_SHOW),
         ("ABOUT_PLACEHOLDER", super::IDC_ABOUT_PLACEHOLDER),
     ];
 

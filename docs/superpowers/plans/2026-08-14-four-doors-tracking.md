@@ -23,8 +23,8 @@ Last updated: 2026-08-15, branch `four-doors-phase-0`.
 | `MIN_WIDTH` 660 unchanged | **done** | and must not move until G1 runs — `layout.rs` states that as a rule |
 | `MIN_HEIGHT` 560 unchanged | **changed** | kept at 560 through two re-derivations, and the constant has not moved in either. Its **four-row guarantee is withdrawn** — design §4 makes the list scroll, so a row count is not what a floor should promise — and the arithmetic under it has now swung from *two* rows to **eight**: 2026-08-15 returned 110 px to the list (the keyboard card's cross-page reservation, the editor caption, the column header) and deleted the cap that would have absorbed it. The two-row point is **412**, so the floor clears its own standard by 148 px. **Not moved, deliberately**: the standard is met at both ends so it cannot choose, the slack points the safe way (too high costs draggability, too low ships a one-row list), and `MIN_WIDTH` is frozen until G1 for the same class of reason. Numbers for whoever lowers it are in `MIN_HEIGHT`'s own comment — 412 / 456 / 500 for two / four / six rows |
 | `WINDOW_HEIGHT` 600 unchanged | **done** | and re-derived 2026-08-15: it buys **13 rows** banner-down where it bought 7. Left alone on purpose — the only argument for a shorter window is that the mock-up's page is ~436 px, and the mock-up is drawn **without a command bar**, which is design §6's job, not this pass's |
-| Defaults to **dark** | **open** | System page (Task 7+) |
-| Transparency slider 85-100 %, default 96 % | **open** | System page |
+| Defaults to **dark** | **done** | 2026-08-15, and it is the behaviour change design §5.2 flags rather than a tidy-up. `theme::read_inputs`' `apps_use_light_theme` is no longer `Themes\Personalize\AppsUseLightTheme` — it is `Some(u32::from(!prefs::dark()))`, i.e. beckon's own `HKCU\Software\beckon\DarkMode`, absent meaning DARK. A user on light Windows now gets a dark window. High contrast still outranks it, unchanged, in `theme::resolve` — that is the OS enforcing a choice rather than expressing one. The field keeps its registry-shaped name on purpose: core knows the SHAPE of the answer and the Windows crate knows where it comes from, and a second `ThemeInputs` field would have been two ways to say one thing plus a rule about which wins |
+| Transparency slider 85-100 %, default 96 % | **done** | 2026-08-15. `IDC_OPACITY` is a `msctls_trackbar32` with `TBS_NOTICKS`, range set from `OPACITY_MIN`/`OPACITY_MAX`, page size 5. **The tier stays core's and only the LEVEL is the user's**: `apply_current_backdrop` matches `backdrop(...)`, and substitutes `opacity_alpha(prefs::opacity())` for `TIER2_ALPHA` on the `Alpha` arm alone — so a blocked machine (`transparency_block`) never reaches the substitution and the slider can never make an opaque window transparent. Applied on every step of a drag, not on `TB_ENDTRACK`: the window's own alpha is what the user is judging the value by, so a slider you have to let go of to see is not one |
 | Strip sits below the title bar, never inside the caption | **done** | and **verified free**: `chrome::nchittest` returns `HTCLIENT` below `TITLEBAR_H`, so no drag-zone arithmetic was needed |
 | Tokens `TABSTRIP_H 36`, `TAB_PAD_X 14`, `TAB_PAD_Y 2`, `TAB_VISUAL 26`, `FOCUS_SLACK 3` | **done** | `layout.rs` `mod tok` |
 | New palette tokens `strip` / `strip_hover` with `pairs()` rows | **changed** | done, but `LIGHT.strip_hover` moved `#CBD1DE` → `#C2C9D8`: the design's value measures **1.126** against the trough, under its own 1.2 floor |
@@ -129,6 +129,7 @@ every row was already silent in it. Nothing in that picture moved.
 | The Caps row exists as its own page | **done** — Task 4 |
 | Three `Hold` chips and never four | **done** (pre-existing; `Chord` has exactly ctrl/super/alt) |
 | `Tap` is a `CBS_DROPDOWNLIST` read and written by index | **done** (pre-existing) |
+| The Caps switch itself | **changed 2026-08-15, by the System page and not by this workstream.** `paint::toggle` now draws its track at the RIGHT of the control and its caption at the left; it was the other way round. The mock-up draws the Caps row's switch right-aligned like System's three, so this is a step toward §3.2's own drawing rather than away from it — but only a step: the switch lands at the right end of `IDC_CAPS`' own rect, not at the card's right edge, because that needs the three-row Keyboard card this workstream owns. `layout` did not move: a switch's control is its caption plus `toggle_glyph` either way |
 | `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]` toggle, default OFF | **open** — id 1060 reserved. **It carries a fifth job nobody has scheduled: retiring the `other chord` status word.** §3.2 argues that once bindings on the caps chord collapse to `[Caps][B]` while every other chord keeps its full run of chips, "other chord" is visible at a glance and the word can go — and the mock-up is drawn in that future, which is why its `Telegram Web` row (a genuine `ctrl+super+alt+shift+t`) shows an EMPTY status cell while §3.1's own list of four words still names `other chord`. The two are not in conflict, they are dated: `row_condition` produces the word today because the toggle it depends on does not exist. Whoever builds 1060 owns deleting it — and `FLAGS` is a closed four-word table with three tests reading it, so that is a real task, not a line |
 | `If Caps Lock does nothing` expander | **open** — ids 1061/1062 reserved |
 | The hook-disclosure line moves to About | **open** |
@@ -137,30 +138,157 @@ every row was already silent in it. Nothing in that picture moved.
 
 | Design says | Status | Where / why |
 |---|---|---|
-| Both pages exist and open | **done** | Task 7. Each owns one `STATIC` reading `Nothing here yet.` — `IDC_SYS_PLACEHOLDER 1084`, `IDC_ABOUT_PLACEHOLDER 1115`, from the reserved TAILS of their ranges rather than the next free number, so deleting a placeholder cannot leave a hole in the middle of a page's numbering. `every_door_owns_at_least_one_control` is the assertion: before Task 7 both doors opened onto the strip, the command bar and nothing between, which reads as a window that failed to draw |
-| Every id allocated (1070-1099, 1100-1119) | **done** (Phase 0) | and tested for uniqueness, so the pages can be filled without touching anything else |
-| Every real System control (pause, autostart, dark, opacity, the two file rows) | **open** | |
+| Both pages exist and open | **done** | Task 7 gave each a `STATIC` reading `Nothing here yet.`, from the reserved TAILS of their ranges rather than the next free number, so deleting a placeholder could not leave a hole in the middle of a page's numbering. **System's is gone (2026-08-15) and that reasoning was paid off**: 1070-1083 came out intact and `IDC_SYS_PLACEHOLDER` (1084) is RETIRED, not freed. About's (1115) is still a live control. `every_door_owns_at_least_one_control` is the assertion: before Task 7 both doors opened onto the strip, the command bar and nothing between, which reads as a window that failed to draw |
+| Every id allocated (1070-1099, 1100-1119) | **done** (Phase 0) | and tested for uniqueness. **System spent all fourteen of its named ids on 2026-08-15 and invented none** — the page was built from Phase 0's own table, in that table's order |
+| Every real System control (pause, autostart, dark, opacity, the two file rows) | **done** | 2026-08-15; the rest of this section is what it cost |
 | Every real About control (mark, version, build, location, licence, the hook disclosure, three links) | **open** | |
 
-**The placeholders sit on `bg`, not on `card`, and that is a correction to the
-plan.** The plan and shell spec §8 both say "**both must be added to the
+**About's placeholder sits on `bg`, not on `card`, and that is a correction to
+the plan.** The plan and shell spec §8 both say "**both must be added to the
 `on_card` match** or they fall through to `COLOR_3DFACE` and draw as grey
 rectangles". The hazard is real and is closed; the prescription was half right.
-Neither page has a card at all — `compute_card_rects` leaves all four rects at
-zero height behind those two doors — so `on_card` would have painted a
-card-coloured strip the width of one line onto a page with no card behind it.
-They get their own branch of `WM_CTLCOLORSTATIC` instead, returning the `bg`
-brush with `text_muted` ink (already covered by `theme::pairs`' *muted text on
-window bg* row) and `COLOR_BTNTEXT`/`COLOR_BTNFACE` under high contrast — a
-same-family pair, unlike the cross-family one the `on_card` branch below it
-carries its own correction about.
+That page has no card at all — `compute_card_rects` leaves every rect at zero
+height behind that door — so `on_card` would have painted a card-coloured
+strip the width of one line onto a page with no card behind it. It gets its
+own branch of `WM_CTLCOLORSTATIC` instead, returning the `bg` brush with
+`text_muted` ink (already covered by `theme::pairs`' *muted text on window bg*
+row) and `COLOR_BTNTEXT`/`COLOR_BTNFACE` under high contrast — a same-family
+pair, unlike the cross-family one the `on_card` branch below it carries its own
+correction about. **System left that branch when it grew a card**; its five
+STATICs and switches are in `on_card` now and its three VALUE slots have a
+third branch of their own, in `text_muted` on `card`.
 
-**They are also the first strings this window draws outside a card**, which
+**It is also the first string this window draws outside a card**, which
 reopens a hazard `theme::apply_backdrop` had closed by naming that exact
 change: GDI text drawn straight onto Mica glass loses its alpha and fringes
 black. `OPAQUE` plus the `bg` fill is what keeps it closed — the ink lands on
 an opaque surface either way. That comment has been corrected rather than left
 describing a window that no longer exists.
+
+### What the System page is made of, 2026-08-15
+
+**Card 4, at the content origin, its height its CONTENTS'.** It follows card
+3's shape rather than card 1's: nothing on it flexes, so the page is a card
+with space below it — which is what a page with one thing on it looks like —
+rather than a card stretched to the command bar. `system_plan` walks nine
+slots in the drawing's order (three service rows, a divider, two look rows, a
+divider, two file rows) and is the **one** arithmetic three readers share:
+`compute_card_rects` takes its `content_h`, `layout` takes the row offsets,
+and `WM_PAINT` takes the two divider offsets through `system_dividers`. Three
+spellings of "how tall is the System card" would drift, and the drift reads as
+a divider through a row.
+
+**A row that is omitted contributes NO height**, the same rule the banner's
+card follows — so "omitted, not greyed" is a layout property rather than a
+`ShowWindow` that leaves a hole. Which rows exist is
+`beckon_core::settings::system_state`'s answer (`autostart: Option<bool>`,
+`log: Option<FileRow>`), and the window reads only `is_some()`. It reaches
+`layout` and `compute_card_rects` through `SYS_ROWS`, a **thread-local `Cell`
+and never `Ui`** — `PILL_BADGE`'s reason, and the fifth time it has decided a
+design here: a paint arrives while `UI` is borrowed, and
+`compute_card_rects` is documented never to touch it.
+
+**A second push, `apply_system_state`, beside `apply_state`.** This is design
+§1's split by store made structural rather than described: `ControlState` is
+the projection of a `Model`, and a config that does not parse produces no
+`Model` at all — so every System row would have been hostage to a TOML error
+it has nothing to do with, which is the defect the design names as fixed "as a
+side effect". It takes two arguments (`paused`, `autostart`) and asks for
+everything else itself: the paths are already in `CFG`, the log's size is a
+`stat`, and the look is `HKCU\Software\beckon`. Passing those in would have
+meant `serve` reading Windows-only state on a cross-platform path.
+
+**`Pause shortcuts` and `Reload` go through `SettingsCommand` to `serve.rs`'s
+own `set_paused` and `reload`** — the same two functions the tray menu calls,
+never a second implementation. `set_paused` does five ordered things and one
+of them CLEARS `registered`; a window that flipped a flag itself would leave
+nineteen rows claiming to be registered while nothing was. `Start with
+Windows` goes the same way, to a new `set_autostart` extracted from the tray's
+own menu arm so the Run-key command line has one author.
+
+| Piece | Decided where | Note |
+|---|---|---|
+| Which rows exist | `settings::system_state` | `None` omits; the window reads `is_some()` |
+| What the transparency slot says | `Transparency::slot` | a percentage, or `TransparencyBlock::reason()` |
+| Whether the slider is live | `theme::transparency_block` | **the same predicate `theme::backdrop` uses**, factored out rather than copied — `the_slider_is_blocked_exactly_when_the_window_is_opaque` walks all eight combinations |
+| The opacity range and its alpha | `OPACITY_MIN`/`MAX`/`DEFAULT`, `clamp_opacity`, `opacity_alpha` | clamped on the way out of the registry too: anything can write that value |
+| How a size reads | `settings::size_label` | `112 KB`, Explorer's units |
+| Which half of a file row is the label | `system_state` | the file's own NAME; the value slot is the directory or the size |
+
+**Five things this pass did that the design did not ask for, each because
+something else forced it.**
+
+1. **`paint::toggle` now draws its track at the RIGHT and its caption at the
+   left.** It was the other way round while `IDC_CAPS` was the only switch,
+   and the mock-up draws both pages' switches right-aligned (`.srow` is
+   `label (flex:1)` then `.sw`). Four switches where there was one is what
+   made it matter: a page of rows whose controls line up with the card's right
+   edge reads as a column. **This changes the Keyboard page too**, and only
+   part-way — the switch moves to the right end of `IDC_CAPS`' own rect rather
+   than the card's, because §3.2's three-row Keyboard card is another
+   workstream's. Nothing in `layout` moved with it: a switch's control is its
+   caption plus `toggle_glyph` either way.
+2. **The five System push buttons joined `PUSH_BUTTONS` and `DefaultButton`**
+   (9 → 14 in both). Without `BS_NOTIFY` the default ring cannot follow focus
+   onto them and `IsDialogMessageW` falls through to `DM_GETDEFID`, which
+   still says `Save` — so Enter on a focused `Open config file` glyph would
+   have written the config file. That is the `Reload` defect the whole module
+   was built for, two pages across. `DefaultButton::visible` answers
+   `page == Page::System` for all five, and the log pair's hidden state is
+   **unreachable with focus** — `Paths::log` is fixed for the window's
+   lifetime, so a hidden log button was hidden from creation and has never
+   held focus.
+3. **`IDC_OPACITY` is in the `on_card` match.** A `msctls_trackbar32` asks its
+   parent for a background brush through `WM_CTLCOLORSTATIC`, and
+   `paint::slider_part` only fills the two rects comctl32 hands it — so
+   without the id there the slider sat in a `COLOR_3DFACE` rectangle. The
+   eight-control defect, reached through a control class instead of a page.
+4. **`beckon-windows/src/prefs.rs`**, a new module: `HKCU\Software\beckon`,
+   two `REG_DWORD`s. `RegCreateKeyW` rather than `RegCreateKeyExW` because the
+   `Ex` form takes a `SECURITY_ATTRIBUTES` and so is gated behind a
+   `Win32_Security` feature this crate does not enable — a wider Win32 surface
+   to pass `None` to one parameter.
+5. **`shell::reveal_path`**, `explorer.exe /select,<path>`. No shell verb does
+   this (`"explore"` opens a folder and selects nothing) and the documented
+   route is ~60 lines of COM. **No space after the comma and no quotes around
+   the path** — Explorer takes the whole remainder of the command line as the
+   item, so the usual quoting rule is inverted here.
+
+**Known deviations from the drawing, both deliberate.**
+
+- **The four glyph buttons wear `BtnTier::Secondary`**, so each file row ends
+  in two small boxes; the mock-up's `.btn.glyph` is
+  `border-color:transparent; background:transparent`, a fifth "ghost" tier. It
+  would need its own `colours` arm, its own high-contrast pair and its own
+  `theme::pairs` rows before anything drew it, and its resting state would be
+  indistinguishable from the card — which is the one thing a button that
+  launches something should not be.
+- **`IDC_OPACITY_VALUE` holds the row's LABEL and its value in one string**
+  (`Window transparency    96%`), left-aligned, with the slider hard right.
+  Phase 0's id table gives the row a slider and a value and **no label id**,
+  and ids may not be invented — so the two share one control, and a STATIC has
+  one alignment. It reads better than the drawing in the forced-off case,
+  which is the case rule 7 is about: `Window transparency    Off in a remote
+  session`.
+
+**What is NOT built, and is design §3.3's by rights.** `on_open_file` is not
+folded into `Open(Target::Config)`. Phase 0's spec assigns that fold to this
+workstream ("The System workstream folds it and deletes the field"), and it is
+four sites including `beckon-macos`'s window and its probe's complete-literal
+`Callbacks` — a behaviour-neutral refactor across a platform this pass does
+not otherwise touch. The window now has two ways to open the same file, which
+is a duplication and is the reason this is written down rather than dropped.
+`Target::{Github, Releases, BugReport}` are likewise unhandled: they belong to
+About, which has no controls, and a link that opens the wrong page is worse
+than one that is not built.
+
+**Nothing on this page has been seen.** Every figure above is arithmetic and
+code, checked by five green gates on two Windows targets and by hand-verifying
+the four id invariants that only run on the Windows CI job (46 declared ids ==
+46 `MINE` rows; 36 `PAGE_CONTROLS` + 7 chrome + 3 banner == 46; 14
+`PUSH_BUTTONS` == 14 `DefaultButton::ALL`; no retired id reclaimed).
+`examples/settings_probe.rs` gained a `measure_system` section for the run
+that would change that — see the gates table.
 
 ## The vertical stack is page-dependent — taken 2026-08-15, after two defers
 
@@ -222,14 +350,23 @@ horizontally, which reads as a rendering fault.
 
 | Design says | Status |
 |---|---|
-| Transparency slider is buildable via `SetLayeredWindowAttributes` | **open** |
-| Dark by default | **open** |
+| Transparency slider is buildable via `SetLayeredWindowAttributes` | **done** — 2026-08-15, and it is buildable exactly as §5.1 argues: `apply_backdrop`'s `Alpha` arm already called it, so the change is which number goes in. See the §2 row for the tier/level split |
+| Dark by default | **done** — 2026-08-15, see the §2 row. Flagged there as the behaviour change it is |
 
 ## §6 Auto-save
 
 **Not started.** No Save/Close removal, no debounce, none of the eleven guards
-(G-a … G-k). Two things from its neighbourhood did land early because Task 4
-made them urgent:
+(G-a … G-k).
+
+**The System page is the first proof that §6's "every valid change is written
+immediately" is workable**, and it is a weak one that should not be read as a
+strong one: that page has no Save and every row applies on change, which is
+exactly §6's shape — but it writes the REGISTRY and the Run key, never
+`apps.toml`, so none of the eleven guards is about anything it does. A row
+whose write cannot lose a hand edit is not evidence about rows that can.
+
+Two things from §6's neighbourhood did land early because Task 4 made them
+urgent:
 
 - **§6.3's shipping bug is fixed**: `Remove` under a filter could delete the
   whole config, because the filter matched the Shortcut column and every
@@ -257,8 +394,24 @@ made them urgent:
 ## §7 The seven editing rules
 
 **Partial.** Rules 1 and 2 have now been applied to the Shortcuts page in
-full; the rest govern wording that has not been written yet (System, About,
-the status line).
+full, and rules 3, 6 and 7 govern the System page as built; the rest govern
+wording that has not been written yet (About, the status line).
+
+- **Rule 3, a fact about this machine is a value**, is why the System page has
+  three right-hand slots — `…\shortcuts\`, `112 KB`, `96%` — drawn at
+  `Role::Caption` in `text_muted` rather than at Body weight, so a row does
+  not read as two labels.
+- **Rule 6, a choice nobody turns off is not a choice**, was applied by
+  DELETING before anything was built: *Remember size and position*, *Show
+  error notifications* and *Copy diagnostics* are not on the page and no id
+  was spent on them. Phase 0 had already allocated none, which is the design
+  working a step ahead of the build.
+- **Rule 7, a disabled control explains itself in its own slot**, is the
+  transparency row and is the one rule with a mechanism behind it rather than
+  a habit: a disabled Win32 control receives no mouse messages, so a tooltip
+  there silently never appears. `Transparency::slot` returns the percentage or
+  the reason, never both, into the same control on the same line —
+  `Window transparency    Off in a remote session`.
 
 - **Rule 2, silence is the healthy state**, was the one `row_condition`
   predated — for the FLAG column only. On 2026-08-15 it was promoted to the
@@ -316,6 +469,8 @@ form rather than quietly rewritten.
 
 | File | Claim | Why it is false now |
 |---|---|---|
+| `CLAUDE.md` | *"The **only** file beckon reads is the `serve` shortcuts TOML — and since the settings window, the only file it writes"* | still true of FILES, and there is a second store now: `HKCU\Software\beckon`, two `REG_DWORD`s (`prefs.rs`). Corrected in place rather than rewritten, because the sentence as written is not wrong — the split by store is what the addition IS |
+| `CLAUDE.md` | the settings window *"lists installed apps only to fill in a Name … and never focuses or launches anything"* | still true of the shortcut table; the window is now `serve`'s control surface as well as its editor — pause, reload, autostart, theme, transparency, open and reveal. Widened in place, with the "never re-implement `set_paused`" rule stated where the window is described |
 | `CLAUDE.md` | the list is *"a **fixed eight rows** (`tok::ROWS`) at every DPI … so it does not grow with the config"* | `tok::ROWS` is deleted (§4). The list takes the room the page leaves and scrolls; what survives is the whole-row snap |
 | `CLAUDE.md` | the band list — *"Banner / `Shortcuts` head … / keyboard group / command bar"* | two things: the stack is page-dependent (the keyboard card is no longer reserved on Shortcuts), and the head has no heading in it |
 | `CLAUDE.md` | *"`paused` > `key in use` > `not installed` > `custom`"*, and *"derives `mark` from the notes at the end"* | three words were reworded by design §3.1, and `mark` folds the notes **and every condition** — the paused-and-missing defect above is what that sentence had stopped covering |
@@ -341,6 +496,25 @@ typed text), **G-S4** (the strip under four high-contrast schemes), **G-S5**
 (frame metrics and the resize edge across the strip band), **G-S6** (does
 `place_app_combo`'s restore restore), **G-S7** (what `GetFocus` returns for the
 App combo).
+
+**G-S9, unrun, and the page it is about has never been displayed: does the
+System page draw?** `examples/settings_probe.rs`'s `measure_system` is the
+instrument, and it must be run **with the System door open** — everything on
+that page is behind it, so on any other door every control reads `hidden` and
+the section says nothing (which is itself the check that `show_page_controls`
+covers the new rows). It prints all fourteen ids with their rect, visibility
+and enabled state; the three switches' `BM_GETCHECK`; the trackbar's position
+AND its range, since `paint::slider_part` reads that range back to decide how
+much of the channel to fill and a 0..=100 range with a position of 96 would
+draw a plausible bar in the wrong place for ever; and a verdict line on each
+conditional row plus one on the transparency slot, which is the only place the
+forced-off reason appears at all. A screenshot answers the rest: whether the
+two dividers land between the groups rather than through a row, whether the
+switches' tracks line up on the card's right edge, whether the glyphs
+(`U+2197`, `U+25A4` — the first non-ASCII this window puts on screen) draw as
+arrows or as boxes, and whether `SS_PATHELLIPSIS` shortens the config
+directory or merely clips it under `SS_RIGHT`, which is the one pairing the
+Win32 documentation leaves ambiguous.
 
 **A new one, unrun, and cheap: G-S8 — did the five 2026-08-15 deletions land
 the way the arithmetic says?** (Four when this was written; the `Shortcuts`

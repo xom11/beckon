@@ -151,8 +151,9 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    banner_shown, combo_needs_placing, default_button, warn_dot_shown, ComboSpot, ControlState,
-    DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths, SettingsCommand, BANNER_PAGE,
+    banner_shown, combo_needs_placing, default_button, opacity_alpha, system_state, warn_dot_shown,
+    ComboSpot, ControlState, DefaultButton, FlagTone, ListItem, Mark, Note, Page, Paths,
+    SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
 use std::cell::RefCell;
@@ -256,9 +257,51 @@ const CMD_FROM_ACCELERATOR: u32 = 1;
 /// lines tall.
 const SS_CENTERIMAGE_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0200);
 
+/// `SS_PATHELLIPSIS` (0x8000), which `windows` 0.61 does not export either.
+///
+/// It shortens a string that does not fit by replacing characters in the
+/// MIDDLE with `...`, keeping the beginning and the end -- for a path, the
+/// drive and the last folder, which are the two parts that identify it. That
+/// is why the System page's config row carries it and its log row does not:
+/// only one of the two values is a path, and on `112 KB` the style finds no
+/// separator to cut at.
+///
+/// **The shortening belongs to the OS, deliberately.**
+/// `beckon_core::settings::system_state` supplies the whole directory and
+/// counts no characters, because a character count is not a width -- the face
+/// is proportional and the control's width moves with the window.
+const SS_PATHELLIPSIS_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x8000);
+
+/// `SS_RIGHT` (0x0002), which `windows` 0.61 does not export either.
+///
+/// **A different VALUE of a STATIC's type field, not a flag** -- the same
+/// low-bit field `SS_LEFT` (0) and `SS_OWNERDRAW` (13) occupy, exactly the
+/// relationship `SS_OWNERDRAW_STYLE` above describes. It is what puts the
+/// System page's two file-row values against the glyph buttons rather than
+/// stranded in the middle of the row, which is where the mock-up draws them.
+///
+/// **Combining it with `SS_PATHELLIPSIS` is the one thing here that is
+/// documented ambiguously**, and the config row does exactly that. The
+/// ellipsis styles are described against `SS_LEFT`; whether the shortening
+/// still runs under `SS_RIGHT` is not stated, and nothing on the machine this
+/// was written on can display the window. The failure mode if it does not is
+/// a long path CLIPPED rather than shortened -- the row still shows the start
+/// of the directory, which is the half a reader can act on -- so this is a
+/// look question, not a correctness one. `settings_probe`'s System section
+/// prints the control's text and a screenshot shows which happened.
+const SS_RIGHT_STYLE: WINDOW_STYLE = WINDOW_STYLE(0x0002);
+
 /// `EM_SETCUEBANNER` (`ECM_FIRST + 1`), which `windows` 0.61 does not
 /// export -- the same gap `SS_CENTERIMAGE_STYLE` above fills.
 const EM_SETCUEBANNER_MSG: u32 = 0x1501;
+
+/// `TBM_GETPOS`, which is `WM_USER + 0` and therefore the one trackbar
+/// message the `windows` crate does not generate a constant for -- every
+/// other `TBM_*` this window sends (`TBM_SETRANGE`, `TBM_SETPOS`,
+/// `TBM_SETPAGESIZE`, `TBM_GETRANGEMIN`, `TBM_GETRANGEMAX`) is imported by
+/// name. Spelled out here rather than as a bare `WM_USER` at the call site,
+/// for the same reason `DM_GETDEFID_MSG` above is.
+const TBM_GETPOS_MSG: u32 = WM_USER;
 
 /// Posted by the catalog worker thread with the scanned app names.
 pub const WM_CATALOG: u32 = WM_APP + 2;
@@ -404,7 +447,14 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 /// chips that absence does a second job -- without `BS_NOTIFY` an owner-draw
 /// button emits only `BN_CLICKED` and `BN_DOUBLECLICKED`, which is exactly
 /// the pair `is_chip_click` takes.
-const PUSH_BUTTONS: [i32; 9] = [
+/// **The System page's five joined on 2026-08-15 and had to.** The four glyph
+/// buttons look like ornaments and are ordinary push buttons; leaving them out
+/// would mean no `BS_NOTIFY`, so the ring could not follow focus onto them,
+/// so `IsDialogMessageW` would fall through to `DM_GETDEFID` -- which still
+/// says `Save`. Enter on a focused `Open config file` glyph would have
+/// written the config file. That is the `Reload` defect this list was built
+/// for, two pages across.
+const PUSH_BUTTONS: [i32; 14] = [
     IDC_ADD,
     IDC_REMOVE,
     IDC_APPLY,
@@ -414,6 +464,11 @@ const PUSH_BUTTONS: [i32; 9] = [
     IDC_KEEPMINE,
     IDC_RECORD,
     IDC_REVERT,
+    IDC_SYS_RELOAD,
+    IDC_CONFIG_OPEN,
+    IDC_CONFIG_SHOW,
+    IDC_LOG_OPEN,
+    IDC_LOG_SHOW,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -508,13 +563,24 @@ fn tab_id_of(page: Page) -> i32 {
 /// those two doors -- see `compute_card_rects` in `layout.rs` for why the
 /// re-stack was weighed and deferred again rather than taken here.
 ///
+/// **CORRECTED AGAIN 2026-08-15**: System's waiting line is gone and its
+/// fourteen real controls are here. Two of the page's rows are CONDITIONAL --
+/// `Start with Windows` when this process cannot offer it, and the log row
+/// when `serve` ran without `--log` -- and they are in this table like every
+/// other control. Being behind the System door and being on screen are two
+/// questions; this table answers the first, and `SYS_ROWS` answers the
+/// second, in `show_page_controls`, which applies both. Putting the
+/// conditional five in the banner's exempt group instead would have hidden
+/// them from `every_control_belongs_to_exactly_one_group`'s partition for a
+/// condition that has nothing to do with `external_change`.
+///
 /// `every_control_belongs_to_exactly_one_group` in `ids.rs` is what keeps the
 /// two absences honest: it partitions `MINE` across this table, the pills,
 /// the banner and the command bar, and fails on any control that lands in
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 23] = [
+const PAGE_CONTROLS: [(i32, Page); 36] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
     // The head row's `Shortcuts` heading (`IDC_LBL_SECTION`, 1020) left this
     // table with the control on 2026-08-15; the row itself is unchanged.
@@ -540,10 +606,85 @@ const PAGE_CONTROLS: [(i32, Page); 23] = [
     (IDC_HOLD_ALT, Page::Keyboard),
     (IDC_LBL_TAP, Page::Keyboard),
     (IDC_TAP, Page::Keyboard),
-    // -- System and About: one waiting line each, and nothing else yet.
-    (IDC_SYS_PLACEHOLDER, Page::System),
+    // -- System: the service group, the look group, the two file rows.
+    (IDC_PAUSE, Page::System),
+    (IDC_AUTOSTART, Page::System),
+    (IDC_SYS_RELOAD, Page::System),
+    (IDC_DARK, Page::System),
+    (IDC_OPACITY_VALUE, Page::System),
+    (IDC_OPACITY, Page::System),
+    (IDC_CONFIG_NAME, Page::System),
+    (IDC_CONFIG_DIR, Page::System),
+    (IDC_CONFIG_OPEN, Page::System),
+    (IDC_CONFIG_SHOW, Page::System),
+    (IDC_LOG_NAME, Page::System),
+    (IDC_LOG_SIZE, Page::System),
+    (IDC_LOG_OPEN, Page::System),
+    (IDC_LOG_SHOW, Page::System),
+    // -- About: one waiting line, and nothing else yet.
     (IDC_ABOUT_PLACEHOLDER, Page::About),
 ];
+
+/// Which of the System page's two CONDITIONAL rows are on screen.
+///
+/// **A `Cell`, for `PILL_BADGE`'s reason, and this is the fifth time that
+/// reason has decided a design here.** `compute_card_rects` is documented
+/// never to touch `UI` -- `card_rects` calls it from inside `WM_PAINT`, where
+/// `UI` can already be borrowed, and a second `RefCell` borrow across an
+/// `extern "system"` boundary aborts the process rather than unwinding. The
+/// System card's HEIGHT depends on both flags, so the answer has to be
+/// reachable from there.
+///
+/// **Both facts are fixed for the window's lifetime**, which is what makes a
+/// stale read impossible rather than merely unlikely: `serve` is started with
+/// `--log` or it is not, and `AutostartCapability` is decided before the tray
+/// exists. They still arrive through `apply_system_state` rather than through
+/// `open`, because the window is a renderer of pushed state and adding a
+/// second way in would be a second thing to keep in step.
+///
+/// The resting value hides both. The first push arrives immediately after
+/// `open` (`serve.rs`'s `refresh_settings`), and hidden-then-shown is the
+/// safe direction: a row that flickers into existence is a cosmetic fault,
+/// while a row shown for a capability this process does not have is a
+/// control that does nothing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SystemRows {
+    autostart: bool,
+    log: bool,
+}
+
+thread_local! {
+    static SYS_ROWS: std::cell::Cell<SystemRows> = const {
+        std::cell::Cell::new(SystemRows {
+            autostart: false,
+            log: false,
+        })
+    };
+}
+
+fn sys_rows() -> SystemRows {
+    SYS_ROWS.with(|c| c.get())
+}
+
+/// Is this control on screen at all, given which System rows exist?
+///
+/// **One function, three readers**: `show_page_controls` (which owns the
+/// `ShowWindow`), `layout` (which skips placing a row that is not there) and
+/// `compute_card_rects` (which does not reserve its height). Three spellings
+/// of "is the log row up" would disagree the first time one of them was
+/// edited, and the disagreement reads as a rendering fault -- a card with a
+/// gap at the bottom, or a row drawn half outside it.
+///
+/// Everything not named here is unconditional and answers `true`, including
+/// every control on the other three pages: this is a mask applied ON TOP of
+/// `PAGE_CONTROLS`, never a second page table.
+fn sys_row_shown(id: i32, rows: SystemRows) -> bool {
+    match id {
+        IDC_AUTOSTART => rows.autostart,
+        IDC_LOG_NAME | IDC_LOG_SIZE | IDC_LOG_OPEN | IDC_LOG_SHOW => rows.log,
+        _ => true,
+    }
+}
 
 /// Show the controls `page` owns and hide every other page's.
 ///
@@ -561,9 +702,14 @@ const PAGE_CONTROLS: [(i32, Page); 23] = [
 /// unchanged door, and `PAGE` already holds the one `open` asked for by the
 /// time any control exists.
 unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
+    // Two conditions, ANDed, and neither may be dropped: the door decides
+    // which page's controls are candidates, and `sys_row_shown` decides which
+    // of the System page's candidates exist on this machine at all. Only the
+    // second is a `SYS_ROWS` question, and only the first is a `page` one.
+    let rows = sys_rows();
     for (id, owner) in PAGE_CONTROLS {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
-            show(h, owner == page);
+            show(h, owner == page && sys_row_shown(id, rows));
         }
     }
     // The banner's three, from the same function `layout`'s card 0 and
@@ -764,19 +910,75 @@ mod cap {
     pub const TAB_KEYBOARD: &str = "Keyboard";
     pub const TAB_SYSTEM: &str = "System";
     pub const TAB_ABOUT: &str = "About";
-    /// What System and About say until their real controls land.
+    /// What About says until its real controls land.
     ///
-    /// **One constant, two controls.** The two pages are waiting for different
-    /// things, but "waiting" is the whole of what either can say today, and a
-    /// second literal reading the same words would only be a second thing to
-    /// forget to delete. Each has its OWN id (`IDC_SYS_PLACEHOLDER`,
-    /// `IDC_ABOUT_PLACEHOLDER`) because they are two windows on two pages, and
-    /// a shared caption does not make them one control.
+    /// **It was two controls' caption until 2026-08-15**, when design §3.3's
+    /// rows replaced System's waiting line (`IDC_SYS_PLACEHOLDER`, 1084,
+    /// retired). One constant is still right for one control: About is still
+    /// waiting, and "waiting" is the whole of what it can say.
     ///
     /// No `&`: it is not operable and owns no mnemonic, and the STATIC is
     /// created with `SS_NOPREFIX` so an `&` added here would draw as a literal
     /// rather than silently eat the next letter.
     pub const PLACEHOLDER: &str = "Nothing here yet.";
+
+    /// The System page's five rows (design §3.3), in drawing order.
+    ///
+    /// **Not one of these carries an `&`, and it is the same counting
+    /// argument the tab pills lost.** The collision table above has
+    /// `A M U C O S E R K T W L D` spoken for; `Pause shortcuts` could take
+    /// only `p`, `h` or one of the two `s`s, `Start with Windows` overlaps it
+    /// on every letter it has, `Dark mode` has only `k` free, and the four
+    /// glyph buttons have no letters at all. Rather than spend the four free
+    /// letters left in the alphabet on a page whose keyboard route is already
+    /// `Ctrl+3` plus Tab, the page carries none -- which is also design §10's
+    /// standing rule: no new `Alt` mnemonics until a uniqueness `#[test]`
+    /// lands.
+    ///
+    /// `Pause shortcuts`, not the tray's `Pause hotkeys`: the window's own
+    /// word for a row of the table is `shortcut` everywhere else on screen
+    /// (the file is a shortcuts TOML, the pill says `Shortcuts`), and two
+    /// words for one thing costs the reader a lookup. The tray keeps its
+    /// wording -- a menu the user reads once has no such context to be
+    /// consistent with.
+    pub const PAUSE: &str = "Pause shortcuts";
+    pub const AUTOSTART: &str = "Start with Windows";
+    /// The tray's own reload, which re-reads the file and re-registers every
+    /// hotkey. NOT the banner's `&Reload` (`cap::RELOAD`), which discards the
+    /// window's unsaved edits -- see `IDC_SYS_RELOAD` in `ids.rs`. The two
+    /// captions are the same word because they are the same word to the
+    /// reader; they are never on screen together, since the banner is
+    /// `BANNER_PAGE`-only.
+    pub const SYS_RELOAD: &str = "Reload";
+    pub const DARK: &str = "Dark mode";
+    pub const TRANSPARENCY: &str = "Window transparency";
+
+    /// The two glyph buttons every file row carries.
+    ///
+    /// **Glyphs, not `Open` and `Show in folder`**, and the filename beside
+    /// them is why: design §3.3 makes the file's own name the row's label, so
+    /// two verbs would be the only words on a line that already says what it
+    /// is about. Each carries a tooltip with the full sentence.
+    ///
+    /// **ASCII would be better and there is no ASCII for this.** Every other
+    /// display string in this window is ASCII because a face that lacks a
+    /// glyph draws a box -- `serve --log`'s em-dash came back as `?"` once.
+    /// These two are `U+2197 NORTH EAST ARROW` and `U+25A4 SQUARE WITH
+    /// HORIZONTAL FILL`, both in Segoe UI's coverage on every Windows 10/11
+    /// build, and both are what the mock-up draws. They are the FIRST
+    /// non-ASCII the window puts on screen, so if a box appears anywhere it
+    /// will be here; `settings_probe` reads the captions back, which is the
+    /// cheapest check available without a screenshot.
+    pub const OPEN_GLYPH: &str = "\u{2197}";
+    pub const SHOW_GLYPH: &str = "\u{25A4}";
+    /// The four glyph buttons' tooltips -- the words the buttons do not
+    /// spend width on. `%s` is not a thing here: each is written out per row,
+    /// because "Open the config file" and "Open the log file" differ by more
+    /// than a noun once a screen reader is reading them out.
+    pub const TIP_CONFIG_OPEN: &str = "Open the config file";
+    pub const TIP_CONFIG_SHOW: &str = "Show the config file in Explorer";
+    pub const TIP_LOG_OPEN: &str = "Open the log file";
+    pub const TIP_LOG_SHOW: &str = "Show the log file in Explorer";
 }
 
 /// A caption as the user SEES it: a lone `&` marks the mnemonic and is not
@@ -1335,7 +1537,15 @@ fn role_of(id: i32) -> Role {
         // Subtitle heading, and one STATIC has one font, which was the whole
         // reason it was a second control. It is retired (design 2 moved the
         // count to the pill), so `IDC_NOTES` is alone here now.
-        IDC_NOTES => Role::Caption,
+        //
+        // **The System page's three VALUE slots joined on 2026-08-15**
+        // (design §3.3, rule 3: "a fact about this machine is a value, not a
+        // sentence"). `…\shortcuts\`, `112 KB` and `96%` are all facts about
+        // the machine rather than prose, they all sit right of a Body label
+        // on the same line, and drawing them at Body weight would make each
+        // row read as two labels. The mock-up draws them at 12.5 px against
+        // its 14 px body, which is this role.
+        IDC_NOTES | IDC_CONFIG_DIR | IDC_LOG_SIZE | IDC_OPACITY_VALUE => Role::Caption,
         // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
         // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
         // same font -- the draw font and the measuring font move together,
@@ -1543,6 +1753,21 @@ struct Ui {
     /// the `Vec` into this struct does not move its heap buffer, so the
     /// pointer handed to comctl32 in `build_children` stays valid.
     tip_text: Vec<u16>,
+    /// The System page's four glyph-button tooltips, kept alive for
+    /// `tip_text`'s reason -- `TTM_ADDTOOLW` stores the pointer, not the
+    /// bytes.
+    ///
+    /// **A `Vec` of `Vec`s rather than one buffer with four offsets**,
+    /// because comctl32 wants four independent NUL-terminated pointers and
+    /// each inner `Vec` owns a heap allocation that does not move when the
+    /// outer one is moved into this struct. Four tooltips, four buffers, and
+    /// the whole set drops with the window.
+    ///
+    /// They carry the words the buttons do not: design §3.3 makes each file
+    /// row's own filename its label, so `Open` and `Show` have nowhere on
+    /// screen to be said and a glyph on its own says nothing to a reader who
+    /// has not met it.
+    sys_tips: Vec<Vec<u16>>,
     /// The dirty state the title bar currently shows, so `apply_state` --
     /// which runs on every keystroke -- only rewrites the caption when the
     /// mark actually flips. `None` until the first push.
@@ -2195,6 +2420,11 @@ fn default_button_of(id: i32) -> DefaultButton {
         IDC_KEEPMINE => DefaultButton::KeepMine,
         IDC_RECORD => DefaultButton::Record,
         IDC_REVERT => DefaultButton::Revert,
+        IDC_SYS_RELOAD => DefaultButton::SysReload,
+        IDC_CONFIG_OPEN => DefaultButton::ConfigOpen,
+        IDC_CONFIG_SHOW => DefaultButton::ConfigShow,
+        IDC_LOG_OPEN => DefaultButton::LogOpen,
+        IDC_LOG_SHOW => DefaultButton::LogShow,
         _ => DefaultButton::HOME,
     }
 }
@@ -2212,6 +2442,11 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::KeepMine => IDC_KEEPMINE,
         DefaultButton::Record => IDC_RECORD,
         DefaultButton::Revert => IDC_REVERT,
+        DefaultButton::SysReload => IDC_SYS_RELOAD,
+        DefaultButton::ConfigOpen => IDC_CONFIG_OPEN,
+        DefaultButton::ConfigShow => IDC_CONFIG_SHOW,
+        DefaultButton::LogOpen => IDC_LOG_OPEN,
+        DefaultButton::LogShow => IDC_LOG_SHOW,
     }
 }
 
@@ -4025,43 +4260,196 @@ unsafe fn build_children(hwnd: HWND) {
         );
     }
 
-    // -- The System and About pages: one waiting line each, and that is the
-    // whole of both pages today.
+    // -- Band 8: the System page (design §3.3). One card, five rows, two
+    // painted dividers between the three groups.
     //
-    // Created HERE rather than beside the band they sit in, because they sit
-    // in no band: neither page has a card at all (`compute_card_rects` gives
-    // all four zero height behind those two doors), so `layout` puts each line
-    // at the top of the content area -- card 0's own top, which is where the
-    // stack starts on every page. This is the last content in the function
-    // before the command bar, which is where two pages that come after
-    // Keyboard belong in a file whose order is its reading order.
+    // Creation order is Tab order, and this page's order is the reading
+    // order of the drawing: Pause, Start with Windows, Reload / Dark mode,
+    // transparency / config row, log row. The two STATICs in each file row
+    // carry no tab stop, so Tab goes label-less from the slider straight to
+    // the four glyph buttons.
     //
-    // Creation order is Tab order, and neither of these takes a tab stop: a
-    // STATIC has no `WS_TABSTOP` and `GetNextDlgTabItem` skips it. So both
-    // doors are, today, doors that Tab walks straight past into the command
-    // bar -- correct, since there is nothing behind either to reach.
-    //
-    // **`SS_NOPREFIX`, like `IDC_LBL_COUNT`.** The text carries no mnemonic
-    // (`cap::PLACEHOLDER`), and a STATIC that would silently eat an `&` added
-    // to it later is a trap whether or not one is there today.
-    //
-    // **Neither is in the `on_card` match** in the `WM_CTLCOLORSTATIC` arm
-    // below, and that is not the omission the plan warned about: they have
-    // their own branch there, painting them on the window's own `bg`, because
-    // that is the surface actually under them. Joining `on_card` would draw a
-    // card-coloured strip on a page with no card behind it; falling through to
-    // `DefWindowProcW` would draw a `COLOR_3DFACE` one. Both are wrong, and
-    // only the second was written down.
-    for id in [IDC_SYS_PLACEHOLDER, IDC_ABOUT_PLACEHOLDER] {
+    // **`BS_AUTOCHECKBOX` for all three switches**, painted by
+    // `paint::toggle` through `NM_CUSTOMDRAW` -- `TOGGLES` is the list and
+    // `toggle_custom_draw` is the dispatcher. Never `BS_OWNERDRAW`: that is
+    // a different VALUE of the same 4-bit type field, and taking it would
+    // throw away the check-box state machine and the UIA role a screen
+    // reader announces. On this page that matters more than it did for
+    // `IDC_CAPS`, because three of the four switches in the window are here.
+    for (caption, id) in [
+        (cap::PAUSE, IDC_PAUSE),
+        (cap::AUTOSTART, IDC_AUTOSTART),
+        (cap::DARK, IDC_DARK),
+    ] {
         child(
             hwnd,
-            w!("STATIC"),
-            cap::PLACEHOLDER,
-            SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
             id,
             &fonts,
         );
     }
+    // The tray's own reload. `BS_NOTIFY` and membership in `PUSH_BUTTONS`,
+    // like every other push button here -- see that list's own comment for
+    // why the System five had to join it.
+    child(
+        hwnd,
+        w!("BUTTON"),
+        cap::SYS_RELOAD,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+        IDC_SYS_RELOAD,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("STATIC"),
+        cap::TRANSPARENCY,
+        SS_CENTERIMAGE_STYLE,
+        IDC_OPACITY_VALUE,
+        &fonts,
+    );
+    // The transparency slider.
+    //
+    // **`TBS_NOTICKS` and `TBS_HORZ`.** Sixteen ticks under a sixteen-step
+    // slider is noise the mock-up does not have, and suppressing the stage is
+    // also what keeps `paint::slider_part` down to two parts.
+    //
+    // **The range is 85..=100, the control's own**, set here and read back by
+    // the painter rather than assumed there -- `beckon_core::settings`'
+    // `OPACITY_MIN`/`OPACITY_MAX` are the one source. A page size of 5 makes
+    // PageUp/PageDown cross the band in three presses; the default would be a
+    // quarter of the range, which on a 15-step range is a coarser step than
+    // the eye can even see.
+    //
+    // The label `IDC_OPACITY_VALUE` is created BEFORE it, which is why the
+    // caption `cap::TRANSPARENCY` is on that STATIC and not here: a trackbar
+    // has no caption, and the row's words and its value share one slot only
+    // in the drawing, not in the control tree. See `layout`'s System band --
+    // `IDC_OPACITY_VALUE` draws the ROW LABEL at its left and is rewritten
+    // with the percentage or the forced-off reason at its right.
+    let opacity = child(
+        hwnd,
+        TRACKBAR_CLASS,
+        "",
+        WINDOW_STYLE(TBS_HORZ | TBS_NOTICKS) | WS_TABSTOP,
+        IDC_OPACITY,
+        &fonts,
+    );
+    SendMessageW(
+        opacity,
+        TBM_SETRANGE,
+        Some(WPARAM(0)),
+        Some(LPARAM(
+            ((beckon_core::settings::OPACITY_MAX as i32) << 16
+                | beckon_core::settings::OPACITY_MIN as i32) as isize,
+        )),
+    );
+    SendMessageW(opacity, TBM_SETPAGESIZE, Some(WPARAM(0)), Some(LPARAM(5)));
+    // The two file rows. Four controls each: the file's own NAME as the
+    // label (design §3.3 deletes the `Config` / `Log` captions -- the
+    // filename identifies the row), the one fact worth a value slot, and two
+    // glyph buttons.
+    //
+    // **Both VALUE slots are `SS_RIGHT`**, so the directory and the size land
+    // against the glyph buttons rather than in the middle of the row -- the
+    // mock-up's `.val` sits immediately left of them because its `.lab` is the
+    // flexing half. Left-aligned they would strand `112 KB` with 150 px of
+    // nothing between it and the buttons at the shipped width.
+    //
+    // **`SS_PATHELLIPSIS` on the config row's value and not on the log's**,
+    // and the asymmetry is the whole reason the two are not one loop: that
+    // style shortens a path by eating the MIDDLE, keeping the drive and the
+    // last folder, which is exactly what a directory wants and exactly wrong
+    // for `112 KB` -- there the style would find no separator, fall back to
+    // clipping, and it is a value that fits anyway. See `SS_RIGHT_STYLE` for
+    // the one thing about that pairing that is documented ambiguously. Both
+    // texts are pushed by `apply_system_state`; the shortening is the OS's, so
+    // nothing here or in core counts characters.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_CONFIG_NAME,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE | SS_PATHELLIPSIS_STYLE | SS_RIGHT_STYLE,
+        IDC_CONFIG_DIR,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_LOG_NAME,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE | SS_RIGHT_STYLE,
+        IDC_LOG_SIZE,
+        &fonts,
+    );
+    for (caption, id) in [
+        (cap::OPEN_GLYPH, IDC_CONFIG_OPEN),
+        (cap::SHOW_GLYPH, IDC_CONFIG_SHOW),
+        (cap::OPEN_GLYPH, IDC_LOG_OPEN),
+        (cap::SHOW_GLYPH, IDC_LOG_SHOW),
+    ] {
+        child(
+            hwnd,
+            w!("BUTTON"),
+            caption,
+            WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+            id,
+            &fonts,
+        );
+    }
+
+    // -- The About page: one waiting line, and that is the whole page today.
+    //
+    // Created HERE rather than beside the band it sits in, because it sits in
+    // no band: the page has no card at all (`compute_card_rects` gives all
+    // four zero height behind that door), so `layout` puts the line at the top
+    // of the content area -- card 0's own top, which is where the stack starts
+    // on every page. This is the last content in the function before the
+    // command bar, which is where the page that comes after System belongs in
+    // a file whose order is its reading order.
+    //
+    // Creation order is Tab order, and this takes no tab stop: a STATIC has no
+    // `WS_TABSTOP` and `GetNextDlgTabItem` skips it. So About is, today, a
+    // door that Tab walks straight past into the command bar -- correct, since
+    // there is nothing behind it to reach.
+    //
+    // **`SS_NOPREFIX`.** The text carries no mnemonic (`cap::PLACEHOLDER`),
+    // and a STATIC that would silently eat an `&` added to it later is a trap
+    // whether or not one is there today.
+    //
+    // **It is not in the `on_card` match** in the `WM_CTLCOLORSTATIC` arm
+    // below, and that is not the omission the plan warned about: it has its
+    // own branch there, painting it on the window's own `bg`, because that is
+    // the surface actually under it. Joining `on_card` would draw a
+    // card-coloured strip on a page with no card behind it; falling through to
+    // `DefWindowProcW` would draw a `COLOR_3DFACE` one. Both are wrong, and
+    // only the second was written down. **System left that branch on
+    // 2026-08-15**: its rows sit on a card now, so they are in `on_card` like
+    // every other on-card STATIC.
+    child(
+        hwnd,
+        w!("STATIC"),
+        cap::PLACEHOLDER,
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_ABOUT_PLACEHOLDER,
+        &fonts,
+    );
 
     // -- Band 7: the command bar. `Open config file` far left, then Close
     // and Save on the right, Save outermost and default.
@@ -4125,6 +4513,33 @@ unsafe fn build_children(hwnd: HWND) {
     let mut tip_text = wide(&path.to_string_lossy());
     add_tooltip(hwnd, openfile, &mut tip_text);
 
+    // The System page's four glyph buttons. Same lifetime rule as the line
+    // above -- comctl32 keeps the pointer -- so each buffer is built here and
+    // then MOVED into `Ui::sys_tips`, which outlives every tooltip because
+    // both die with the window.
+    //
+    // Attached unconditionally, including to the log row's two buttons on a
+    // run with no log: a tooltip on a hidden control never shows, and
+    // wiring them behind `SYS_ROWS` would put a second reader on a fact that
+    // arrives after this function has finished.
+    let mut sys_tips: Vec<Vec<u16>> = [
+        cap::TIP_CONFIG_OPEN,
+        cap::TIP_CONFIG_SHOW,
+        cap::TIP_LOG_OPEN,
+        cap::TIP_LOG_SHOW,
+    ]
+    .iter()
+    .map(|t| wide(t))
+    .collect();
+    for (i, id) in [IDC_CONFIG_OPEN, IDC_CONFIG_SHOW, IDC_LOG_OPEN, IDC_LOG_SHOW]
+        .into_iter()
+        .enumerate()
+    {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            add_tooltip(hwnd, h, &mut sys_tips[i]);
+        }
+    }
+
     // Every control now exists, so this is the first moment the page rule can
     // be applied at all -- and it has to be applied HERE rather than through
     // `show_page`, which returns early on an unchanged door and so cannot
@@ -4156,6 +4571,7 @@ unsafe fn build_children(hwnd: HWND) {
             // Moved, not copied: the heap buffer `add_tooltip` handed
             // comctl32 a pointer to travels with it.
             tip_text,
+            sys_tips,
             shown_dirty: None,
             shown_external: None,
             shown_empty: None,
@@ -4759,6 +5175,145 @@ unsafe fn notes_height(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> i32 {
 
 /// Push a snapshot into the controls. The only path that changes what is on
 /// screen; the window never reads the model.
+/// The transparency row's whole caption: its label, then its value slot.
+///
+/// **One STATIC holds both, and that is Phase 0's id table rather than a
+/// preference.** 1074 is the slider and 1075 is "`96%`, or the reason it is
+/// forced off"; there is **no id for the row's label**, and ids are fixed and
+/// may not be invented. So the label rides on 1075, and a STATIC has one
+/// alignment -- which is why the value sits after a wide gap rather than
+/// against the slider the way the mock-up draws it. It reads better than the
+/// drawing in the case rule 7 is actually about:
+/// `Window transparency    Off in a remote session`.
+///
+/// **Two writers, one spelling.** `render_system` writes it on every push and
+/// the `WM_HSCROLL` arm rewrites it on every step of a drag -- and the drag
+/// path must NOT go through `layout` (that is `SetWindowPos` on the populated
+/// App combo, the measured data-loss call), so the two are genuinely separate
+/// call sites. A separator spelled twice would make the label jump by a space
+/// the first time one of them was edited.
+fn opacity_slot(value: &str) -> String {
+    format!("{}    {}", cap::TRANSPARENCY, value)
+}
+
+/// Push what `serve` knows onto the System page.
+///
+/// **A second entry point beside `apply_state`, and design §1's split by
+/// STORE is the whole reason.** `apply_state` renders a `ControlState`, which
+/// is the projection of a `Model`, which is what a config file that does not
+/// parse fails to produce. Every System row would then be hostage to a TOML
+/// error it has nothing to do with -- the defect the design names as fixed
+/// "as a side effect" of splitting the window by store. So the System page
+/// has its own push, its own state type, and no `editable` flag anywhere in
+/// it.
+///
+/// **Two arguments, not a `SystemState`**: everything else the page draws is
+/// something this crate can ask for itself and `serve` cannot. The config and
+/// log PATHS are already in `CFG` (handed over once at `open`); the log's SIZE
+/// is a `stat`; the theme and opacity preferences are `HKCU\Software\beckon`,
+/// which is this window's own store; and whether the machine may be
+/// transparent at all is a `GetSystemMetrics` plus a registry read. Passing
+/// any of those in would mean `serve` reading Windows-only state on a
+/// cross-platform path and this function trusting a copy of it.
+///
+/// The DECISIONS are still core's -- which rows exist, what the transparency
+/// slot says, how a size reads -- and `system_state` is where they are made
+/// and where all three CI jobs test them. This function gathers and renders.
+pub fn apply_system_state(paused: bool, autostart: Option<bool>) {
+    let Some(hwnd) = UI.with(|u| u.borrow().as_ref().map(|x| x.hwnd)) else {
+        return;
+    };
+    let Some(paths) = CFG.with(|c| c.borrow().clone()) else {
+        return;
+    };
+    // The log's size, read fresh on every push: it is the one value on this
+    // page that moves on its own, and a `serve` that has just rolled its log
+    // (`roll_if_oversized`, 5 MiB) should say so the next time anything
+    // refreshes. `None` when the file is not there, which
+    // `system_state` renders as `not found` rather than as `0 bytes`.
+    let log_bytes = paths
+        .log
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len());
+    let st = system_state(SystemInputs {
+        paused,
+        autostart,
+        dark: crate::prefs::dark(),
+        opacity: crate::prefs::opacity(),
+        block: crate::prefs::transparency_block_now(),
+        paths: &paths,
+        log_bytes,
+    });
+    unsafe { render_system(hwnd, &st) };
+}
+
+/// Write `st` onto the controls.
+///
+/// Split from `apply_system_state` so the gathering above has no `unsafe` in
+/// it and this has no policy in it -- the same division `apply_state` and
+/// `control_state` already have across a crate boundary.
+unsafe fn render_system(hwnd: HWND, st: &SystemState) {
+    // The row set FIRST, because everything below is placed against it: the
+    // card's height, where each row sits, and which controls `layout` places
+    // at all. `SYS_ROWS` is read by `compute_card_rects` without a `UI`
+    // borrow -- see its own doc.
+    let rows = SystemRows {
+        autostart: st.autostart.is_some(),
+        log: st.log.is_some(),
+    };
+    let rows_moved = SYS_ROWS.with(|c| c.replace(rows)) != rows;
+
+    // `BM_SETCHECK` raises no `BN_CLICKED`, so none of these three can be
+    // read back as a user gesture and none needs the `suppress` guard the
+    // Shortcuts page's fields do. `check` routes to `BM_SETCHECK` for a real
+    // check box -- none of the three is in the chip table.
+    check(hwnd, IDC_PAUSE, st.paused);
+    check(hwnd, IDC_AUTOSTART, st.autostart.unwrap_or(false));
+    check(hwnd, IDC_DARK, st.dark);
+
+    // The transparency row. `TBM_SETPOS` raises no `WM_HSCROLL` either, so
+    // the same reasoning holds: a push cannot be mistaken for a drag.
+    if let Transparency::On(p) = st.transparency {
+        if let Ok(h) = GetDlgItem(Some(hwnd), IDC_OPACITY) {
+            SendMessageW(h, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(p as isize)));
+        }
+    }
+    enable(hwnd, IDC_OPACITY, st.transparency.enabled());
+    set_text_if_changed(
+        hwnd,
+        IDC_OPACITY_VALUE,
+        &opacity_slot(&st.transparency.slot()),
+    );
+
+    set_text_if_changed(hwnd, IDC_CONFIG_NAME, &st.config.name);
+    set_text_if_changed(hwnd, IDC_CONFIG_DIR, &st.config.value);
+    if let Some(log) = st.log.as_ref() {
+        set_text_if_changed(hwnd, IDC_LOG_NAME, &log.name);
+        set_text_if_changed(hwnd, IDC_LOG_SIZE, &log.value);
+    }
+
+    // Only when the row set actually moved, which after the first push is
+    // never: both facts are fixed for the window's lifetime (see `SYS_ROWS`).
+    // `layout` is `SetWindowPos` on the populated App combo, the measured
+    // data-loss call -- so this is guarded for `Ui::shown_external`'s reason
+    // and not for tidiness, even though the guard can only fire once.
+    if rows_moved {
+        show_page_controls(
+            hwnd,
+            PAGE.with(|p| p.get()),
+            UI.with(|u| {
+                u.borrow()
+                    .as_ref()
+                    .map(|x| x.external_change)
+                    .unwrap_or(false)
+            }),
+        );
+        layout(hwnd);
+        let _ = InvalidateRect(Some(hwnd), None, true);
+    }
+}
+
 pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[String]>) {
     let Some((hwnd, list, combo, app, notes, filter, banner, reload, keep, tap)) = UI.with(|u| {
         u.borrow().as_ref().map(|x| {
@@ -5749,6 +6304,17 @@ unsafe fn subitem_text(list: HWND, item: usize, subitem: i32) -> String {
 /// already says which the button currently is. Reading it back is also what
 /// keeps the two in agreement by construction: a caption and a tier stored
 /// in two places can drift, one read from one place cannot.
+/// **The System page's five are all `Secondary`, by falling through**, and the
+/// four glyph buttons are a KNOWN deviation from the mock-up rather than a
+/// match. There `.btn.glyph` is `border-color:transparent;
+/// background:transparent`, i.e. a fifth "ghost" tier; here they wear
+/// `Secondary`'s `field` fill and `field_border` edge, so each file row ends
+/// in two small boxes rather than two bare glyphs. A ghost tier would need its
+/// own `colours` arm, its own high-contrast pair and its own
+/// `theme::pairs` rows before anything drew it -- and its resting state would
+/// be indistinguishable from the card, which is the one thing a button that
+/// deletes nothing but LAUNCHES something should not be. Deferred deliberately;
+/// nothing else depends on which way it goes.
 fn tier_of(id: i32, hwnd_item: HWND) -> BtnTier {
     match id {
         IDC_APPLY => BtnTier::Accent,
@@ -5810,46 +6376,120 @@ unsafe fn push_button_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
     CDRF_SKIPDEFAULT as isize
 }
 
-/// Paint `IDC_CAPS` -- the one toggle switch in this window -- by reading
-/// the three bits `paint::toggle` needs off the `NMCUSTOMDRAW` comctl32
-/// hands this window, the same shape `push_button_custom_draw` uses one
-/// function up for the nine `PUSH_BUTTONS`.
+/// Every switch in this window, in creation order.
 ///
-/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** `IDC_CAPS` stays
-/// `BS_AUTOCHECKBOX` -- see its creation call and `paint::toggle`'s own doc
-/// for why: owner-draw is a different VALUE of the same 4-bit type field,
-/// not a flag beside it, and adopting it would throw away the check box
-/// state machine and the UIA role a screen reader announces.
+/// **Four since 2026-08-15**, where `paint::toggle`'s own doc still says "the
+/// one toggle switch in this window": `IDC_CAPS` on Keyboard, and design
+/// §3.3's `Pause shortcuts` / `Start with Windows` / `Dark mode` on System.
+/// One list because one `WM_NOTIFY` arm dispatches all four and one
+/// `WM_CTLCOLORSTATIC` arm answers for all four -- a second switch added
+/// without a row here paints as an ordinary themed check box beside three
+/// switches, which reads as a rendering fault rather than as a missing row.
+///
+/// Every one of them is a real `BS_AUTOCHECKBOX`; see `is_a_toggle`.
+const TOGGLES: [i32; 4] = [IDC_CAPS, IDC_PAUSE, IDC_AUTOSTART, IDC_DARK];
+
+fn is_a_toggle(id: i32) -> bool {
+    TOGGLES.contains(&id)
+}
+
+/// Paint one of the four switches by reading the three bits `paint::toggle`
+/// needs off the `NMCUSTOMDRAW` comctl32 hands this window -- the same shape
+/// `push_button_custom_draw` uses one function up for the fourteen
+/// `PUSH_BUTTONS`.
+///
+/// **`NM_CUSTOMDRAW`, NOT `BS_OWNERDRAW`.** All four stay `BS_AUTOCHECKBOX`
+/// -- see their creation calls and `paint::toggle`'s own doc for why:
+/// owner-draw is a different VALUE of the same 4-bit type field, not a flag
+/// beside it, and adopting it would throw away the check box state machine
+/// and the UIA role a screen reader announces. That matters more on System
+/// than it did on Keyboard: three of the four are there, and a switch that
+/// announces itself as nothing is a switch a screen-reader user cannot find.
 ///
 /// `on` is read with `is_checked`, not off a bit this notification carries
 /// -- a check box's `NMCUSTOMDRAW` has no state bit for "ticked", only
 /// `CDIS_DISABLED` / `CDIS_FOCUS` / `CDIS_SELECTED` / `CDIS_HOT`, none of
-/// which mean checked. `is_checked` already routes `IDC_CAPS` to
-/// `BM_GETCHECK` (see `chip_bit`'s own doc: `IDC_CAPS` is deliberately
-/// absent from the chip table), so this asks the control the same way
-/// `handle_command`'s `(IDC_CAPS, _)` arm already does.
-unsafe fn caps_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+/// which mean checked. `is_checked` already routes these four to
+/// `BM_GETCHECK` (see `chip_bit`'s own doc: none of them is in the chip
+/// table), so this asks the control the same way `handle_command`'s own arms
+/// do.
+unsafe fn toggle_custom_draw(hwnd: HWND, id: i32, p: *const NMCUSTOMDRAW) -> isize {
     let cd = &*p;
     if cd.dwDrawStage != CDDS_PREPAINT {
         return CDRF_DODEFAULT as isize;
     }
     let dpi = GetDpiForWindow(hwnd).max(96);
-    let on = is_checked(hwnd, IDC_CAPS);
+    let on = is_checked(hwnd, id);
     let enabled = cd.uItemState.0 & CDIS_DISABLED.0 == 0;
     let focused = cd.uItemState.0 & CDIS_FOCUS.0 != 0;
     PAINT_THEME.with(|c| toggle(cd, on, enabled, focused, &mut c.borrow_mut(), dpi));
     CDRF_SKIPDEFAULT as isize
 }
 
+/// Paint the transparency slider.
+///
+/// **A `msctls_trackbar32` with `NM_CUSTOMDRAW`, not a hand-rolled control.**
+/// Everything a slider has to get right for a keyboard -- Left/Right by one,
+/// Page by a chunk, Home/End to the ends, the focus rectangle, the
+/// `WM_HSCROLL` stream, the UIA range-value pattern a screen reader reads --
+/// is comctl32's and is free. What is not free is the colours: a trackbar
+/// draws its channel and thumb from the *light* visual style whatever
+/// `SetWindowTheme` is told, which in a `#15171C` card is a pale slot with a
+/// pale lozenge in it. So the control is kept and only its pixels are
+/// replaced, exactly the trade `push_button_custom_draw` makes for the
+/// fourteen push buttons.
+///
+/// **Three stages, and the two that matter are the ITEM ones.** A trackbar's
+/// custom draw is a two-level notification: `CDDS_PREPAINT` must answer
+/// `CDRF_NOTIFYITEMDRAW` or no item stage ever arrives, and then
+/// `CDDS_ITEMPREPAINT` arrives once per part with `dwItemSpec` naming it.
+/// Answering `CDRF_SKIPDEFAULT` at the top level instead -- which is what the
+/// other three painters in this file do -- would suppress the whole control,
+/// tick marks, channel, thumb and all, and leave an empty rectangle.
+///
+/// `TBCD_TICS` is skipped rather than drawn: the control is created
+/// `TBS_NOTICKS`, so the stage does not arrive, and drawing sixteen ticks
+/// under a sixteen-step slider is noise the mock-up does not have.
+unsafe fn slider_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
+    let cd = &*p;
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    match cd.dwDrawStage {
+        CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as isize,
+        CDDS_ITEMPREPAINT => {
+            let enabled = enabled(hwnd, IDC_OPACITY);
+            // The focus ring is the CONTROL's, not the thumb's, so it is read
+            // once here rather than off `uItemState` -- a trackbar reports
+            // `CDIS_FOCUS` on neither part.
+            let focused = GetFocus() == cd.hdr.hwndFrom;
+            let drawn = PAINT_THEME.with(|c| {
+                paint::slider_part(
+                    cd,
+                    cd.dwItemSpec as u32,
+                    enabled,
+                    focused,
+                    &mut c.borrow_mut(),
+                    dpi,
+                )
+            });
+            if drawn {
+                CDRF_SKIPDEFAULT as isize
+            } else {
+                CDRF_DODEFAULT as isize
+            }
+        }
+        _ => CDRF_DODEFAULT as isize,
+    }
+}
+
 /// Paint one of the four tab pills, by reading off the `NMCUSTOMDRAW` the
 /// three things `paint::tab_pill` cannot ask for itself.
 ///
-/// The same shape `push_button_custom_draw` and `caps_custom_draw` use one
+/// The same shape `push_button_custom_draw` and `toggle_custom_draw` use one
 /// and two functions up: one notification in, one full repaint out,
 /// `CDRF_SKIPDEFAULT` on the way back.
 ///
 /// **`is_checked`, not `CDIS_CHECKED`** -- there is no such bit. See
-/// `paint::tab_pill`'s own doc, and `caps_custom_draw` for the identical
+/// `paint::tab_pill`'s own doc, and `toggle_custom_draw` for the identical
 /// decision taken for `IDC_CAPS`.
 ///
 /// **The badge and the dot come from `PILL_BADGE` and `PAGE`, never from
@@ -6051,8 +6691,36 @@ unsafe fn on_theme_changed(hwnd: HWND) {
 /// `read_backdrop_inputs` themselves, so `theme::MICA_SUPPORTED` is the one
 /// flag Gate 01 has to flip on a hardware failure. See its doc comment.
 fn apply_current_backdrop(hwnd: HWND) {
-    let inputs = theme::read_backdrop_inputs(theme::MICA_SUPPORTED);
-    theme::apply_backdrop(hwnd, beckon_core::theme::backdrop(inputs));
+    let inputs = backdrop_inputs();
+    // **The tier is core's answer; the ALPHA is the user's.** `backdrop`
+    // decides whether this machine may be transparent at all -- the three
+    // refusals `theme::transparency_block` owns, and the Mica/alpha
+    // capability split -- and returns `TIER2_ALPHA` as the level, which is
+    // what beckon picks when nobody is asked. The System page's slider is
+    // exactly "someone was asked", so the tier survives and only the level is
+    // replaced. Substituting here rather than inside `backdrop` keeps that
+    // function a pure decision the two non-Windows CI jobs can test, and
+    // keeps the slider from being able to make an opaque window transparent:
+    // a blocked machine never reaches this arm.
+    let tier = match beckon_core::theme::backdrop(inputs) {
+        beckon_core::theme::Backdrop::Alpha(_) => {
+            beckon_core::theme::Backdrop::Alpha(opacity_alpha(crate::prefs::opacity()))
+        }
+        other => other,
+    };
+    theme::apply_backdrop(hwnd, tier);
+}
+
+/// What this machine says about transparency, right now.
+///
+/// Public so `crate::prefs::transparency_block_now` can ask the same question
+/// of the same inputs the backdrop tier is decided from -- one reading, two
+/// readers, which is what stops the System page calling the slider live on a
+/// window that is already opaque. `theme::MICA_SUPPORTED` is threaded through
+/// here for the reason its own doc gives: one flag for a hardware failure to
+/// flip.
+pub fn backdrop_inputs() -> beckon_core::theme::BackdropInputs {
+    theme::read_backdrop_inputs(theme::MICA_SUPPORTED)
 }
 
 /// Bring the ListView's own background in line with the theme (Task 10).
@@ -6474,6 +7142,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         card(hdc, rc, dpi);
                     }
                 }
+                // The System card's two dividers, in the same layer as the
+                // cards and immediately after them -- they are drawn ON the
+                // card, so a card painted afterwards would erase them. Their
+                // geometry is `system_plan`'s, the same arithmetic `layout`
+                // places the rows either side of them from, reached through
+                // `system_dividers` for `card_rects`' reason: one function,
+                // two readers, no second copy to drift.
+                //
+                // Zero-width behind every other door, which `divider`
+                // declines to draw -- the same degenerate-rect rule the loop
+                // above applies.
+                {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    for rc in system_dividers(hwnd) {
+                        divider(hdc, rc, dpi);
+                    }
+                }
                 // The tab strip's trough, in the same layer as the cards and
                 // for the same reason: it is the window's own background under
                 // four child controls that paint themselves afterwards. It is
@@ -6739,13 +7424,27 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if is_push_button(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
                     return LRESULT(push_button_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
-                // `IDC_CAPS` (Task 11): the one toggle switch in this
-                // window, reached the same way and for the same reason as
-                // the nine push buttons just above -- pure painting, no
-                // callback, cannot recurse into `apply_state`, so it is
-                // answered before `suppressed()` too.
-                if nm.idFrom == IDC_CAPS as usize && nm.code == NM_CUSTOMDRAW {
-                    return LRESULT(caps_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
+                // The four toggle switches (`TOGGLES`) -- `IDC_CAPS` on
+                // Keyboard since Task 11, and design §3.3's three on System
+                // since 2026-08-15. Reached the same way and for the same
+                // reason as the fourteen push buttons just above: pure
+                // painting, no callback, cannot recurse into `apply_state`,
+                // so it is answered before `suppressed()` too.
+                if is_a_toggle(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(toggle_custom_draw(
+                        hwnd,
+                        nm.idFrom as i32,
+                        lp.0 as *const NMCUSTOMDRAW,
+                    ));
+                }
+                // The transparency slider. A SIBLING arm rather than a
+                // widening of any above it, because a trackbar's custom draw
+                // is two-level -- `CDRF_NOTIFYITEMDRAW` then one
+                // `CDDS_ITEMPREPAINT` per part -- while every other painter
+                // here answers once and returns `CDRF_SKIPDEFAULT`. Sharing a
+                // function would mean an `if` on the control class inside it.
+                if nm.idFrom == IDC_OPACITY as usize && nm.code == NM_CUSTOMDRAW {
+                    return LRESULT(slider_custom_draw(hwnd, lp.0 as *const NMCUSTOMDRAW));
                 }
                 // The four tab pills (Task 6). A SIBLING arm rather than a
                 // widening of the push-button one above: the pills are
@@ -6933,7 +7632,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // cross-family pair the `on_card` branch below has its own
                 // correction about -- latent only because the four shipped HC
                 // schemes happen to make those two indices equal.
-                if id == IDC_SYS_PLACEHOLDER || id == IDC_ABOUT_PLACEHOLDER {
+                if id == IDC_ABOUT_PLACEHOLDER {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
                     let bg = theme_col(|p| p.bg, COLOR_BTNFACE);
                     let text = theme_col(|p| p.text_muted, COLOR_BTNTEXT);
@@ -6941,6 +7640,39 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SetBkColor(hdc, bg);
                     SetBkMode(hdc, OPAQUE);
                     return LRESULT(theme_brush(bg).0 as isize);
+                }
+                // **The System page's three VALUE slots**, on the card like
+                // everything else on that page but in `text_muted` rather
+                // than `text` -- design §7 rule 3: a fact about this machine
+                // is a value, and a value beside its own label should not
+                // compete with it. The pair is already covered by
+                // `theme::pairs`' *muted text on card* row at the 4.5 floor,
+                // so no new row was needed and moving either token stays a
+                // test failure.
+                //
+                // `IDC_OPACITY_VALUE` is in this branch even though the label
+                // half of its text is not a value: the control holds
+                // `Window transparency` and `96%` in one string (see
+                // `render_system` for why one control), and a STATIC has one
+                // ink. Muted for both is the safe direction -- the label is
+                // still 4.5 against the card, while `text` on the value would
+                // make a percentage read as loud as the row it belongs to.
+                //
+                // **`COLOR_GRAYTEXT` under high contrast, not
+                // `COLOR_WINDOWTEXT`.** It is the index the four HC schemes
+                // define for de-emphasised text on `COLOR_WINDOW`, and it is
+                // the pair `colours`' disabled row and `toggle`'s disabled ink
+                // already use. What it must not be is the fill's own index,
+                // which is the collision class that put five invisible strings
+                // on screen in the last redesign.
+                if id == IDC_CONFIG_DIR || id == IDC_LOG_SIZE || id == IDC_OPACITY_VALUE {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let card = theme_col(|p| p.card, COLOR_WINDOW);
+                    let text = theme_col(|p| p.text_muted, COLOR_GRAYTEXT);
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, card);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(card).0 as isize);
                 }
                 // `IDC_NOTES` is deliberately ABSENT since Task 12: it is
                 // `SS_OWNERDRAW` now, and an owner-draw static never asks
@@ -6957,9 +7689,38 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // card still has to be here -- falling through to
                 // `DefWindowProcW` draws it as a `COLOR_3DFACE` rectangle,
                 // which is the defect that once hit eight controls at once.
+                // The System page's three switches and its two file-name
+                // labels joined on 2026-08-15. All five sit on that page's
+                // one card, so all five would otherwise be `COLOR_3DFACE`
+                // rectangles -- the defect that once hit eight controls at
+                // once, respelled on a new page. The three VALUE slots are
+                // NOT here; they have their own branch above, in `text_muted`.
+                //
+                // **`IDC_OPACITY` is here too, and it is not a STATIC.** A
+                // `msctls_trackbar32` asks its PARENT for a background brush
+                // through `WM_CTLCOLORSTATIC`, which is the message trackbars
+                // and progress bars have always used, and
+                // `paint::slider_part` only ever fills the two rects comctl32
+                // hands it -- the channel's and the thumb's. Everything
+                // outside those two, which on a 120x20 control is most of it,
+                // is erased with whatever this arm returns. Without the id
+                // here it fell through to `DefWindowProcW` and the slider sat
+                // in a `COLOR_3DFACE` rectangle: the defect that once hit
+                // eight controls at once, reached through a control class
+                // rather than through a page.
                 let on_card = matches!(
                     id,
-                    IDC_BANNER | IDC_GRP_KEYBOARD | IDC_CAPS | IDC_LBL_HOLD | IDC_LBL_TAP
+                    IDC_BANNER
+                        | IDC_GRP_KEYBOARD
+                        | IDC_CAPS
+                        | IDC_LBL_HOLD
+                        | IDC_LBL_TAP
+                        | IDC_PAUSE
+                        | IDC_AUTOSTART
+                        | IDC_DARK
+                        | IDC_OPACITY
+                        | IDC_CONFIG_NAME
+                        | IDC_LOG_NAME
                 );
                 if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
@@ -7054,6 +7815,57 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 handle_command(hwnd, id, code);
                 LRESULT(0)
             }
+            // The transparency slider. A trackbar reports through
+            // `WM_HSCROLL`, not `WM_COMMAND`, which is why this is an arm of
+            // its own rather than a line in `handle_command`: the id is not
+            // in `wParam` at all -- `lParam` is the control's HWND, and the
+            // low word of `wParam` is the scroll code.
+            //
+            // **The position is read from the control, never from the code.**
+            // `TB_THUMBTRACK` carries the position in `wParam`'s high word
+            // and `TB_ENDTRACK` carries nothing at all, while
+            // `TBM_GETPOS` answers correctly for every one of the ten codes
+            // -- including the keyboard's `TB_LINEUP`/`TB_PAGEDOWN`/`TB_TOP`,
+            // which is the whole reason a hand-rolled slider was not built.
+            //
+            // **Applied on every step, including mid-drag.** The window's own
+            // alpha is what the user is judging the value by, so a control
+            // that only committed on `TB_ENDTRACK` would be a slider you have
+            // to let go of to see. `SetLayeredWindowAttributes` is cheap
+            // enough for a drag; the registry write beside it is not free,
+            // but a drag is a human gesture measured in tens of writes, not
+            // thousands.
+            // The `lp.0 != 0` half is not defensive dressing: a `WM_HSCROLL`
+            // from a scroll BAR rather than a control carries a null `lParam`,
+            // and `GetDlgCtrlID(HWND(null))` is an error whose return value is
+            // 0 -- which would be indistinguishable from a control whose id
+            // really is 0 if anything here had one.
+            WM_HSCROLL
+                if lp.0 != 0
+                    && GetDlgCtrlID(HWND(lp.0 as *mut core::ffi::c_void)) == IDC_OPACITY =>
+            {
+                let h = HWND(lp.0 as *mut core::ffi::c_void);
+                let pos = SendMessageW(h, TBM_GETPOS_MSG, None, None).0;
+                let pct = beckon_core::settings::clamp_opacity(pos.clamp(0, 255) as u8);
+                if let Err(e) = crate::prefs::set_opacity(pct) {
+                    eprintln!("beckon: cannot store the transparency preference: {e}");
+                }
+                apply_current_backdrop(hwnd);
+                // The readout, without `layout`: `set_text_if_changed` is a
+                // `WM_SETTEXT`, and the slot's width is fixed by `layout` from
+                // the constant label plus a reserved value column -- see the
+                // System band there. A caption that fed `layout` would be
+                // `SetWindowPos` on the populated App combo once per drag
+                // step, which is the measured data-loss call
+                // (`Ui::shown_external`).
+                set_text_if_changed(
+                    hwnd,
+                    IDC_OPACITY_VALUE,
+                    &opacity_slot(&beckon_core::settings::opacity_label(pct)),
+                );
+                with_cb(|cb| (cb.on_command)(SettingsCommand::SetOpacity(pct)));
+                LRESULT(0)
+            }
             WM_CLOSE => {
                 // BEFORE the save prompt, not after. `on_close_request` can
                 // put up a `MessageBoxW`, which runs a MODAL LOOP on this
@@ -7117,6 +7929,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     // going out of scope, because "nothing reads this field"
                     // is exactly the impression that gets it deleted.
                     drop(ui.tip_text);
+                    // The System page's four glyph-button tooltips, on the
+                    // same rule and for the same reason. `sys_tips` and
+                    // `tip_text` are the whole set: every tooltip in this
+                    // window holds a pointer into one of the five buffers
+                    // these two fields own.
+                    drop(ui.sys_tips);
                 }
                 CB.with(|c| *c.borrow_mut() = None);
                 CFG.with(|c| *c.borrow_mut() = None);
@@ -7951,6 +8769,67 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
                 }
             }
         }
+        // ---- The System page (design §3.3).
+        //
+        // **`Pause shortcuts` and `Reload` reach the tray's OWN `set_paused`
+        // and `reload`, never a second implementation**, and the command
+        // channel is what makes that structural: this window can only ask,
+        // and `serve.rs` answers with the same two functions the tray menu
+        // calls. `set_paused` does five ordered things -- unregister, set the
+        // flag, rewrite the status phrase, CLEAR `registered`, and sync the
+        // Caps hook -- and the cleared map is what makes the `paused` status
+        // word load-bearing on every Shortcuts row. A window that flipped a
+        // flag itself would leave nineteen rows claiming to be registered
+        // while nothing was.
+        //
+        // `is_checked` AFTER the click, not a stored value: all three are
+        // `BS_AUTOCHECKBOX`, so Windows has already flipped the state by the
+        // time this notification arrives -- the same read
+        // `(IDC_CAPS, _)` above makes, and the opposite of the chip arms,
+        // which have to flip the state themselves first because
+        // `BS_OWNERDRAW` has none.
+        (IDC_PAUSE, _) => {
+            let on = is_checked(hwnd, IDC_PAUSE);
+            with_cb(|cb| (cb.on_command)(SettingsCommand::SetPaused(on)));
+        }
+        (IDC_AUTOSTART, _) => {
+            let on = is_checked(hwnd, IDC_AUTOSTART);
+            with_cb(|cb| (cb.on_command)(SettingsCommand::SetAutostart(on)));
+        }
+        // **The window applies this one itself and tells the caller after.**
+        // Every other command here is something only `serve` can do; the
+        // theme is this window's own look, stored in this window's own key,
+        // and a round trip through `serve` would mean the switch stayed on
+        // the old colours until the next push. The caller still hears about
+        // it -- it owns the tray, and a future tray that wants to follow the
+        // same preference should not have to read the registry to find out.
+        (IDC_DARK, _) => {
+            let on = is_checked(hwnd, IDC_DARK);
+            if let Err(e) = crate::prefs::set_dark(on) {
+                // Swallowed rather than surfaced: what is lost is that the
+                // choice does not survive a restart, and a modal dialog for
+                // that -- on a switch the user just flipped -- is worse than
+                // the fault. The window has already changed colour.
+                eprintln!("beckon: cannot store the theme preference: {e}");
+            }
+            unsafe { on_theme_changed(hwnd) };
+            with_cb(|cb| (cb.on_command)(SettingsCommand::SetDarkMode(on)));
+        }
+        (IDC_SYS_RELOAD, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::ReloadNow)),
+        // The four glyph buttons. `Open` hands the file to whatever is
+        // registered for it; `Reveal` opens Explorer with it selected. Both
+        // are `serve`'s to do -- `ShellExecuteW` pumps this thread's message
+        // queue, so it must not run from inside a notification with a borrow
+        // alive, which is the rule this whole file states for
+        // `backend.beckon()`.
+        (IDC_CONFIG_OPEN, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Config)))
+        }
+        (IDC_CONFIG_SHOW, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Reveal(Target::Config)))
+        }
+        (IDC_LOG_OPEN, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Log))),
+        (IDC_LOG_SHOW, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::Reveal(Target::Log))),
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),
         (IDC_KEEPMINE, _) => with_cb(|cb| (cb.on_keep_mine)()),

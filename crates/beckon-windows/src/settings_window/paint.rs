@@ -1219,21 +1219,28 @@ pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut Them
     }
 }
 
-/// Paint `IDC_CAPS` -- the one toggle switch in this window -- as a 40x20
-/// track with a sliding knob, in place of the native check box glyph.
+/// Paint one of the window's four toggle switches (`TOGGLES`, `mod.rs`) as a
+/// 40x20 track with a sliding knob, in place of the native check box glyph.
 ///
-/// **`IDC_CAPS` stays `BS_AUTOCHECKBOX`, reached through `NM_CUSTOMDRAW`,
+/// **It was `IDC_CAPS` alone until 2026-08-15**, when design §3.3 gave the
+/// System page `Pause shortcuts`, `Start with Windows` and `Dark mode`. This
+/// function did not change for the extra three -- it never read the id -- and
+/// that is the argument for one painter rather than a System-page copy:
+/// four switches on two pages that differ in nothing a reader can see.
+///
+/// **All four stay `BS_AUTOCHECKBOX`, reached through `NM_CUSTOMDRAW`,
 /// exactly `button`'s own pattern one function up.** `BS_OWNERDRAW` is a
 /// different VALUE of the same 4-bit type field `BS_DEFPUSHBUTTON` and
 /// `BS_AUTOCHECKBOX` occupy (`BS_TYPEMASK_BITS`), not a flag beside it, so
-/// adopting it would throw away the check box state machine `handle_command`'s
-/// `(IDC_CAPS, _)` arm and `apply_state`'s own `check(hwnd, IDC_CAPS, ...)`
-/// both depend on, and the UIA role a screen reader announces for the
-/// control. Custom draw leaves `BM_GETCHECK`/`BM_SETCHECK`, `Space` and the
-/// accessible role exactly as they are and only replaces the pixels --
-/// `caps_custom_draw` (`mod.rs`) is the translation, one `NMCUSTOMDRAW` in,
-/// one full repaint out, no `DRAWITEMSTRUCT` needed because nothing here
-/// reads one.
+/// adopting it would throw away the check box state machine
+/// `handle_command`'s per-id arms and `render_system`'s own
+/// `check(hwnd, id, ...)` both depend on, and the UIA role a screen reader
+/// announces for the control -- which matters more with three of the four on
+/// a page whose other rows are buttons and a slider. Custom draw leaves
+/// `BM_GETCHECK`/`BM_SETCHECK`, `Space` and the accessible role exactly as
+/// they are and only replaces the pixels -- `toggle_custom_draw` (`mod.rs`)
+/// is the translation, one `NMCUSTOMDRAW` in, one full repaint out, no
+/// `DRAWITEMSTRUCT` needed because nothing here reads one.
 ///
 /// **High contrast: knob and track never share a `sys` index.** `col`
 /// ignores the palette closure under `Theme::HighContrast` and answers
@@ -1259,9 +1266,9 @@ pub(super) unsafe fn button(di: &DRAWITEMSTRUCT, tier: BtnTier, cache: &mut Them
 ///
 /// **Geometry: `layout` gives `IDC_CAPS` its own budget, not `glyph`.**
 /// `w_caps = tw(cap::CAPS) + toggle_glyph`, where `toggle_glyph` (`layout.rs`,
-/// `s(50)`) covers everything this function draws before the caption: the
-/// track's own left inset (`off`, 2 px -- see the track-rect comment above),
-/// the 40 px track itself, and `tok::GAP` (6 px) before the text. Those sum
+/// `s(50)`) covers everything this function draws BESIDE the caption: the
+/// track's own outer inset (`off`, 2 px -- see the track-rect comment above),
+/// the 40 px track itself, and `tok::GAP` (6 px) between the two. Those sum
 /// to 48, so the budget covers them with 2 logical px left over -- 2 to 6
 /// physical across the standard scale steps, derived step by step in the
 /// comment beside `toggle_glyph`. The caption's `DrawTextW` box is therefore
@@ -1302,21 +1309,35 @@ pub(super) unsafe fn toggle(
     let top = rc.top + (rc.bottom - rc.top - track_h) / 2;
     // `off` is the focus ring's own outset below (2 px) -- the ring grows
     // OUTWARD from the track by `off` on every side, and `NM_CUSTOMDRAW`'s
-    // `hdc` is clipped to this control's own `rc`. A track flush against
-    // `rc.left` left the ring's left edge (and both left arcs) `off` px
-    // past `rc.left` with nothing to clip into -- cut off. Inset the track
-    // by `off` on the left instead, so `ring_rc.left` (`track.left - off`)
-    // lands back exactly on `rc.left`. This mirrors `button`'s own ring
-    // painter (`ring_rc` in `button`, paint.rs:1254), which computes its
-    // ring as an INSET from
-    // the full `rc` rather than an outset from an inner shape -- `button`
-    // has margin on every side to shrink into; this track does not, so it
-    // has to make its own margin on the one side (left) that had none.
+    // `hdc` is clipped to this control's own `rc`. A track flush against the
+    // control's edge leaves the ring's outer edge (and both arcs on that
+    // side) `off` px past it with nothing to clip into -- cut off. Insetting
+    // the track by `off` puts `ring_rc`'s outer edge back exactly on `rc`'s.
+    // This mirrors `button`'s own ring painter, which computes its ring as an
+    // INSET from the full `rc` rather than an outset from an inner shape --
+    // `button` has margin on every side to shrink into; this track does not,
+    // so it has to make its own margin on the one side that had none.
     let off = scale(2, dpi);
+    // **The track is at the RIGHT and the caption at the LEFT, since
+    // 2026-08-15.** It was the other way round while `IDC_CAPS` was the only
+    // switch in the window, and the mock-up draws BOTH pages' switches
+    // right-aligned -- `.srow` there is `label (flex:1)` then `.sw`, on the
+    // Keyboard row as much as on System's three. Design §3.3 puts four
+    // switches on screen where there was one, and a page of rows whose
+    // controls line up with the card's right edge is the whole reason they
+    // read as a column rather than as four sentences.
+    //
+    // Nothing in `layout` moved with it: a switch's control is its caption
+    // plus `toggle_glyph`'s budget either way, and only the arrangement
+    // inside that box changed. The Keyboard page therefore gets the switch
+    // at the right end of `IDC_CAPS`'s own rect rather than at the right edge
+    // of its card, which is closer to §3.2's drawing than the old side was
+    // and not yet that drawing -- the three-row Keyboard card is that
+    // workstream's, and this change neither does it nor blocks it.
     let track = RECT {
-        left: rc.left + off,
+        left: rc.right - off - track_w,
         top,
-        right: rc.left + off + track_w,
+        right: rc.right - off,
         bottom: top + track_h,
     };
 
@@ -1397,12 +1418,11 @@ pub(super) unsafe fn toggle(
     let _ = DeleteObject(HGDIOBJ(knob_pen.0));
     let _ = DeleteObject(HGDIOBJ(knob_brush.0));
 
-    // The caption, to the right of the track at this window's usual
-    // control-to-control gap (`tok::GAP`). The raw caption text (mnemonic
-    // `&` intact) with prefix processing left ON -- `button`'s own choice,
-    // for the same reason: `IDC_CAPS`' caption carries `&Use`, and whether
-    // the underline SHOWS is the window's UI state to say, not this
-    // function's.
+    // The caption, from the control's own left edge up to one `tok::GAP`
+    // before the track. The raw caption text (mnemonic `&` intact) with
+    // prefix processing left ON -- `button`'s own choice, for the same
+    // reason: `IDC_CAPS`' caption carries `&Use`, and whether the underline
+    // SHOWS is the window's UI state to say, not this function's.
     let font = HFONT(
         SendMessageW(
             nm.hdr.hwndFrom,
@@ -1426,7 +1446,7 @@ pub(super) unsafe fn toggle(
     SetTextColor(hdc, ink);
     let gap = scale(tok::GAP, dpi);
     let mut tr = RECT {
-        left: track.right + gap,
+        right: (track.left - gap).max(rc.left),
         ..rc
     };
     let ui_state = SendMessageW(
@@ -1493,6 +1513,213 @@ pub(super) unsafe fn toggle(
         }
         let _ = DeleteObject(HGDIOBJ(ring_pen.0));
     }
+}
+
+/// One part of the transparency slider: the channel, or the thumb.
+///
+/// Returns `false` for any part this does not draw, so the dispatcher can
+/// answer `CDRF_DODEFAULT` rather than leaving a hole. Today that is only
+/// `TBCD_TICS`, which the control's own `TBS_NOTICKS` means never arrives --
+/// the arm exists because a stage that stops being suppressed must not
+/// silently vanish from the control.
+///
+/// **`slider_part`, not `slider`, and it draws no geometry of its own.**
+/// comctl32 hands each part its rect (`cd.rc`) and owns where the thumb sits;
+/// re-deriving either here would be a second copy of the trackbar's own
+/// arithmetic, and the copy would drift the first time a DPI put the thumb
+/// half a pixel elsewhere. The one thing this DOES compute is how much of the
+/// channel is filled, and even that is read back out of the control
+/// (`TBM_GETPOS` against the live range) rather than passed in from the model
+/// -- a fill that disagreed with the thumb by one step would look like a
+/// rendering fault and be a state-sync fault.
+///
+/// **The parent's own surface first**, exactly `button`'s and `toggle`'s
+/// first line and for the same reason: `cd.rc` is wider and taller than the
+/// shapes below it, a trackbar has no `WM_CTLCOLOR*` this window answers
+/// (`WM_CTLCOLORSTATIC` reaches it, and this arm skips default drawing
+/// anyway), and whatever the last frame left there stays unless something
+/// repaints it. `p.card`, because the System page's rows sit on a card.
+pub(super) unsafe fn slider_part(
+    cd: &NMCUSTOMDRAW,
+    part: u32,
+    enabled: bool,
+    focused: bool,
+    cache: &mut ThemeCache,
+    dpi: u32,
+) -> bool {
+    if part != TBCD_CHANNEL && part != TBCD_THUMB {
+        return false;
+    }
+    let hdc = cd.hdc;
+    let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
+    let ground = cache.col(|p| p.card, COLOR_WINDOW);
+    FillRect(hdc, &cd.rc, cache.brush(ground));
+
+    // `accent_fill` for the filled half and the thumb, `field_border` for the
+    // empty half -- the same pair `toggle`'s track already uses for on and
+    // off, so a switch and a slider on the same page read as one family.
+    // Under high contrast the two are `COLOR_HIGHLIGHT` and `COLOR_BTNSHADOW`:
+    // DIFFERENT indices, which is the rule five invisible-text collisions were
+    // found by breaking on the last redesign, and neither collides with the
+    // `COLOR_WINDOW` ground this function just filled.
+    let (lit, dim) = if enabled {
+        (
+            cache.col(|p| p.accent_fill, COLOR_HIGHLIGHT),
+            cache.col(|p| p.field_border, COLOR_BTNSHADOW),
+        )
+    } else {
+        (
+            cache.col(|p| p.text_faint, COLOR_GRAYTEXT),
+            cache.col(|p| p.field_border, COLOR_BTNSHADOW),
+        )
+    };
+
+    let solid = |rc: RECT, fill: COLORREF, round: bool| {
+        let brush = CreateSolidBrush(fill);
+        let pen = CreatePen(PS_SOLID, 1, fill);
+        let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+        let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+        if round && !hc {
+            let r = (rc.bottom - rc.top).max(0);
+            let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, r, r);
+        } else {
+            let _ = Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+        }
+        if !pp.is_invalid() {
+            SelectObject(hdc, pp);
+        }
+        if !pb.is_invalid() {
+            SelectObject(hdc, pb);
+        }
+        let _ = DeleteObject(HGDIOBJ(pen.0));
+        let _ = DeleteObject(HGDIOBJ(brush.0));
+    };
+
+    if part == TBCD_CHANNEL {
+        // A 4 px bar centred in the channel comctl32 offered, not the whole
+        // of it: the control reserves a channel tall enough for the classic
+        // sunken slot, and filling all of it would draw a bar three times the
+        // mock-up's weight.
+        let h = scale(4, dpi);
+        let mid = (cd.rc.top + cd.rc.bottom) / 2;
+        let bar = RECT {
+            left: cd.rc.left,
+            top: mid - h / 2,
+            right: cd.rc.right,
+            bottom: mid - h / 2 + h,
+        };
+        solid(bar, dim, true);
+        // How far along the thumb is, from the control's own range. `min`
+        // and `max` are read back rather than assumed to be
+        // `OPACITY_MIN..=OPACITY_MAX`: this function must not hold a second
+        // opinion about a range `build_children` set once.
+        let hwnd = cd.hdr.hwndFrom;
+        let pos = SendMessageW(hwnd, TBM_GETPOS_MSG, None, None).0;
+        let lo = SendMessageW(hwnd, TBM_GETRANGEMIN, None, None).0;
+        let hi = SendMessageW(hwnd, TBM_GETRANGEMAX, None, None).0;
+        let span = (hi - lo).max(1);
+        let frac = (pos - lo).clamp(0, span);
+        let w = bar.right - bar.left;
+        let filled = RECT {
+            right: bar.left + (w as i64 * frac as i64 / span as i64) as i32,
+            ..bar
+        };
+        if filled.right > filled.left {
+            solid(filled, lit, true);
+        }
+        return true;
+    }
+
+    // The thumb: a disc, inset so it reads as a knob on the bar rather than
+    // as a lozenge in a slot. comctl32's own thumb rect is taller than it is
+    // wide, so the diameter is taken from the WIDTH and the disc is centred
+    // vertically -- taking it from the height would draw an ellipse.
+    let d = (cd.rc.right - cd.rc.left)
+        .min(cd.rc.bottom - cd.rc.top)
+        .max(1);
+    let cxm = (cd.rc.left + cd.rc.right) / 2;
+    let cym = (cd.rc.top + cd.rc.bottom) / 2;
+    let knob = RECT {
+        left: cxm - d / 2,
+        top: cym - d / 2,
+        right: cxm - d / 2 + d,
+        bottom: cym - d / 2 + d,
+    };
+    let brush = CreateSolidBrush(lit);
+    // A pen of the fill colour, never the stock black one: `Ellipse` strokes
+    // its outline with the current pen, and the default would put a 1 px
+    // black ring around the knob in both themes.
+    let pen = CreatePen(PS_SOLID, 1, lit);
+    let pb = SelectObject(hdc, HGDIOBJ(brush.0));
+    let pp = SelectObject(hdc, HGDIOBJ(pen.0));
+    let _ = Ellipse(hdc, knob.left, knob.top, knob.right, knob.bottom);
+    if !pp.is_invalid() {
+        SelectObject(hdc, pp);
+    }
+    if !pb.is_invalid() {
+        SelectObject(hdc, pb);
+    }
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+
+    // The focus ring, LAST, per `button`'s rule -- so it never fights the
+    // knob for the same pixels. It rides INSIDE the thumb's own rect rather
+    // than outside it, because `NM_CUSTOMDRAW`'s `hdc` is clipped to
+    // `cd.rc`: a ring drawn outward would be cut off on every side, which is
+    // the same clip `toggle`'s track inset itself to survive.
+    if enabled && focused {
+        let ring = cache.col(|p| p.accent_on, COLOR_HIGHLIGHTTEXT);
+        let w = scale(2, dpi);
+        let ring_pen = CreatePen(PS_SOLID, w, ring);
+        let null_brush = GetStockObject(NULL_BRUSH);
+        let pp = SelectObject(hdc, HGDIOBJ(ring_pen.0));
+        let pb = SelectObject(hdc, null_brush);
+        let inset = w;
+        let _ = Ellipse(
+            hdc,
+            knob.left + inset,
+            knob.top + inset,
+            knob.right - inset,
+            knob.bottom - inset,
+        );
+        if !pp.is_invalid() {
+            SelectObject(hdc, pp);
+        }
+        if !pb.is_invalid() {
+            SelectObject(hdc, pb);
+        }
+        let _ = DeleteObject(HGDIOBJ(ring_pen.0));
+    }
+    true
+}
+
+/// One divider inside a card: a hairline the full width of the card's
+/// interior.
+///
+/// **A painted line, not a control**, for the reason the cards themselves are
+/// painted: it belongs to the window's own background layer, it takes no
+/// hit-test and no tab stop, and a `SS_ETCHEDHORZ` STATIC would need an id, a
+/// `PAGE_CONTROLS` row and a `WM_CTLCOLORSTATIC` arm apiece to draw two
+/// pixels. The geometry comes from `layout::system_rects`, the same function
+/// that places the rows either side of it -- one arithmetic, two readers, the
+/// rule `compute_card_rects` states for itself.
+///
+/// `card_border`, the same token `card`'s own edge uses: a divider inside a
+/// card and the card's own outline are the same kind of line, and giving the
+/// inner one its own token would be a second thing to keep in step for no
+/// visible difference. Under high contrast it is `COLOR_BTNSHADOW`, distinct
+/// from the `COLOR_WINDOW` card it sits on.
+pub(super) unsafe fn divider(hdc: HDC, rc: RECT, dpi: u32) {
+    if rc.right <= rc.left {
+        return;
+    }
+    let h = scale(1, dpi).max(1);
+    let line = RECT {
+        bottom: rc.top + h,
+        ..rc
+    };
+    let c = theme_col(|p| p.card_border, COLOR_BTNSHADOW);
+    FillRect(hdc, &line, theme_brush(c));
 }
 
 /// The tab strip's trough: one rounded fill behind the four pills, drawn
@@ -1585,7 +1812,7 @@ const PILL_DOT: i32 = 7;
 /// **`active` comes from `is_checked`, never from a bit on `nm`.** A check
 /// box's -- and an auto-radio's -- `NMCUSTOMDRAW` carries `CDIS_DISABLED` /
 /// `CDIS_FOCUS` / `CDIS_SELECTED` / `CDIS_HOT` and nothing that means
-/// "ticked"; `CDIS_SELECTED` means the mouse is DOWN on it. `caps_custom_draw`
+/// "ticked"; `CDIS_SELECTED` means the mouse is DOWN on it. `toggle_custom_draw`
 /// took the identical decision for `IDC_CAPS` and for the identical reason,
 /// and `BM_GETCHECK` answering an auto-radio 1/0 was measured on a14
 /// 2026-08-14 (gate G-S3) rather than assumed.

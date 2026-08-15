@@ -964,6 +964,17 @@ settings window, the only file it writes. There is still
 no config for `beckon <id>` itself and no resolve cache — ids resolve against
 OS metadata on every call.
 
+**CORRECTED 2026-08-15: there is now a second store, and it is deliberately
+not a file.** The settings window's System page (design §3.3) keeps the
+window's own look — `DarkMode` and `Opacity` — in
+`HKCU\Software\beckon`, two `REG_DWORD`s written by
+`crates/beckon-windows/src/prefs.rs`. That is the split the Four Doors design
+asks for: Shortcuts and Keyboard write `apps.toml`, System writes the
+registry, the Run key, or nothing. The split is what makes a theme switch keep
+working when `apps.toml` does not parse, which is the one state a user most
+needs a GUI in. The sentence above still holds as written — a *file* is still
+only ever the shortcuts TOML — and the hot path (`beckon <id>`) reads neither.
+
 ## Out of scope (explicitly)
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
@@ -979,6 +990,25 @@ OS metadata on every call.
   only to fill in a Name while authoring a binding — the job `beckon
   search` already has — and never focuses or launches anything. Design:
   `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`.
+
+  **WIDENED 2026-08-15 — the window is `serve`'s control surface as well as
+  its editor.** Design §3.3's System page pauses and resumes the hotkeys,
+  reloads the config, toggles `Start with Windows`, sets the window's own
+  theme and transparency, and opens or reveals the config and log files. The
+  paragraph above is still true of the SHORTCUT table — nothing there
+  focuses or launches — and the additions are the tray menu's own commands
+  reached from a page rather than a menu: `Pause shortcuts` and `Reload` call
+  `serve.rs`'s `set_paused` and `reload`, the same two functions the tray
+  calls, through `SettingsCommand`. **They must never be re-implemented in the
+  window**: `set_paused` does five ordered things, one of which is CLEARING
+  the registration map, and that cleared map is what makes the `paused` status
+  word load-bearing on every Shortcuts row.
+
+  `Start with Windows` is **omitted, not greyed**, under `beckon.exe serve`,
+  copying the tray's own reasoning — a capability this process does not have
+  asks "why is this greyed?" with no answer in the row. The log row is omitted
+  the same way when `serve` ran without `--log`. Both decisions live in
+  `beckon_core::settings::system_state`, so all three CI jobs test them.
 
   **Shape: bands stacked top to bottom, not a split pane** (landing 2a,
   `settings_window.rs::layout`). The 45/55 column split it replaced put 561 px of fixed

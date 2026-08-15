@@ -664,6 +664,277 @@ pub enum SettingsCommand {
     Undo,
 }
 
+// ---------------------------------------------------------------------------
+// The System page
+// ---------------------------------------------------------------------------
+
+/// The narrowest the transparency slider goes, as a percentage.
+///
+/// **85, not 0, and the floor is a measurement rather than a preference.**
+/// `SetLayeredWindowAttributes` dims without blurring -- Mica and Acrylic
+/// blur, and Mica is measured dead on this window (gate 01, a14) -- so every
+/// step of visible transparency is a step of legible clutter with nothing
+/// gained. 91 % was tried on a real desktop and rejected in those words
+/// ("trong suot qua da, va khong co lam mo nen rat kho nhin"), which is where
+/// the floor comes from: the slider offers the band either side of "barely
+/// there", not the band that includes "unreadable". See
+/// `theme::TIER2_ALPHA`'s own note, which is the same finding from the other
+/// end.
+pub const OPACITY_MIN: u8 = 85;
+
+/// Fully opaque, and the top of the range: a slider whose top end is not
+/// "off" would leave no way to turn the effect off from the control that
+/// turns it on.
+pub const OPACITY_MAX: u8 = 100;
+
+/// Where the slider sits until the user moves it.
+///
+/// A hint of depth at the window's edges and nothing more, which is design
+/// §5.1's whole claim for tier 2. It is deliberately NOT `theme::TIER2_ALPHA`
+/// (250, i.e. 98 %) converted: that constant is the fixed alpha for a window
+/// with no slider, and the two answer different questions -- one is what
+/// beckon picks when nobody is asked, the other is where the asking starts.
+pub const OPACITY_DEFAULT: u8 = 96;
+
+/// Bring a stored or typed percentage into range.
+///
+/// The window clamps before sending `SettingsCommand::SetOpacity`, so the
+/// caller may assume 85..=100 -- but the value also arrives from
+/// `HKCU\Software\beckon`, which anything can write, so the read path clamps
+/// too. Two callers, one function: a value that reached the alpha
+/// calculation unclamped would produce a window the user cannot see through
+/// a slider that cannot reach it.
+pub fn clamp_opacity(v: u8) -> u8 {
+    v.clamp(OPACITY_MIN, OPACITY_MAX)
+}
+
+/// A percentage as `SetLayeredWindowAttributes`' 0..=255 alpha.
+///
+/// Rounded rather than truncated: 96 % truncates to 244 and rounds to 245,
+/// and the whole visible range is 218..=255, so a systematic one-step bias
+/// across sixteen positions is worth the `+ 50`.
+///
+/// 100 % comes back as exactly 255, which is what makes the top of the
+/// slider genuinely opaque rather than nearly so.
+pub fn opacity_alpha(percent: u8) -> u8 {
+    let p = clamp_opacity(percent) as u32;
+    ((p * 255 + 50) / 100) as u8
+}
+
+/// What the slider's slot reads while it is live: `96%`.
+///
+/// No space before the sign, matching the mock-up.
+pub fn opacity_label(percent: u8) -> String {
+    format!("{}%", clamp_opacity(percent))
+}
+
+/// The transparency row's state: a live slider, or the reason there is none.
+///
+/// **Two states rather than an `enabled: bool` beside a percentage**, because
+/// the row draws one thing or the other in the same slot and a pair would let
+/// the two disagree -- a greyed slider still showing `96%` says the window is
+/// 96 % opaque, which under high contrast it is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transparency {
+    /// The slider is live at this percentage, within `OPACITY_MIN..=OPACITY_MAX`.
+    On(u8),
+    /// Forced off by the OS. The window disables the slider and puts
+    /// `TransparencyBlock::reason()` in the value slot beside it.
+    Off(crate::theme::TransparencyBlock),
+}
+
+impl Transparency {
+    /// Resolve the row from the machine's own answer and the stored
+    /// preference.
+    ///
+    /// **The block is asked for, not re-derived.** The caller passes what
+    /// `theme::transparency_block` said, which is the same predicate
+    /// `theme::backdrop` uses to pick the window's tier -- so a slider that
+    /// is live and a window that is transparent are the same fact rather
+    /// than two facts that agree today.
+    pub fn resolve(block: Option<crate::theme::TransparencyBlock>, percent: u8) -> Transparency {
+        match block {
+            Some(b) => Transparency::Off(b),
+            None => Transparency::On(clamp_opacity(percent)),
+        }
+    }
+
+    /// What goes in the row's value slot -- a percentage, or the reason.
+    ///
+    /// **One slot, never a sub-line and never a tooltip.** Design §7 rule 7:
+    /// a disabled Win32 control receives no mouse messages, so a tooltip on
+    /// one silently never appears. The slot is on the same line as the label
+    /// either way, so the row's height does not move when the reason
+    /// replaces the number.
+    pub fn slot(self) -> String {
+        match self {
+            Transparency::On(p) => opacity_label(p),
+            Transparency::Off(b) => b.reason().to_string(),
+        }
+    }
+
+    /// Is the slider operable?
+    pub fn enabled(self) -> bool {
+        matches!(self, Transparency::On(_))
+    }
+}
+
+/// One of the System page's two file rows: the file's own name, and the one
+/// fact about it worth a value slot.
+///
+/// **The name IS the label**, which is why there is no `Config` / `Log`
+/// caption anywhere -- design §3.3, and it is rule 1 applied to a row: a
+/// label that says "Config" beside a control that says `apps.windows.toml`
+/// has told the reader nothing the filename did not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileRow {
+    pub name: String,
+    pub value: String,
+}
+
+/// A file size for the log row's value slot.
+///
+/// **The log's size is worth showing and the config's is not**, which is why
+/// only one of the two rows carries this: `roll_if_oversized` caps the log
+/// pair at 10 MiB and rolls at 5, so the number is on its way somewhere. A
+/// shortcuts TOML is a few hundred bytes for ever.
+///
+/// `KB`/`MB` in the Windows sense (multiples of 1024), matching what Explorer
+/// shows for the same file -- a number that disagreed with the one beside it
+/// in Explorer would read as a beckon bug rather than as a units convention.
+pub fn size_label(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * KB;
+    if bytes < KB {
+        // Never "0 KB" for a file that has something in it: a log with one
+        // line is the ordinary state seconds after `serve` starts.
+        return format!("{bytes} bytes");
+    }
+    if bytes < MB {
+        return format!("{} KB", (bytes + KB / 2) / KB);
+    }
+    format!("{}.{} MB", bytes / MB, (bytes % MB) * 10 / MB)
+}
+
+/// Everything the System page draws that is not in `ControlState`.
+///
+/// **A second push, not more fields on `ControlState`, and that is design §1's
+/// split by STORE rather than a convenience.** Shortcuts and Keyboard write
+/// `apps.toml`; System writes `HKCU\Software\beckon`, the Run key, or
+/// nothing. `ControlState` is the projection of a `Model`, and a `Model` is
+/// what a config file that does not parse fails to produce -- which is
+/// exactly the state (`unreadable_state`) in which the theme switch and
+/// `Start with Windows` must still work, because neither has anything to do
+/// with that file. Riding on `ControlState` would have made the whole System
+/// page hostage to a TOML error, which is the defect design §1 names as
+/// fixed "as a side effect".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemState {
+    /// Hotkeys are unregistered. The same flag `RuntimeStatus::paused`
+    /// carries, from the same `ServeState` field -- the switch and the
+    /// `paused` status word on every Shortcuts row are one fact.
+    pub paused: bool,
+    /// `None` OMITS the row -- this process cannot offer autostart at all.
+    /// `Some(on)` shows it, ticked per `on`.
+    ///
+    /// **Omitted, never greyed**, and the reasoning is copied from the tray
+    /// menu rather than re-derived: a greyed row asks "why is this greyed?"
+    /// with no answer available in the row itself, so a capability this
+    /// process does not have is left out. `beckon.exe serve` is the case --
+    /// a Run value pointing at a console-subsystem binary would open a
+    /// console window at every logon, so the capability is absent by
+    /// construction and `MenuModel::autostart` is already `None` there.
+    pub autostart: Option<bool>,
+    /// The window's own theme switch. Two states, and design §3.3 is explicit
+    /// that this is a behaviour change: beckon followed Windows and now does
+    /// not. "Follow system" would have to be a third state, which the design
+    /// rejects.
+    pub dark: bool,
+    pub transparency: Transparency,
+    pub config: FileRow,
+    /// `None` OMITS the row: `serve` ran without `--log`, so there is no log
+    /// file and a path would be a lie. Same reasoning as `autostart`, and the
+    /// same one `Paths::log` already carries.
+    pub log: Option<FileRow>,
+}
+
+/// What the caller knows that `system_state` turns into a page.
+#[derive(Debug, Clone, Copy)]
+pub struct SystemInputs<'a> {
+    pub paused: bool,
+    pub autostart: Option<bool>,
+    pub dark: bool,
+    /// The stored preference, clamped on the way in.
+    pub opacity: u8,
+    /// `theme::transparency_block`'s answer for this machine, right now.
+    pub block: Option<crate::theme::TransparencyBlock>,
+    pub paths: &'a Paths,
+    /// The log file's size in bytes, or `None` when it could not be read --
+    /// which is not the same as zero and must not render as `0 bytes`.
+    pub log_bytes: Option<u64>,
+}
+
+/// The System page, decided in one place.
+///
+/// Every branch here is a decision the design argues for and the two CI jobs
+/// that never compile a wndproc can check: which rows appear, what the
+/// transparency slot says, and which half of each file row is the label.
+pub fn system_state(i: SystemInputs) -> SystemState {
+    SystemState {
+        paused: i.paused,
+        autostart: i.autostart,
+        dark: i.dark,
+        transparency: Transparency::resolve(i.block, i.opacity),
+        config: FileRow {
+            name: file_name_of(&i.paths.config),
+            // The DIRECTORY, because the file name is already the row's own
+            // label and a row that said `apps.windows.toml` twice would be
+            // spending its value slot on nothing. The window draws it through
+            // `SS_PATHELLIPSIS`, so the shortening is width-aware and belongs
+            // to the OS rather than to a character count here.
+            value: dir_of(&i.paths.config),
+        },
+        log: i.paths.log.as_ref().map(|p| FileRow {
+            name: file_name_of(p),
+            value: match i.log_bytes {
+                Some(n) => size_label(n),
+                // A path `serve` was given but has not written to, or one
+                // deleted underneath. Short, value-shaped and true; `0 bytes`
+                // would claim the file exists and is empty.
+                None => "not found".to_string(),
+            },
+        }),
+    }
+}
+
+/// A path's last component, or the whole path when it has none.
+fn file_name_of(p: &std::path::Path) -> String {
+    match p.file_name() {
+        Some(f) => f.to_string_lossy().into_owned(),
+        None => p.to_string_lossy().into_owned(),
+    }
+}
+
+/// The directory a file sits in, with a trailing separator so it reads as a
+/// folder rather than as a file that lost its extension.
+///
+/// A path with no parent (a bare file name, which is what `serve some.toml`
+/// gives) has no directory to show, so the slot is empty rather than `.\`:
+/// the row's job is to say where the file is, and "here" is what the reader
+/// already assumed.
+fn dir_of(p: &std::path::Path) -> String {
+    match p.parent() {
+        Some(d) if !d.as_os_str().is_empty() => {
+            let mut s = d.to_string_lossy().into_owned();
+            if !s.ends_with(std::path::MAIN_SEPARATOR) {
+                s.push(std::path::MAIN_SEPARATOR);
+            }
+            s
+        }
+        _ => String::new(),
+    }
+}
+
 /// Everything a settings window reports back. The caller owns all policy:
 /// what an edit means, whether a close is allowed, what Save writes.
 ///
@@ -1799,6 +2070,17 @@ pub enum DefaultButton {
     /// own vocabulary two words for one control. The id NUMBER did not move --
     /// `IDC_REVERT` is still 1033 -- because that is what a probe reads.
     Revert,
+    /// The System page's five, all added the day design §3.3's rows were
+    /// built. They are here for the reason `Record` is, restated one page
+    /// across: a push button outside this set gets no `BS_NOTIFY`, so the
+    /// ring cannot follow focus onto it, so `IsDialogMessageW` asks
+    /// `DM_GETDEFID` and is told `Save` -- and Enter on a focused
+    /// `Open config file` glyph would write the config file.
+    SysReload,
+    ConfigOpen,
+    ConfigShow,
+    LogOpen,
+    LogShow,
 }
 
 impl DefaultButton {
@@ -1806,7 +2088,7 @@ impl DefaultButton {
     /// and forgotten here weakens those tests silently, so the array is
     /// length-annotated: adding a variant without extending it fails to
     /// compile.
-    pub const ALL: [DefaultButton; 9] = [
+    pub const ALL: [DefaultButton; 14] = [
         DefaultButton::Save,
         DefaultButton::Add,
         DefaultButton::Remove,
@@ -1816,6 +2098,11 @@ impl DefaultButton {
         DefaultButton::KeepMine,
         DefaultButton::Record,
         DefaultButton::Revert,
+        DefaultButton::SysReload,
+        DefaultButton::ConfigOpen,
+        DefaultButton::ConfigShow,
+        DefaultButton::LogOpen,
+        DefaultButton::LogShow,
     ];
 
     /// Where the ring rests, and the one button `default_button` will fall
@@ -1854,6 +2141,25 @@ impl DefaultButton {
             | DefaultButton::Remove
             | DefaultButton::Record
             | DefaultButton::Revert => page == Page::Shortcuts,
+            // System-page controls, and the page is the WHOLE condition even
+            // though two of the five can be hidden while it is open.
+            //
+            // **`LogOpen` / `LogShow` are hidden exactly when `Paths::log` is
+            // `None`, which is fixed for the window's lifetime** -- `serve`
+            // is started with `--log` or it is not, and nothing repoints it
+            // while the window is up. So a hidden log button was hidden from
+            // the moment it was created and has never held focus; the ring
+            // reaches a button only through its own `BN_SETFOCUS`, so
+            // `current` can never BE one of those two while they are hidden,
+            // and this arm's answer for them is unreachable rather than
+            // wrong. Modelling it properly would mean threading the log's
+            // presence through `visible`, `pressable` and `default_button`
+            // for a state no keystroke can produce.
+            DefaultButton::SysReload
+            | DefaultButton::ConfigOpen
+            | DefaultButton::ConfigShow
+            | DefaultButton::LogOpen
+            | DefaultButton::LogShow => page == Page::System,
         }
     }
 
@@ -1899,6 +2205,19 @@ impl DefaultButton {
                 | DefaultButton::Close
                 | DefaultButton::Reload
                 | DefaultButton::KeepMine => true,
+                // The System page is deliberately NOT gated on
+                // `st.editable`, and that is design §1's split by store
+                // rather than an oversight: `editable` is false exactly when
+                // `apps.toml` did not parse, and none of these five touches
+                // that file. Reloading, opening the config in an editor and
+                // showing it in Explorer are the three things a user whose
+                // config is broken most needs, and greying them out is what
+                // the split exists to stop.
+                DefaultButton::SysReload
+                | DefaultButton::ConfigOpen
+                | DefaultButton::ConfigShow
+                | DefaultButton::LogOpen
+                | DefaultButton::LogShow => true,
             }
     }
 }
@@ -2227,13 +2546,11 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("LOG_SIZE", 1081),
     ("LOG_OPEN", 1082),
     ("LOG_SHOW", 1083),
-    // The one line the page shows while it is waiting. From the reserved TAIL
-    // of the range rather than the next free number: 1070-1083 are named above
-    // for controls nothing has built, and a placeholder is the one control on
-    // this page that is meant to be DELETED -- taking a number out of the
-    // middle of the block would leave a hole in a page's numbering the day it
-    // goes.
-    ("SYS_PLACEHOLDER", 1084),
+    // 1084 was `SYS_PLACEHOLDER`, the `Nothing here yet.` line this page
+    // showed between Task 7 and the day the fourteen rows above were built.
+    // Retired, not free -- see `RETIRED_IDS`, and note that the tail it came
+    // out of (1084-1099) did its job: the fourteen numbers above have no hole
+    // in them.
     // -- About -------------------------------------------------------------
     ("ABOUT_MARK", 1100),
     ("ABOUT_NAME", 1101),
@@ -2299,7 +2616,18 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
 /// see. Unlike 1017/1018/1034 it gives NO geometry back: the head row it
 /// opened is still there, still `ctl` tall, still holding the filter and the
 /// two buttons.
-pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035];
+///
+/// **1084 was `SYS_PLACEHOLDER`**, the System page's `Nothing here yet.`
+/// line, deleted the day design §3.3's rows were built. It is the first id
+/// retired for the reason it was ALLOCATED: Task 7 took it from the reserved
+/// tail 1084-1099 rather than from the next free number precisely because a
+/// placeholder is the one control on a page that is meant to be deleted, and
+/// taking 1084 out of the middle of 1070-1083 would have left a hole in the
+/// numbering of the page that replaced it. It did not.
+///
+/// About's own placeholder (`ABOUT_PLACEHOLDER`, 1115) is NOT retired and is
+/// still a live control: that page is still waiting.
+pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035, 1084];
 
 /// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
 ///
@@ -4710,5 +5038,195 @@ mod tests {
                  it cannot be recompiled into agreement"
             );
         }
+    }
+
+    // -- The System page ---------------------------------------------------
+
+    /// **Built from components, never from a literal with backslashes in
+    /// it.** These tests run on all three CI jobs, and `std::path` on Unix
+    /// does not treat `\` as a separator -- so a hard-coded
+    /// `C:\Users\me\apps.toml` is ONE file-name component there, and every
+    /// assertion below would be checking `dir_of` against a string it never
+    /// had to split. `collect` gives whatever the host's separator is, which
+    /// is what `dir_of` appends too.
+    fn sys_paths(log: bool) -> Paths {
+        Paths {
+            config: ["home", "me", "shortcuts", "apps.windows.toml"]
+                .iter()
+                .collect(),
+            log: log.then(|| ["home", "me", "logs", "beckon-serve.log"].iter().collect()),
+        }
+    }
+
+    fn sys(paths: &Paths) -> SystemInputs<'_> {
+        SystemInputs {
+            paused: false,
+            autostart: Some(false),
+            dark: true,
+            opacity: OPACITY_DEFAULT,
+            block: None,
+            paths,
+            log_bytes: Some(114_688),
+        }
+    }
+
+    /// The two conditional rows are ABSENT, not present-and-off.
+    ///
+    /// The window reads `is_some()` on each to decide whether the control is
+    /// on screen at all, so an implementation that returned
+    /// `Some(FileRow{..})` with empty strings -- or `Some(false)` for a
+    /// process that cannot autostart -- would draw a row with nothing in it
+    /// rather than no row. That is the difference design §3.3 spells out for
+    /// `Start with Windows` ("OMITTED, not greyed") and `Paths::log` ("omit
+    /// the row rather than show a path that does not exist").
+    #[test]
+    fn a_capability_this_process_lacks_leaves_no_row_behind() {
+        let p = sys_paths(false);
+        let st = system_state(SystemInputs {
+            autostart: None,
+            ..sys(&p)
+        });
+        assert_eq!(st.autostart, None);
+        assert_eq!(st.log, None);
+
+        let p = sys_paths(true);
+        let st = system_state(SystemInputs {
+            autostart: Some(true),
+            ..sys(&p)
+        });
+        assert_eq!(st.autostart, Some(true));
+        assert_eq!(
+            st.log,
+            Some(FileRow {
+                name: "beckon-serve.log".into(),
+                value: "112 KB".into(),
+            })
+        );
+    }
+
+    /// A log path that names a file nothing has written says so, and does not
+    /// say `0 bytes`.
+    #[test]
+    fn a_missing_log_is_not_an_empty_one() {
+        let p = sys_paths(true);
+        let st = system_state(SystemInputs {
+            log_bytes: None,
+            ..sys(&p)
+        });
+        assert_eq!(st.log.unwrap().value, "not found");
+        let st = system_state(SystemInputs {
+            log_bytes: Some(0),
+            ..sys(&p)
+        });
+        assert_eq!(st.log.unwrap().value, "0 bytes");
+    }
+
+    /// The file rows say the name once and the location once.
+    ///
+    /// The row's LABEL is the file name, so a value slot repeating it would
+    /// be the duplication design §3.3 deletes the `Config` / `Log` captions
+    /// to avoid -- from the other end.
+    #[test]
+    fn the_config_row_shows_the_directory_not_the_file() {
+        let p = sys_paths(false);
+        let st = system_state(sys(&p));
+        assert_eq!(st.config.name, "apps.windows.toml");
+        assert!(
+            !st.config.value.contains("apps.windows.toml"),
+            "the value slot repeats the row's own label: {}",
+            st.config.value
+        );
+        assert!(st.config.value.ends_with(std::path::MAIN_SEPARATOR));
+
+        // A bare file name has no directory to show, and `.\` is not one.
+        let bare = Paths {
+            config: std::path::PathBuf::from("apps.windows.toml"),
+            log: None,
+        };
+        let st = system_state(sys(&bare));
+        assert_eq!(st.config.name, "apps.windows.toml");
+        assert_eq!(st.config.value, "");
+    }
+
+    /// A blocked machine gets the reason in the slot the percentage was in,
+    /// and the slider off.
+    #[test]
+    fn a_forced_off_slider_says_why_in_its_own_slot() {
+        let p = sys_paths(false);
+        let live = system_state(sys(&p)).transparency;
+        assert_eq!(live, Transparency::On(OPACITY_DEFAULT));
+        assert!(live.enabled());
+        assert_eq!(live.slot(), "96%");
+
+        for b in [
+            crate::theme::TransparencyBlock::HighContrast,
+            crate::theme::TransparencyBlock::RemoteSession,
+            crate::theme::TransparencyBlock::SystemSetting,
+        ] {
+            let off = system_state(SystemInputs {
+                block: Some(b),
+                ..sys(&p)
+            })
+            .transparency;
+            assert_eq!(off, Transparency::Off(b));
+            assert!(!off.enabled());
+            assert_eq!(off.slot(), b.reason());
+            // The slot never holds a percentage AND a reason: one control,
+            // one string.
+            assert!(!off.slot().contains('%'));
+        }
+    }
+
+    /// The stored value is clamped on the way in, not trusted.
+    ///
+    /// It comes out of `HKCU\Software\beckon`, which anything can write, and
+    /// the slider's own range is 85..=100 -- so an unclamped 0 would set the
+    /// window to an alpha the user could not reverse from the control that
+    /// set it.
+    #[test]
+    fn opacity_out_of_range_is_pulled_back_into_it() {
+        assert_eq!(clamp_opacity(0), OPACITY_MIN);
+        assert_eq!(clamp_opacity(84), OPACITY_MIN);
+        assert_eq!(clamp_opacity(85), 85);
+        assert_eq!(clamp_opacity(100), 100);
+        assert_eq!(clamp_opacity(255), OPACITY_MAX);
+        let p = sys_paths(false);
+        assert_eq!(
+            system_state(SystemInputs {
+                opacity: 3,
+                ..sys(&p)
+            })
+            .transparency,
+            Transparency::On(OPACITY_MIN)
+        );
+    }
+
+    /// 100 % is fully opaque and the range is monotone.
+    ///
+    /// The rounding matters at this scale: the whole visible band is
+    /// 218..=255, so a truncating conversion biases every one of the sixteen
+    /// positions one step toward transparent.
+    #[test]
+    fn the_top_of_the_slider_is_actually_opaque() {
+        assert_eq!(opacity_alpha(100), 255);
+        assert_eq!(opacity_alpha(96), 245);
+        assert_eq!(opacity_alpha(85), 217);
+        let mut prev = 0u8;
+        for p in OPACITY_MIN..=OPACITY_MAX {
+            let a = opacity_alpha(p);
+            assert!(a > prev, "alpha did not rise at {p}%");
+            prev = a;
+        }
+    }
+
+    #[test]
+    fn a_size_reads_the_way_explorer_reads_it() {
+        assert_eq!(size_label(0), "0 bytes");
+        assert_eq!(size_label(1023), "1023 bytes");
+        assert_eq!(size_label(1024), "1 KB");
+        assert_eq!(size_label(114_688), "112 KB");
+        // `roll_if_oversized` rolls at 5 MiB and caps the pair at 10.
+        assert_eq!(size_label(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(size_label(5_400_000), "5.1 MB");
     }
 }

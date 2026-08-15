@@ -36,6 +36,48 @@ pub fn open_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Open Explorer with `path` selected, rather than opening `path` itself.
+///
+/// The System page's second glyph on each file row (design §3.3). "Show" and
+/// "Open" are different questions -- one answers *where is it*, the other
+/// *what does it say* -- and a settings window that could only do the second
+/// leaves the user with a path they cannot act on.
+///
+/// **`explorer.exe /select,<path>`, not a shell verb**, because there is no
+/// verb for it: `ShellExecuteW`'s `"explore"` opens a FOLDER and selects
+/// nothing, and the documented route to a selected item is `IShellWindows` +
+/// `SHOpenFolderAndSelectItems`, which is ~60 lines of COM for what one
+/// command line does. The trade is that a malformed path becomes an Explorer
+/// window at the user's Documents rather than an error -- acceptable, since
+/// every path this is called with came from `serve`'s own `Paths`.
+///
+/// **No space after the comma, and no quotes around the path.** Explorer
+/// parses `/select,` by taking the whole remainder of the command line as the
+/// item, so a quoted argument is looked up WITH its quotes and a space after
+/// the comma is part of the name it looks for. This is the one place in
+/// beckon where the usual quoting rule is inverted, which is why it is
+/// written down here rather than left to look like an omission.
+///
+/// **This pumps the calling thread's message queue**, exactly like
+/// `open_path` above and with the same consequence for `RefCell` borrows.
+pub fn reveal_path(path: &Path) -> Result<(), String> {
+    let args = HSTRING::from(format!("/select,{}", path.display()));
+    let rc = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            windows::core::w!("explorer.exe"),
+            PCWSTR(args.as_ptr()),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if rc.0 as usize <= 32 {
+        return Err(format!("cannot show `{}` in Explorer", path.display()));
+    }
+    Ok(())
+}
+
 /// A modal error box.
 ///
 /// The GUI-subsystem binary has no stderr before its log is open and no

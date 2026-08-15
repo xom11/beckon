@@ -230,13 +230,81 @@ pub struct BackdropInputs {
     pub mica_supported: bool,
 }
 
+/// Why this machine may not be transparent at all.
+///
+/// **One variant per refusal in `transparency_block`, and the point of the
+/// enum is that the caller can SAY which.** Design §3.3 forces the System
+/// page's transparency slider off under any of the three and requires the
+/// reason in the control's own slot on the same line -- "never a tooltip,
+/// because a disabled Win32 control receives no mouse messages", so a
+/// disabled control with no words beside it is a control that explains
+/// itself nowhere. A `bool` would have been enough for `backdrop` and is not
+/// enough for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransparencyBlock {
+    HighContrast,
+    RemoteSession,
+    /// `Themes\Personalize\EnableTransparency` is 0 -- the user turned
+    /// transparency off in Settings.
+    SystemSetting,
+}
+
+impl TransparencyBlock {
+    /// What the slider's own slot reads instead of a percentage.
+    ///
+    /// **Each one names the cause, not the effect.** "Off" alone would send
+    /// the reader looking for the switch that turned it off; every one of
+    /// these three is somewhere else entirely, and only the third is
+    /// somewhere the user can go and change.
+    ///
+    /// ASCII, like every display string in this window: a `serve --log`
+    /// em-dash came back as `?"` once, and a text face draws a glyph it does
+    /// not carry as a box.
+    pub fn reason(self) -> &'static str {
+        match self {
+            TransparencyBlock::HighContrast => "Off in high contrast",
+            TransparencyBlock::RemoteSession => "Off in a remote session",
+            TransparencyBlock::SystemSetting => "Off in Windows settings",
+        }
+    }
+}
+
+/// May this machine be transparent at all, and if not, why not?
+///
+/// **The ONE copy of the three refusals.** `backdrop` below is one reader and
+/// `settings::transparency` is the other; before this function existed the
+/// tier decision owned them as an inline `||` and the System page would have
+/// been the second place they were spelled -- which is how a slider comes to
+/// be live on a machine whose window is already opaque, or greyed on one
+/// where it is not.
+///
+/// Each refusal is correctness rather than taste. High contrast: a
+/// translucent ground defeats the guaranteed contrast the mode exists to
+/// provide. Remote session: every frame becomes a blend the wire has to
+/// carry. Transparency off: the user already answered this question in
+/// Settings.
+///
+/// **The order is the precedence**, and it is only observable through
+/// `reason()` -- `backdrop` cannot tell the three apart. High contrast leads
+/// because it is the one the OS is enforcing rather than merely preferring;
+/// the registry setting is last because it is the only one the user can
+/// change from where they are standing, so it is the least surprising thing
+/// to be told when it is not the whole story.
+pub fn transparency_block(i: BackdropInputs) -> Option<TransparencyBlock> {
+    if i.high_contrast {
+        return Some(TransparencyBlock::HighContrast);
+    }
+    if i.remote_session {
+        return Some(TransparencyBlock::RemoteSession);
+    }
+    if !i.transparency_enabled {
+        return Some(TransparencyBlock::SystemSetting);
+    }
+    None
+}
+
 pub fn backdrop(i: BackdropInputs) -> Backdrop {
-    // Three refusals, each of which is correctness rather than taste.
-    // High contrast: a translucent ground defeats the guaranteed contrast the
-    // mode exists to provide. Remote session: every frame becomes a blend the
-    // wire has to carry. Transparency off: the user already answered this
-    // question in Settings.
-    if i.high_contrast || i.remote_session || !i.transparency_enabled {
+    if transparency_block(i).is_some() {
         return Backdrop::Opaque;
     }
     if i.mica_supported && i.build >= MICA_MIN_BUILD {
@@ -676,6 +744,85 @@ mod tests {
             ..bi(26200)
         };
         assert_eq!(backdrop(i), Backdrop::Opaque);
+    }
+
+    /// `backdrop` is opaque EXACTLY when `transparency_block` refuses.
+    ///
+    /// The two are one predicate with two readers since the System page's
+    /// slider arrived, and this is the assertion that keeps them one: it walks
+    /// the eight combinations of the three refusal inputs against a build that
+    /// would otherwise be capable, so a `backdrop` that grew a fourth
+    /// condition of its own -- or a `transparency_block` that lost one --
+    /// fails here rather than shipping a live slider on an opaque window.
+    #[test]
+    fn the_slider_is_blocked_exactly_when_the_window_is_opaque() {
+        for hc in [false, true] {
+            for remote in [false, true] {
+                for on in [false, true] {
+                    let i = BackdropInputs {
+                        high_contrast: hc,
+                        remote_session: remote,
+                        transparency_enabled: on,
+                        ..bi(26200)
+                    };
+                    assert_eq!(
+                        transparency_block(i).is_some(),
+                        backdrop(i) == Backdrop::Opaque,
+                        "hc={hc} remote={remote} enabled={on}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The three reasons are distinguishable and ordered.
+    ///
+    /// `backdrop` cannot see the difference -- all three are `Opaque` -- so
+    /// nothing above this line would notice the arms being reordered, and the
+    /// order is what the System page's one-line reason is drawn from. A
+    /// machine in high contrast over RDP with transparency off says the first
+    /// of the three.
+    #[test]
+    fn the_reason_names_the_first_refusal_that_applies() {
+        let all = BackdropInputs {
+            high_contrast: true,
+            remote_session: true,
+            transparency_enabled: false,
+            ..bi(26200)
+        };
+        assert_eq!(
+            transparency_block(all),
+            Some(TransparencyBlock::HighContrast)
+        );
+        assert_eq!(
+            transparency_block(BackdropInputs {
+                high_contrast: false,
+                ..all
+            }),
+            Some(TransparencyBlock::RemoteSession)
+        );
+        assert_eq!(
+            transparency_block(BackdropInputs {
+                high_contrast: false,
+                remote_session: false,
+                ..all
+            }),
+            Some(TransparencyBlock::SystemSetting)
+        );
+        // Three distinct sentences, so the enum earns its variants.
+        let words: Vec<&str> = [
+            TransparencyBlock::HighContrast,
+            TransparencyBlock::RemoteSession,
+            TransparencyBlock::SystemSetting,
+        ]
+        .iter()
+        .map(|b| b.reason())
+        .collect();
+        assert_eq!(words.len(), 3);
+        for w in &words {
+            assert!(w.is_ascii(), "{w} is not ASCII");
+            assert_eq!(words.iter().filter(|o| *o == w).count(), 1, "{w} repeats");
+        }
     }
 
     /// COLORREF is 0x00BBGGRR. The window converts at its boundary, but the

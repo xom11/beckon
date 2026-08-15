@@ -262,6 +262,115 @@ impl LayoutHandles {
     }
 }
 
+/// Where each of the System card's rows starts, as an offset from the card's
+/// own content origin, plus the two dividers and the total interior height.
+///
+/// **One plan, three readers**: `compute_card_rects` takes `content_h` to
+/// size the card, `layout` takes the row offsets to place fourteen controls,
+/// and `WM_PAINT` takes the two divider offsets to draw two hairlines. Three
+/// spellings of "how tall is the System card" would drift, and the drift
+/// would read as a rendering fault -- a divider through a row, or a card with
+/// a gap at the bottom.
+///
+/// **A row that is not on screen contributes NO height**, the same rule the
+/// banner's card follows: its offset is the one the next row takes, so an
+/// absent `Start with Windows` closes the gap rather than leaving a hole.
+/// That is what makes "omitted, not greyed" a layout property rather than a
+/// `ShowWindow` that leaves a space behind.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SystemPlan {
+    pause: i32,
+    autostart: i32,
+    reload: i32,
+    div1: i32,
+    dark: i32,
+    opacity: i32,
+    div2: i32,
+    config: i32,
+    log: i32,
+    content_h: i32,
+}
+
+/// Walk the nine slots in drawing order, skipping the two conditional ones.
+///
+/// The order IS the mock-up's, top to bottom: the three service rows, a
+/// divider, the two look rows, a divider, the two file rows. Design §3.3
+/// calls it five rows; nine slots is the same page counted by control line
+/// rather than by group, and the two dividers are what turn nine lines into
+/// three groups without a heading on any of them -- design §7 rule 5, read
+/// backwards: a group whose rows share a store does not need a word saying so.
+fn system_plan(dpi: u32, rows: SystemRows) -> SystemPlan {
+    let s = |v: i32| v * dpi as i32 / 96;
+    let ctl = s(tok::CTL);
+    let gap = s(tok::GAP);
+    // A divider costs its own hairline plus a gap either side, so the two
+    // groups it separates are not merely spaced but visibly parted.
+    let div_h = gap + s(1).max(1) + gap;
+    let mut p = SystemPlan::default();
+    let mut y = 0;
+    let row = |y: &mut i32, on: bool| -> i32 {
+        if !on {
+            // The offset an absent row reports is where the NEXT row starts,
+            // so a caller that places it anyway (which `layout` does not)
+            // stacks it under its successor rather than at the card's origin.
+            return *y;
+        }
+        let at = *y;
+        *y += ctl + gap;
+        at
+    };
+    p.pause = row(&mut y, true);
+    p.autostart = row(&mut y, rows.autostart);
+    p.reload = row(&mut y, true);
+    // The gap the last row of a group already left is the divider's own top
+    // gap, so it is taken back before the divider is placed -- otherwise
+    // every group boundary would be spaced twice.
+    y -= gap;
+    p.div1 = y + gap;
+    y += div_h;
+    p.dark = row(&mut y, true);
+    p.opacity = row(&mut y, true);
+    y -= gap;
+    p.div2 = y + gap;
+    y += div_h;
+    p.config = row(&mut y, true);
+    p.log = row(&mut y, rows.log);
+    // The trailing `gap` the last row added is not interior height: the
+    // card's own `CARD_PAD` is what separates it from the border.
+    p.content_h = (y - gap).max(0);
+    p
+}
+
+/// The two divider hairlines inside the System card, in client coordinates.
+///
+/// `WM_PAINT`'s only window onto `system_plan`. Returns a zero-width rect for
+/// each divider when the System door is not open, which `paint::divider`
+/// declines to draw -- the same "a degenerate rect is nothing worth asking
+/// GDI to draw" rule the card loop already applies.
+pub(super) unsafe fn system_dividers(hwnd: HWND) -> [RECT; 2] {
+    let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
+        return [RECT::default(); 2];
+    };
+    if ui.page != Page::System {
+        return [RECT::default(); 2];
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let s = |v: i32| v * dpi as i32 / 96;
+    let card = compute_card_rects(hwnd, &ui, dpi)[4];
+    if card.bottom <= card.top {
+        return [RECT::default(); 2];
+    }
+    let pad = s(tok::CARD_PAD);
+    let plan = system_plan(dpi, sys_rows());
+    let line = |dy: i32| RECT {
+        left: card.left + pad,
+        top: card.top + pad + dy,
+        right: card.right - pad,
+        bottom: card.top + pad + dy + s(1).max(1),
+    };
+    [line(plan.div1), line(plan.div2)]
+}
+
 /// The tab strip's trough, in client coordinates.
 ///
 /// Separate from `compute_card_rects` because it is not a card and the
@@ -392,18 +501,24 @@ pub(super) fn strip_rect(rc: RECT, dpi: u32) -> RECT {
 /// it reaches the list instead of stopping at eight rows. See `MIN_HEIGHT` for
 /// the full table.
 ///
-/// **System and About needed none of this and are unchanged.** A page whose
-/// entire content is one line has no stack: `layout` puts each waiting line at
-/// the content origin (card 0's top, which on those two pages is the origin)
-/// and the emptiness below it is the page being empty rather than the line
-/// being misplaced. The Keyboard page now reads the same way, which is the
-/// second half of why the re-stack was worth taking: one card at the origin
-/// and space below it is a page with one thing on it, while one card at the
+/// **About needed none of this and is unchanged.** A page whose entire
+/// content is one line has no stack: `layout` puts the waiting line at the
+/// content origin (card 0's top, which on that page is the origin) and the
+/// emptiness below it is the page being empty rather than the line being
+/// misplaced. The Keyboard page now reads the same way, which is the second
+/// half of why the re-stack was worth taking: one card at the origin and
+/// space below it is a page with one thing on it, while one card at the
 /// bottom and space above it is a page that failed to lay out.
-unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 4] {
+///
+/// **System grew card 4 on 2026-08-15** (design §3.3), and it follows card 3's
+/// shape exactly: one card at the content origin, its height fixed by its own
+/// contents rather than by the window's. The array is five long and still
+/// never five tall -- Shortcuts stacks 0/1/2, Keyboard draws 3 alone, System
+/// draws 4 alone, About draws none.
+unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT; 5] {
     let mut rc = RECT::default();
     if GetClientRect(hwnd, &mut rc).is_err() {
-        return [RECT::default(); 4];
+        return [RECT::default(); 5];
     }
     let s = |v: i32| v * dpi as i32 / 96;
     // See `layout`'s own comment on `clamp` for the widths-vs-positions
@@ -438,6 +553,7 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // against the content origin directly.
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
+    let system = ui.page == Page::System;
 
     // The command bar is anchored, not stacked, so the window's bottom edge is
     // where it stays however tall the content above is. `content_bottom` is
@@ -627,7 +743,22 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // why the two cards are treated differently rather than uniformly.
     let card3 = card(content_top, if keyboard { kb_card_h } else { 0 });
 
-    [card0, card1, card2, card3]
+    // -- Card 4: the System page's only card, at the same content origin,
+    // and its height is its CONTENTS' rather than the window's -- so the page
+    // is a card with space below it, which is what a page with one thing on
+    // it looks like. Unlike card 1 nothing here flexes: every row is `ctl`
+    // tall and the two conditional rows either take a row's height or none.
+    //
+    // No clamp against `content_bottom`, on card 3's reasoning: the tallest
+    // this card gets is nine slots, which at 96 DPI is 262 px of interior
+    // against a floor of 560 for the whole window, so it cannot reach the
+    // command bar at any size `WM_GETMINMAXINFO` allows -- and below the
+    // floor, clamping its top downward would push it INTO the bar rather than
+    // away from it.
+    let sys_card_h = card_pad * 2 + system_plan(dpi, sys_rows()).content_h;
+    let card4 = card(content_top, if system { sys_card_h } else { 0 });
+
+    [card0, card1, card2, card3, card4]
 }
 
 /// The four card rects, for `WM_PAINT` -- see `compute_card_rects` for the
@@ -640,9 +771,9 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
 /// immediately" rule on its own. The PAGE it lays out for does not ride in
 /// that borrow at all -- `LayoutHandles::of` reads the `PAGE` `Cell`, so a
 /// paint arriving while `UI` is held elsewhere still gets the right answer.
-pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 4] {
+pub(super) unsafe fn card_rects(hwnd: HWND) -> [RECT; 5] {
     let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
-        return [RECT::default(); 4];
+        return [RECT::default(); 5];
     };
     let dpi = GetDpiForWindow(hwnd).max(96);
     compute_card_rects(hwnd, &ui, dpi)
@@ -906,13 +1037,14 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // arithmetic `card_rects` (called from `WM_PAINT`) also runs. Every
     // control below is placed `card_pad` inside whichever of these it
     // belongs to.
-    let [card0, card1, card2, card3] = compute_card_rects(hwnd, &ui, dpi);
-    // Which door is open. The same two names `compute_card_rects` binds, and
-    // the two must agree: a card given height there and skipped here is an
+    let [card0, card1, card2, card3, card4] = compute_card_rects(hwnd, &ui, dpi);
+    // Which door is open. The same three names `compute_card_rects` binds, and
+    // the three must agree: a card given height there and skipped here is an
     // empty card, and a card skipped there and placed into here puts every
     // control at the origin.
     let shortcuts = ui.page == Page::Shortcuts;
     let keyboard = ui.page == Page::Keyboard;
+    let system = ui.page == Page::System;
 
     // -- Band 0: the tab strip, above card 0 and outside all four of them.
     // The trough is not a card, which is why `compute_card_rects` does not
@@ -1389,12 +1521,120 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         place(IDC_TAP, kx, ry + edit_dy, tap_w, field_h * 5);
     }
 
-    // -- System and About: one waiting line each, at the content origin.
+    // -- Card 4: the System page (design §3.3). Nine slots in three groups,
+    // parted by two painted dividers; `system_plan` owns every vertical
+    // figure and `system_dividers` hands the same two hairlines to
+    // `WM_PAINT`.
     //
-    // **`card0.top` IS the content origin on these two pages**, and reading it
-    // back is what keeps this function from spelling
+    // Skipped off-page for cards 1-3's reason. Nothing here is a
+    // `CBS_DROPDOWN`, so the measured data-loss call is not in reach on this
+    // page -- uniformity is the argument, and one fewer `SetWindowPos` per
+    // door change is the incidental gain.
+    if system {
+        let sx = card4.left + card_pad;
+        let sy = card4.top + card_pad;
+        let sw = clamp(card4.right - card4.left - card_pad * 2);
+        let rows = sys_rows();
+        let plan = system_plan(dpi, rows);
+
+        // **A switch row is ONE control the full width of the card**, not a
+        // label plus a switch. `paint::toggle` draws the caption at its rect's
+        // left edge and the track at the right, so the row's own rect IS the
+        // layout -- which is what puts every switch on this page flush with
+        // the card's right edge, where the mock-up draws them, with no
+        // right-alignment arithmetic and no second control to keep in step.
+        place(IDC_PAUSE, sx, sy + plan.pause, sw, ctl);
+        if rows.autostart {
+            place(IDC_AUTOSTART, sx, sy + plan.autostart, sw, ctl);
+        }
+        let bw_reload = btn(cap::SYS_RELOAD);
+        place(
+            IDC_SYS_RELOAD,
+            sx + clamp(sw - bw_reload),
+            sy + plan.reload,
+            bw_reload,
+            ctl,
+        );
+        place(IDC_DARK, sx, sy + plan.dark, sw, ctl);
+
+        // The transparency row: the label-and-value STATIC, then the slider
+        // hard right.
+        //
+        // **The slider's width is fixed, and the STATIC takes what is left.**
+        // The mock-up's track is 120 px against a 638 px card, and a slider
+        // that grew with the window would make a 15-step range span 500 px --
+        // 33 px per step, which is a control that is harder to land on the
+        // faster you drag it. The STATIC flexes instead, because what it holds
+        // varies: `96%` is four characters and
+        // `Off in a remote session` is twenty-three.
+        let track_w = s(120);
+        let track_h = s(20);
+        place(
+            IDC_OPACITY,
+            sx + clamp(sw - track_w),
+            // Centred on the row rather than sitting on its top edge: a
+            // trackbar's own rect is taller than the channel it draws, and
+            // `ctl` here would put the channel above the label's baseline.
+            sy + plan.opacity + clamp(ctl - track_h) / 2,
+            track_w,
+            track_h,
+        );
+        place(
+            IDC_OPACITY_VALUE,
+            sx,
+            sy + plan.opacity,
+            clamp(sw - track_w - gap),
+            ctl,
+        );
+
+        // The two file rows: name, value, two glyph buttons.
+        //
+        // **A glyph button is square-ish rather than `tok::BTN` wide**: it
+        // holds one character, and 88 px of button around a 10 px arrow is a
+        // target the size of the row it sits in. `ctl` on both axes is the
+        // smallest square this window's own grid can produce, which is what
+        // keeps them from needing a token of their own.
+        let gw = ctl;
+        let glyphs = gw * 2 + gap;
+        // The value slot is capped at the same width the filter box and the
+        // key list take, so every measured column in this window narrows
+        // together -- and floored at nothing, since `SS_PATHELLIPSIS` shortens
+        // whatever it is given. Both value STATICs are `SS_RIGHT`, so the slot
+        // being wider than its contents costs nothing: the text sits against
+        // the glyph buttons and the slack falls on the NAME's side, where a
+        // long PWA name can use it.
+        let val_w = s(tok::SHORTCUT_COL).min(clamp((sw - glyphs - gap) / 2));
+        let name_w = clamp(sw - glyphs - gap - val_w - gap);
+        let file_row = |y: i32, name: i32, value: i32, open: i32, show: i32| {
+            place(name, sx, y, name_w, ctl);
+            place(value, sx + name_w + gap, y, val_w, ctl);
+            place(open, sx + clamp(sw - glyphs), y, gw, ctl);
+            place(show, sx + clamp(sw - gw), y, gw, ctl);
+        };
+        file_row(
+            sy + plan.config,
+            IDC_CONFIG_NAME,
+            IDC_CONFIG_DIR,
+            IDC_CONFIG_OPEN,
+            IDC_CONFIG_SHOW,
+        );
+        if rows.log {
+            file_row(
+                sy + plan.log,
+                IDC_LOG_NAME,
+                IDC_LOG_SIZE,
+                IDC_LOG_OPEN,
+                IDC_LOG_SHOW,
+            );
+        }
+    }
+
+    // -- About: one waiting line, at the content origin.
+    //
+    // **`card0.top` IS the content origin on that page**, and reading it back
+    // is what keeps this function from spelling
     // `strip_rect(rc, dpi).bottom + gap_card` a second time. The banner is
-    // `BANNER_PAGE`-only (`banner_shown`), so behind these two doors
+    // `BANNER_PAGE`-only (`banner_shown`), so behind that door
     // `compute_card_rects` never advances `y` past card 0 -- its rect is a
     // zero-height one AT the origin, which is exactly the number wanted here.
     // If the banner ever widens to every page again, this line follows it down
@@ -1402,21 +1642,16 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     //
     // Inset by `card_pad` on the left and top, so the line begins where every
     // other string in the window begins rather than out at the card border.
-    // Neither page has a card today; both will grow one, and a placeholder
-    // that has to move sideways when it arrives is a placeholder standing in
-    // the wrong place.
+    // The page has no card today and will grow one, and a placeholder that has
+    // to move sideways when it arrives is a placeholder standing in the wrong
+    // place.
     //
-    // No `else` and no clearing: the OTHER page's line is hidden by
-    // `show_page_controls`, and leaving it wherever it was last placed is what
-    // every other off-page control does.
-    let waiting = match ui.page {
-        Page::System => Some(IDC_SYS_PLACEHOLDER),
-        Page::About => Some(IDC_ABOUT_PLACEHOLDER),
-        Page::Shortcuts | Page::Keyboard => None,
-    };
-    if let Some(id) = waiting {
+    // No `else` and no clearing: another page's controls are hidden by
+    // `show_page_controls`, and leaving them wherever they were last placed is
+    // what every other off-page control does.
+    if ui.page == Page::About {
         place(
-            id,
+            IDC_ABOUT_PLACEHOLDER,
             cx + card_pad,
             card0.top + card_pad,
             clamp(cw - card_pad * 2),

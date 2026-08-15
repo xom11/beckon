@@ -27,6 +27,11 @@ pub mod caps_hook;
 pub mod hotkey;
 #[cfg(target_os = "windows")]
 pub mod logfile;
+/// The settings window's own look, in `HKCU\Software\beckon` -- the one file
+/// beckon writes that is not the shortcuts TOML. See its module header for
+/// why it is a separate store from `apps.toml`.
+#[cfg(target_os = "windows")]
+pub mod prefs;
 #[cfg(target_os = "windows")]
 pub mod settings_window;
 

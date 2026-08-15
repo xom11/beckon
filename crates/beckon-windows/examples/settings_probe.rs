@@ -1272,6 +1272,150 @@ mod win {
         }
     }
 
+    /// The System page (design §3.3), read back control by control.
+    ///
+    /// **Nothing on the machine this window is written on can display it**,
+    /// so every figure on that page is a hand trace until this runs. It reads
+    /// the fourteen ids by number -- transcribed, like every id in this file,
+    /// because the probe drives another process and cannot link the crate --
+    /// and prints what only hardware can answer: whether each control exists,
+    /// where it landed, whether a row that should be OMITTED is on screen
+    /// anyway, and what the transparency slot actually says.
+    ///
+    /// **Run it with the System door open.** Everything here is behind it, so
+    /// on any other page every control reads `hidden` and the section says
+    /// nothing -- which is itself the check that `show_page_controls` covers
+    /// the new rows.
+    ///
+    /// Three things it can catch that no test on the build host can:
+    ///
+    /// - **A row that is omitted in the model but shown on screen.** The two
+    ///   conditional rows (`Start with Windows`, and the log row's four) are
+    ///   hidden by `sys_row_shown` through a thread-local the tests cannot
+    ///   reach. A visible `Start with Windows` under `beckon.exe serve` is a
+    ///   switch that writes a Run value which opens a console at every logon.
+    /// - **The slider's range**, which `build_children` sets once and
+    ///   `paint::slider_part` reads back to decide how much of the channel is
+    ///   filled. A range of 0..=100 with a position of 96 would draw a
+    ///   plausible bar at the wrong place for ever.
+    /// - **The value slots' text**, which is the only place the forced-off
+    ///   reason appears at all. A blank slot with a greyed slider is design
+    ///   §7 rule 7 broken exactly as it warns.
+    fn measure_system(parent: HWND) {
+        println!("  -- System page (design 3.3) --");
+        // Transcribed from `beckon_core::settings::CONTROL_IDS`' System block
+        // (1070-1083). `SYS_PLACEHOLDER` (1084) is RETIRED and deliberately
+        // absent: a probe that still looked for it would report a missing
+        // control on every healthy build.
+        const ROWS: [(i32, &str); 14] = [
+            (1070, "PAUSE"),
+            (1071, "AUTOSTART"),
+            (1072, "SYS_RELOAD"),
+            (1073, "DARK"),
+            (1074, "OPACITY"),
+            (1075, "OPACITY_VALUE"),
+            (1076, "CONFIG_NAME"),
+            (1077, "CONFIG_DIR"),
+            (1078, "CONFIG_OPEN"),
+            (1079, "CONFIG_SHOW"),
+            (1080, "LOG_NAME"),
+            (1081, "LOG_SIZE"),
+            (1082, "LOG_OPEN"),
+            (1083, "LOG_SHOW"),
+        ];
+        // `WM_USER + 0` and `TBM_GETRANGEMIN` / `TBM_GETRANGEMAX`. Bare
+        // integer messages, so they cross the process boundary as they are --
+        // unlike anything that would return a pointer.
+        const TBM_GETPOS: u32 = 0x0400;
+        const TBM_GETRANGEMIN: u32 = 0x0400 + 1;
+        const TBM_GETRANGEMAX: u32 = 0x0400 + 2;
+        // A `BS_AUTOCHECKBOX` answers `BM_GETCHECK` whatever paints it, which
+        // is the whole reason the three switches stayed check boxes.
+        const SWITCHES: [i32; 3] = [1070, 1071, 1073];
+
+        let mut any_visible = false;
+        for (id, name) in ROWS {
+            let Some(ctl) = dlg_item(parent, id) else {
+                println!("    {id} {name:<14}: MISSING <<< FAIL");
+                continue;
+            };
+            let vis = unsafe { IsWindowVisible(ctl) }.as_bool();
+            any_visible |= vis;
+            let (x, y, w, h) = box_in_client(parent, ctl);
+            let en = unsafe { IsWindowEnabled(ctl) }.as_bool();
+            let text = ctl_text(ctl);
+            let extra = if SWITCHES.contains(&id) {
+                format!("   checked={}", send(ctl, BM_GETCHECK, 0, 0))
+            } else if id == 1074 {
+                format!(
+                    "   pos={} range={}..={}",
+                    send(ctl, TBM_GETPOS, 0, 0),
+                    send(ctl, TBM_GETRANGEMIN, 0, 0),
+                    send(ctl, TBM_GETRANGEMAX, 0, 0),
+                )
+            } else {
+                String::new()
+            };
+            println!(
+                "    {id} {name:<14}: {}   visible={vis} enabled={en}{extra}   text={text:?}",
+                fmt_box(x, y, w, h)
+            );
+        }
+        if !any_visible {
+            println!(
+                "    (every control is hidden -- this run is not on the System door, so \
+                 nothing above is a verdict)"
+            );
+            return;
+        }
+        // The two conditional rows, stated as a verdict rather than left for
+        // the reader to infer from four `visible=` flags. Neither is a FAIL
+        // on its own: which way each should go depends on how this
+        // `beckon-serve` was started, and only a person knows that.
+        let shown = |id: i32| {
+            dlg_item(parent, id)
+                .map(|c| unsafe { IsWindowVisible(c) }.as_bool())
+                .unwrap_or(false)
+        };
+        println!(
+            "    conditional rows: AUTOSTART {}   log row {}",
+            if shown(1071) {
+                "shown (expect this only under beckon-serve.exe)"
+            } else {
+                "omitted (expect this under `beckon.exe serve`)"
+            },
+            if shown(1080) && shown(1081) && shown(1082) && shown(1083) {
+                "shown (expect this only with --log)"
+            } else if !shown(1080) && !shown(1081) && !shown(1082) && !shown(1083) {
+                "omitted (expect this without --log)"
+            } else {
+                "HALF SHOWN <<< FAIL, sys_row_shown disagrees with itself"
+            }
+        );
+        // The transparency slot, which is where rule 7 either holds or does
+        // not. A disabled slider whose slot carries no reason is the failure
+        // design 7 names by name -- and a tooltip cannot rescue it, because a
+        // disabled Win32 control receives no mouse messages.
+        let live = dlg_item(parent, 1074)
+            .map(|c| unsafe { IsWindowEnabled(c) }.as_bool())
+            .unwrap_or(false);
+        let slot = dlg_item(parent, 1075).map(ctl_text).unwrap_or_default();
+        if live {
+            if slot.contains('%') {
+                println!("    transparency: live, slot {slot:?}");
+            } else {
+                println!("    transparency: live but the slot shows no percentage <<< FAIL");
+            }
+        } else if slot.len() > "Window transparency".len() {
+            println!("    transparency: forced off, slot {slot:?}");
+        } else {
+            println!(
+                "    transparency: forced off and the slot says nothing beyond its label \
+                 ({slot:?}) <<< FAIL, design 7 rule 7"
+            );
+        }
+    }
+
     fn click(parent: HWND, id: i32) {
         let Some(ctl) = dlg_item(parent, id) else {
             println!("    (no control {id})");
@@ -2103,6 +2247,11 @@ mod win {
         // run -- taken after a door change -- be read as a comparison of this
         // section alone.
         measure_strip(h);
+        // After the strip, for the same reason the strip comes after
+        // `measure_geometry`: this block reads one page's controls, so it
+        // says something only on the run where that door is open. Cheap and
+        // silent otherwise -- it prints one line saying so and returns.
+        measure_system(h);
 
         // **Asked before anything reads a chord, and it is a control for the
         // probe itself.** Every shortcut this run prints is rebuilt from the

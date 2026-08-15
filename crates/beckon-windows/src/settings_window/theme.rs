@@ -53,14 +53,26 @@ pub(super) fn read_inputs() -> ThemeInputs {
     };
     ThemeInputs {
         high_contrast,
-        apps_use_light_theme: read_apps_use_light(),
+        // **beckon's OWN preference, not Windows'** -- design §3.3's stated
+        // behaviour change, and the one line that carries it. This used to be
+        // `read_personalize_dword("AppsUseLightTheme")`, so the window
+        // followed the OS; it now defaults to dark and does not ask, and the
+        // System page's `Dark mode` switch is what moves it.
+        //
+        // `resolve` reads this field as `Some(0) => Dark`, anything else
+        // Light, so a dark preference has to arrive as 0. The field is still
+        // named for the registry value it used to hold, and the inversion
+        // here is why: core knows the SHAPE of the answer (a Windows-style
+        // "apps use light" DWORD) and this crate knows where the answer comes
+        // from. Introducing a second `ThemeInputs` field would have meant two
+        // ways to say the same thing and a rule about which wins.
+        //
+        // High contrast still outranks it, in `resolve` and unchanged: a user
+        // in high contrast has asked the OS for specific colours, which is
+        // the OS enforcing a choice rather than the user expressing a
+        // preference about this window.
+        apps_use_light_theme: Some(u32::from(!crate::prefs::dark())),
     }
-}
-
-/// `HKCU\...\Themes\Personalize\AppsUseLightTheme`. `None` when absent, which
-/// is a fresh profile and means light.
-fn read_apps_use_light() -> Option<u32> {
-    read_personalize_dword("AppsUseLightTheme")
 }
 
 /// `EnableTransparency` from the same key, for the backdrop tier -- absent
