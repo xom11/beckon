@@ -305,6 +305,37 @@ fn refusal_for(vk: u32, mods: Mods, on: Platform) -> Option<Refusal> {
     }
 }
 
+/// A Carbon modifier keycode as the Win32 vk `step_on` expects.
+///
+/// **`key_table()` cannot answer this and should not learn to.** It is the
+/// table of BINDABLE keys, and a bare modifier is not one -- `KeyDef` has no
+/// row for Shift. But `step_on` reads modifiers through `modifier_of`, which
+/// speaks Win32, so the tap needs a translation for exactly the eight
+/// keycodes `flagsChanged` reports. Eight, not four: `flagsChanged` names the
+/// PHYSICAL key, so left and right arrive as different codes.
+///
+/// It lives here rather than in `beckon-macos` for the reason
+/// `bound_keys_mac` does: a wrong entry is a modifier the recorder silently
+/// drops from a chord, and that is testable on all three CI jobs while the
+/// tap is not.
+///
+/// Caps (`0x39`) is deliberately absent. It reaches `step_on` as an ordinary
+/// key so `refusal_for` can refuse it -- the lock toggles before any tap
+/// runs, so swallowing cannot undo the light.
+pub fn mac_modifier_vk(code: u16) -> Option<u32> {
+    Some(match code {
+        0x38 => VK_LSHIFT,
+        0x3C => VK_RSHIFT,
+        0x3B => VK_LCONTROL,
+        0x3E => VK_RCONTROL,
+        0x3A => VK_LMENU,
+        0x3D => VK_RMENU,
+        0x37 => VK_LWIN,
+        0x36 => VK_RWIN,
+        _ => return None,
+    })
+}
+
 /// Which platform's reserved-chord rules `step` applies.
 ///
 /// **The refusals are not the same set, and one of them is not even the same
@@ -886,6 +917,44 @@ mod tests {
             alt,
             shift,
         }
+    }
+
+    /// **Every vk this returns must be one `modifier_of` recognises**, and
+    /// that is the whole point of the test rather than a restatement of the
+    /// table. A typo here does not fail to compile and does not throw: the
+    /// modifier is simply absent from `mods()`, so the chord commits one
+    /// modifier short and the user gets a binding they did not press.
+    #[test]
+    fn every_mac_modifier_maps_to_one_capture_recognises() {
+        use super::{mac_modifier_vk, modifier_of, Modifier};
+        for (code, want) in [
+            (0x38u16, Modifier::Shift),
+            (0x3C, Modifier::Shift),
+            (0x3B, Modifier::Ctrl),
+            (0x3E, Modifier::Ctrl),
+            (0x3A, Modifier::Alt),
+            (0x3D, Modifier::Alt),
+            (0x37, Modifier::Super),
+            (0x36, Modifier::Super),
+        ] {
+            let vk =
+                mac_modifier_vk(code).unwrap_or_else(|| panic!("keycode 0x{code:02X} has no vk"));
+            assert_eq!(
+                modifier_of(vk),
+                Some(want),
+                "keycode 0x{code:02X} -> vk 0x{vk:02X} must reach `modifier_of`"
+            );
+        }
+    }
+
+    /// Caps is NOT a modifier here, and the omission is load-bearing.
+    ///
+    /// It has to reach `step_on` as an ordinary key so `refusal_for` can
+    /// refuse it. Mapped as a modifier it would enter the held set instead,
+    /// and a chord could commit with a lock key silently counted as one.
+    #[test]
+    fn caps_is_not_in_the_modifier_table() {
+        assert_eq!(super::mac_modifier_vk(0x39), None);
     }
 
     /// macOS refuses `Cmd+Q`, and the reason is the OPPOSITE of `Win+L`'s.

@@ -45,6 +45,10 @@
 //!   cannot take, a state it cannot read, an unbound key: every one of those
 //!   returns the event. Swallowing wrongly eats a keystroke the user meant.
 
+use beckon_core::caps::{Edge, KeyEvent};
+use beckon_core::capture::{
+    mac_modifier_vk, step_on, CaptureState, HookOwners, HookReason, Mods, Outcome, Platform,
+};
 use beckon_core::shortcuts::{CapsTap as TapAction, Chord};
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -74,6 +78,7 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn CGEventTapEnable(tap: *mut c_void, enable: bool);
     fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+    fn CGEventGetFlags(event: *mut c_void) -> u64;
     fn CGEventCreateKeyboardEvent(
         source: *const c_void,
         virtual_key: u16,
@@ -128,6 +133,16 @@ const FLAG_COMMAND: u64 = 0x0010_0000;
 
 /// `kIOHIDRequestTypeListenEvent`.
 const REQUEST_LISTEN: u32 = 1;
+
+/// What a recording session reports back, once per event it consumed.
+///
+/// **Called on the run loop's own thread, from inside the tap callback.**
+/// Windows posts a message instead, because a `WH_KEYBOARD_LL` callback that
+/// overruns `LowLevelHooksTimeout` is unhooked silently; a `CGEventTap` is
+/// disabled the same way (`kCGEventTapDisabledByTimeout`, which `on_event`
+/// already re-enables). So the sink must stay cheap -- set a caption, redraw
+/// a hint -- and must not open a modal loop or call back into `caps_tap`.
+pub type CaptureSink = Box<dyn FnMut(Outcome) + Send>;
 
 // ---------------------------------------------------------------------------
 // State
@@ -189,6 +204,22 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 /// The live tap, kept so it can be disabled again. Never dereferenced off
 /// the main thread.
 static TAP_PORT: Mutex<usize> = Mutex::new(0);
+
+/// Who wants the tap held, so neither reason can take it from the other.
+///
+/// Caps is resident for the session; a recording lasts seconds. Without the
+/// refcount, ending a capture would tear down the tap under a machine with
+/// `keyboard.caps = true`, and turning Caps off mid-recording would do the
+/// same in the other direction.
+///
+/// **One tap, two reasons -- never two taps.** A second `CGEventTapCreate`
+/// chains, and the one inserted later would record the chord the Caps arm
+/// INJECTS rather than the key the user pressed.
+static OWNERS: Mutex<HookOwners> = Mutex::new(HookOwners::new());
+
+/// `Some` exactly while a shortcut field is recording.
+static CAPTURE: Mutex<Option<CaptureState>> = Mutex::new(None);
+static CAPTURE_SINK: Mutex<Option<CaptureSink>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------
 // Public surface — mirrors `beckon_windows::caps_hook`
@@ -317,6 +348,193 @@ pub fn uninstall() {
     }
 }
 
+/// Hold the tap for one reason, installing it if nobody held it yet.
+pub fn install_for(reason: HookReason) -> Result<(), String> {
+    let need = match OWNERS.lock() {
+        Ok(mut o) => o.add(reason),
+        Err(_) => return Err("the tap's owner set is poisoned".into()),
+    };
+    if need {
+        if let Err(e) = install() {
+            // Give the reason back. Leaving it recorded would make the next
+            // `uninstall_for` believe a tap exists and the one after that
+            // believe nothing needs installing.
+            if let Ok(mut o) = OWNERS.lock() {
+                o.remove(reason);
+            }
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// Drop one reason. The tap comes down only when nobody is left.
+///
+/// **This is why ending a recording does not disarm Caps**, and why
+/// `sync_caps_hook` turning Caps off does not stop a recording in progress.
+pub fn uninstall_for(reason: HookReason) {
+    let last = match OWNERS.lock() {
+        Ok(mut o) => o.remove(reason),
+        Err(_) => return,
+    };
+    if last {
+        uninstall();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chord capture
+// ---------------------------------------------------------------------------
+
+/// Arm a recording. Idempotent in the sense that a second call replaces the
+/// sink and restarts the state -- it never stacks.
+///
+/// **This can arm the tap on a machine where the user left
+/// `keyboard.caps = false`**, which is exactly the widening the Windows
+/// entry records for `WH_KEYBOARD_LL`: the exception is no longer one
+/// feature. `end_capture` is what bounds it, and it is called from every
+/// exit path the window has.
+pub fn begin_capture(sink: CaptureSink) -> Result<(), String> {
+    install_for(HookReason::Capture)?;
+    if let Ok(mut s) = CAPTURE_SINK.lock() {
+        *s = Some(sink);
+    }
+    if let Ok(mut c) = CAPTURE.lock() {
+        *c = Some(CaptureState::armed());
+    }
+    Ok(())
+}
+
+/// Stop recording. **Idempotent**, because it is called from seven places
+/// and most of them do not know whether one of the others ran first.
+pub fn end_capture() {
+    if let Ok(mut c) = CAPTURE.lock() {
+        *c = None;
+    }
+    if let Ok(mut s) = CAPTURE_SINK.lock() {
+        *s = None;
+    }
+    uninstall_for(HookReason::Capture);
+}
+
+pub fn is_capturing() -> bool {
+    CAPTURE.lock().map(|c| c.is_some()).unwrap_or(false)
+}
+
+/// The modifiers physically held, as this event reports them.
+///
+/// `step_on` takes these as a parameter rather than a snapshot precisely so a
+/// modifier RELEASED mid-recording stops counting the moment it is let go.
+fn live_mods(flags: u64) -> Mods {
+    Mods {
+        ctrl: flags & FLAG_CONTROL != 0,
+        super_: flags & FLAG_COMMAND != 0,
+        alt: flags & FLAG_ALTERNATE != 0,
+        shift: flags & FLAG_SHIFT != 0,
+    }
+}
+
+/// One tap event as `step_on` wants it, or `None` when it is not a key at all.
+///
+/// Two projections in one function because they answer one question:
+///
+/// - **an ordinary key** goes through `key_table()`, which carries `mac` and
+///   `win` side by side -- measured on airm3, every keycode the probe saw was
+///   in it, which is why `step` is reused rather than forked;
+/// - **a modifier** goes through `mac_modifier_vk`, and its EDGE comes from
+///   its own flag bit. That works here and not for Caps: suppression freezes
+///   the lock the Caps flag reports, while these are not locks.
+fn project(etype: u32, code: u16, flags: u64) -> Option<KeyEvent> {
+    let edge = match etype {
+        KEY_DOWN => Edge::Down,
+        KEY_UP => Edge::Up,
+        FLAGS_CHANGED => {
+            let bit = match code {
+                K_SHIFT | 0x3C => FLAG_SHIFT,
+                K_CONTROL | 0x3E => FLAG_CONTROL,
+                K_OPTION | 0x3D => FLAG_ALTERNATE,
+                K_COMMAND | 0x36 => FLAG_COMMAND,
+                // Caps, or a modifier with no bit. It reaches `step_on` as an
+                // ordinary key-down so `refusal_for` can refuse it.
+                _ => return ordinary(code, Edge::Down),
+            };
+            if flags & bit != 0 {
+                Edge::Down
+            } else {
+                Edge::Up
+            }
+        }
+        _ => return None,
+    };
+    if etype == FLAGS_CHANGED {
+        return mac_modifier_vk(code).map(|vk| KeyEvent {
+            vk,
+            edge,
+            injected_by_us: false,
+            time_ms: 0,
+        });
+    }
+    ordinary(code, edge)
+}
+
+/// Run one event through the recorder, or `None` when nothing is recording.
+///
+/// **Every lock is released before the sink is called.** The sink reaches
+/// into the settings window, and the window's own handlers call
+/// `end_capture` -- which takes `CAPTURE` and `CAPTURE_SINK`. Holding either
+/// across the call is a deadlock on the run loop's own thread, and the tray's
+/// `dispatch` takes the same precaution for the same reason.
+fn capture_step(etype: u32, event: *mut c_void) -> Option<Outcome> {
+    // `try_lock`: a contended lock means the window is mid-`end_capture`, and
+    // the safe answer there is to let the key through rather than swallow it
+    // into a recording that is being torn down.
+    let mut guard = CAPTURE.try_lock().ok()?;
+    let st = guard.as_mut()?;
+
+    let code = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) } as u16;
+    let flags = unsafe { CGEventGetFlags(event) };
+    let Some(ev) = project(etype, code, flags) else {
+        drop(guard);
+        return Some(Outcome::PassThrough);
+    };
+
+    let outcome = step_on(ev, st, live_mods(flags), Platform::Mac);
+    drop(guard);
+
+    // Taken out of the mutex, called, then put back -- so the sink may
+    // re-enter this module without deadlocking. If it called `end_capture`,
+    // the slot is `None` when we return and the sink is simply dropped.
+    let taken = CAPTURE_SINK.lock().ok().and_then(|mut s| s.take());
+    if let Some(mut sink) = taken {
+        sink(outcome);
+        if let Ok(mut s) = CAPTURE_SINK.lock() {
+            if s.is_none() {
+                *s = Some(sink);
+            }
+        }
+    }
+    Some(outcome)
+}
+
+fn ordinary(code: u16, edge: Edge) -> Option<KeyEvent> {
+    // `step_on` looks the vk up again through `lookup_win_vk`; handing it a
+    // vk it cannot name is how `Refusal::UnknownKey` is reached, which is a
+    // real answer rather than a hole. So an unknown keycode still has to
+    // reach it -- passing `None` here would swallow the event with no verdict
+    // and no hint.
+    let vk = beckon_core::shortcuts::key_table()
+        .iter()
+        .find(|k| k.mac == code)
+        .map(|k| k.win)
+        .unwrap_or(u32::from(code) | 0x1_0000);
+    Some(KeyEvent {
+        vk,
+        edge,
+        injected_by_us: false,
+        time_ms: 0,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // The callback
 // ---------------------------------------------------------------------------
@@ -343,6 +561,25 @@ extern "C" fn on_event(
     // Our own burst. Reading it as input would make the alias eat itself.
     if INJECTING.load(Ordering::SeqCst) {
         return event;
+    }
+
+    // **The capture arm is consulted FIRST, and the order is load-bearing.**
+    //
+    // Two reasons, both taken from the Windows entry. A recording must work
+    // on a machine where the user left `keyboard.caps = false` -- and the
+    // Caps arm below returns early on `reaches_nothing()`, so anything after
+    // it would never run there. And if Caps ran first, a `Caps+T` during a
+    // recording would inject `ctrl+cmd+opt+T` and the recorder would write
+    // down the ALIAS instead of the key that was pressed.
+    if let Some(out) = capture_step(etype, event) {
+        // `PassThrough` is the one outcome that must not be swallowed: the
+        // down was never taken, so taking the up would strand a modifier the
+        // system believes is still held. See `Outcome::PassThrough`.
+        return if out == Outcome::PassThrough {
+            event
+        } else {
+            std::ptr::null_mut()
+        };
     }
 
     // **`try_lock`, and pass through when it fails.** The callback runs on
@@ -485,6 +722,84 @@ fn inject_chord(hold: Chord, code: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An ordinary key projects to the vk `step_on` looks up, both edges.
+    #[test]
+    fn an_ordinary_key_carries_its_win_vk_and_its_edge() {
+        let down = project(KEY_DOWN, 0x00, 0).expect("`a` is in key_table");
+        assert_eq!((down.vk, down.edge), (0x41, Edge::Down));
+        let up = project(KEY_UP, 0x00, 0).expect("`a` is in key_table");
+        assert_eq!((up.vk, up.edge), (0x41, Edge::Up));
+    }
+
+    /// **The edge comes from the modifier's OWN bit in the flags this event
+    /// carries**, and getting it backwards is the quietest possible defect:
+    /// nothing throws, the chord simply commits with a modifier the user let
+    /// go of, or without one they are holding.
+    ///
+    /// Measured on airm3 2026-08-16 -- the flags carry state AFTER the
+    /// transition, so the bit being set means the key just went down.
+    #[test]
+    fn a_modifier_takes_its_edge_from_its_own_flag_bit() {
+        let down = project(FLAGS_CHANGED, K_CONTROL, FLAG_CONTROL).expect("ctrl projects");
+        assert_eq!(down.edge, Edge::Down, "bit set means it just went down");
+
+        let up = project(FLAGS_CHANGED, K_CONTROL, 0).expect("ctrl projects");
+        assert_eq!(up.edge, Edge::Up, "bit clear means it just came up");
+
+        // A DIFFERENT modifier's bit must not decide this one's edge. With
+        // Command held and Control released, the flags are non-zero and a
+        // naive `flags != 0` reads the release as a press.
+        let up_while_cmd_held =
+            project(FLAGS_CHANGED, K_CONTROL, FLAG_COMMAND).expect("ctrl projects");
+        assert_eq!(
+            up_while_cmd_held.edge,
+            Edge::Up,
+            "ctrl came up; Command being held says nothing about ctrl"
+        );
+    }
+
+    /// Caps must reach `step_on` as an ORDINARY key, not as a modifier.
+    ///
+    /// `refusal_for` refuses it there -- the lock toggles before any tap
+    /// runs, so swallowing cannot undo the light. Projected as a modifier it
+    /// would enter the held set instead, and a chord could commit with a lock
+    /// key silently counted as one of its modifiers.
+    #[test]
+    fn caps_projects_as_a_key_so_it_can_be_refused() {
+        let ev = project(FLAGS_CHANGED, K_CAPSLOCK, 0).expect("caps still projects");
+        assert_eq!(ev.edge, Edge::Down);
+        assert_eq!(
+            beckon_core::capture::mac_modifier_vk(K_CAPSLOCK),
+            None,
+            "and it is not in the modifier table at all"
+        );
+    }
+
+    /// A keycode `key_table()` cannot name still has to REACH `step_on`.
+    ///
+    /// That is how `Refusal::UnknownKey` is produced, which is a real answer
+    /// with a hint that sends the reader to the Key list. Returning `None`
+    /// here would swallow the key with no verdict and no hint -- a recording
+    /// that silently ignores a keypress.
+    #[test]
+    fn an_unnameable_keycode_still_reaches_the_state_machine() {
+        // 0x6F is F12 on some layouts and absent from the 81-key table's mac
+        // column on this one; whatever it is, the projection must not drop it.
+        let ev = project(KEY_DOWN, 0x7F, 0);
+        assert!(
+            ev.is_some(),
+            "an unknown keycode must still produce an event"
+        );
+    }
+
+    #[test]
+    fn live_mods_reads_all_four() {
+        let m = live_mods(FLAG_CONTROL | FLAG_COMMAND);
+        assert!(m.ctrl && m.super_ && !m.alt && !m.shift);
+        let m = live_mods(FLAG_ALTERNATE | FLAG_SHIFT);
+        assert!(!m.ctrl && !m.super_ && m.alt && m.shift);
+    }
 
     /// `resync` is the whole answer to a dropped transition, so it has to
     /// clear BOTH halves — a stale `USED` would silently swallow the next
