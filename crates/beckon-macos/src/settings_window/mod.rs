@@ -75,6 +75,8 @@ use std::cell::RefCell;
 #[allow(dead_code)]
 mod about;
 #[allow(dead_code)]
+mod keyboard;
+#[allow(dead_code)]
 mod system;
 #[allow(dead_code)]
 mod widgets;
@@ -131,6 +133,7 @@ struct Controls {
     /// write the config and on neither of the other two —
     /// `command_bar_shown`, from `Page::writes_config`.
     bar: Retained<NSStackView>,
+    kbd: keyboard::KeyboardControls,
     sys: system::SystemControls,
     abt: about::AboutControls,
 
@@ -146,11 +149,6 @@ struct Controls {
     banner: Retained<NSTextField>,
     banner_reload: Retained<NSButton>,
     banner_keep: Retained<NSButton>,
-    caps: Retained<NSButton>,
-    hold_ctrl: Retained<NSButton>,
-    hold_super: Retained<NSButton>,
-    hold_alt: Retained<NSButton>,
-    tap: Retained<NSPopUpButton>,
     save: Retained<NSButton>,
     remove: Retained<NSButton>,
     add: Retained<NSButton>,
@@ -213,6 +211,20 @@ struct Ui {
     /// pass — a preference that outlives the window should be introduced with
     /// the reload path that has to honour it, not before.
     opacity: u8,
+
+    /// Group 3 of the Keyboard door: write a bound chord as `Caps` in the
+    /// list instead of its three modifiers.
+    ///
+    /// A **view** preference, so it lives with the window rather than in
+    /// `apps.toml` — that file stays byte-identical between a machine with
+    /// it on and one without, which is the whole reason a person can share
+    /// one config across machines.
+    caps_view: bool,
+    /// The two halves of the fold that are not this window's own preference.
+    /// Mirrored out of the last `ControlState` so the table's data source can
+    /// read them re-entrantly — see `caps_view_now` and friends.
+    caps_checked: bool,
+    caps_hold: Chord,
 
     /// The last `AboutState` pushed.
     ///
@@ -423,7 +435,24 @@ define_class!(
                         return Some(obj);
                     }
                     COL_APP => it.app.clone(),
-                    COL_COMBO => it.combo.clone(),
+                    // **Not `it.combo` raw.** That field holds the config
+                    // file's own token — `ctrl+super+alt+t` — which is one
+                    // language on every platform so a dotfile can be copied
+                    // between machines. It is not what a person reads. The
+                    // window is the layer that turns it into this keyboard's
+                    // words, and on this keyboard `super` is Command.
+                    COL_COMBO => {
+                        let fold = beckon_core::settings::caps_view_fold(
+                            caps_view_now(),
+                            caps_checked_now(),
+                            caps_hold_now(),
+                        );
+                        beckon_core::shortcuts::combo_display_folded_with(
+                            &it.combo,
+                            fold,
+                            beckon_core::shortcuts::ModifierLabels::MAC,
+                        )
+                    }
                     COL_STATUS => it.flag.clone().unwrap_or_default(),
                     _ => String::new(),
                 };
@@ -548,6 +577,28 @@ define_class!(
         }
 
         // --- the tab strip -------------------------------------------------
+
+        /// Group 3 of the Keyboard door.
+        ///
+        /// A view preference: it changes what the Shortcuts list CELL says
+        /// and touches nothing in `apps.toml`. So it is stored with the
+        /// window, reported to the caller for its own records, and answered
+        /// by redrawing the list.
+        #[unsafe(method(beckonShorthand:))]
+        fn on_shorthand(&self, _s: &AnyObject) {
+            if suppressed() {
+                return;
+            }
+            let Some(c) = controls() else { return };
+            let on = c.kbd.shorthand.state() == 1;
+            UI.with(|u| {
+                if let Some(x) = u.borrow_mut().as_mut() {
+                    x.caps_view = on;
+                }
+            });
+            c.table.reloadData();
+            cmd(SettingsCommand::SetCapsShorthand(on));
+        }
 
         #[unsafe(method(beckonPage:))]
         fn on_page(&self, _s: &AnyObject) {
@@ -697,7 +748,7 @@ define_class!(
                 return;
             }
             let Some(c) = controls() else { return };
-            let on = c.caps.state() == 1;
+            let on = c.kbd.caps.state() == 1;
             with_cb(|cb| (cb.on_caps)(on));
         }
 
@@ -712,9 +763,9 @@ define_class!(
             }
             let Some(c) = controls() else { return };
             let chord = Chord {
-                ctrl: c.hold_ctrl.state() == 1,
-                super_: c.hold_super.state() == 1,
-                alt: c.hold_alt.state() == 1,
+                ctrl: c.kbd.hold_ctrl.state() == 1,
+                super_: c.kbd.hold_super.state() == 1,
+                alt: c.kbd.hold_alt.state() == 1,
             };
             with_cb(|cb| (cb.on_caps_hold)(chord));
         }
@@ -727,7 +778,7 @@ define_class!(
                 return;
             }
             let Some(c) = controls() else { return };
-            let t = match c.tap.indexOfSelectedItem() {
+            let t = match c.kbd.tap.indexOfSelectedItem() {
                 0 => CapsTap::CapsLock,
                 1 => CapsTap::Escape,
                 2 => CapsTap::None,
@@ -1067,41 +1118,6 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let notes = label("", mtm);
     notes.setFont(Some(&NSFont::systemFontOfSize(11.0)));
 
-    // --- keyboard group ---------------------------------------------------
-    // One line: [x] Use Caps Lock as a shortcut key  Hold [Ctrl][Cmd][Option]
-    // Tap [v]. It replaced a check box plus three radios whose first caption
-    // embedded the question governing all three.
-    let caps = check(
-        "Use Caps Lock as a shortcut key",
-        sel!(beckonCaps:),
-        &target,
-        mtm,
-    );
-    let hold_ctrl = check("Ctrl", sel!(beckonHold:), &target, mtm);
-    let hold_super = check("Cmd", sel!(beckonHold:), &target, mtm);
-    let hold_alt = check("Option", sel!(beckonHold:), &target, mtm);
-    let tap = NSPopUpButton::new(mtm);
-    unsafe {
-        tap.setTarget(Some(&*target));
-        tap.setAction(Some(sel!(beckonTap:)));
-        // Order IS the CapsTap mapping in `beckonTap:`; do not reorder.
-        tap.addItemWithTitle(&NSString::from_str("Caps Lock"));
-        tap.addItemWithTitle(&NSString::from_str("Escape"));
-        tap.addItemWithTitle(&NSString::from_str("Nothing"));
-    }
-    let keyboard_row = hstack(
-        &[
-            &caps,
-            &label("Hold", mtm),
-            &hold_ctrl,
-            &hold_super,
-            &hold_alt,
-            &label("Tap", mtm),
-            &tap,
-        ],
-        mtm,
-    );
-
     // --- command bar ------------------------------------------------------
     let save = push("Save", sel!(beckonSave:), &target, mtm);
     let open_file = push("Open config file", sel!(beckonOpenFile:), &target, mtm);
@@ -1139,18 +1155,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     .into_super();
 
     // --- door 2: Keyboard --------------------------------------------------
-    let page_keyboard: Retained<NSView> = widgets::card(
-        &widgets::vstack(
-            &[
-                &*widgets::heading("Keyboard", mtm) as &NSView,
-                &*keyboard_row,
-            ],
-            10.0,
-            mtm,
-        ),
-        mtm,
-    )
-    .into_super();
+    let (page_keyboard, kbd) = keyboard::build(&target, mtm);
 
     // --- doors 3 and 4 -----------------------------------------------------
     let (page_system, sys) = system::build(&target, mtm);
@@ -1241,6 +1246,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 tabs,
                 pages: [page_shortcuts, page_keyboard, page_system, page_about],
                 bar,
+                kbd,
                 sys,
                 abt,
                 table,
@@ -1255,11 +1261,6 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 banner,
                 banner_reload,
                 banner_keep,
-                caps,
-                hold_ctrl,
-                hold_super,
-                hold_alt,
-                tap,
                 save,
                 remove,
                 add,
@@ -1272,6 +1273,9 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             page: Page::Shortcuts,
             paths: paths.clone(),
             opacity: 100,
+            caps_view: false,
+            caps_checked: false,
+            caps_hold: Chord::default(),
             about_state: None,
         });
     });
@@ -1523,6 +1527,13 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.pushing = true;
         x.items = st.items.clone();
         x.shown_combo = st.detail.as_ref().map(|d| d.combo.clone());
+        // Kept for the DATA SOURCE, which needs them while `reloadData` is
+        // running and cannot be handed arguments: the list cell folds a
+        // bound chord into `Caps` only when the preference is on AND Caps is
+        // actually acting as a shortcut key, and `caps_view_fold` is where
+        // that AND lives.
+        x.caps_checked = st.caps_checked;
+        x.caps_hold = st.caps_hold;
         true
     });
     if !ok {
@@ -1535,6 +1546,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     let Some(x) = controls() else {
         return;
     };
+    // Read and the borrow dropped in one expression, before any AppKit call
+    // — the rule `controls()` exists to make structural.
+    let caps_view = UI.with(|u| u.borrow().as_ref().map(|y| y.caps_view).unwrap_or(false));
     {
         // The count badge, on the Shortcuts pill and nowhere else.
         //
@@ -1610,18 +1624,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
             }
         }
 
-        set_check(&x.caps, st.caps_checked);
-        set_check(&x.hold_ctrl, st.caps_hold.ctrl);
-        set_check(&x.hold_super, st.caps_hold.super_);
-        set_check(&x.hold_alt, st.caps_hold.alt);
-        // Written BY INDEX, never by text, and the order here is the same
-        // order `beckonTap:` reads back. Do not reorder one without the
-        // other.
-        x.tap.selectItemAtIndex(match st.caps_tap {
-            CapsTap::CapsLock => 0,
-            CapsTap::Escape => 1,
-            CapsTap::None => 2,
-        });
+        // The whole Keyboard door, including its own enablement -- see
+        // `keyboard::apply`. The `caps_view` preference rides along because
+        // it is the one control on that door with no home in `ControlState`:
+        // it changes this list's cells and nothing in the file.
+        keyboard::apply(&x.kbd, st, caps_view);
 
         // `editable` is ANDed at every enable site rather than branched on:
         // the window is not allowed to know WHY it is read only.
@@ -1629,15 +1636,8 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.save.setEnabled(st.apply_enabled && edit);
         x.remove.setEnabled(st.remove_enabled && edit);
         x.add.setEnabled(edit);
-        x.caps.setEnabled(edit);
-        // A disabled pop-up still renders light with dark text on macOS, so
-        // it looks live beside greyed labels. Enablement follows the check
-        // box regardless; do not "fix" the appearance.
-        let caps_on = st.caps_checked && edit;
-        x.hold_ctrl.setEnabled(caps_on);
-        x.hold_super.setEnabled(caps_on);
-        x.hold_alt.setEnabled(caps_on);
-        x.tap.setEnabled(caps_on);
+        x.kbd.caps.setEnabled(edit);
+        x.kbd.shorthand.setEnabled(edit);
         let has_row = st.detail.is_some() && edit;
         x.mod_ctrl.setEnabled(has_row);
         x.mod_super.setEnabled(has_row);
@@ -1687,4 +1687,20 @@ fn mark_glyph(m: Mark) -> &'static str {
         Mark::Bad => "x",
         Mark::Unknown => "?",
     }
+}
+
+/// The three inputs `caps_view_fold` needs, read one at a time with the
+/// borrow taken and released each time.
+///
+/// Split into three tiny reads rather than one struct because the data
+/// source calls them from inside `reloadData`, i.e. re-entrantly, where an
+/// outstanding borrow is the measured panic `controls()` exists to prevent.
+fn caps_view_now() -> bool {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.caps_view).unwrap_or(false))
+}
+fn caps_checked_now() -> bool {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.caps_checked).unwrap_or(false))
+}
+fn caps_hold_now() -> Chord {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.caps_hold).unwrap_or_default())
 }

@@ -274,6 +274,66 @@ pub fn key_label(name: &str) -> String {
 /// share. Lift the three labels out instead, so the caller supplies them and
 /// this function keeps doing one thing.
 pub fn combo_caps(s: &str) -> Vec<String> {
+    combo_caps_with(s, ModifierLabels::WINDOWS)
+}
+
+/// What the three modifier keys are CALLED on a given keyboard.
+///
+/// The config file is one language everywhere — `ctrl+super+alt+t` on every
+/// platform, which is what lets a dotfile be copied between machines. The
+/// keys it names are not: `super` is the Windows key on one keyboard and
+/// Command on another, and `alt` is Option. Only these three differ.
+/// `key_label` is already neutral, because `T` is `T` and `PgDn` is `PgDn`.
+///
+/// **Added 2026-08-16 because the macOS window was drawing `Win`.** Until
+/// then `combo_caps` had the three strings inline, which was correct for the
+/// only window that existed. It is the first of exactly two strings in
+/// `beckon-core` that named one platform — the other is
+/// `theme::TransparencyBlock::reason`'s *"Off in Windows settings"*, still
+/// worked around locally in `beckon-macos` and wanting the same treatment.
+///
+/// `Shift` is here for completeness and is the same word on both. It is
+/// nonetheless a field rather than a literal, so that a future keyboard that
+/// spells it differently is a table entry rather than a second mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModifierLabels {
+    pub ctrl: &'static str,
+    pub super_: &'static str,
+    pub alt: &'static str,
+    pub shift: &'static str,
+}
+
+impl ModifierLabels {
+    /// What `combo_caps` has always produced. **`combo_caps` still calls
+    /// this**, so every existing caller and every existing test is
+    /// byte-identical to before this type existed.
+    pub const WINDOWS: ModifierLabels = ModifierLabels {
+        ctrl: "Ctrl",
+        super_: "Win",
+        alt: "Alt",
+        shift: "Shift",
+    };
+
+    /// Words, not glyphs (`Cmd`, not `⌘`).
+    ///
+    /// Two reasons, and the second is the one that decides it. The window's
+    /// own editor already draws these three as check-box captions reading
+    /// `Ctrl` / `Cmd` / `Option`, so a list cell showing `⌘` beside a box
+    /// captioned `Cmd` would be two names for one key on one screen. And the
+    /// display strings in this program are ASCII by a rule with a measurement
+    /// behind it: a UTF-8 em-dash came back from a `serve` log as `?"` under
+    /// PowerShell's default encoding, and `combo_display` is what a screen
+    /// reader is handed.
+    pub const MAC: ModifierLabels = ModifierLabels {
+        ctrl: "Ctrl",
+        super_: "Cmd",
+        alt: "Option",
+        shift: "Shift",
+    };
+}
+
+/// `combo_caps`, in a named keyboard's words.
+pub fn combo_caps_with(s: &str, l: ModifierLabels) -> Vec<String> {
     let Ok(c) = Combo::parse(s) else {
         return Vec::new();
     };
@@ -282,16 +342,16 @@ pub fn combo_caps(s: &str) -> Vec<String> {
     // with it would make two identical chords look different.
     let mut v = Vec::with_capacity(5);
     if c.ctrl {
-        v.push("Ctrl".to_string());
+        v.push(l.ctrl.to_string());
     }
     if c.super_ {
-        v.push("Win".to_string());
+        v.push(l.super_.to_string());
     }
     if c.alt {
-        v.push("Alt".to_string());
+        v.push(l.alt.to_string());
     }
     if c.shift {
-        v.push("Shift".to_string());
+        v.push(l.shift.to_string());
     }
     v.push(key_label(&c.key.name));
     v
@@ -332,6 +392,17 @@ pub const CAPS_CAP: &str = "Caps";
 /// spotting it costs no reading. Folding a superset would destroy exactly
 /// that, and would also be a lie: `Caps+Shift+T` is not what the hook sends.
 pub fn combo_caps_folded(s: &str, hold: Option<Chord>) -> Vec<String> {
+    combo_caps_folded_with(s, hold, ModifierLabels::WINDOWS)
+}
+
+/// `combo_caps_folded`, in a named keyboard's words.
+///
+/// The labels only reach the UNFOLDED arm, and that is the point rather than
+/// an accident: a folded chord is `[Caps][T]`, and `Caps` is the same word on
+/// every keyboard beckon runs on. So the preference makes the platform
+/// difference disappear from the list exactly where it folds, and keeps it
+/// where it does not — which is the row the reader is meant to notice.
+pub fn combo_caps_folded_with(s: &str, hold: Option<Chord>, l: ModifierLabels) -> Vec<String> {
     let Ok(c) = Combo::parse(s) else {
         return Vec::new();
     };
@@ -339,7 +410,7 @@ pub fn combo_caps_folded(s: &str, hold: Option<Chord>) -> Vec<String> {
         Some(h) if !c.shift && c.ctrl == h.ctrl && c.super_ == h.super_ && c.alt == h.alt => {
             vec![CAPS_CAP.to_string(), key_label(&c.key.name)]
         }
-        _ => combo_caps(s),
+        _ => combo_caps_with(s, l),
     }
 }
 
@@ -350,6 +421,74 @@ pub fn combo_caps_folded(s: &str, hold: Option<Chord>) -> Vec<String> {
 /// two spellings of a join.
 pub fn combo_display_folded(s: &str, hold: Option<Chord>) -> String {
     combo_caps_folded(s, hold).join(" + ")
+}
+
+/// `combo_display_folded`, in a named keyboard's words.
+pub fn combo_display_folded_with(s: &str, hold: Option<Chord>, l: ModifierLabels) -> String {
+    combo_caps_folded_with(s, hold, l).join(" + ")
+}
+
+#[cfg(test)]
+mod modifier_label_tests {
+    use super::*;
+
+    /// The whole safety claim of this change in one assertion: adding the
+    /// table did not move the string any existing caller gets.
+    #[test]
+    fn the_default_labels_are_what_combo_caps_always_produced() {
+        assert_eq!(
+            combo_caps("ctrl+super+alt+shift+t"),
+            vec!["Ctrl", "Win", "Alt", "Shift", "T"]
+        );
+        assert_eq!(
+            combo_caps("ctrl+super+alt+t"),
+            combo_caps_with("ctrl+super+alt+t", ModifierLabels::WINDOWS)
+        );
+    }
+
+    #[test]
+    fn a_mac_keyboard_says_cmd_and_option() {
+        assert_eq!(
+            combo_caps_with("ctrl+super+alt+t", ModifierLabels::MAC),
+            vec!["Ctrl", "Cmd", "Option", "T"]
+        );
+    }
+
+    /// The key half is neutral and must stay that way: only three strings
+    /// differ between keyboards, and a fourth creeping in would mean two
+    /// tables to keep in step.
+    #[test]
+    fn only_the_modifiers_differ_between_keyboards() {
+        let win = combo_caps_with("ctrl+super+alt+shift+pagedown", ModifierLabels::WINDOWS);
+        let mac = combo_caps_with("ctrl+super+alt+shift+pagedown", ModifierLabels::MAC);
+        assert_eq!(win.len(), mac.len());
+        assert_eq!(win.last(), mac.last(), "the key label is not platform text");
+        assert_eq!(win[0], mac[0], "Ctrl is Ctrl");
+        assert_eq!(win[3], mac[3], "Shift is Shift");
+        assert_ne!(win[1], mac[1]);
+        assert_ne!(win[2], mac[2]);
+    }
+
+    /// A folded row is the same on both keyboards, because `Caps` is one
+    /// word everywhere; an unfolded one is not. That contrast is what makes
+    /// the shorthand worth having on a Mac at all.
+    #[test]
+    fn folding_erases_the_platform_difference_and_not_folding_keeps_it() {
+        let hold = Some(Chord {
+            ctrl: true,
+            super_: true,
+            alt: true,
+        });
+        assert_eq!(
+            combo_caps_folded_with("ctrl+super+alt+t", hold, ModifierLabels::MAC),
+            combo_caps_folded_with("ctrl+super+alt+t", hold, ModifierLabels::WINDOWS),
+        );
+        // Shift refuses to fold -- and there the two keyboards diverge again.
+        assert_ne!(
+            combo_caps_folded_with("ctrl+super+alt+shift+n", hold, ModifierLabels::MAC),
+            combo_caps_folded_with("ctrl+super+alt+shift+n", hold, ModifierLabels::WINDOWS),
+        );
+    }
 }
 
 /// A parsed key combo. Modifier order in the input is free; `canonical()`
