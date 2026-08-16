@@ -238,8 +238,14 @@ fn is_format_mark(c: char) -> bool {
 }
 
 /// Resolve a user-supplied id. See module docs for priority order.
+///
+/// The discovery entry point (`beckon resolve`, `beckon search`): it pays
+/// `bundle_path_for` on a running match so the report can print a path. The
+/// hot path takes `resolve_with_running`, which does not — see there.
 pub fn resolve(id: &str) -> Option<ResolvedMatch> {
-    resolve_with_running(id, &running_apps())
+    let running = running_apps();
+    let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
+    resolve_inner(id, &refs, installed_apps, bundle_path_for)
 }
 
 /// Subset of `RunningAppInfo` that the resolver actually consults — no
@@ -259,13 +265,23 @@ impl<'a> From<&'a RunningAppInfo> for RunningRef<'a> {
     }
 }
 
-/// Resolve, reusing a `running_apps()` snapshot the caller already has.
-/// Used by `beckon()` to avoid querying NSWorkspace twice in the hot path.
-/// Calls `bundle_path_for` for running matches (NSWorkspace lookup) so the
-/// `resolve` debug output can show a path; `installed_apps()` is queried lazily.
+/// Resolve, reusing a `running_apps()` snapshot the caller already has — the
+/// hot path (`beckon <id>` → `MacBackend::beckon_inner`). `installed_apps()` is
+/// queried lazily, and the bundle path is not queried at all.
+///
+/// `|_| None` for the path, the same call `resolve_reports_in` makes and for
+/// the same reason: the only reader of `ResolvedMatch::bundle_path` is
+/// `print_resolve_report`, and every hot-path consumer — `launch_bundle`,
+/// `focus_running` — acts on the bundle id. The lookup is a LaunchServices
+/// round trip and it is **cold** on this path, because a keypress is a whole
+/// process: measured on airm3 2026-08-16, 13 fresh processes each taking one
+/// sample, the first `resolve_with_running` on a running-tier match cost
+/// **6.3–8.8 ms (median 6.6)** with the lookup and **0.011–0.035 ms
+/// (median 0.014)** without it. A warm loop reports ~0.013 ms either way and
+/// is measuring the LaunchServices cache, not this path.
 pub fn resolve_with_running(id: &str, running: &[RunningAppInfo]) -> Option<ResolvedMatch> {
     let refs: Vec<RunningRef> = running.iter().map(RunningRef::from).collect();
-    resolve_inner(id, &refs, installed_apps, bundle_path_for)
+    resolve_inner(id, &refs, installed_apps, |_| None)
 }
 
 /// What a keypress costs when a name matched only by substring and exactly one
@@ -683,6 +699,54 @@ mod tests {
         assert!(
             called.get(),
             "installed_loader should run when running miss"
+        );
+    }
+
+    // ---------- the hot path pays for no bundle path ----------
+
+    /// `beckon <id>` never reads `ResolvedMatch::bundle_path` — `launch_bundle`
+    /// and `focus_running` both act on the bundle id — so the hot path must not
+    /// pay `bundle_path_for` to fill it. That lookup is a LaunchServices round
+    /// trip and it is COLD on this path, because a keypress is a whole process:
+    /// measured on airm3 2026-08-16, 13 fresh processes each taking one sample,
+    /// 6.3–8.8 ms (median 6.6) with it against 0.011–0.035 ms (median 0.014)
+    /// without, on a ~95–105 ms path.
+    ///
+    /// `com.apple.finder` is the bundle id because it resolves on **every**
+    /// macOS: put `bundle_path_for` back and this comes back
+    /// `Some("/System/Library/CoreServices/Finder.app")` and the assertion
+    /// fails. A made-up id would answer `None` either way and pin nothing.
+    /// `NSRunningApplication::currentApplication` stands in for the snapshot
+    /// entry — the resolver reads only `bundle_id` and `name`.
+    #[test]
+    fn the_hot_path_resolves_without_a_bundle_path_lookup() {
+        let running = vec![RunningAppInfo {
+            pid: std::process::id() as i32,
+            bundle_id: "com.apple.finder".to_string(),
+            name: "Finder".to_string(),
+            running: NSRunningApplication::currentApplication(),
+        }];
+        let m = resolve_with_running("Finder", &running).unwrap();
+        assert_eq!(m.match_type, MatchType::RunningName);
+        assert_eq!(m.bundle_id, "com.apple.finder");
+        assert_eq!(
+            m.bundle_path, None,
+            "the hot path asked LaunchServices for a path nothing downstream reads"
+        );
+    }
+
+    /// The installed tiers take their path from the catalog entry, not from the
+    /// closure, so dropping the lookup on the hot path cannot blank a path the
+    /// launcher might have wanted. This is what makes the change safe rather
+    /// than merely cheap.
+    #[test]
+    fn dropping_the_lookup_does_not_blank_the_installed_tiers_path() {
+        let inst = vec![installed("com.anthropic.claude", "Claude")];
+        let m = resolve_inner("Claude", &[], move || inst, |_| None).unwrap();
+        assert_eq!(m.match_type, MatchType::InstalledName);
+        assert_eq!(
+            m.bundle_path,
+            Some(PathBuf::from("/Applications/Claude.app"))
         );
     }
 
