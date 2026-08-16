@@ -330,11 +330,22 @@
   --hud-bg:      rgba(250, 250, 248, .86);
 }
 
-/* --- 1b. dark. THEME AXIS ONLY — no form token appears below, so the two
-       axes cannot fight over specificity. `:root[data-theme="dark"]` and
-       `:root[data-os="linux"]` both score (0,2,0), and if either block set a
-       token the other also set, source order alone would decide it. Keeping the
-       palette here and the form in §1c makes that collision unrepresentable.
+/* --- 1b. dark. THE PALETTE, AND THE TWO ELEVATION TOKENS — and those two are
+       the exception the rest of the block is written to avoid.
+       `:root[data-theme="dark"]` and `:root[data-os="linux"]` both score
+       (0,2,0), so any token both blocks set is decided by source order alone,
+       and §1c comes later. Everything else here is palette and appears in no
+       skin block, which is what makes that collision unrepresentable for it.
+
+       --elev-1 / --elev-2 DO appear in all three skin blocks, so §1c wins them
+       here. Measured in headless Chrome against this file: at
+       `prefers-color-scheme: dark` with `data-theme="dark"`, --fg read #EDEDEA
+       while --elev-1 read the light `0 1px 2px rgba(0,0,0,.06), 0 8px 24px -8px
+       rgba(0,0,0,.18)` on macOS and each skin's own light value on the other
+       two. They stay here anyway because a reader with JS off has no `data-os`
+       at all — the same reason §1a carries macOS's form — and this block is the
+       only dark answer that reader gets; §1d settles the three skins at (0,3,0),
+       above both.
 
        Written twice: once for the system preference, once for the explicit
        toggle, so the toggle wins both ways. Only what differs is restated. */
@@ -357,6 +368,7 @@
     --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
     --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
     --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+    /* The no-skin reader's dark elevation only; §1d has the three skins'. */
     --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
     --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
     --win-paper: #1B1B20; --win-ink: #D8D8DC;
@@ -380,6 +392,7 @@
   --hit: rgba(255, 255, 255, .06); --rim: rgba(255, 255, 255, .14);
   --shadow: 0 24px 60px -26px rgba(0, 0, 0, .8);
   --shadow-soft: 0 10px 26px -16px rgba(0, 0, 0, .7);
+  /* The no-skin reader's dark elevation only; §1d has the three skins'. */
   --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
   --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
   --win-paper: #1B1B20; --win-ink: #D8D8DC;
@@ -407,8 +420,10 @@
 
    Colour is deliberately NOT restated here. Chrome fills are built out of the
    theme-aware --surface / --rule / --rim, so one definition serves light and
-   dark; only --accent is genuinely per-machine AND per-theme, which is what
-   §1d is for and all §1d contains. */
+   dark; --accent is genuinely per-machine AND per-theme, which is what §1d is
+   for. The values below are the LIGHT ones: --elev-1 / --elev-2 are the two
+   form tokens the theme axis also has an opinion about, so §1d restates them
+   per skin for dark at (0,3,0) — read the two together before changing either. */
 
 :root[data-os="macos"], .door[data-os="macos"] {
   --r-window: 26px; --r-card: 16px; --r-ctl: 8px; --r-pill: 999px;
@@ -480,36 +495,68 @@
 }
 
 
-/* --- 1d. accent, the one token that is genuinely OS × theme ---------------
-   Fluent LIGHTENS its accent in dark rather than reusing #0078D4, and Adwaita
-   does the same; #007AFF, #0078D4 and #3584E4 all fail AA against a dark
-   canvas. Written at (0,3,0) so it beats both §1b and §1c whichever way source
-   order runs, and written twice for the same reason §1b is. */
+/* --- 1d. the tokens that are genuinely OS × theme -------------------------
+   ACCENT is the one that was always here by design. Fluent LIGHTENS its accent
+   in dark rather than reusing #0078D4, and Adwaita does the same; #007AFF,
+   #0078D4 and #3584E4 all fail AA against a dark canvas. Written at (0,3,0) so
+   it beats both §1b and §1c whichever way source order runs, and written twice
+   for the same reason §1b is.
+
+   ELEVATION IS HERE AS A FIX, not because anyone chose to split it: a shadow's
+   SHAPE is the skin's (§1c) and its DEPTH is the theme's (§1b), both wrote
+   --elev-1 / --elev-2 at (0,2,0), and source order handed every one of them to
+   §1c — so the page drew light shadows on a dark ground on all three skins.
+   Measured in headless Chrome before this block existed: at
+   `prefers-color-scheme: dark` with `data-theme="dark"`, --fg read #EDEDEA
+   while --elev-1 read `0 1px 2px rgba(0,0,0,.06), 0 8px 24px -8px
+   rgba(0,0,0,.18)` on macOS, `0 1px 2px rgba(0,0,0,.10)` on Windows and `none`
+   on Linux — every one of them the light value. (0,3,0) is the only place both
+   axes can be honoured at once, and §1c is left alone so check-site.sh's
+   check 9 still sees all three skins restate the token.
+
+   Each skin deepens ITS OWN alphas and keeps its own geometry; none of them
+   borrows macOS's. macOS keeps the three §1b authored for it. Windows and
+   Linux take macOS's --elev-2 ratio — .38 → .72, i.e. ×1.9, the gentlest of
+   the three — on their own, because neither skin is trying to be dramatic.
+   Adwaita's --elev-1 stays `none` in both themes: flat is the skin, not the
+   theme, which is what §1c already says about it. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"])[data-os="macos"],
   :root:not([data-theme="light"]) .door[data-os="macos"] {
     --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+    --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+    --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
   }
   :root:not([data-theme="light"])[data-os="windows"],
   :root:not([data-theme="light"]) .door[data-os="windows"] {
     --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+    --elev-1: 0 1px 2px rgba(0, 0, 0, .19);
+    --elev-2: 0 4px 8px rgba(0, 0, 0, .27);
   }
   :root:not([data-theme="light"])[data-os="linux"],
   :root:not([data-theme="light"]) .door[data-os="linux"] {
     --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+    --elev-1: none;
+    --elev-2: 0 8px 24px rgba(0, 0, 0, .34);
   }
 }
 :root[data-theme="dark"][data-os="macos"],
 :root[data-theme="dark"] .door[data-os="macos"] {
   --accent: #0A84FF; --accent-fg: #FFFFFF; --accent-soft: rgba(10, 132, 255, .24);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .30), 0 8px 24px -8px rgba(0, 0, 0, .50);
+  --elev-2: 0 24px 60px -22px rgba(0, 0, 0, .72);
 }
 :root[data-theme="dark"][data-os="windows"],
 :root[data-theme="dark"] .door[data-os="windows"] {
   --accent: #4CC2FF; --accent-fg: #000000; --accent-soft: rgba(76, 194, 255, .12);
+  --elev-1: 0 1px 2px rgba(0, 0, 0, .19);
+  --elev-2: 0 4px 8px rgba(0, 0, 0, .27);
 }
 :root[data-theme="dark"][data-os="linux"],
 :root[data-theme="dark"] .door[data-os="linux"] {
   --accent: #78AEED; --accent-fg: #0B0B0E; --accent-soft: rgba(120, 174, 237, .18);
+  --elev-1: none;
+  --elev-2: 0 8px 24px rgba(0, 0, 0, .34);
 }
 
 
