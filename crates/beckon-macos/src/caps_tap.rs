@@ -96,6 +96,8 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn CFRunLoopGetCurrent() -> *mut c_void;
     fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+    fn CFRunLoopRemoveSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
+    fn CFMachPortInvalidate(port: *mut c_void);
     static kCFRunLoopCommonModes: *const c_void;
 }
 #[link(name = "IOKit", kind = "framework")]
@@ -204,6 +206,18 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 /// The live tap, kept so it can be disabled again. Never dereferenced off
 /// the main thread.
 static TAP_PORT: Mutex<usize> = Mutex::new(0);
+
+/// The run-loop source built from that port, kept for the same reason and one
+/// more: **only `CFRunLoopRemoveSource` can free the tap.** The source is what
+/// the run loop retains, and the source retains the mach port — so a
+/// `CFRelease(port)` on its own cannot deallocate it, nothing invalidates the
+/// tap, and every pause/resume would leave another disabled tap registered
+/// with the window server for the life of the daemon.
+///
+/// Capture makes the rate worse rather than equal: `install_for` /
+/// `uninstall_for` below take the tap up and down per Record/Stop as well as
+/// per pause/resume, so the leak was once per recording too.
+static TAP_SOURCE: Mutex<usize> = Mutex::new(0);
 
 /// Who wants the tap held, so neither reason can take it from the other.
 ///
@@ -319,9 +333,13 @@ pub fn install() -> Result<(), String> {
     }
     unsafe {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
-        // The source is retained by the run loop; this balances the create.
-        CFRelease(source as *const c_void);
         CGEventTapEnable(port, true);
+    }
+    // The create reference on the source is KEPT rather than balanced here:
+    // `uninstall` needs the handle to remove it from the run loop, and the
+    // handle is unrecoverable once this function returns.
+    if let Ok(mut s) = TAP_SOURCE.lock() {
+        *s = source as usize;
     }
     if let Ok(mut p) = TAP_PORT.lock() {
         *p = port as usize;
@@ -335,17 +353,49 @@ pub fn install() -> Result<(), String> {
 /// **`clear_bindings` first, always.** Between disabling and the run loop
 /// noticing there is a window in which the callback can still run, and a
 /// callback with no bindings swallows nothing.
+///
+/// **The source goes too.** `install` is reached again on every resume, so
+/// leaving it registered accumulates one dead source, one mach port and one
+/// tap per pause/resume for the life of the daemon.
 pub fn uninstall() {
     clear_bindings();
-    let port = TAP_PORT.lock().map(|mut p| std::mem::replace(&mut *p, 0));
-    if let Ok(port) = port {
-        if port != 0 {
-            unsafe {
-                CGEventTapEnable(port as *mut c_void, false);
-                CFRelease(port as *const c_void);
-            }
+    let (port, source) = take_handles();
+    if port != 0 {
+        unsafe { CGEventTapEnable(port as *mut c_void, false) };
+    }
+    if source != 0 {
+        unsafe {
+            CFRunLoopRemoveSource(
+                CFRunLoopGetCurrent(),
+                source as *mut c_void,
+                kCFRunLoopCommonModes,
+            );
+            CFRelease(source as *const c_void);
         }
     }
+    if port != 0 {
+        unsafe {
+            CFMachPortInvalidate(port as *mut c_void);
+            CFRelease(port as *const c_void);
+        }
+    }
+}
+
+/// Take both handles, zeroing the statics.
+///
+/// Split out of `uninstall` because everything done with them afterwards is
+/// FFI a test cannot reach, and forgetting the SOURCE is exactly the defect
+/// the pairing exists to prevent.
+fn take_handles() -> (usize, usize) {
+    let port = TAP_PORT
+        .lock()
+        .map(|mut p| std::mem::replace(&mut *p, 0))
+        .unwrap_or(0);
+    let source = TAP_SOURCE
+        .lock()
+        .map(|mut s| std::mem::replace(&mut *s, 0))
+        .unwrap_or(0);
+    (port, source)
 }
 
 /// Hold the tap for one reason, installing it if nobody held it yet.
@@ -841,5 +891,21 @@ mod tests {
         let c = CONFIG.lock().expect("not poisoned");
         assert!(c.reaches_nothing());
         assert_eq!(c.tap, TapAction::CapsLock);
+    }
+
+    /// Taking the tap down has to take the run-loop source with it. The
+    /// source is what the run loop retains and the source retains the mach
+    /// port, so a teardown that forgets it leaves a disabled tap registered
+    /// with the window server on every pause — and `install` builds a fresh
+    /// pair on every resume.
+    #[test]
+    fn taking_the_tap_down_takes_the_run_loop_source_with_it() {
+        *TAP_PORT.lock().expect("not poisoned") = 0xAB;
+        *TAP_SOURCE.lock().expect("not poisoned") = 0xCD;
+        assert_eq!(take_handles(), (0xAB, 0xCD));
+        // Both slots are cleared, so a second teardown is a no-op rather
+        // than a double release.
+        assert_eq!(take_handles(), (0, 0));
+        assert!(!is_installed());
     }
 }
