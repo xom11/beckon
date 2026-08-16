@@ -61,7 +61,20 @@ desktop to bind to, so a task configured to "run whether user is logged
 on or not" registers nothing and silently never fires.
 
 ```powershell
-$exe = (Get-Command beckon).Source
+# Resolve past the Scoop shim. Get-Command answers the shim under
+# \scoop\shims\, and that shim stays alive as beckon's parent: it holds the
+# console open, beckon's own FreeConsole cannot close it, and the window
+# --log exists to remove is back for the life of the daemon. Scoop names
+# the real target in the .shim file beside it. A cargo-installed beckon has
+# no such file and is used as-is.
+$exe  = (Get-Command beckon).Source
+$shim = [IO.Path]::ChangeExtension($exe, '.shim')
+if (Test-Path $shim) {
+    if ((Get-Content -Raw $shim) -match '(?m)^\s*path\s*=\s*"?(.+?)"?\s*$') { $exe = $Matches[1] }
+    else { throw "$shim has no path= line; open it and read the target by hand" }
+}
+$exe    # must NOT be under \scoop\shims\
+
 $cfg = "$env:USERPROFILE\.config\beckon\apps.toml"
 $log = "$env:USERPROFILE\AppData\Local\beckon\serve.log"
 $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
@@ -74,8 +87,14 @@ $sid = ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
   ForEach-Object { Register-ScheduledTask -TaskName "beckon-serve" -Xml $_ -Force }
 ```
 
-Two things in there look like overkill and are not:
+Three things in there look like overkill and are not:
 
+- **`$exe` is resolved past the Scoop shim.** The shim stays alive as
+  beckon's parent — measured: the shim's pid is the real process's
+  `ParentProcessId` — so it owns the console Windows allocated, and beckon
+  detaching does not close it. Pointing the action at the shim gives back
+  the console window the whole `--log` design exists to remove, permanently
+  rather than for 60 ms. See *The console window* below.
 - **The principal is a SID, not `DOMAIN\user`.** On a machine that isn't
   domain-joined `$env:USERDOMAIN` is `WORKGROUP`, and registering
   `WORKGROUP\you` fails with *"No mapping between account names and
@@ -86,8 +105,11 @@ Two things in there look like overkill and are not:
   encoding."* Every task Windows exports declares UTF-16 for the same
   reason.
 
-Both were hit and fixed against a real machine (Windows 11 ARM64, build
-26200); the file as shipped registers cleanly.
+The last two were hit and fixed against a real machine (Windows 11 ARM64,
+build 26200); the file as shipped registers cleanly. The first is the
+opposite shape and is why it is worth a bullet: a shim registers cleanly
+too, and only the console window it leaves on screen says anything is
+wrong.
 
 **One more thing, if you register a task by hand rather than importing this
 XML** — which is how everything on this project's Windows test machine gets
@@ -196,7 +218,10 @@ and kills the daemon.
 **Two caveats about what you point the action at.** The command must be
 the real `beckon.exe`, not a wrapper that stays alive: a launcher which
 remains as a live parent (a Scoop shim, `cmd /c`) holds the console open,
-so beckon detaching does not close it. And a whole-binary
+so beckon detaching does not close it. That is what the `.shim` lookup at
+the top of the registration snippet is for — if you build the task by hand,
+do the same, because `(Get-Command beckon).Source` on a Scoop install is
+the shim. And a whole-binary
 `windows_subsystem = "windows"` is **not** an option — it would silently
 swallow the output of `beckon list`, `installed`, `search`, `resolve`
 and `doctor`. `beckon-serve.exe` is that escalation, already built: a
@@ -215,9 +240,16 @@ never appears here, because `current_exe()` on this path resolves to
 Run key — ticking it here would write a value that can never fire at next
 logon. Use `beckon-serve.exe`'s own tray for that. Right-click for a
 disabled status row (`beckon - 5 shortcuts registered`, `beckon - 3 of 5
-shortcuts registered (2 failed)`, or `beckon - paused (...)`), plus Edit
-shortcuts, Reload now, Open log, Pause hotkeys and Quit. Hovering the icon
-shows the same registration count in the tooltip.
+shortcuts registered (2 failed)`, or `beckon - paused (...)`), plus
+`Settings...`, `Reload now`, `Open log`, `Pause hotkeys` and `Quit`.
+Hovering the icon shows the same registration count in the tooltip.
+
+`Settings...` was `Edit shortcuts...`, and it changed job as well as
+caption: it used to hand `apps.toml` to whatever opens a `.toml`, and now
+opens beckon's own settings window. Four pages — Shortcuts, Keyboard,
+System, About — which edit the shortcut table, the Caps Lock row and this
+window's own look, and write the file back through `toml_edit`, so hand
+edits and window edits stay interchangeable.
 
 So the icon is no longer a bare one-way liveness light — hovering or
 opening the menu answers "is it alive and how many keys does it hold" the
