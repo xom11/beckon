@@ -28,11 +28,20 @@ Faster than clicking through the UI five times:
 BECKON="$(command -v beckon)"
 
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>t"     -t string -s "$BECKON kitty"
-xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>c"     -t string -s "$BECKON Google Chrome"
-xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>v"     -t string -s "$BECKON Visual Studio Code"
+xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>c"     -t string -s "$BECKON \"Google Chrome\""
+xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>v"     -t string -s "$BECKON \"Visual Studio Code\""
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>f"     -t string -s "$BECKON Thunar"
 xfconf-query -c xfce4-keyboard-shortcuts -np "/commands/custom/<Primary><Alt><Super>s"     -t string -s "$BECKON Spotify"
 ```
+
+A Name with a space in it keeps its quotes **inside** the stored string —
+the same spelling the table above uses. xfsettingsd stores the command
+verbatim and splits it into argv itself, so `$BECKON Google Chrome` reaches
+beckon as two arguments, and beckon takes exactly one id: it exits 2 with
+`error: unexpected argument 'Chrome' found`. A hotkey has nowhere to print
+that, so the binding is simply dead. (Measured on GLib 2.88.2 with
+`g_shell_parse_argv`, the splitter behind `g_spawn_command_line_async`:
+unquoted gives argc=3, quoted gives argc=2 with `argv[1]=[Google Chrome]`.)
 
 The property name **is** the accelerator, so it is written in GTK's own
 order — `<Primary>` (Ctrl), `<Alt>`, `<Super>` — rather than in the

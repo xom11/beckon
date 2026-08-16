@@ -4,7 +4,11 @@
 # leaves every custom shortcut you wired by hand where it was.
 #
 # Requires:
-#   - GNOME on X11 (run `echo $XDG_SESSION_TYPE` — must say `x11`)
+#   - GNOME, either session. The shortcuts live in dconf and
+#     gnome-settings-daemon binds them, so this script is the same on X11 and
+#     on Wayland. What DOES differ is whether beckon can focus a window once
+#     the key fires: X11 needs nothing, Wayland needs the bundled shell
+#     extension and a logout. See README.md.
 #   - beckon on PATH (or an absolute path you set in BECKON_BIN below)
 #
 # Verify: open Settings → Keyboard → View and Customize Shortcuts →
@@ -12,7 +16,8 @@
 # whatever was already there.
 #
 # `--self-test` checks this script's own list handling against the strings
-# gsettings really prints, and touches no dconf key. It needs no GNOME.
+# gsettings really prints, and its command quoting against the way GNOME
+# splits a stored command. It touches no dconf key and needs no GNOME.
 
 set -euo pipefail
 
@@ -57,6 +62,25 @@ merged_list() {
     printf '[%s]' "${out%, }"
 }
 
+# The command one entry stores. Usage: beckon_command <app>
+#
+# gnome-settings-daemon keeps this as a STRING and splits it into argv itself
+# when the key fires, so the quotes have to be IN the stored string: an app
+# Name with a space — `Google Chrome`, `Visual Studio Code`, two of the five
+# below — otherwise arrives as two arguments. That is not a binding that
+# resolves the wrong app, it is a dead one, because beckon takes exactly one
+# id: `beckon Google Chrome` exits 2 with
+# `error: unexpected argument 'Chrome' found`, and a hotkey has nowhere to
+# print it. Measured on GLib 2.88.2 with `g_shell_parse_argv`, the splitter
+# behind `g_spawn_command_line_async`: unquoted gives argc=3, quoted gives
+# argc=2 with `argv[1]=[Google Chrome]`.
+#
+# Double quotes rather than single, so this is the same spelling README.md's
+# manual route tells you to type into the Settings UI.
+beckon_command() {
+    printf '%s "%s"' "$BECKON_BIN" "$1"
+}
+
 self_test() {
     local fails=0
     local mine=("$BASE/beckon-0/" "$BASE/beckon-1/")
@@ -91,6 +115,14 @@ self_test() {
     check "a stale beckon-N from an older run is dropped" \
         "['$theirs', $ours]" \
         "$(merged_list "['$BASE/beckon-9/', '$theirs']" "${mine[@]}")"
+
+    # `local` is dynamically scoped in bash, so `beckon_command` reads this
+    # one and the test needs no beckon on PATH.
+    local BECKON_BIN=/usr/bin/beckon
+    check "a Name with a space is quoted inside the stored command" \
+        '/usr/bin/beckon "Google Chrome"' "$(beckon_command 'Google Chrome')"
+    check "a one-word Name is quoted the same way" \
+        '/usr/bin/beckon "Spotify"' "$(beckon_command Spotify)"
 
     if [[ $fails -eq 0 ]]; then
         echo "self-test: all checks passed"
@@ -140,13 +172,15 @@ for i in "${!ENTRIES[@]}"; do
     schema="$GS_SCHEMA.custom-keybinding:$BASE/beckon-$i/"
     gsettings set "$schema" name "$name"
     gsettings set "$schema" binding "$binding"
-    gsettings set "$schema" command "$BECKON_BIN $app"
+    gsettings set "$schema" command "$(beckon_command "$app")"
 done
 
+# Print the command line that was stored, not a re-spelling of it — a quoting
+# mistake in `beckon_command` is then on screen instead of silent.
 echo "Done. Five beckon shortcuts wired:"
 for i in "${!ENTRIES[@]}"; do
     IFS='|' read -r _ binding app <<<"${ENTRIES[$i]}"
-    printf "  %-15s → beckon %s\n" "$binding" "$app"
+    printf "  %-24s → %s\n" "$binding" "$(beckon_command "$app")"
 done
 echo
 echo "Test one: press the binding, or run \`beckon doctor\` to check the env."

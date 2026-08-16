@@ -1,12 +1,32 @@
 # GNOME (X11)
 
-GNOME on X11 uses Mutter, which exposes EWMH atoms beckon needs. The
-**Wayland** session of GNOME blocks external focus by design — beckon
-can't work there. Switch to "GNOME on Xorg" at the login screen.
+GNOME on X11 uses Mutter, which exposes the EWMH atoms beckon needs, so
+there is nothing to install beyond beckon itself. That session is what
+this page is about.
 
-> Verify your session type:
+**The Wayland session works too**, through a different backend, and the
+hotkey setup below is identical either way — but it costs an install and
+a logout. Mutter does block external processes from focusing windows
+there; beckon gets around it with a collaborator running *inside*
+gnome-shell, the bundled extension at
+[`extensions/beckon@xom11.github.io/`](../../../extensions/):
+
+```sh
+cd extensions
+gnome-extensions pack beckon@xom11.github.io
+gnome-extensions install --force beckon@xom11.github.io.shell-extension.zip
+gnome-extensions enable beckon@xom11.github.io
+# then log out and back in — Wayland can't reload the shell live
+```
+
+(Unlike KDE Wayland, which needs nothing installed: KWin ships its own
+scripting engine. See [`../kde/`](../kde/).)
+
+> Check which one you're on:
 > ```sh
-> echo $XDG_SESSION_TYPE     # must say "x11"
+> echo $XDG_SESSION_TYPE     # "x11" or "wayland"
+> beckon doctor              # prints the five env vars it detects on, and
+>                            # whether a backend was selected at all
 > ```
 
 ## Option A — automated via the included script

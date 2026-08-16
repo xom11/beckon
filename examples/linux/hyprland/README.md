@@ -26,14 +26,24 @@ command needed.
 Hyprland has no minimize concept the way X11 does. beckon's "hide"
 step (5c) parks the window on a special workspace called
 `special:beckon`. The next time you press the same hotkey, beckon
-finds the window there and `dispatch focuswindow` brings it back —
-Hyprland surfaces the special workspace automatically when a window
-on it gets focus.
+finds the window there, moves it back onto the workspace you are
+looking at, and only then focuses it.
 
-If you want to inspect what beckon parked, run:
+Un-parking it first is beckon's job, not the compositor's. This page
+used to say `dispatch focuswindow` was enough because Hyprland surfaces
+the special workspace on focus; measured on 0.56.0, it surfaces it as an
+*overlay* while the window still belongs to `special:beckon`, so the
+moment focus moves elsewhere the window vanishes again and `$mod+1..4`,
+`movefocus` and `movetoworkspace` all behave as if it does not exist —
+only `beckon <Name>` could ever bring it back. Only `special:beckon` is
+un-parked; a `special:*` workspace of your own is left where you put it.
+
+If you want to inspect what beckon parked, ask for the shape beckon
+itself reads — the workspace is an object, so the name lives at
+`.workspace.name`:
 
 ```sh
-hyprctl clients | grep -A1 'workspace: special:beckon'
+hyprctl -j clients | jq -r '.[] | select(.workspace.name == "special:beckon") | .class'
 ```
 
 ## Customizing
