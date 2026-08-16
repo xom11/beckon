@@ -185,10 +185,17 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
     c.image.setHidden(verdict.is_empty());
 
     c.access.setStringValue(&NSString::from_str(if ax_trusted {
+        // **`or while you are recording a shortcut` is not padding.** Chord
+        // capture arms the same tap on a machine where the reader
+        // deliberately left `keyboard.caps` off, so without this clause the
+        // sentence is a false claim about when beckon can see keystrokes --
+        // the one kind of wrong sentence this page exists to avoid. It is the
+        // same wording `HOOK_DISCLOSURE` carries on Windows, for the same
+        // widening.
         "beckon has Accessibility permission, which is what lets it focus and cycle \
          windows. It reads window lists and raises windows. The keyboard event tap is \
-         installed only while Caps Lock is on as a shortcut key; beckon keeps no record \
-         of what you type."
+         installed only while Caps Lock is on as a shortcut key, or while you are \
+         recording a shortcut; beckon keeps no record of what you type."
     } else {
         "beckon does NOT have Accessibility permission. Hotkeys will launch apps but \
          cannot focus or cycle windows. Grant it in System Settings > Privacy & \
