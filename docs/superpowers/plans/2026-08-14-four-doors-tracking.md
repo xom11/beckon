@@ -131,8 +131,10 @@ every row was already silent in it. Nothing in that picture moved.
 | The Caps row exists as its own page | **done** — Task 4 |
 | Three `Hold` chips and never four | **done** (pre-existing; `Chord` has exactly ctrl/super/alt) |
 | `Tap` is a `CBS_DROPDOWNLIST` read and written by index | **done** (pre-existing) |
-| The Caps switch itself | **changed 2026-08-15, by the System page and not by this workstream.** `paint::toggle` now draws its track at the RIGHT of the control and its caption at the left; it was the other way round. The mock-up draws the Caps row's switch right-aligned like System's three, so this is a step toward §3.2's own drawing rather than away from it — but only a step: the switch lands at the right end of `IDC_CAPS`' own rect, not at the card's right edge, because that needs the three-row Keyboard card this workstream owns. `layout` did not move: a switch's control is its caption plus `toggle_glyph` either way |
-| `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]` toggle, default OFF | **open** — id 1060 reserved. **It carries a fifth job nobody has scheduled: retiring the `other chord` status word.** §3.2 argues that once bindings on the caps chord collapse to `[Caps][B]` while every other chord keeps its full run of chips, "other chord" is visible at a glance and the word can go — and the mock-up is drawn in that future, which is why its `Telegram Web` row (a genuine `ctrl+super+alt+shift+t`) shows an EMPTY status cell while §3.1's own list of four words still names `other chord`. The two are not in conflict, they are dated: `row_condition` produces the word today because the toggle it depends on does not exist. Whoever builds 1060 owns deleting it — and `FLAGS` is a closed four-word table with three tests reading it, so that is a real task, not a line |
+| The Caps switch itself | **done 2026-08-16.** `paint::toggle` draws the track at the RIGHT and the caption at the left (2026-08-15, by the System page), and the switch now spans the card's full width, so its track lands on the card's right edge and lines up with the second switch below it and with System's four. That was the half the earlier note said "needs the three-row Keyboard card this workstream owns" — the card landed and took it. `toggle_glyph` (`s(50)`) went with it: it sized the control as caption-plus-track when the switch shared a line, and a full-width row has no neighbour to leave room for. Two paragraphs of subadditivity proof went too; the track's `2 + 40 + GAP` budget now lives in `paint.rs` only, which is what the 2026-08-14 correction in that comment was asking for |
+| Three groups parted by two dividers, no card heading | **done 2026-08-16.** `beckon_core::page_plan::keyboard_plan` owns the vertical figures on `system_plan`'s shape, so all three CI jobs test them; `keyboard_dividers` hands `WM_PAINT` the two hairlines. The card's interior goes 56 → 120 px. **`IDC_GRP_KEYBOARD` is deleted and RETIRED** — it drew `Keyboard` directly beneath a pill captioned `Keyboard`, the duplication §3.1 deleted on the Shortcuts door and §7 rule 5 forbids, photographed surviving on this one in `fd-after-keyboard.png` |
+| `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]` toggle, default OFF | **done** — 2026-08-16, `IDC_CAPS_SHORTHAND` (1060), the id core had reserved under that exact name. `HKCU\Software\beckon\CapsView`, default OFF, so `apps.toml` is byte-identical between a machine with it on and one without. The fold is `beckon_core::shortcuts::combo_display_folded` and requires an EXACT chord match with no Shift — the mock-up's own rule, since its `Telegram Web` row sits in `.chips.always`. Photographed working: `measurements/fd-caps-fold-on.png` |
+| …and the fifth job that row carried: retiring the `other chord` status word | **changed — the argument does not survive the default, and the word stays.** §3.2 reasons that once caps-chord bindings collapse while every other chord keeps its full run of chips, "other chord" is visible at a glance and the word can go; the mock-up is drawn in that future, which is why its `Telegram Web` row shows an EMPTY status cell. **But the toggle it depends on is default OFF, and §3.2 is what sets that default.** With the preference off — the state every user starts in and most will stay in — nothing collapses, every row shows its full chips, and there is no glance-level difference at all. Deleting the word would leave that majority with no signal whatever. Making the word conditional on the preference is the other way out and is worse: a status vocabulary that changes with a view setting is one that cannot be reasoned about, and `FLAGS` is a closed four-word table precisely so it can be. So `other chord` stays, `FLAGS` stays four words, and §3.2's paragraph is recorded here as reasoning that was sound about the fold and wrong about the default |
 | `If Caps Lock does nothing` expander | **open** — ids 1061/1062 reserved |
 | The hook-disclosure line moves to About | **done** — 2026-08-15. `beckon_core::settings::HOOK_DISCLOSURE`, drawn by `paint::disclosure` on `IDC_ABOUT_DISCLOSURE` (1111). It is the mock-up's wording verbatim, and `the_hook_disclosure_keeps_both_halves` pins BOTH halves against a later trim: when the hook is held, and what beckon does not keep. The second is a **negative claim** — no icon, colour or control state can draw "beckon keeps no record of what you type", which is why it is a sentence and why nothing on that row but a severity dot is not words. Note the reading of "while Caps Lock is on": it means the SETTING (`keyboard.caps`), not the LED, and the claim is conservative in the safe direction — pausing removes the hook too, so the moments it is really installed are a SUBSET of the two named |
 
@@ -641,12 +643,48 @@ does not.
   Limited in session 1 and cannot touch it. The failure names the wrong thing
   entirely.
 
-**Still owed, and it is the reason the release was paused for a decision:** the
-Keyboard door draws one row where design §3.2 has three sections, two dividers
-and an expander, and its card is captioned `Keyboard` directly beneath a pill
-captioned `Keyboard`. That is the same duplication §3.1 deleted on the
-Shortcuts door (`IDC_LBL_SECTION`), it is what design §7 rule 5 forbids, and it
-is visible in `fd-after-keyboard.png`.
+**CLOSED 2026-08-16, except the expander.** The Keyboard door drew one row
+where §3.2 has three sections, and its card was captioned `Keyboard` directly
+beneath a pill captioned `Keyboard` — the duplication §3.1 deleted on the
+Shortcuts door and §7 rule 5 forbids. Both are gone; `IDC_GRP_KEYBOARD` is
+RETIRED and `keyboard_plan` in core owns the three groups.
+
+The row that was missing is design §3.2's `Write shortcuts as [Caps] instead of
+[Ctrl][Win][Alt]`, and it now works end to end —
+`measurements/fd-caps-fold-on.png` is the photograph, taken on a14 with Caps
+armed and the preference on:
+
+| Binding | Drawn |
+|---|---|
+| `ctrl+super+alt+t` / `+e` / `+j` | `[Caps][T]` `[Caps][E]` `[Caps][J]` |
+| `ctrl+super+alt+shift+n` | `[Ctrl][Win][Alt][Shift][N]` — **refuses to fold** |
+
+That contrast IS the feature. §3.2's own words: bindings on any other chord do
+not collapse, "which is what makes them visible at a glance". The probe added
+the Shift binding for exactly that reason; the config and the preference were
+both restored byte for byte afterwards.
+
+**One decision §3.2 did not make, taken and testable.** With `keyboard.caps`
+OFF the Caps key does nothing, so a list drawing `[Caps][B]` would advertise a
+keystroke that is not bound. `caps_view_fold` is the AND of the preference and
+an armed Caps; `caps_view_enabled` is the switch's own enablement and is
+deliberately a DIFFERENT predicate — gate the switch on the fold and turning
+the preference off would grey the only control that can turn it back on.
+`fd-keyboard-3groups.png` shows the greyed row on a machine with Caps off.
+
+**Still owed on this door**, and it is two things rather than one:
+
+- **The expander**, `If Caps Lock does nothing`, with the UIPI line and the
+  other-remapper line. CLAUDE.md lists both facts under *what must never be
+  cut*, so they are owed rather than optional. It is a second card, and the
+  ground under this door does not close until it lands.
+- **The chips inside the label.** §3.2 sets `[Caps]` and `[Ctrl] [Win] [Alt]`
+  as real keycaps within the sentence; the row carries the same words as plain
+  text. That needs a painter interleaving text runs and keycaps, measuring each
+  to place the next — `draw_keycaps` lays out a row of caps and `paint::toggle`
+  draws one line of text, and nothing mixes them. Recorded rather than faked:
+  building it blind would put a third unverifiable thing on the door that
+  already collected three.
 
 **Not closed, and named so it is not mistaken for done:** the Keyboard door
 carries the LARGEST gap of the three — its card is a fixed 78 px at 96 DPI —
