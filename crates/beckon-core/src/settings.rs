@@ -2568,13 +2568,53 @@ fn row_condition(
             // catalog miss -- "no installed app has this name" is a strange
             // thing to say about no name at all.
             if !want.is_empty() && !names.iter().any(|n| n.to_lowercase() == want) {
-                // No note: `missing` is the sentence, in one word, on the row
-                // the user is already looking at. `flag_mark` keeps the
-                // `Mark::Bad` the deleted note used to carry -- and it is
-                // PUSHED rather than inserted-if-absent, so a paused row is
-                // still `Bad` for an app that is not installed even though the
-                // cell can only say `paused`.
-                conditions.push("missing");
+                // **Not a miss yet.** Every beckon resolver ends in a
+                // case-insensitive substring tier, and `check --resolve`
+                // passes it deliberately -- a `Certainty::Guess` prints and
+                // exits 0. Comparing for equality here made the window say
+                // `missing` about bindings the resolver resolves, which is
+                // one program answering a question two ways. Measured on
+                // airm3 2026-08-16: `Settings` and `DeepSeek` came back
+                // `MISSING` from this catalog while `check --resolve` exited
+                // 0 for both.
+                let loose: Vec<&String> = names
+                    .iter()
+                    .filter(|n| n.to_lowercase().contains(&want))
+                    .collect();
+                match loose.as_slice() {
+                    // No note: `missing` is the sentence, in one word, on the
+                    // row the user is already looking at. `flag_mark` keeps
+                    // the `Mark::Bad` the deleted note used to carry -- and it
+                    // is PUSHED rather than inserted-if-absent, so a paused
+                    // row is still `Bad` for an app that is not installed even
+                    // though the cell can only say `paused`.
+                    [] => conditions.push("missing"),
+                    // The two hazards `check --resolve` distinguishes, in its
+                    // own words. One candidate is a name a later install can
+                    // take; several means the winner is already decided by
+                    // sort order rather than by anything the user wrote.
+                    //
+                    // A note rather than a fifth status word: design 3.1 fixes
+                    // the vocabulary at four and lists that under *what must
+                    // never be cut*. The severity still reaches the row,
+                    // because `mark` folds the notes.
+                    [one] => notes.push(Note {
+                        mark: Mark::Warn,
+                        text: format!(
+                            "Matches \"{one}\" by substring, so an app installed \
+                             later can quietly take this name."
+                        ),
+                    }),
+                    many => notes.push(Note {
+                        mark: Mark::Warn,
+                        text: format!(
+                            "Matches {} installed apps by substring; \"{}\" wins \
+                             only because it sorts first.",
+                            many.len(),
+                            many[0]
+                        ),
+                    }),
+                }
             }
         }
     }
@@ -3736,6 +3776,101 @@ mod tests {
         assert!(
             cs.detail.unwrap().notes.is_empty(),
             "one word, no sentence repeating it"
+        );
+    }
+
+    /// The window must not call a binding broken that the resolver resolves.
+    ///
+    /// Every beckon resolver ends in a case-insensitive **substring** tier,
+    /// and `check --resolve` deliberately passes it: a `Certainty::Guess`
+    /// prints and exits 0, because two of the author's own bindings depend on
+    /// that tier (`Settings` matching *System Settings*, `DeepSeek` matching
+    /// *DeepSeek - Into the Unknown*). Failing them "would turn a correct file
+    /// red, which is how a check stops being run".
+    ///
+    /// `row_condition` compared for EQUALITY, so the window said `missing`
+    /// about exactly those bindings -- two halves of one program answering
+    /// differently about one row. Measured on airm3 2026-08-16 with
+    /// `examples/catalog_probe.rs` against the machine's real config:
+    /// `Finder present`, `Settings MISSING`, `DeepSeek MISSING`, while
+    /// `beckon check --resolve` exited 0 for both.
+    ///
+    /// This is the same defect `b4153ba` fixed for `Finder`, which widened the
+    /// catalog and left the comparison alone -- so it fixed the one name whose
+    /// problem was absence and none of the ones whose problem was the tier.
+    #[test]
+    fn an_app_that_resolves_by_substring_is_not_missing() {
+        let mut m = model();
+        m.set_app(0, "Settings");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec!["System Settings".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &st);
+        assert_ne!(
+            cs.items[0].flag.as_deref(),
+            Some("missing"),
+            "`Settings` resolves against *System Settings* by substring, which \
+             is the tier `check --resolve` passes"
+        );
+
+        // Control: the tier is what saves it, not a blanket amnesty. A name
+        // that is a substring of nothing is still missing.
+        let mut m = model();
+        m.set_app(0, "Nonexistent App");
+        let cs = control_state(&m, &st);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+    }
+
+    /// Resolving loosely is not the same as resolving, and the row says which.
+    ///
+    /// `check --resolve` prints these under *"These shortcuts resolve, but
+    /// only loosely"* and names the hazard: a substring match means an app
+    /// installed later can quietly take the name. The window has no fifth
+    /// status word to spend on that -- design 3.1 fixes the vocabulary at four
+    /// -- so it says it the way every other non-word condition is said, in the
+    /// editor's notes, and carries the severity on the row.
+    ///
+    /// Silent would be wrong in the direction that costs the user something:
+    /// `Settings` resolving today against *System Settings* and tomorrow
+    /// against a newly installed *Settings Sync* is exactly the failure the
+    /// hazard describes, and the row is the only place it can be seen before
+    /// it happens.
+    #[test]
+    fn a_substring_match_says_so_rather_than_passing_as_exact() {
+        let st = RuntimeStatus {
+            catalog: Some(vec!["System Settings".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+
+        let mut m = model();
+        m.set_app(0, "Settings");
+        m.selected = Some(0);
+        let cs = control_state(&m, &st);
+        assert_eq!(
+            cs.items[0].mark,
+            Mark::Warn,
+            "loose is not clean; the row carries the severity the cell has no \
+             word for"
+        );
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes.iter().any(|n| n.text.contains("System Settings")),
+            "the note names what it actually matched, so the reader can see \
+             whether it is the app they meant: {notes:?}"
+        );
+
+        // Control: an exact match stays silent. A healthy row says nothing,
+        // and this note must not appear on every row in the file.
+        let mut m = model();
+        m.set_app(0, "Terminal");
+        m.selected = Some(0);
+        let cs = control_state(&m, &st);
+        assert_eq!(cs.items[0].mark, Mark::Ok);
+        assert!(
+            cs.detail.unwrap().notes.is_empty(),
+            "an exact match is not a hazard"
         );
     }
 
