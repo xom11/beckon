@@ -2632,6 +2632,36 @@ Reasonable next-session order:
   Re-run both, in that order, on a machine with kanata stopped, and put the
   result back in the table. Do not restore the "yes" from the old output.
 
+  **And a SECOND defect fell out of trying to measure the first, 2026-08-17:
+  `caps_tap = "capslock"` did nothing on macOS.** The arm was
+  `inject_plain(K_CAPSLOCK)`, i.e. `CGEventPost` of `kVK_CapsLock` — and that
+  does not move the lock on this platform. Measured with
+  `hs.hid.capslock.get()` as an INDEPENDENT reader (IOKit, sharing nothing
+  with the event path or with `CGEventSourceKeyState`):
+
+  ```text
+  control: set(false)->false, set(true)->true      the lock moves, the reader sees it
+  post to kCGSessionEventTap  (what beckon did)    before=false  after=false
+  post to kCGHIDEventTap      (the only other)     before=false  after=false
+  IOHIDSetModifierLockState                        0 -> 1, KERN_SUCCESS
+  ```
+
+  `AXIsProcessTrusted` was 1 for both posts, so this is not the silent no-op
+  an untrusted `CGEventPost` gives, and the posts came from a standalone C
+  probe byte-identical to `inject_plain` so nothing else of beckon's could
+  explain it. **The Windows entry above — *"an injected `VK_CAPITAL` flips the
+  toggle, so `caps_tap = "capslock"` is implementable"* — is true, and true
+  only there.** The macOS port inherited the shape without re-measuring it, so
+  a user ticking the box lost the key and got nothing back.
+
+  `toggle_caps_lock()` uses `IOHIDSetModifierLockState` now, verified through
+  the real function by `examples/capslock_probe.rs`: `false -> true -> false`,
+  with the second toggle asserted because a stuck reader also returns two
+  equal reads. **Still unverified: the gesture end to end.** The tap's Caps
+  arm fires on `kCGEventFlagsChanged` and an injected `kVK_CapsLock` is an
+  ordinary `keyDown`, so no synthetic event reaches it — a physical Caps tap
+  with `serve` running is the only way, and it needs a person.
+
   **Caps arriving as `flagsChanged` is the one structural difference from
   Windows** and it is why `beckon_core::caps` is not shared: that state
   machine is written against `KeyEvent { vk, edge }` with a down and an up,

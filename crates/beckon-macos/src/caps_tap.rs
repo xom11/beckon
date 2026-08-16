@@ -19,11 +19,19 @@
 //!   `CGEventTimestamp` is nanoseconds of mach absolute time — a unit
 //!   mismatch that would not fail to compile.
 //! - **Nothing in the event says whether Caps went down or came up.** Both
-//!   transitions arrive with identical flags (`0x20000000`,
-//!   `alphaShift` clear), because suppression stops the lock from moving and
-//!   the flag reports the lock. `CGEventSourceKeyState` does not help
-//!   either: for an ordinary key it tracks the press, for a LOCK key it
-//!   reports the lock, which is frozen for the same reason.
+//!   transitions arrive with identical flags (`0x20000000`, `alphaShift`
+//!   clear). That is the observation, and it is all parity needs.
+//!
+//!   **CORRECTED 2026-08-17: the explanation that used to follow it was
+//!   unmeasured.** It read *"because suppression stops the lock from moving
+//!   and the flag reports the lock"* — which is the "suppression stops the
+//!   lock" claim CLAUDE.md now marks WITHDRAWN, restated as a cause, so the
+//!   effect appeared to prove it. It also said `CGEventSourceKeyState`
+//!   reports the LOCK for a lock key; `caps_probe`'s withdrawal measured the
+//!   opposite (it answers *is that KEY down*, and Caps is momentary, which is
+//!   why its old verdict could not fail). Neither sentence is restored here
+//!   as fact. What replaces them is the observation above, which stands on
+//!   its own.
 //!
 //! So the edge is **parity**: transitions alternate, the first is a press.
 //! That is what every remapper at this layer does, and it has exactly one
@@ -103,7 +111,26 @@ unsafe extern "C" {
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOHIDCheckAccess(request: u32) -> u32;
+
+    // The lock is set through IOKit, not through an event. See
+    // `toggle_caps_lock` for the measurement that forced this.
+    fn IOServiceMatching(name: *const i8) -> *mut c_void;
+    fn IOServiceGetMatchingService(main_port: u32, matching: *mut c_void) -> u32;
+    fn IOServiceOpen(service: u32, owner: u32, typ: u32, connect: *mut u32) -> i32;
+    fn IOServiceClose(connect: u32) -> i32;
+    fn IOObjectRelease(object: u32) -> i32;
+    fn IOHIDGetModifierLockState(handle: u32, selector: i32, state: *mut bool) -> i32;
+    fn IOHIDSetModifierLockState(handle: u32, selector: i32, state: bool) -> i32;
+    static mach_task_self_: u32;
 }
+
+/// `kIOHIDCapsLockState`, from `IOKit/hidsystem/IOHIDParameter.h`.
+const IOHID_CAPS_LOCK_STATE: i32 = 0x0000_0001;
+/// `kIOHIDParamConnectType`, from `IOKit/hidsystem/IOHIDShared.h`.
+const IOHID_PARAM_CONNECT_TYPE: u32 = 1;
+/// `kIOHIDSystemClass`. A `c""` literal so the NUL is the compiler's
+/// business rather than a byte someone can drop.
+const IOHID_SYSTEM_CLASS: &std::ffi::CStr = c"IOHIDSystem";
 
 /// `kCGSessionEventTap`. Not `kCGHIDEventTap`: both deliver here, and the
 /// session tap is the layer an ordinary application is meant to use.
@@ -696,12 +723,16 @@ extern "C" fn on_event(
             // A press with nothing in it: the tap gesture.
             match cfg.tap {
                 TapAction::CapsLock => {
-                    // Give the key back. The lock did not move while it was
-                    // swallowed, so this is the only way it ever toggles —
-                    // which is what makes `capslock` the honest default: a
-                    // person who ticks the box does not silently lose a key.
+                    // Give the key back — through IOKit, NOT by posting
+                    // `kVK_CapsLock`. Measured: the post is ignored at both
+                    // tap levels, so this arm used to do nothing at all. See
+                    // `toggle_caps_lock`.
+                    //
+                    // What makes `capslock` the honest default is unchanged:
+                    // a person who ticks the box does not silently lose a
+                    // key. It just now actually happens.
                     drop(cfg);
-                    inject_plain(K_CAPSLOCK);
+                    toggle_caps_lock();
                 }
                 TapAction::Escape => {
                     drop(cfg);
@@ -749,6 +780,80 @@ fn post(code: u16, down: bool, flags: u64) {
         CGEventPost(SESSION_TAP, ev);
         CFRelease(ev as *const c_void);
     }
+}
+
+/// Flip the caps lock, through IOKit rather than by posting the key.
+///
+/// **`CGEventPost` of `kVK_CapsLock` does not move the lock on macOS, at
+/// either tap.** Measured on airm3 2026-08-17 with `hs.hid.capslock.get()` as
+/// an INDEPENDENT reader — IOKit, so it shares nothing with the event path or
+/// with `CGEventSourceKeyState`, which this file and CLAUDE.md have
+/// disagreed about:
+///
+/// ```text
+/// control: set(false) -> false, set(true) -> true   the lock moves and the reader sees it
+/// post to kCGSessionEventTap (what this file did)   before=false  after=false
+/// post to kCGHIDEventTap    (the only other level)  before=false  after=false
+/// IOHIDSetModifierLockState                         before=0 -> after=1, KERN_SUCCESS
+/// ```
+///
+/// `AXIsProcessTrusted` was 1 for both posts, so this is not the silent
+/// no-op an untrusted `CGEventPost` gives. The two posts are byte-identical
+/// to what `inject_plain` builds, run from a separate C probe so the result
+/// could not depend on anything else beckon does.
+///
+/// So `TapAction::CapsLock` used to be a **dead option**: the user ticked
+/// "Caps Lock", beckon swallowed the key, injected a replacement the system
+/// ignored, and the lock never toggled. The Windows entry in CLAUDE.md says
+/// an injected `VK_CAPITAL` flips the toggle — measured, and true there. The
+/// macOS port inherited the shape without re-measuring it.
+///
+/// Failure is silent by design: this is the tap gesture, already inside a
+/// swallowed event, and there is nowhere to report to. A lock that does not
+/// move is exactly what the user got before.
+fn toggle_caps_lock() {
+    unsafe {
+        let matching = IOServiceMatching(IOHID_SYSTEM_CLASS.as_ptr());
+        if matching.is_null() {
+            return;
+        }
+        // `IOServiceGetMatchingService` consumes the matching dictionary, so
+        // there is nothing to release on this line even when it answers 0.
+        let service = IOServiceGetMatchingService(0, matching);
+        if service == 0 {
+            return;
+        }
+        let mut conn: u32 = 0;
+        let kr = IOServiceOpen(
+            service,
+            mach_task_self_,
+            IOHID_PARAM_CONNECT_TYPE,
+            &mut conn,
+        );
+        IOObjectRelease(service);
+        if kr != 0 || conn == 0 {
+            return;
+        }
+        let mut cur = false;
+        if IOHIDGetModifierLockState(conn, IOHID_CAPS_LOCK_STATE, &mut cur) == 0 {
+            IOHIDSetModifierLockState(conn, IOHID_CAPS_LOCK_STATE, !cur);
+        }
+        IOServiceClose(conn);
+    }
+}
+
+/// `toggle_caps_lock`, reachable from a probe.
+///
+/// The same idiom as `HotkeyManager::run_carbon_event_loop_for_probe`: the
+/// function it wraps is on a path only a PHYSICAL Caps press reaches, because
+/// the tap's Caps arm fires on `kCGEventFlagsChanged` and an injected
+/// `kVK_CapsLock` is an ordinary `keyDown`. So the gesture cannot be driven
+/// synthetically and the FFI underneath it would otherwise ship unrun —
+/// which is the half most likely to be wrong.
+///
+/// `examples/capslock_probe.rs` calls this and reads the lock back.
+pub fn toggle_caps_lock_for_probe() {
+    toggle_caps_lock();
 }
 
 /// One key, no modifiers — the tap gesture's replacement.
