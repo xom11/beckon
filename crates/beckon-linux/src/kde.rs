@@ -211,24 +211,29 @@ impl KdeBackend {
 
         self.run_script(READ_PLUGIN, &read_script(&self.sink_name))?;
 
-        let json = self.rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| {
+        let json: Result<String> = self.rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| {
             BackendError::Ipc(format!(
                 "KWin script did not call back within {:?}. The script engine accepted the \
                  script but nothing reached {SINK_IFACE} — check KWin's stderr, where a \
                  script's own errors are printed.",
                 REPLY_TIMEOUT
             ))
-        })?;
+        });
 
-        // Unload the read script now that it has answered; `run_script` only
-        // clears it on the error paths so that a slow script still has its
-        // chance to fire.
+        // Unload the read script now that it has had its say; `run_script`
+        // only clears it on the error paths so that a slow script still has
+        // its chance to fire. This runs whether or not the reply arrived, and
+        // the `?` deliberately comes after it: it used to sit on the line
+        // above, so a timed-out read returned early and left
+        // `beckon-read-<pid>.js` in `$XDG_RUNTIME_DIR` for the rest of the
+        // session — and the wait itself is what proves the script has had its
+        // chance, so there is nothing left to race.
         if let Ok(proxy) = Self::proxy(&self.conn) {
             let _ = proxy.call::<_, _, bool>("unloadScript", &(READ_PLUGIN,));
         }
         let _ = std::fs::remove_file(script_path(READ_PLUGIN));
 
-        serde_json::from_str(&json)
+        serde_json::from_str(&json?)
             .map_err(|e| BackendError::Ipc(format!("bad window JSON from KWin script: {e}")))
     }
 
