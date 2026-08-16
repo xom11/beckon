@@ -1914,16 +1914,31 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // `command_bar_shown` decides whether the buttons are there to make room
     // for -- the same predicate that hides them, so the two cannot disagree
     // about which doors have a gap on the left.
-    let service_right = if command_bar_shown(ui.page) {
-        cx + clamp(cw - bw_apply - gap - bw_close - gap * 2)
+    // **The left end is only free where the buttons are gone.** §6.4 puts the
+    // service line hard left because in its world auto-save has deleted all
+    // three buttons; here they still exist on the two doors that save, and
+    // `Open config file` sits exactly where §6.4 expects the line. Placing it
+    // at `cx` regardless drew it UNDER that button on Shortcuts and Keyboard,
+    // which is invisible rather than wrong-looking -- found in a photograph,
+    // because nothing in the layout overlaps in a way a test could see.
+    //
+    // So the line starts past `Open config file` where that button is drawn,
+    // and at the card column's own left edge where it is not. Both ends come
+    // from `command_bar_shown`, the same predicate that shows the buttons, so
+    // the gap and the thing filling it cannot disagree.
+    let (service_left, service_right) = if command_bar_shown(ui.page) {
+        (
+            cx + bw_open + gap * 2,
+            cx + clamp(cw - bw_apply - gap - bw_close - gap * 2),
+        )
     } else {
-        cx + cw
+        (cx + gap, cx + cw)
     };
     place(
         IDC_SERVICE_LINE,
-        cx + gap,
+        service_left,
         bar_y,
-        clamp(service_right - cx - gap),
+        clamp(service_right - service_left),
         ctl,
     );
     place(IDC_APPLY, cx + clamp(cw - bw_apply), bar_y, bw_apply, ctl);
