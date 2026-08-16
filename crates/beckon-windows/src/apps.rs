@@ -308,13 +308,33 @@ fn walk_lnk_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: u8) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if is_dir_entry(&entry, &path) {
             walk_lnk_paths(&path, out, depth + 1);
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) == Some("lnk") {
             out.push(path);
         }
+    }
+}
+
+/// Is this directory entry something to descend into?
+///
+/// `DirEntry::file_type` is free on Windows — the type comes back inside the
+/// `WIN32_FIND_DATAW` the enumeration already produced — while
+/// `Path::is_dir` is a fresh `stat` per entry, and the Start Menu walk is on
+/// the hot path (`resolve_start_menu_by_name`) as well as in the full scan.
+///
+/// **The `is_symlink` arm is not belt-and-braces.** A reparse point reports
+/// the LINK, not its target: a junction comes back `is_symlink() == true` and
+/// `is_dir() == false`, and Start Menu trees do contain them. Reading the
+/// cheap answer there would silently stop descending into a subtree that
+/// `Path::is_dir` has always followed — so the one `stat` is still paid,
+/// for exactly the entries that need it.
+fn is_dir_entry(entry: &std::fs::DirEntry, path: &Path) -> bool {
+    match entry.file_type() {
+        Ok(ft) if !ft.is_symlink() => ft.is_dir(),
+        _ => path.is_dir(),
     }
 }
 
@@ -951,6 +971,48 @@ mod tests {
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
             .collect();
         assert_eq!(names, vec!["shallow.lnk"]);
+    }
+
+    /// The walk reads `DirEntry::file_type()` because it is free, and a
+    /// reparse point is the one entry that answer is wrong about: a junction
+    /// reports the LINK (`is_symlink() == true`, `is_dir() == false`), so
+    /// `is_dir_entry`'s fallback pays a `stat` for it and follows it, exactly
+    /// as `Path::is_dir` alone always did.
+    ///
+    /// **`mklink /J`, not `symlink_dir`.** A junction needs no privilege,
+    /// while a directory SYMLINK needs `SeCreateSymbolicLink` — so this
+    /// exercises the arm on an ordinary account rather than skipping itself
+    /// there, and it is the reparse point Start Menu trees actually contain.
+    #[test]
+    fn walk_lnk_paths_follows_a_junction() {
+        let dir =
+            std::env::temp_dir().join(format!("beckon-lnk-junction-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("behind-junction.lnk"), b"").unwrap();
+
+        let link = dir.join("link");
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .status()
+            .expect("cmd is on every Windows");
+        assert!(status.success(), "mklink /J needs no privilege; it failed");
+
+        let mut out = Vec::new();
+        walk_lnk_paths(&dir, &mut out, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        // Once through `real`, once through the junction — the point is that
+        // the junction contributed at all.
+        assert_eq!(
+            out.iter()
+                .filter(|p| p.file_name().and_then(|n| n.to_str()) == Some("behind-junction.lnk"))
+                .count(),
+            2
+        );
     }
 
     // ---------- certainty ----------

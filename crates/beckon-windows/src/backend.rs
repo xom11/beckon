@@ -5,6 +5,7 @@ use crate::window_ops::{self, WindowInfo};
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use std::collections::{HashMap, HashSet};
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
@@ -78,10 +79,8 @@ impl Backend for WindowsBackend {
         }
 
         // Step 5a: focused, multiple windows -> cycle to next.
-        if matching.len() > 1 {
-            let current_idx = matching.iter().position(|w| w.hwnd == fg_hwnd).unwrap_or(0);
-            let next_idx = (current_idx + 1) % matching.len();
-            window_ops::focus_window(matching[next_idx].hwnd)
+        if let Some(next) = next_in_cycle(&matching, fg_hwnd) {
+            window_ops::focus_window(next)
                 .map_err(|e| BackendError::Other(format!("cycle: {}", e)))?;
             return Ok(BeckonAction::Cycled);
         }
@@ -160,6 +159,46 @@ impl Backend for WindowsBackend {
             })
             .collect())
     }
+}
+
+/// Step 5a's ring: the next window of the same app, ordered by `HWND`.
+///
+/// **Deliberately not by z-order, which is the order `matching` arrives in.**
+/// `enum_visible_windows` returns front-to-back z-order, and focusing a
+/// window puts it in front — so a ring built from that list reshuffles under
+/// the user between every press: the window just left drops to second, and
+/// the next press goes straight back to it. That is a 2-cycle, and with three
+/// or more windows open, windows 3..N are unreachable no matter how often the
+/// key is pressed. `beckon-linux` shipped the same defect, measured it live
+/// (three `foot` windows on sway, seven presses) and answered it in
+/// `algorithm::decide` by rotating over the compositor's own window ids
+/// instead of over recency; see CLAUDE.md "Step 5a cycles over a ring ordered
+/// by address, not by recency". The `HWND` is this platform's version of that
+/// address — the window manager mints it once and it does not move for the
+/// window's lifetime — so a lap visits every window exactly once.
+///
+/// **Stability is the whole requirement; creation order is not.** The Linux
+/// entry can say its addresses are ordered by creation, and an `HWND` is not:
+/// it comes out of a handle table that reuses slots, so the ring's starting
+/// point is arbitrary. That costs nothing here — `beckon <id>` is a one-shot
+/// process, so what the ring needs is an order that is the same on the NEXT
+/// keypress as on this one, which z-order is precisely not.
+///
+/// `None` means "do not cycle", and the caller falls through to step 5b/5c: a
+/// lone window has nothing to cycle to, and cycling it to itself would make
+/// toggle-back and minimize unreachable.
+///
+/// `focused` is in `matching` whenever this is reached — the caller only gets
+/// here after `fg_is_target` — so the lookup failing is not a state beckon
+/// can produce; falling through is the honest answer if it ever becomes one.
+fn next_in_cycle(matching: &[&WindowInfo], focused: HWND) -> Option<HWND> {
+    if matching.len() < 2 {
+        return None;
+    }
+    let mut ring: Vec<HWND> = matching.iter().map(|w| w.hwnd).collect();
+    ring.sort_by_key(|h| h.0 as usize);
+    let pos = ring.iter().position(|h| h.0 == focused.0)?;
+    Some(ring[(pos + 1) % ring.len()])
 }
 
 /// Find running windows matching a resolved installed app.
@@ -433,7 +472,60 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use windows::Win32::Foundation::HWND;
+
+    /// An `HWND` is an opaque handle Win32 packs into a pointer slot and
+    /// never dereferences, so `without_provenance_mut` is both the honest
+    /// spelling and the one clippy accepts: `manual_dangling_ptr` rewrites a
+    /// small literal cast into the type's ALIGNMENT, which would silently
+    /// collapse two of these fixtures onto one handle.
+    fn hwnd(value: usize) -> HWND {
+        HWND(std::ptr::without_provenance_mut(value))
+    }
+
+    /// One window of a plain classic app. Only `hwnd` matters to the ring.
+    fn win(handle: usize) -> WindowInfo {
+        WindowInfo {
+            hwnd: hwnd(handle),
+            pid: 1,
+            title: "Untitled - Notepad".to_string(),
+            class_name: "Notepad".to_string(),
+            exe_path: String::new(),
+            exe_name: "notepad.exe".to_string(),
+            aumid: None,
+        }
+    }
+
+    #[test]
+    fn the_cycle_ring_laps_every_window_instead_of_flipping_between_two() {
+        // Three windows of one app, handed to the ring in the order
+        // `enum_visible_windows` would return them: z-order, front first.
+        // Focusing raises, so that order is rewritten between every press —
+        // which is what made a z-ordered ring a 2-cycle with the third
+        // window unreachable. The re-sort below is that rewrite.
+        let windows = [win(0x30), win(0x10), win(0x20)];
+        let mut zorder: Vec<&WindowInfo> = windows.iter().collect();
+        let mut focused = zorder[0].hwnd;
+
+        let mut visited = Vec::new();
+        for _ in 0..4 {
+            let next = next_in_cycle(&zorder, focused).expect("three windows have a next");
+            visited.push(next.0 as usize);
+            focused = next;
+            zorder.sort_by_key(|w| w.hwnd.0 != focused.0);
+        }
+
+        // A full lap, then round again — not 0x10, 0x30, 0x10, 0x30.
+        assert_eq!(visited, vec![0x10, 0x20, 0x30, 0x10]);
+    }
+
+    #[test]
+    fn a_lone_window_does_not_cycle_to_itself() {
+        // Step 5b (toggle to another app) and 5c (minimize) both live past
+        // this `None`; a ring of one would make them unreachable.
+        let windows = [win(0x40)];
+        let only: Vec<&WindowInfo> = windows.iter().collect();
+        assert!(next_in_cycle(&only, only[0].hwnd).is_none());
+    }
 
     #[test]
     fn packaged_window_matches_aumid_without_exe_or_title_match() {

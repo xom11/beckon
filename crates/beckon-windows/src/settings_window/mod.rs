@@ -3219,6 +3219,12 @@ thread_local! {
     /// is created `WS_VISIBLE`, so it can be asked to paint before the first
     /// push ever runs -- and a `WM_DRAWITEM` that draws nothing leaves
     /// whatever was last in that rect.
+    ///
+    /// It is also the state `WM_DESTROY` restores, and that is not tidiness:
+    /// this is a thread_local, the tray opens and closes this window on one
+    /// thread all day, and `show_service` skips the write when the mirror
+    /// already agrees. Left holding the last window's line, it would skip the
+    /// FIRST write of the next one.
     static SHOWN_SERVICE: RefCell<Option<ServiceLine>> = const { RefCell::new(None) };
 }
 
@@ -8901,6 +8907,19 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 CB.with(|c| *c.borrow_mut() = None);
                 CFG.with(|c| *c.borrow_mut() = None);
+                // The service line's mirror outlives the control it mirrors,
+                // and `show_service` is the one push in this window that
+                // RETURNS EARLY when nothing changed. So a second open --
+                // the tray can open and close this window all day -- began
+                // with a freshly created, empty `IDC_SERVICE_LINE` and a
+                // mirror still holding the line the LAST window ended on: if
+                // the two agreed, `set_text` never ran. Nothing looked wrong,
+                // because `WM_DRAWITEM` paints from the mirror; but the
+                // control's own window text stayed empty, which is what a
+                // screen reader and `examples/settings_probe.rs`'s `dump`
+                // both read. `SHOWN_NOTES` needs no such line -- `show_notes`
+                // writes unconditionally.
+                SHOWN_SERVICE.with(|c| *c.borrow_mut() = None);
                 LRESULT(0)
             }
             _ => DefWindowProcW(hwnd, msg, wp, lp),
