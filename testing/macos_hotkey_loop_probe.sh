@@ -21,6 +21,8 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/examples/hotkey_loop_probe"
+KEYBIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/examples/hid_key"
+[ -x "$KEYBIN" ] || { echo "not built: $KEYBIN" >&2; exit 2; }
 [ -x "$BIN" ] || { echo "not built: $BIN" >&2; echo "run: cargo build -p beckon-macos --example hotkey_loop_probe" >&2; exit 2; }
 
 one_mode() {
@@ -50,16 +52,34 @@ OSA
         /usr/bin/pkill -x hotkey_loop_probe 2>/dev/null; return 4
     fi
 
-    # kVK_ANSI_F = 3. `key code`, never `keystroke`: `keystroke "f"` asks the
-    # OS to produce whatever character the current layout puts on that key,
-    # which on a non-US layout is a different key entirely -- and the hotkey
-    # was registered against a keycode.
-    osascript >/dev/null 2>&1 <<'OSA'
-tell application "System Events"
-    key code 3 using {control down, option down, shift down}
+    # kVK_ANSI_F = 3, pressed through the window server by `hid_key`.
+    #
+    # **Not `System Events`.** That route needs Automation permission, and on
+    # this machine it does not fail -- it HANGS, waiting on a consent dialog
+    # nobody may be in front of. `CGEventPost` needs Accessibility instead,
+    # and the injector must therefore run from a process that has BOTH a
+    # window-server session and that grant, which is why it is launched
+    # through Terminal rather than from the caller's own shell.
+    KEYOUT="${TMPDIR:-/tmp}/beckon-hotkey-inject-$MODE.txt"
+    rm -f "$KEYOUT"
+    osascript >/dev/null 2>&1 <<OSA
+tell application "Terminal"
+    do script "'$KEYBIN' 3 ctrl opt shift > '$KEYOUT' 2>&1; exit"
 end tell
 OSA
-    echo "injected: ctrl+alt+shift+f (key code 3)"
+    j=0
+    while [ $j -lt 20 ]; do
+        grep -q "POSTED\|REFUSING" "$KEYOUT" 2>/dev/null && break
+        j=$((j + 1)); /bin/sleep 0.25
+    done
+    # The injector's own trust line, echoed here. Without it a silent probe
+    # reads as a dead loop when it may only mean nothing was ever typed.
+    sed 's/^/    inject: /' "$KEYOUT" 2>/dev/null || echo "    inject: (no output)"
+    if ! grep -q POSTED "$KEYOUT" 2>/dev/null; then
+        echo "    the keystroke was never sent -- this run measures nothing"
+        /usr/bin/pkill -x hotkey_loop_probe 2>/dev/null
+        return 5
+    fi
 
     i=0
     while [ $i -lt 24 ]; do

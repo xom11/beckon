@@ -282,12 +282,18 @@ impl HotkeyManager {
     /// queue and the path a hotkey press travels after the window server has
     /// decided the press belongs to this app is intact.
     ///
-    /// **Indirect, and labelled so rather than rounded up.** It does not
-    /// exercise the window server's own half, so a failure living there would
-    /// survive it; the direct test is a person pressing the chord, and
-    /// `examples/hotkey_loop_probe.rs` is waiting for one. What it replaces
-    /// is not a keypress but an argument, which is the weaker thing it was
-    /// standing in for.
+    /// **And directly, the same day**, once an Accessibility grant made a
+    /// synthetic keystroke possible: `examples/hotkey_loop_probe.rs` driven
+    /// by `examples/hid_key.rs`, a real chord posted through the window
+    /// server, again with the Carbon loop as the baseline —
+    ///
+    /// ```text
+    /// carbon : HOTKEY FIRED
+    /// nsapp  : HOTKEY FIRED
+    /// ```
+    ///
+    /// The queue probe therefore stands as the explanation rather than as the
+    /// evidence, which is the better shape for it.
     ///
     /// `TransformProcessType` is untouched, so the window-server identity the
     /// hotkeys depend on has not moved either.

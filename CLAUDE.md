@@ -2211,13 +2211,28 @@ Reasonable next-session order:
   asks whether the handler ran. Both loops deliver, so `[NSApp run]` pumps
   the Carbon application event queue.
 
-  That is deliberately labelled INDIRECT: it does not exercise the window
-  server's half, so a failure living there would survive it. The direct test
-  is a person pressing the chord and `examples/hotkey_loop_probe.rs` is built
-  and waiting for one — it could not run unattended because injecting a
-  keystroke into the Aqua session needs a grant no process on this machine
-  has. What the queue probe replaces is not that keypress; it is the
-  *argument* that used to stand in for it.
+  **And directly.** Once Terminal.app was granted Accessibility,
+  `examples/hotkey_loop_probe.rs` driven by `examples/hid_key.rs` posted a
+  real chord through the window server, baseline first:
+  `carbon : HOTKEY FIRED` / `nsapp : HOTKEY FIRED`. The queue probe now
+  stands as the *explanation* rather than as the evidence.
+
+- **A synthetic chord needs the modifiers posted as REAL KEY EVENTS.**
+  `CGEventCreateKeyboardEvent(code)` + `CGEventSetFlags(ctrl|opt|shift)` is
+  the obvious spelling and it does **not** fire a `RegisterEventHotKey`
+  chord: measured 2026-08-16, it posted successfully — `AXIsProcessTrusted:
+  true`, no error anywhere — and nothing happened under EITHER loop. The
+  flags field *describes* an event; it does not hold a key down, and the
+  system tracks modifier state from `kVK_Control` &co. key events. The
+  working sequence is the one a hand makes: each modifier down carrying the
+  flags accumulated so far, then the key down and up, then the modifiers up
+  in reverse (`examples/hid_key.rs`).
+
+  **The baseline is what caught it.** A flags-only injection failing under
+  `nsapp` alone would have read as "the loop change broke hotkeys" and got
+  `run_forever` reverted for no reason; it failed under the Carbon loop too,
+  which is the one that demonstrably delivers hotkeys in production, and that
+  is what said the injector was wrong rather than the thing under test.
 
 - **`RegisterEventHotKey` does NOT report a chord another application holds,
   so macOS has no availability probe and that is a finding rather than a
