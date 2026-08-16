@@ -51,9 +51,9 @@ impl Backend for WindowsBackend {
 
         // Step 3: not running -> launch.
         if matching.is_empty() {
-            let m = resolved.ok_or_else(|| BackendError::LaunchFailed {
+            let m = resolved.ok_or_else(|| BackendError::NoMatch {
                 id: id.to_string(),
-                reason: format!(
+                hint: format!(
                     "no running window and no installed Windows app matches `{}`. \
                      Run `beckon installed` to list installed apps, or `beckon search {}` \
                      to search.",

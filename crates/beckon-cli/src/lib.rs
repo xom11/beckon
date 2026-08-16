@@ -362,15 +362,83 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     }
 }
 
+/// Walk a candidate chain and act on the first rung this machine can serve.
+///
+/// The predicate is **"first that ACTS"**, not "first that resolves", and the
+/// difference is not academic. `BackendError::NoMatch` is raised only after
+/// the backend has looked at BOTH the installed-app catalog and the live
+/// window list — on Linux the site sits inside the `Decision::Launch` arm —
+/// so a running ad-hoc app that ships no `.desktop` file still wins its rung.
+/// A ladder built on `certainty::Certainty` instead would grade that
+/// `NoMatch` and step straight past a window that is on screen.
+///
+/// Only `NoMatch` is stepped over. Any other error aborts the whole press:
+/// a broken IPC connection or a compositor refusal is not made better by
+/// trying the next name against the same broken connection, and swallowing
+/// it would turn one loud failure into several quiet ones.
+///
+/// Two properties fall out of putting this above the `Backend` trait, and
+/// both were checked in the backends rather than assumed:
+///
+///  - **A skipped rung leaves nothing half-done.** The MRU write happens
+///    after the match on Linux, only `if action.is_ok()` on macOS, and inside
+///    the not-running branch on Windows.
+///  - **A skipped rung fires no desktop notification.** The error reaches
+///    `cli_main`'s reporting path only once every rung has failed. On Windows
+///    that is the difference between the ~245 ms scan and the ~945 ms figure,
+///    of which ~700 ms is the toast itself.
+pub(crate) fn beckon_ladder(
+    backend: &dyn beckon_core::Backend,
+    id: &str,
+    verbose: bool,
+) -> Result<()> {
+    let candidates = beckon_core::candidates::split(id).map_err(|e| anyhow!("{e}"))?;
+    let chain = candidates.len() > 1;
+    let mut misses: Vec<String> = Vec::new();
+
+    for (i, cand) in candidates.iter().enumerate() {
+        match backend.beckon(cand) {
+            Ok(action) => {
+                // Single-id output stays byte-identical: the extra line is
+                // printed only for a chain, because
+                // `testing/linux_live_test.py` greps `-v` output for
+                // `action:` across eight live focus tests.
+                if verbose {
+                    if chain {
+                        eprintln!("candidate {}/{} `{cand}`", i + 1, candidates.len());
+                    }
+                    eprintln!("action: {action:?}");
+                }
+                return Ok(());
+            }
+            Err(beckon_core::BackendError::NoMatch { hint, .. }) if chain => {
+                if verbose {
+                    eprintln!(
+                        "candidate {}/{} `{cand}`: no match",
+                        i + 1,
+                        candidates.len()
+                    );
+                }
+                misses.push(format!("`{cand}`: {hint}"));
+            }
+            Err(e) => {
+                return Err(anyhow!(e)).with_context(|| format!("beckon failed for id `{cand}`"))
+            }
+        }
+    }
+
+    // Every rung missed. Name them all: reporting only the first would hide
+    // that the fallback was tried, and reporting only the last would name the
+    // candidate the user cares least about.
+    Err(anyhow!(
+        "no candidate of `{id}` matches anything on this machine:\n  {}",
+        misses.join("\n  ")
+    ))
+}
+
 fn cmd_beckon(id: &str, verbose: bool) -> Result<()> {
     let backend = pick_backend()?;
-    let action = backend
-        .beckon(id)
-        .with_context(|| format!("beckon failed for id `{id}`"))?;
-    if verbose {
-        eprintln!("action: {action:?}");
-    }
-    Ok(())
+    beckon_ladder(backend.as_ref(), id, verbose)
 }
 
 fn cmd_list() -> Result<()> {
@@ -418,17 +486,50 @@ fn check_resolution<'a>(
     // Distinct names, asked in one call: several hotkeys aiming at one app is
     // the normal shape of a shortcuts file, and every backend answers a batch
     // with a single catalog scan.
-    let mut names: Vec<&str> = shortcuts.iter().map(|s| s.app.as_str()).collect();
+    //
+    // A value may be a CANDIDATE CHAIN, so the batch is every candidate of
+    // every binding, not every value. A malformed chain is reported per
+    // binding below rather than aborting the batch: a check that refuses to
+    // grade eighteen good bindings because the nineteenth has a stray `||`
+    // is a check that stops being run.
+    let mut names: Vec<&str> = shortcuts
+        .iter()
+        .flat_map(|s| beckon_core::candidates::split(&s.app).unwrap_or_default())
+        .collect();
     names.sort_unstable();
     names.dedup();
     let reports = report(&names)?;
     let grade: std::collections::HashMap<&str, &NameReport> =
         reports.iter().map(|r| (r.id.as_str(), r)).collect();
 
+    // The candidate that will WIN at runtime, graded as the binding's grade.
+    //
+    // This mirrors `beckon_ladder` exactly: the ladder stops at the first
+    // candidate that is not a miss, so that is the one whose certainty the
+    // user will actually live with. Grading a chain by its FIRST candidate
+    // would call a working binding dead — which is the whole failure this
+    // feature exists to remove, reintroduced one layer up — and grading it by
+    // its BEST would hide a `Guess` that a later exact candidate never gets
+    // the chance to beat.
+    let winner = |s: &Shortcut| -> Option<&NameReport> {
+        let cands = beckon_core::candidates::split(&s.app).ok()?;
+        let mut last = None;
+        for c in cands {
+            let r = *grade.get(c)?;
+            if r.certainty != Certainty::NoMatch {
+                return Some(r);
+            }
+            last = Some(r);
+        }
+        // Every rung missed. Report the LAST one: it is the candidate the
+        // user added as the fallback, so it is the one whose absence is news.
+        last
+    };
+
     let pick = |want: Certainty| -> Vec<(&Shortcut, &NameReport)> {
         shortcuts
             .iter()
-            .filter_map(|s| grade.get(s.app.as_str()).map(|r| (s, *r)))
+            .filter_map(|s| winner(s).map(|r| (s, r)))
             .filter(|(_, r)| r.certainty == want)
             .collect()
     };
@@ -1037,5 +1138,72 @@ mod tests {
             format!("{err}").contains("1 of 2 shortcuts"),
             "the count must name only the dead ones: {err}"
         );
+    }
+
+    // ---- candidate chains ----
+
+    /// The failure this feature exists to remove, at the CHECK layer.
+    ///
+    /// Grading a chain by its first candidate would call a binding dead while
+    /// the hotkey works perfectly -- the same wrong answer, one layer up, on
+    /// exactly the bindings the chain was added to rescue.
+    #[test]
+    fn a_chain_is_graded_by_the_candidate_that_will_actually_win() {
+        let s = shortcuts("\"ctrl+alt+k\" = \"Google Keep || https://keep.google.com/\"\n");
+        let out = check_resolution(&s, |names| {
+            // Both candidates are asked for in one batch.
+            assert!(names.contains(&"Google Keep"), "{names:?}");
+            assert!(names.contains(&"https://keep.google.com/"), "{names:?}");
+            Ok(vec![
+                report("Google Keep", Certainty::NoMatch),
+                report("https://keep.google.com/", Certainty::Exact),
+            ])
+        });
+        assert!(out.is_ok(), "the fallback resolves, so the file is fine");
+    }
+
+    /// And a chain whose every rung misses is still dead.
+    #[test]
+    fn a_chain_with_no_surviving_candidate_still_fails() {
+        let s = shortcuts("\"ctrl+alt+k\" = \"Nope || Also nope\"\n");
+        let e = check_resolution(&s, |_| {
+            Ok(vec![
+                report("Nope", Certainty::NoMatch),
+                report("Also nope", Certainty::NoMatch),
+            ])
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("1 of 1"), "{e}");
+    }
+
+    /// A `Guess` that wins is reported as a Guess, not upgraded by a later
+    /// exact candidate the ladder will never reach. Grading by the BEST
+    /// candidate would hide the substring hazard `guess_report` exists to
+    /// name.
+    #[test]
+    fn a_winning_guess_is_not_upgraded_by_a_later_exact_candidate() {
+        let s = shortcuts("\"ctrl+alt+n\" = \"Notion || https://www.notion.so/\"\n");
+        let out = check_resolution(&s, |_| {
+            Ok(vec![
+                report("Notion", Certainty::Guess),
+                report("https://www.notion.so/", Certainty::Exact),
+            ])
+        });
+        // Still exit 0 -- a Guess resolves -- but it must have been graded on
+        // the Guess, which is what the printed block reports.
+        assert!(out.is_ok());
+    }
+
+    /// A plain id is unchanged in every respect, which is the case that
+    /// covers every binding the user already has.
+    #[test]
+    fn a_plain_id_is_graded_exactly_as_before() {
+        let s = shortcuts("\"ctrl+alt+t\" = \"Terminal\"\n");
+        let e = check_resolution(&s, |names| {
+            assert_eq!(names, ["Terminal"]);
+            Ok(vec![report("Terminal", Certainty::NoMatch)])
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("1 of 1"), "{e}");
     }
 }

@@ -113,9 +113,9 @@ impl MacBackend {
         };
 
         if running_for_target.is_empty() {
-            let m = resolved.ok_or_else(|| BackendError::LaunchFailed {
+            let m = resolved.ok_or_else(|| BackendError::NoMatch {
                 id: id.to_string(),
-                reason: format!(
+                hint: format!(
                     "no running app and no installed bundle matches `{id}`. \
                      Run `beckon installed` to list installed apps, or \
                      `beckon search {id}` to search."

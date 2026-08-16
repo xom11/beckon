@@ -768,8 +768,9 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
                     // carries a text face, not a symbol one, so a glyph it
                     // lacks draws as a box that reads like a rendering bug.
                     // This is the same reason `title_base` enforces ASCII.
-                    "value for `{raw_key}` is an array -- candidate lists are not supported, \
-                     write exactly one app name"
+                    "value for `{raw_key}` is an array -- write the alternatives \
+                     inside the string instead, separated by `||`: \
+                     \"Google Keep || https://keep.google.com/\""
                 ));
             }
             other => {
@@ -1017,10 +1018,34 @@ mod tests {
         );
     }
 
+    /// An array is still refused -- and the message now points at the shape
+    /// that DOES work, because the array is exactly what a user reaches for
+    /// when they want two names.
+    ///
+    /// Refusing rather than accepting is not conservatism: measured
+    /// 2026-08-16, an array value is a hard `nixos-rebuild` failure on the
+    /// author's laptop. `builtins.fromTOML` parses it, then
+    /// `"${data.${combo}}"` in all three of
+    /// `~/.nix/home-manager/environments/{sway,hyprland,gnome}/launch-app.nix`
+    /// throws `cannot coerce a list to a string` -- so the machine stops
+    /// building before beckon ever runs. A chain is a string, which those
+    /// generators interpolate verbatim with no edit at all.
     #[test]
-    fn parse_shortcuts_rejects_array_value() {
+    fn parse_shortcuts_rejects_array_value_and_names_the_chain_syntax() {
         let e = parse_shortcuts("\"ctrl+alt+a\" = [\"A\", \"B\"]\n").unwrap_err();
-        assert!(e.contains("candidate lists are not supported"), "{e}");
+        assert!(e.contains("is an array"), "{e}");
+        assert!(e.contains("||"), "must point at the syntax that works: {e}");
+    }
+
+    /// A chain is an ordinary string as far as the parser is concerned. It
+    /// does not split here, because splitting is the CLI's job -- see
+    /// `beckon_core::candidates` for why that boundary is where it is.
+    #[test]
+    fn a_candidate_chain_parses_as_one_value() {
+        let sc = parse_shortcuts("\"ctrl+alt+k\" = \"Google Keep || https://keep.google.com/\"\n")
+            .expect("chains are ordinary strings");
+        assert_eq!(sc.len(), 1);
+        assert_eq!(sc[0].app, "Google Keep || https://keep.google.com/");
     }
 
     #[test]

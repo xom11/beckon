@@ -503,7 +503,12 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id
             None => return,
         }
     };
-    if let Err(e) = backend.beckon(&app) {
+    // Through the ladder, not straight at the backend: a `serve` shortcut
+    // whose value is a chain must fall through to the next candidate exactly
+    // as a Linux compositor binding does. Same string, same rule, one
+    // implementation -- and `verbose: false` because `serve` reports through
+    // the log and the notification below, never to a terminal.
+    if let Err(e) = crate::beckon_ladder(backend.as_ref().as_ref(), &app, false) {
         let msg = format!("{app} ({canonical}): {e}");
         eprintln!("beckon serve: {msg}");
         // A key the owner just pressed. Told every time, including the fifth,

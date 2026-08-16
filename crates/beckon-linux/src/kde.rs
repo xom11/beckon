@@ -398,9 +398,9 @@ impl Backend for KdeBackend {
 
         let action = match decision {
             Decision::Launch => {
-                let entry = entry.ok_or_else(|| BackendError::LaunchFailed {
+                let entry = entry.ok_or_else(|| BackendError::NoMatch {
                     id: id.to_string(),
-                    reason: format!(
+                    hint: format!(
                         "no .desktop entry matches `{0}` and no running window has class=`{0}`. \
                          Run `beckon installed` to list installed apps, \
                          or `beckon search {0}` to search.",

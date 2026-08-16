@@ -295,9 +295,9 @@ impl Backend for HyprlandBackend {
 
         let action = match decision {
             Decision::Launch => {
-                let entry = entry.ok_or_else(|| BackendError::LaunchFailed {
+                let entry = entry.ok_or_else(|| BackendError::NoMatch {
                     id: id.to_string(),
-                    reason: format!(
+                    hint: format!(
                         "no .desktop entry matches `{}` and no running window has class `{}`. \
                          Run `beckon installed` to list installed apps, \
                          or `beckon search {}` to search.",

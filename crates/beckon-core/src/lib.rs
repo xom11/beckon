@@ -55,6 +55,25 @@ pub enum BackendError {
     #[error("failed to launch `{id}`: {reason}")]
     LaunchFailed { id: String, reason: String },
 
+    /// Nothing on THIS MACHINE answers to this id: no installed-app entry
+    /// matched it, and no running window carries it as a class either.
+    ///
+    /// Split out of [`LaunchFailed`] so a candidate chain can step over it.
+    /// The distinction the ladder needs is "this id does not exist here",
+    /// which is recoverable by trying the next candidate, against "the
+    /// compositor refused / IPC broke", which is not and must abort the whole
+    /// press rather than silently retrying against a broken connection.
+    ///
+    /// **Every backend already computed this predicate**; it was spelled as a
+    /// `LaunchFailed` because there was nothing else to do with it. Note where
+    /// the site sits on Linux: INSIDE the `Decision::Launch` arm, so it is
+    /// reached only when the window tree ALSO holds no window of that class.
+    /// That is what lets a running ad-hoc app with no `.desktop` file win its
+    /// rung -- a ladder built on `Certainty` instead would grade it `NoMatch`
+    /// and skip past a window that is right there on screen.
+    #[error("no app matches `{id}`{}", if .hint.is_empty() { String::new() } else { format!(": {}", .hint) })]
+    NoMatch { id: String, hint: String },
+
     #[error("{0}")]
     Other(String),
 }
@@ -70,6 +89,7 @@ pub trait Backend {
     fn beckon(&self, id: &str) -> Result<BeckonAction>;
 }
 
+pub mod candidates;
 pub mod caps;
 pub mod capture;
 pub mod certainty;
