@@ -1768,8 +1768,34 @@ User's nix integration (flake-input pattern, no hand-rolled overlay):
 
 - `~/.nix/flake.nix` — `inputs.beckon.url = "github:xom11/beckon"; inputs.beckon.inputs.nixpkgs.follows = "nixpkgs";`
 - `~/.nix/lib/mkConfigs.nix` — `mkArgs` does `args = inputs // { ... }`, which **spreads inputs flat at the top level of specialArgs**. So inside any host's `home.nix` the input is referenced directly as `beckon`, not `inputs.beckon`.
-- **Standalone HM hosts** (`mkHomeManager`, e.g. `rog`, `desktop`, `zenbook-a14`) — `pkgs` is constructed with `overlays = [ (import ../overlays) inputs.beckon.overlays.default ]`, so `pkgs.beckon` works without further wiring.
-- **nix-darwin / NixOS hosts** (`mkDarwin`, `mkNixos`, e.g. `airm3`, `macmini`) — overlay is **not** pre-baked. The host's `home.nix` adds it explicitly:
+- **CORRECTED 2026-08-16: `rog` is a NixOS host, not a standalone HM one, and
+  `zenbook-a14` is not a nix host at all.** The old list here said *"Standalone
+  HM hosts (`mkHomeManager`, e.g. `rog`, `desktop`, `zenbook-a14`)"* and two of
+  its three examples were wrong. Read out of `~/.nix/flake.nix` and confirmed
+  against `nix flake show`:
+
+  | builder | hosts | flake output |
+  |---|---|---|
+  | `lib.mkNixos` | `x1g6`, `vm`, **`rog`** | `nixosConfigurations` |
+  | `lib.mkDarwin` | `macmini`, `airm3` | `darwinConfigurations` |
+  | `lib.mkHomeManager` | `server`, `desktop`, `minimal` | `homeConfigurations` |
+
+  `zenbook-a14` appears nowhere — "a14" is the **Windows** laptop, and a
+  session reading this entry can spend a while looking for its nix host.
+
+  **The cost of the error is a command that cannot work.** `nix flake show`
+  lists no `homeConfigurations.rog`, so `home-manager switch --flake .#rog` —
+  the obvious thing to reach for after `nix flake update beckon` — fails on a
+  host where beckon is very much installed. `mkNixos` pulls home-manager in as
+  a NixOS module (`inputs.home-manager.nixosModules.home-manager`, then
+  `home-manager.users.${username}.imports = hmModules ++ [../hosts/<device>/home.nix]`),
+  so on `rog` the whole HM layer ships inside the system closure and
+  **`sudo nixos-rebuild switch --impure --flake ~/.nix#rog` is the one command
+  that applies it**. There is no separate HM step to run, and running one is
+  not merely redundant — it errors.
+
+- **Standalone HM hosts** (`mkHomeManager` — `server`, `desktop`, `minimal`) — `pkgs` is constructed with `overlays = [ (import ../overlays) inputs.beckon.overlays.default ]`, so `pkgs.beckon` works without further wiring.
+- **nix-darwin / NixOS hosts** (`mkDarwin`, `mkNixos` — `macmini`, `airm3`, `x1g6`, `vm`, `rog`) — overlay is **not** pre-baked. The host's `home.nix` adds it explicitly:
   ```nix
   {pkgs, beckon, ...}: {
     nixpkgs.overlays = [
@@ -1792,14 +1818,32 @@ To bump beckon to latest commit on `main`:
 ```sh
 cd ~/.nix
 nix flake update beckon
-# Linux / standalone HM:
+git commit --only flake.lock -m 'flake: bump beckon <old> -> <new>'
+
+# NixOS (rog, x1g6, vm) — home-manager rides inside the system closure,
+# so this ONE command is the whole deploy. There is no HM step to add.
+sudo nixos-rebuild switch --impure --flake ~/.nix#rog
+
+# standalone HM (server, desktop, minimal) — only these three
 home-manager switch --flake .#<host>
-# macOS / nix-darwin (airm3):
+
+# macOS / nix-darwin (macmini, airm3)
 sudo darwin-rebuild switch --flake .#airm3 --impure
 hs -c "hs.reload()"   # reload Hammerspoon to pick up spoon changes
 ```
 
-That's it — no manual rev / hash / Cargo.lock copy. flake.lock records the pinned rev for reproducibility across machines.
+**Use `git commit --only flake.lock`, not `git add` + `git commit`.** Measured
+2026-08-16: several Claude sessions share `~/.nix`, and `git commit` takes the
+whole INDEX, not the file just added — a peer staged three files between the
+`git status` read and the commit, and 110 lines of their work landed inside a
+commit whose message was about bumping this pin. `--only` ignores the index
+entirely, so a race cannot widen the commit; verify with `git show --stat HEAD`
+rather than trusting the commit summary.
+
+The bump itself is all there is to it — no manual rev / hash / Cargo.lock copy.
+flake.lock records the pinned rev for reproducibility across machines, and
+since 2026-08-16 `beckon --version` prints that rev's short sha, so a machine
+can be asked directly instead of by reading the lock file that built it.
 
 ## Picking up next session
 
