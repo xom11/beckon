@@ -1,47 +1,57 @@
 //! Can a `CGEventTap` record a chord the way `WH_KEYBOARD_LL` does?
 //!
 //! ```text
-//! cargo run -p beckon-macos --example capture_probe            # swallow (what capture needs)
-//! cargo run -p beckon-macos --example capture_probe -- pass    # control: same tap, nothing suppressed
+//! cargo run -p beckon-macos --example capture_probe             # observe only, safe
+//! cargo run -p beckon-macos --example capture_probe -- swallow  # suppress -- read the warnings
 //! ```
 //!
-//! **Run it in kitty on airm3**, or anywhere with Input Monitoring. It prints
-//! `IOHIDCheckAccess` first, because a tap without that grant is created
-//! successfully and then receives nothing, silently.
+//! Every line also goes to `~/beckon-test/capture_probe.log`, and that is not
+//! a convenience: **the first run of this probe took the terminal down with
+//! it and every measurement was lost.** stdout is not a safe place to keep a
+//! result produced by a program that suppresses keystrokes.
 //!
-//! ## Why this exists before any UI code
+//! ## Input Monitoring is per-BINARY here, and that is the trap
 //!
-//! Windows' chord capture was written after `caps_probe` measured that the
-//! hook sees `Win+T` and friends, with a control proving the detector worked.
-//! The same four questions have to be asked here, and two of them have macOS
-//! answers that cannot be guessed from the Windows side:
+//! Accessibility is inherited from the responsible process -- `beckon doctor`
+//! run inside kitty reports the grant kitty holds. **`kTCCServiceListenEvent`
+//! is not.** Read on airm3 2026-08-16, `beckon` had its own row while this
+//! probe had none, so the tap was created successfully and received nothing.
+//! Every key went through, `Cmd+Q` closed the terminal, and the run looked
+//! exactly like "macOS refuses to suppress `Cmd+Q`" while measuring nothing
+//! at all.
+//!
+//! So this probe **refuses to run without the grant** rather than producing
+//! that result, and calls `IOHIDRequestAccess` so the dialog appears at all
+//! -- `IOHIDCheckAccess` only asks, it never prompts, which is why the grant
+//! could never arrive on its own.
+//!
+//! ## The four questions
 //!
 //! 1. **Do ordinary keys arrive as `keyDown`/`keyUp` with a keycode
 //!    `shortcuts::key_table()` knows?** If yes, `capture::step` is reusable
-//!    through a projection: `KeyDef` already carries BOTH `mac: u16` and
-//!    `win: u32`, so a Carbon keycode maps to the Win32 vk `step` expects.
-//!    If no, capture needs a `step_mac` and the whole state machine forks.
+//!    through a projection: `KeyDef` carries BOTH `mac: u16` and `win: u32`,
+//!    so a Carbon keycode maps to the Win32 vk `step` expects. If no, capture
+//!    needs a `step_mac` and the state machine forks.
 //!
-//! 2. **Does `flagsChanged` say which EDGE a modifier just took?** This is
-//!    the one that has no Windows counterpart and no safe assumption. Caps
-//!    does not: `caps_tap` tracks parity because suppression freezes the lock
-//!    the flag reports. Ctrl/Cmd/Option/Shift are not locks, so their bit
-//!    should follow the physical key -- **should**. `capture::step` takes a
-//!    `KeyEvent { edge }` and a live `Mods`, and both come from here.
+//! 2. **Does `flagsChanged` say which EDGE a modifier just took?** No Windows
+//!    counterpart and no safe assumption. Caps does not -- `caps_tap` tracks
+//!    parity because suppression freezes the lock the flag reports.
+//!    Ctrl/Cmd/Option/Shift are not locks, so their bit *should* follow the
+//!    physical key. `step` needs an `Edge` and a live `Mods`; both come from
+//!    here.
 //!
 //! 3. **Are the system chords visible, and can they be swallowed?**
-//!    `Cmd+Space`, `Cmd+Tab`, `Ctrl+Up`, `Cmd+Q` are this platform's
-//!    `Win+T` -- the chords a person would plausibly try to bind, and the
-//!    ones the shell consumes first.
+//!    `Cmd+Space`, `Cmd+Tab`, `Ctrl+Up` are this platform's `Win+T`.
 //!
 //! 4. **Is there a chord seen but NOT suppressible?** On Windows that is
-//!    `Win+L`: the hook sees it, returning 1 does not stop the lock, so
-//!    `capture::is_reserved` block-lists it rather than pretending. macOS
-//!    needs its own list and this is how to find out what goes on it.
+//!    `Win+L`, which is why `capture::is_reserved` is a block-list rather
+//!    than blindness. `Ctrl+Cmd+Q` (lock screen) is the macOS candidate.
 //!
-//! Question 4 is the only one a machine cannot answer alone -- "did the
-//! system act?" is a thing a person watches. The probe says SEEN and
-//! SWALLOWED; you say ACTED.
+//! **`Cmd+Q` is deliberately NOT in the list.** It quits the front app, the
+//! front app is the terminal this runs in, and a probe that tells you to
+//! close the window it lives in cannot report what happened next. Test it
+//! last, from a different app, once the rest is known -- the log file
+//! survives that.
 
 fn main() {
     #[cfg(not(target_os = "macos"))]
@@ -58,10 +68,21 @@ mod mac {
     use std::ffi::c_void;
     use std::io::Write;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
+    static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
+    /// Print AND append to the log file. The log is the copy that survives
+    /// the terminal being closed by the thing under test.
     fn say(l: &str) {
         println!("{l}");
         let _ = std::io::stdout().flush();
+        if let Ok(mut g) = LOG.lock() {
+            if let Some(f) = g.as_mut() {
+                let _ = writeln!(f, "{l}");
+                let _ = f.flush();
+            }
+        }
     }
 
     type TapCallback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
@@ -90,12 +111,18 @@ mod mac {
         fn CFRunLoopGetCurrent() -> *mut c_void;
         fn CFRunLoopAddSource(rl: *mut c_void, source: *mut c_void, mode: *const c_void);
         fn CFRunLoopRunInMode(mode: *const c_void, seconds: f64, return_after_source: bool) -> i32;
+        fn CFRunLoopStop(rl: *mut c_void);
         static kCFRunLoopCommonModes: *const c_void;
         static kCFRunLoopDefaultMode: *const c_void;
     }
     #[link(name = "IOKit", kind = "framework")]
     unsafe extern "C" {
         fn IOHIDCheckAccess(request: u32) -> u32;
+        /// The only call that raises the dialog. `IOHIDCheckAccess` asks and
+        /// never prompts, so a binary with no TCC row can never acquire one
+        /// through it -- which is exactly how the first run of this probe
+        /// measured nothing while looking like it measured something.
+        fn IOHIDRequestAccess(request: u32) -> bool;
     }
     const REQUEST_LISTEN: u32 = 1;
 
@@ -109,16 +136,14 @@ mod mac {
     const TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
     const KEYBOARD_EVENT_KEYCODE: u32 = 9;
 
-    // `CGEventFlags`. Only the four capture can record -- Caps is
-    // `caps_tap`'s subject and deliberately not this probe's.
     const FLAG_SHIFT: u64 = 0x0002_0000;
     const FLAG_CONTROL: u64 = 0x0004_0000;
     const FLAG_ALTERNATE: u64 = 0x0008_0000;
     const FLAG_COMMAND: u64 = 0x0010_0000;
 
-    // Carbon keycodes for the modifier keys, which `key_table()` does NOT
-    // carry -- it is a table of bindable keys, and a bare modifier is not
-    // one. Left/right pairs, because `flagsChanged` reports the physical key.
+    const KC_C: u16 = 0x08;
+    const KC_ESCAPE: u16 = 0x35;
+
     fn modifier_name(code: u16) -> Option<(&'static str, u64)> {
         Some(match code {
             0x38 => ("shift", FLAG_SHIFT),
@@ -134,8 +159,7 @@ mod mac {
         })
     }
 
-    /// Question 1, answered per event: is this keycode one `capture::step`
-    /// could be handed through the existing `KeyDef` projection?
+    /// Question 1, answered per event.
     fn projected(code: u16) -> Option<(&'static str, u32)> {
         beckon_core::shortcuts::key_table()
             .iter()
@@ -143,13 +167,12 @@ mod mac {
             .map(|k| (k.name.as_str(), k.win))
     }
 
-    static SWALLOW: AtomicBool = AtomicBool::new(true);
+    static SWALLOW: AtomicBool = AtomicBool::new(false);
     static SEEN_DOWN: AtomicUsize = AtomicUsize::new(0);
     static SEEN_UP: AtomicUsize = AtomicUsize::new(0);
-    static SEEN_FLAGS: AtomicUsize = AtomicUsize::new(0);
     static UNPROJECTED: AtomicUsize = AtomicUsize::new(0);
     static EDGE_READABLE: AtomicUsize = AtomicUsize::new(0);
-    static EDGE_UNREADABLE: AtomicUsize = AtomicUsize::new(0);
+    static EDGE_FROZEN: AtomicUsize = AtomicUsize::new(0);
 
     fn mods_of(flags: u64) -> String {
         let mut s = String::new();
@@ -178,25 +201,29 @@ mod mac {
         event: *mut c_void,
         _user: *mut c_void,
     ) -> *mut c_void {
-        // A tap that is disabled must be re-enabled by hand or it stays dead
-        // and the rest of the run is a silent false negative. `caps_tap`
-        // handles the same two types and calls `resync` after.
         if etype == TAP_DISABLED_BY_TIMEOUT || etype == TAP_DISABLED_BY_USER {
-            say(&format!(
-                "  !! TAP DISABLED ({}) -- re-enabling; everything after this \
-                 is still measured, everything during the gap was missed",
-                if etype == TAP_DISABLED_BY_TIMEOUT {
-                    "timeout"
-                } else {
-                    "user"
-                }
-            ));
+            say("  !! TAP DISABLED -- everything during the gap was missed");
             return event;
         }
 
         let code = unsafe { CGEventGetIntegerValueField(event, KEYBOARD_EVENT_KEYCODE) } as u16;
         let flags = unsafe { CGEventGetFlags(event) };
-        let swallow = SWALLOW.load(Ordering::Relaxed);
+
+        // **Two escape hatches, always passed through, never suppressed.**
+        // The first run of this probe swallowed everything for 30 seconds
+        // with no way out, so the only exit was Force Quit -- which also
+        // destroyed the output. A probe that can trap you is a probe whose
+        // results you cannot collect.
+        let ctrl_c = etype == KEY_DOWN && code == KC_C && flags & FLAG_CONTROL != 0;
+        let escape = etype == KEY_DOWN && code == KC_ESCAPE;
+        if ctrl_c || escape {
+            say(&format!(
+                "  EXIT   {}  -- passed through, stopping",
+                if ctrl_c { "ctrl+c " } else { "escape " }
+            ));
+            unsafe { CFRunLoopStop(CFRunLoopGetCurrent()) };
+            return event;
+        }
 
         match etype {
             KEY_DOWN | KEY_UP => {
@@ -208,52 +235,41 @@ mod mac {
                 let edge = if etype == KEY_DOWN { "down" } else { "up  " };
                 match projected(code) {
                     Some((name, win)) => say(&format!(
-                        "  key   {edge}  keycode 0x{code:02X}  mods {:<18} -> key_table \"{name}\" (win vk 0x{win:02X})",
+                        "  key   {edge}  0x{code:02X}  mods {:<16} -> key_table \"{name}\" (win vk 0x{win:02X})",
                         mods_of(flags)
                     )),
                     None => {
                         UNPROJECTED.fetch_add(1, Ordering::Relaxed);
                         say(&format!(
-                            "  key   {edge}  keycode 0x{code:02X}  mods {:<18} -> NOT IN key_table",
+                            "  key   {edge}  0x{code:02X}  mods {:<16} -> NOT IN key_table",
                             mods_of(flags)
                         ));
                     }
                 }
             }
-            FLAGS_CHANGED => {
-                SEEN_FLAGS.fetch_add(1, Ordering::Relaxed);
-                match modifier_name(code) {
-                    Some((name, bit)) if bit != 0 => {
-                        // **Question 2.** The bit for THIS key in the flags
-                        // this event carries: set means the key just went
-                        // down, clear means it just came up -- if the flags
-                        // track the physical key at all.
-                        let down = flags & bit != 0;
-                        EDGE_READABLE.fetch_add(1, Ordering::Relaxed);
-                        say(&format!(
-                            "  mod   {:<4}  keycode 0x{code:02X}  mods {:<18} -> edge readable: {}",
-                            name,
-                            mods_of(flags),
-                            if down { "DOWN" } else { "UP" }
-                        ));
-                    }
-                    Some((name, _)) => {
-                        EDGE_UNREADABLE.fetch_add(1, Ordering::Relaxed);
-                        say(&format!(
-                            "  mod   {name:<4}  keycode 0x{code:02X}  mods {:<18} -> no bit of its own (this is Caps; caps_tap uses parity)",
-                            mods_of(flags)
-                        ));
-                    }
-                    None => say(&format!(
-                        "  mod   ????  keycode 0x{code:02X}  mods {:<18} -> unknown modifier keycode",
+            FLAGS_CHANGED => match modifier_name(code) {
+                Some((name, bit)) if bit != 0 => {
+                    let down = flags & bit != 0;
+                    EDGE_READABLE.fetch_add(1, Ordering::Relaxed);
+                    say(&format!(
+                        "  mod   {name:<9} 0x{code:02X}  mods {:<16} -> edge {}",
+                        mods_of(flags),
+                        if down { "DOWN" } else { "UP" }
+                    ));
+                }
+                Some((name, _)) => {
+                    EDGE_FROZEN.fetch_add(1, Ordering::Relaxed);
+                    say(&format!(
+                        "  mod   {name:<9} 0x{code:02X}  mods {:<16} -> no bit (Caps; caps_tap uses parity)",
                         mods_of(flags)
-                    )),
+                    ));
                 }
-            }
+                None => say(&format!("  mod   ????      0x{code:02X}")),
+            },
             _ => {}
         }
 
-        if swallow {
+        if SWALLOW.load(Ordering::Relaxed) {
             std::ptr::null_mut()
         } else {
             event
@@ -261,44 +277,94 @@ mod mac {
     }
 
     pub fn run() {
-        let pass = std::env::args().any(|a| a == "pass");
-        SWALLOW.store(!pass, Ordering::Relaxed);
+        if let Some(home) = std::env::var_os("HOME") {
+            let p = std::path::Path::new(&home)
+                .join("beckon-test")
+                .join("capture_probe.log");
+            let _ = std::fs::create_dir_all(p.parent().unwrap());
+            if let Ok(f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&p)
+            {
+                *LOG.lock().unwrap() = Some(f);
+            }
+            say(&format!("=== capture_probe === (log: {})", p.display()));
+        } else {
+            say("=== capture_probe === (no HOME; log disabled)");
+        }
 
-        say("=== capture_probe ===");
+        let swallow = std::env::args().any(|a| a == "swallow");
+        SWALLOW.store(swallow, Ordering::Relaxed);
+
+        // **Refuse rather than measure nothing.** Without this row in TCC the
+        // tap is created and receives no events, which is indistinguishable
+        // from "the system let everything through" -- and that is exactly how
+        // the first run produced a confident wrong answer about `Cmd+Q`.
+        let access = unsafe { IOHIDCheckAccess(REQUEST_LISTEN) };
         say(&format!(
-            "mode              : {}",
-            if pass {
-                "PASS (control -- nothing suppressed; the system should act normally)"
-            } else {
-                "SWALLOW (what capture needs -- the system should NOT act)"
-            }
-        ));
-        say(&format!(
-            "Input Monitoring  : {}",
-            match unsafe { IOHIDCheckAccess(REQUEST_LISTEN) } {
+            "Input Monitoring : {}",
+            match access {
                 0 => "granted",
-                1 => "DENIED  <- the tap will receive nothing, silently",
-                _ => "unknown (never asked)",
+                1 => "DENIED",
+                _ => "never asked",
+            }
+        ));
+        if access != 0 {
+            say("");
+            say("STOPPING. This binary has no Input Monitoring grant of its own.");
+            say("");
+            say("Accessibility is inherited from the terminal; **this is not**.");
+            say("kitty holding the grant does nothing for a child binary -- TCC");
+            say("keeps a row per binary path, and this one has none. A tap");
+            say("without it is created successfully and then receives nothing,");
+            say("silently, which reads exactly like `the system ignored us`.");
+            say("");
+            say("Raising the dialog now (IOHIDCheckAccess only asks; it never");
+            say("prompts, which is why the grant could not arrive on its own):");
+            let asked = unsafe { IOHIDRequestAccess(REQUEST_LISTEN) };
+            say(&format!("  IOHIDRequestAccess returned {asked}"));
+            say("");
+            say("If no dialog appeared, add it by hand:");
+            say("  System Settings > Privacy & Security > Input Monitoring > +");
+            say("  then Cmd+Shift+G and paste:");
+            say("  ~/beckon-test/capture_probe");
+            say("");
+            say("Then run this again. It will not measure until the row exists.");
+            std::process::exit(1);
+        }
+
+        say(&format!(
+            "mode             : {}",
+            if swallow {
+                "SWALLOW -- keys are suppressed; ctrl+c and escape still work"
+            } else {
+                "OBSERVE -- nothing is suppressed (safe; run with `swallow` after)"
             }
         ));
         say(&format!(
-            "key_table entries : {}",
+            "key_table        : {} entries",
             beckon_core::shortcuts::key_table().len()
         ));
         say("");
-        say("Press these, in this order, then wait. 30 seconds.");
-        say("  1. a            -- an ordinary key");
-        say("  2. F2           -- a function key");
+        say("Press these, then wait. 25 seconds, or escape to stop early.");
+        say("  1. a              -- an ordinary key");
+        say("  2. F2             -- a function key");
         say("  3. hold Ctrl, hold Cmd, hold Option, release all");
-        say("  4. Cmd+Space    -- Spotlight");
-        say("  5. Cmd+Tab      -- app switcher");
-        say("  6. Ctrl+Up      -- Mission Control");
-        say("  7. Cmd+Q        -- quit the front app");
-        say("  8. Ctrl+Cmd+Q   -- lock screen (the Win+L candidate)");
+        say("  4. Cmd+Space      -- Spotlight");
+        say("  5. Cmd+Tab        -- app switcher");
+        say("  6. Ctrl+Up        -- Mission Control");
+        say("");
+        say("NOT in the list, on purpose:");
+        say("  Cmd+Q      quits the front app, which is THIS terminal. The");
+        say("             first run of this probe told you to press it and");
+        say("             took the window down with the whole measurement.");
+        say("  Ctrl+Cmd+Q locks the screen -- the `Win+L` candidate. Worth");
+        say("             measuring, but do it last: the log file survives it");
+        say("             and the terminal may not.");
         say("");
         say("The probe says SEEN and SWALLOWED. Only you can say ACTED --");
-        say("watch whether Spotlight opens, whether the app switcher appears,");
-        say("and above all whether the screen locks on 8.");
+        say("whether Spotlight opened, whether the switcher appeared.");
         say("");
 
         let mask = (1u64 << KEY_DOWN) | (1u64 << KEY_UP) | (1u64 << FLAGS_CHANGED);
@@ -314,56 +380,49 @@ mod mac {
         };
         if tap.is_null() {
             say("TAP REFUSED: CGEventTapCreate returned NULL.");
-            say("Without Input Monitoring this is what you get -- grant it and re-run.");
             std::process::exit(1);
         }
         unsafe {
             let src = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, kCFRunLoopCommonModes);
             CGEventTapEnable(tap, true);
-            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 30.0, false);
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 25.0, false);
             CGEventTapEnable(tap, false);
         }
 
         let down = SEEN_DOWN.load(Ordering::Relaxed);
         let up = SEEN_UP.load(Ordering::Relaxed);
-        let fl = SEEN_FLAGS.load(Ordering::Relaxed);
         let unproj = UNPROJECTED.load(Ordering::Relaxed);
         let readable = EDGE_READABLE.load(Ordering::Relaxed);
-        let unreadable = EDGE_UNREADABLE.load(Ordering::Relaxed);
 
         say("");
         say("=== what this run measured ===");
-        say(&format!("keyDown {down}   keyUp {up}   flagsChanged {fl}"));
-        say("");
+        say(&format!("keyDown {down}   keyUp {up}"));
         say(&format!(
-            "Q1  ordinary keys reach the tap with a key_table keycode : {}",
+            "Q1  ordinary keys carry a key_table keycode : {}",
             if down == 0 {
-                "NO EVENTS AT ALL -- the tap saw nothing; treat every other line as void"
+                "NO EVENTS -- the tap saw nothing; every other line is void"
             } else if unproj == 0 {
-                "yes, every one -- capture::step is reusable through KeyDef"
+                "yes, all of them -- capture::step is reusable through KeyDef"
             } else {
-                "PARTLY -- some keycodes are not in key_table; see NOT IN key_table above"
+                "partly -- see NOT IN key_table above"
             }
         ));
         say(&format!(
-            "Q2  a modifier's edge is readable from its own flag bit  : {}",
-            if readable == 0 && unreadable == 0 {
-                "no modifier events seen -- step 3 was not performed"
-            } else if readable > 0 {
-                "yes -- unlike Caps, these are not locks, so the bit follows the key"
+            "Q2  a modifier's edge is readable from flags : {}",
+            if readable == 0 {
+                "no modifier events -- step 3 was not performed"
             } else {
-                "NO -- capture needs parity tracking like caps_tap"
+                "yes -- unlike Caps, these are not locks"
             }
         ));
-        say("Q3  system chords seen / swallowed                       : read the lines above");
-        say("Q4  anything seen but NOT suppressible                   : YOU say -- did 8 lock the screen?");
+        say("Q3  system chords seen / swallowed          : read the lines above");
+        say("Q4  seen but NOT suppressible               : you say -- what acted?");
         say("");
-        if !pass {
-            say("Now run the control, or the result above means nothing:");
-            say("  cargo run -p beckon-macos --example capture_probe -- pass");
-            say("A tap that receives nothing and a tap that suppresses everything");
-            say("produce the same silence from the system.");
+        if !swallow {
+            say("Now the other half. A tap that receives nothing and a tap that");
+            say("suppresses everything look identical from outside:");
+            say("  ~/beckon-test/capture_probe swallow");
         }
     }
 }
