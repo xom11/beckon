@@ -41,6 +41,12 @@ const IFACE: &str = "org.gnome.Shell.Extensions.Beckon";
 /// `Vec<(window_id, class, title, focused, monitor)>`.
 type WindowRow = (u64, String, String, bool, u32);
 
+/// Wire shape of `ListWindows2`: the same, plus the `WM_CLASS` instance
+/// half after the class. See `algorithm::WindowSnapshot::instance` for why
+/// beckon wants it and `extension.js` for why it is a second method rather
+/// than a wider signature on the first.
+type WindowRow2 = (u64, String, String, String, bool, u32);
+
 pub struct GnomeBackend {
     conn: Connection,
 }
@@ -75,11 +81,36 @@ impl GnomeBackend {
             .map_err(|e| BackendError::Ipc(format!("D-Bus proxy: {e}")))
     }
 
-    fn list_windows(&self) -> Result<Vec<WindowRow>> {
+    /// Ask for the richer list first, fall back to the original.
+    ///
+    /// The fallback is not defensive programming, it is the normal state for
+    /// a real window of time: the extension only reaches a running
+    /// gnome-shell after the user logs out and back in (Wayland cannot
+    /// reload the shell live -- CLAUDE.md says so under "Installing /
+    /// updating the extension"), so a freshly-switched machine runs a NEW
+    /// beckon against an OLD extension until the next login. Without this
+    /// arm every keypress in that window would fail with UnknownMethod and
+    /// beckon would have no window list at all.
+    ///
+    /// The fallback is taken on ANY error, not on a parsed
+    /// `org.freedesktop.DBus.Error.UnknownMethod`: zbus surfaces that as a
+    /// `MethodError` whose name is behind an accessor that has changed
+    /// shape between versions, and a mis-parsed error name here would
+    /// silently disable the fallback for the one case it exists to serve.
+    /// The cost of being wrong is one extra round trip on a genuinely
+    /// broken bus, which is a call that was going to fail anyway.
+    fn list_windows(&self) -> Result<Vec<WindowRow2>> {
         let proxy = Self::proxy(&self.conn)?;
-        proxy
-            .call::<_, _, Vec<WindowRow>>("ListWindows", &())
-            .map_err(|e| BackendError::Ipc(format!("ListWindows: {e}")))
+        if let Ok(rows) = proxy.call::<_, _, Vec<WindowRow2>>("ListWindows2", &()) {
+            return Ok(rows);
+        }
+        let rows: Vec<WindowRow> = proxy
+            .call("ListWindows", &())
+            .map_err(|e| BackendError::Ipc(format!("ListWindows: {e}")))?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, cls, title, focused, mon)| (id, cls, String::new(), title, focused, mon))
+            .collect())
     }
 
     fn activate(&self, window_id: u64) -> Result<()> {
@@ -124,11 +155,12 @@ fn launch_exec(exec: &str) -> Result<()> {
     Ok(())
 }
 
-fn snapshots_from(rows: &[WindowRow]) -> Vec<WindowSnapshot> {
+fn snapshots_from(rows: &[WindowRow2]) -> Vec<WindowSnapshot> {
     rows.iter()
         .enumerate()
-        .map(|(idx, (id, class, _title, _focused, _mon))| {
+        .map(|(idx, (id, class, instance, _title, _focused, _mon))| {
             WindowSnapshot::new(id.to_string(), class, idx as i32)
+                .with_instance(Some(instance.as_str()))
         })
         .collect()
 }
@@ -150,13 +182,13 @@ impl Backend for GnomeBackend {
 
         let active_addr = rows
             .iter()
-            .find(|(_, _, _, focused, _)| *focused)
-            .map(|(wid, _, _, _, _)| wid.to_string());
+            .find(|(_, _, _, _, focused, _)| *focused)
+            .map(|(wid, _, _, _, _, _)| wid.to_string());
 
         let pre_focused_class = rows
             .iter()
-            .find(|(_, _, _, focused, _)| *focused)
-            .map(|(_, cls, _, _, _)| cls.clone());
+            .find(|(_, _, _, _, focused, _)| *focused)
+            .map(|(_, cls, _, _, _, _)| cls.clone());
 
         let previous_app = crate::state::read_previous();
 
@@ -220,7 +252,7 @@ impl Backend for GnomeBackend {
     fn list_running(&self) -> Result<Vec<RunningApp>> {
         let rows = self.list_windows()?;
         let mut by_class: std::collections::BTreeMap<String, (String, usize)> = Default::default();
-        for (_id, class, title, _focused, _mon) in rows {
+        for (_id, class, _inst, title, _focused, _mon) in rows {
             let entry = by_class.entry(class).or_insert_with(|| (title.clone(), 0));
             entry.1 += 1;
         }
@@ -252,8 +284,46 @@ impl Backend for GnomeBackend {
 mod tests {
     use super::*;
 
-    fn row(id: u64, class: &str, focused: bool) -> WindowRow {
-        (id, class.to_string(), String::new(), focused, 0)
+    fn row(id: u64, class: &str, focused: bool) -> WindowRow2 {
+        (
+            id,
+            class.to_string(),
+            String::new(),
+            String::new(),
+            focused,
+            0,
+        )
+    }
+
+    /// A window whose class is the browser's and whose INSTANCE names the
+    /// app -- the Brave-PWA shape measured on rog 2026-08-16, arriving
+    /// through `ListWindows2`.
+    fn pwa_row(id: u64, instance: &str) -> WindowRow2 {
+        (
+            id,
+            "Brave-browser".to_string(),
+            instance.to_string(),
+            String::new(),
+            false,
+            0,
+        )
+    }
+
+    #[test]
+    fn the_instance_half_survives_the_projection() {
+        let snaps = snapshots_from(&[pwa_row(10, "crx_claude")]);
+        assert_eq!(snaps[0].class, "Brave-browser");
+        assert_eq!(snaps[0].instance.as_deref(), Some("crx_claude"));
+    }
+
+    /// An old extension answers only `ListWindows`, and the client pads the
+    /// missing column with an empty string. That must arrive as `None`, not
+    /// as `Some("")` -- an empty candidate would be compared against the
+    /// target set on every window.
+    #[test]
+    fn a_row_from_the_old_method_carries_no_instance() {
+        let snaps = snapshots_from(&[row(10, "kitty", true)]);
+        assert_eq!(snaps[0].instance, None);
     }
 
     #[test]

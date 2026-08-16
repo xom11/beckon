@@ -30,6 +30,17 @@ const IFACE_XML = `
     <method name="ListWindows">
       <arg type="a(tssbu)" direction="out" name="windows"/>
     </method>
+    <!-- ListWindows plus the WM_CLASS INSTANCE half. A NEW method rather
+         than a wider signature on the old one: this file only reaches a
+         running shell after the user logs out and back in, so for the whole
+         window between `home-manager switch` and that relogin, a new beckon
+         is talking to an OLD extension. Widening ListWindows would make
+         every call fail there -- no window list at all, on every keypress.
+         The client tries this one and falls back, so the pair degrades to
+         exactly today's behaviour instead. -->
+    <method name="ListWindows2">
+      <arg type="a(tsssbu)" direction="out" name="windows"/>
+    </method>
     <method name="GetFocusedWindow">
       <arg type="t" direction="out" name="window_id"/>
     </method>
@@ -106,6 +117,37 @@ export default class BeckonExtension extends Extension {
             if (w.get_stable_sequence() === target) return w;
         }
         return null;
+    }
+
+    // The instance half of WM_CLASS. Deliberately NOT part of the
+    // `_windowClass` ladder above: that ladder falls back to GTK / Flatpak
+    // ids, which are not WM_CLASS at all, and folding them in here would
+    // report a second copy of the same string as if it were independent
+    // evidence. A Wayland-native window has no WM_CLASS and so honestly has
+    // no instance -- '' is the right answer, and the Rust side maps it to
+    // None.
+    _windowInstance(win) {
+        if (typeof win.get_wm_class_instance !== 'function') return '';
+        return win.get_wm_class_instance() || '';
+    }
+
+    ListWindows2() {
+        const out = [];
+        const windows = this._orderedWindows();
+        for (const w of windows) {
+            if (w.is_skip_taskbar()) continue;
+            const cls = this._windowClass(w);
+            if (!cls) continue;
+            out.push([
+                w.get_stable_sequence(),
+                cls,
+                this._windowInstance(w),
+                w.get_title() || '',
+                w.has_focus(),
+                w.get_monitor(),
+            ]);
+        }
+        return out;
     }
 
     ListWindows() {

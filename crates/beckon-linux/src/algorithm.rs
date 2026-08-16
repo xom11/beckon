@@ -34,16 +34,67 @@ use std::cmp::Ordering;
 pub struct WindowSnapshot {
     pub address: String,
     pub class: String,
+    /// The **other** half of X11's `WM_CLASS`, when the backend can see it.
+    ///
+    /// `WM_CLASS` is a PAIR — `(instance, class)`, sometimes called
+    /// `(res_name, res_class)` — and `class` above is only the second. For
+    /// almost every app the pair is a boring `("kitty", "kitty")` and this
+    /// field earns nothing. It exists for the one shape where the halves
+    /// carry different information, which is a browser-installed web app:
+    ///
+    /// ```text
+    /// Brave PWA under XWayland:  ("crx_agimnkijcaahngcdmfeangaknmldooml",
+    ///                             "Brave-browser")
+    /// the browser itself:        ("brave-browser", "Brave-browser")
+    /// ```
+    ///
+    /// Measured on rog 2026-08-16 with `xprop -id <win> WM_CLASS`. Every PWA
+    /// window reports the SAME class as the browser, so `class` alone cannot
+    /// tell one PWA from another or from a plain browser window — beckon saw
+    /// no running window and launched a duplicate on every keypress. The
+    /// instance half is byte-identical to the `StartupWMClass=` the app's
+    /// `.desktop` already declares, i.e. a string `desktop::target_classes`
+    /// has been putting in the candidate set all along and then comparing
+    /// against the wrong half.
+    ///
+    /// `None` means "this backend cannot see it", never "it is empty" — the
+    /// distinction matters because `None` must degrade to exactly today's
+    /// behaviour. Hyprland is permanently `None`: its `j/clients` exposes 32
+    /// fields and not one carries the instance (dumped 2026-08-16), and
+    /// `stableId` is not the X window id (`1800001b` against `0x60001c`), so
+    /// there is no key to join on either.
+    pub instance: Option<String>,
     pub recency: i32,
 }
 
 impl WindowSnapshot {
+    /// Deliberately still three arguments, with `instance` defaulting to
+    /// `None`. Widening this to four would touch every construction site
+    /// including twenty test fixtures, and rewriting a pin is how a pin
+    /// stops pinning what it was written for. A backend that forgets
+    /// [`with_instance`](Self::with_instance) therefore degrades to the
+    /// behaviour it had before this field existed, which is the safest
+    /// failure available.
     pub fn new(address: impl Into<String>, class: impl Into<String>, recency: i32) -> Self {
         Self {
             address: address.into(),
             class: class.into(),
+            instance: None,
             recency,
         }
+    }
+
+    /// Attach the `WM_CLASS` instance half. Empty strings are stored as
+    /// `None` so that a backend which reports `""` for "no instance" cannot
+    /// widen matching by accident — `Target::matches` already rejects the
+    /// empty string, but making it unrepresentable here is cheaper than
+    /// relying on that at every call site.
+    pub fn with_instance(mut self, instance: Option<impl Into<String>>) -> Self {
+        self.instance = instance
+            .map(Into::into)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        self
     }
 }
 
@@ -116,6 +167,23 @@ impl Target {
         !lowered.is_empty() && self.candidates.contains(&lowered)
     }
 
+    /// Does this WINDOW name the target app, by either half of `WM_CLASS`?
+    ///
+    /// Prefer this over [`matches`](Self::matches) everywhere a whole
+    /// `WindowSnapshot` is in hand. It is a strict WIDENING of `matches`:
+    /// every window that matched before still matches, because the class
+    /// arm is tried first and unchanged. That property is what makes the
+    /// change safe to make in one commit — a narrowing could shrink a
+    /// step-5a cycle ring, strand a window parked by step 5c where only
+    /// beckon can retrieve it, or make step 5b toggle somewhere new.
+    ///
+    /// `matches(&str)` is kept, and is still correct for the one caller that
+    /// has a bare string rather than a window: the MRU file records a class
+    /// and nothing else.
+    pub fn matches_window(&self, w: &WindowSnapshot) -> bool {
+        self.matches(&w.class) || w.instance.as_deref().is_some_and(|inst| self.matches(inst))
+    }
+
     /// The candidate to name in user-facing messages.
     pub fn primary(&self) -> &str {
         &self.primary
@@ -151,17 +219,22 @@ pub fn decide(
     let target = target.into();
     let app_windows: Vec<&WindowSnapshot> = windows
         .iter()
-        .filter(|w| target.matches(&w.class))
+        .filter(|w| target.matches_window(w))
         .collect();
 
     if app_windows.is_empty() {
         return Decision::Launch;
     }
 
-    let focused_in_app = active
-        .and_then(|addr| windows.iter().find(|w| w.address == addr))
-        .map(|w| target.matches(&w.class))
-        .unwrap_or(false);
+    // Membership is decided ONCE, here, and every later step asks this set
+    // rather than re-running the predicate. Two of those steps used to ask
+    // `target.matches(&w.class)` directly, which was the same question while
+    // class was the only half; with the instance half it is a DIFFERENT
+    // question, and the two would silently disagree about a PWA window.
+    let app_addrs: std::collections::HashSet<&str> =
+        app_windows.iter().map(|w| w.address.as_str()).collect();
+
+    let focused_in_app = active.map(|addr| app_addrs.contains(addr)).unwrap_or(false);
 
     if !focused_in_app {
         // Step 4: pick the most-recent same-app window. Stable tie-break by
@@ -200,18 +273,29 @@ pub fn decide(
     // Step 5b: only one window of target. Honour the MRU "previous" first
     // (and only when it isn't `target`), otherwise pick the most-recent
     // window of any other app.
+    //
+    // Both filters exclude the target's OWN windows by address, and the MRU
+    // arm needs that exclusion as much as the fallback does. `previous_app`
+    // is a bare class string from the state file, so on a PWA the guard
+    // above passes honestly — `Brave-browser` really is not in a candidate
+    // set that holds `crx_<hash>` — and the lookup then finds the very
+    // window we are focused on and "toggles" to it. The user sees nothing
+    // happen, beckon reports `ToggledBack`, and step 5c becomes unreachable.
+    // Widening `matches` without this line ships that bug in the same commit
+    // that fixes the duplicate launch.
     let mru_choice = previous_app
         .filter(|app| !target.matches(app))
         .and_then(|app| {
             windows
                 .iter()
+                .filter(|w| !app_addrs.contains(w.address.as_str()))
                 .filter(|w| w.class.eq_ignore_ascii_case(app))
                 .min_by(cmp_recency_then_address)
         });
     let other = mru_choice.or_else(|| {
         windows
             .iter()
-            .filter(|w| !target.matches(&w.class))
+            .filter(|w| !app_addrs.contains(w.address.as_str()))
             .min_by(cmp_recency_then_address)
     });
     if let Some(win) = other {
@@ -534,6 +618,102 @@ mod tests {
         // address, matching the old i3ipc tree-order behaviour.
         assert_eq!(
             decide(&ws, Some("0010"), "claude", None),
+            Decision::ToggleBack("0020".to_string())
+        );
+    }
+
+    // ---- WM_CLASS instance half (browser-installed web apps) ----
+    //
+    // Fixture mirrors what was measured on rog 2026-08-16 under XWayland:
+    // every Brave window -- the browser and both PWAs -- reports the SAME
+    // class, and only the instance half tells them apart.
+    fn brave(addr: &str, instance: &str, recency: i32) -> WindowSnapshot {
+        WindowSnapshot::new(addr, "Brave-browser", recency).with_instance(Some(instance))
+    }
+
+    #[test]
+    fn a_pwa_is_found_by_its_wm_class_instance_when_the_class_is_the_browsers() {
+        let ws = vec![
+            brave("0010", "brave-browser", 0),
+            brave("0020", "crx_youtube", 1),
+        ];
+        // The target is what `desktop::target_classes` builds for the PWA:
+        // the .desktop stem plus StartupWMClass. Neither is "Brave-browser".
+        let t = Target::new(["brave-youtube-Default", "crx_youtube"]);
+        // Before this field existed the decision here was Launch, and the
+        // user got a second window on every keypress.
+        assert_eq!(
+            decide(&ws, Some("0010"), t, None),
+            Decision::Focus("0020".to_string())
+        );
+    }
+
+    #[test]
+    fn two_pwas_of_the_same_browser_do_not_match_each_other() {
+        let ws = vec![
+            brave("0010", "crx_youtube", 0),
+            brave("0020", "crx_claude", 1),
+        ];
+        let t = Target::new(["crx_claude"]);
+        // Not Cycle: only ONE window belongs to this app, so step 5a must
+        // not treat the sibling PWA as another window of the same app.
+        assert_eq!(
+            decide(&ws, Some("0020"), t, None),
+            Decision::ToggleBack("0010".to_string())
+        );
+    }
+
+    #[test]
+    fn matching_by_instance_never_narrows_what_class_already_matched() {
+        // A window whose class matches stays matched even when its instance
+        // matches nothing -- the arms are OR, and class is tried first.
+        let w = WindowSnapshot::new("0010", "kitty", 0).with_instance(Some("something-else"));
+        assert!(Target::new(["kitty"]).matches_window(&w));
+        // And a backend that cannot see the instance is unchanged.
+        assert!(Target::new(["kitty"]).matches_window(&WindowSnapshot::new("0010", "kitty", 0)));
+    }
+
+    #[test]
+    fn an_empty_instance_is_stored_as_none_and_widens_nothing() {
+        let w = WindowSnapshot::new("0010", "kitty", 0).with_instance(Some("   "));
+        assert_eq!(w.instance, None);
+        assert!(!Target::new(["brave"]).matches_window(&w));
+    }
+
+    /// The companion bug the widening would otherwise ship.
+    ///
+    /// `previous_app` is a bare class string from the MRU file, so for a PWA
+    /// it holds `Brave-browser` -- which is honestly NOT in a candidate set
+    /// holding `crx_claude`, so the "don't toggle to yourself" guard passes.
+    /// Without excluding the target's own windows by ADDRESS, the lookup
+    /// then finds the very window we are focused on: beckon reports
+    /// ToggledBack, nothing moves, and step 5c can never be reached.
+    #[test]
+    fn toggle_back_never_returns_a_window_of_the_target_app() {
+        let ws = vec![brave("0010", "crx_claude", 0)];
+        let t = Target::new(["crx_claude"]);
+        assert_eq!(
+            decide(&ws, Some("0010"), t, Some("Brave-browser")),
+            Decision::Hide("0010".to_string()),
+        );
+    }
+
+    #[test]
+    fn toggle_back_still_honours_a_genuine_mru_previous_app() {
+        let ws = vec![
+            brave("0010", "crx_claude", 0),
+            w("0020", "kitty", 2),
+            w("0030", "firefox", 1),
+        ];
+        // firefox is more recent, but the MRU file says kitty -- and kitty
+        // is a real other app, so it still wins.
+        assert_eq!(
+            decide(
+                &ws,
+                Some("0010"),
+                Target::new(["crx_claude"]),
+                Some("kitty")
+            ),
             Decision::ToggleBack("0020".to_string())
         );
     }

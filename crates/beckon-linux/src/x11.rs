@@ -118,6 +118,16 @@ struct X11Window {
     id: Window,
     /// `WM_CLASS[1]` (class). Empty if the window doesn't expose one.
     class: String,
+    /// `WM_CLASS[0]` (instance / `res_name`) — the other half of the same
+    /// property, read from the same reply at no extra round trip. Empty when
+    /// the window exposes no `WM_CLASS` at all, which is already filtered.
+    ///
+    /// It is only ever different from `class` in a way that matters for
+    /// browser-installed web apps: measured on rog 2026-08-16, a Brave PWA
+    /// reports `("crx_<hash>", "Brave-browser")` while the browser itself
+    /// reports `("brave-browser", "Brave-browser")`. See
+    /// `algorithm::WindowSnapshot::instance`.
+    instance: String,
     /// Best-effort window title (`_NET_WM_NAME` → `WM_NAME` fallback).
     name: String,
 }
@@ -152,7 +162,7 @@ fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result
 
     let mut out = Vec::with_capacity(stack.len());
     for win in stack.into_iter().rev() {
-        let class = read_wm_class(conn, win).unwrap_or_default();
+        let (instance, class) = read_wm_class(conn, win).unwrap_or_default();
         if class.is_empty() {
             // Skip windows with no WM_CLASS — usually transient chrome
             // (notifications, pop-ups) we don't want to surface as apps.
@@ -165,6 +175,7 @@ fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result
         out.push(X11Window {
             id: win,
             class,
+            instance,
             name,
         });
     }
@@ -191,16 +202,26 @@ fn active_window(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result<O
     Ok(iter.next().filter(|&w| w != 0))
 }
 
-fn read_wm_class(conn: &RustConnection, win: Window) -> Result<String> {
+/// Both halves of `WM_CLASS`, as `(instance, class)`.
+///
+/// One reply, two strings: `x11rb`'s `WmClass` already parses the pair out of
+/// the single `GetProperty` this function was making anyway, so reading the
+/// instance costs nothing on the hot path. Returning them together is what
+/// keeps that true -- a second `read_wm_instance` would be a second round
+/// trip for a property already in hand.
+fn read_wm_class(conn: &RustConnection, win: Window) -> Result<(String, String)> {
     let cookie =
         WmClass::get(conn, win).map_err(|e| BackendError::Ipc(format!("WmClass cookie: {}", e)))?;
     // WmClass::reply() is Result<Option<WmClass>>: outer error = X11 IO,
     // inner None = property missing (some chrome windows have no class).
     let reply = match cookie.reply() {
         Ok(Some(r)) => r,
-        _ => return Ok(String::new()),
+        _ => return Ok((String::new(), String::new())),
     };
-    Ok(String::from_utf8_lossy(reply.class()).into_owned())
+    Ok((
+        String::from_utf8_lossy(reply.instance()).into_owned(),
+        String::from_utf8_lossy(reply.class()).into_owned(),
+    ))
 }
 
 fn read_window_name(conn: &RustConnection, atoms: &Atoms, win: Window) -> Result<String> {
@@ -368,7 +389,10 @@ fn snapshots_from(windows: &[X11Window]) -> Vec<WindowSnapshot> {
     windows
         .iter()
         .enumerate()
-        .map(|(idx, w)| WindowSnapshot::new(w.id.to_string(), &w.class, idx as i32))
+        .map(|(idx, w)| {
+            WindowSnapshot::new(w.id.to_string(), &w.class, idx as i32)
+                .with_instance(Some(w.instance.as_str()))
+        })
         .collect()
 }
 
@@ -537,16 +561,19 @@ mod tests {
             X11Window {
                 id: 100,
                 class: "kitty".into(),
+                instance: String::new(),
                 name: "k".into(),
             },
             X11Window {
                 id: 200,
                 class: "claude".into(),
+                instance: String::new(),
                 name: "c".into(),
             },
             X11Window {
                 id: 300,
                 class: "firefox".into(),
+                instance: String::new(),
                 name: "f".into(),
             },
         ];
@@ -565,6 +592,7 @@ mod tests {
         let ws = vec![X11Window {
             id: 0xdead_beef_u32 & 0x7fff_ffff,
             class: "x".into(),
+            instance: String::new(),
             name: "x".into(),
         }];
         let snaps = snapshots_from(&ws);

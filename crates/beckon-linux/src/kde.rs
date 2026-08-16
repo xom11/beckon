@@ -76,6 +76,19 @@ struct WindowRow {
     id: String,
     #[serde(default)]
     cls: String,
+    /// KWin's `resourceName` — the `WM_CLASS` INSTANCE half for an X11 or
+    /// XWayland client, where `cls` above is `resourceClass`. Read on its own
+    /// rather than only as the fallback `cls` already uses it for, because
+    /// for a browser-installed web app the two halves differ and only this
+    /// one identifies the app; see `algorithm::WindowSnapshot::instance`.
+    ///
+    /// `#[serde(default)]` matters: a beckon that talks to an OLD generated
+    /// script -- there is no such thing today, both halves ship in one
+    /// binary, but a partially-updated checkout is a real state -- gets an
+    /// empty string rather than a parse failure that would take the whole
+    /// window list down with it.
+    #[serde(default)]
+    inst: String,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -287,6 +300,7 @@ fn read_script(sink_name: &str) -> String {
         out.push({{
             id: String(w.internalId),
             cls: String(cls),
+            inst: String(w.resourceName || ""),
             title: String(w.caption || ""),
             active: (active !== null && active !== undefined && w === active)
         }});
@@ -347,7 +361,10 @@ fn launch_exec(exec: &str) -> Result<()> {
 fn snapshots_from(rows: &[WindowRow]) -> Vec<WindowSnapshot> {
     rows.iter()
         .enumerate()
-        .map(|(idx, r)| WindowSnapshot::new(r.id.clone(), &r.cls, idx as i32))
+        .map(|(idx, r)| {
+            WindowSnapshot::new(r.id.clone(), &r.cls, idx as i32)
+                .with_instance(Some(r.inst.as_str()))
+        })
         .collect()
 }
 

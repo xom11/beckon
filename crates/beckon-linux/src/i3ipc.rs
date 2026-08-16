@@ -41,6 +41,17 @@ impl I3IpcBackend {
 struct WindowInfo {
     con_id: i64,
     app_id: String,
+    /// `window_properties.instance` — the FIRST half of X11's `WM_CLASS`,
+    /// where `app_id` above may hold the second. `None` for a
+    /// Wayland-native window, which has no `WM_CLASS` at all and so has no
+    /// instance to report; that is a real absence, not a missing read.
+    ///
+    /// It comes out of the same `get_tree` reply the class already comes
+    /// from (`swayipc` exposes both on `WindowProperties`), so this costs
+    /// no extra IPC. It exists for browser-installed web apps, where the
+    /// two halves differ and only the instance identifies the app -- see
+    /// `algorithm::WindowSnapshot::instance` for the measurement.
+    instance: Option<String>,
     name: String,
     focused: bool,
 }
@@ -66,10 +77,20 @@ fn collect_windows(node: &Node, out: &mut Vec<WindowInfo>) {
                 .and_then(|wp| wp.class.clone())
         });
 
+        // Read alongside the class, never as a fallback for it: a window
+        // whose class is absent is skipped below exactly as before, and a
+        // window whose class is present gains a second candidate rather
+        // than swapping one for another.
+        let instance = node
+            .window_properties
+            .as_ref()
+            .and_then(|wp| wp.instance.clone());
+
         if let Some(app_id) = app_id {
             out.push(WindowInfo {
                 con_id: node.id,
                 app_id,
+                instance,
                 name: node.name.clone().unwrap_or_default(),
                 focused: node.focused,
             });
@@ -119,7 +140,10 @@ fn snapshots_from(windows: &[WindowInfo]) -> Vec<WindowSnapshot> {
     windows
         .iter()
         .enumerate()
-        .map(|(idx, w)| WindowSnapshot::new(w.con_id.to_string(), &w.app_id, idx as i32))
+        .map(|(idx, w)| {
+            WindowSnapshot::new(w.con_id.to_string(), &w.app_id, idx as i32)
+                .with_instance(w.instance.clone())
+        })
         .collect()
 }
 
