@@ -137,3 +137,84 @@ different pane and a different mechanism.
   `st.release(vk)` returns false when the key was not held.
 - **The escape hatch must only match key-DOWN.** That same orphan up would
   otherwise have stopped the run before it began.
+
+---
+
+## Second run: the two chords left unmeasured (airm3, 2026-08-16 20:12)
+
+MacBook Air M3, **built-in Apple keyboard** — which decides half the result
+below, because that keyboard's fn row is media keys by default.
+
+The escape hatch had to be narrowed before this run was possible at all. It
+matched **every** Escape key-down regardless of modifiers, so `Cmd+Option+Esc`
+would have stopped the probe rather than being recorded — and the summary would
+still have printed clean. It now matches BARE Escape, which is what
+`capture::step` itself does.
+
+### `Cmd+Option+Esc` (Force Quit) — seen, swallowed, and it did NOT act
+
+```
+mod   option    0x3A  mods opt              -> edge DOWN
+mod   command   0x37  mods cmd+opt          -> edge DOWN
+key   down  0x35  mods cmd+opt          -> key_table "escape"
+key   up    0x35  mods cmd+opt          -> key_table "escape"
+```
+
+Reported by the person at the keyboard: **no Force Quit dialog appeared.**
+
+So the last `Win+L` candidate on this platform is not one. **macOS still has
+no `SystemChord` member at all** — `Cmd+Q`, `Ctrl+Cmd+Q` and now
+`Cmd+Option+Esc` are all suppressible, which is why they are `Reserved`
+(beckon's own limit) rather than `SystemChord` (the OS wins).
+
+### The fn row: a key a tap does not see AS A KEY
+
+`NX_SYSDEFINED` (type 14) was added to the probe's mask for this. Eight of
+them arrived, in two bursts either side of the `fn+F1` / `fn+F2` presses:
+
+```
+sys   ----      0x00  mods -   -> NX_SYSDEFINED   (x4)
+key   down  0x7A  mods -       -> key_table "f1"
+sys   ----      0x00  mods -   -> NX_SYSDEFINED   (x4)
+key   down  0x78  mods -       -> key_table "f2"
+```
+
+Two facts, and the second was **the opposite of the prediction**:
+
+1. **Bare `F1`/`F2` are brightness on this keyboard and travel as
+   `NX_SYSDEFINED`, not `keyDown`.** `fn+F1` sends the real `F1`, which is
+   why both shapes appear in one run. A tap registering only key events is
+   blind to the media form.
+2. **Registering the type is enough to SWALLOW them.** Reported by the person
+   at the keyboard: brightness and volume stopped responding for the length of
+   the run. The guess had been that a tap cannot reach them.
+
+**That is why `caps_tap::install` deliberately does NOT register the type.**
+Doing so would cost a person their brightness and volume keys for as long as a
+recording lasts. `key_table()` has no row for those keys either, so the typed
+path cannot bind one — the two paths stay consistent, and a key beckon cannot
+name is a key it does not take.
+
+### `fn` itself — a defect this run found
+
+```
+mod   ????      0x3F
+```
+
+`fn` (`kVK_Function`, 0x3F) arrives as `flagsChanged` with **no flag bit of
+its own**, so `project` had no edge to read and fell through to "ordinary key,
+`Edge::Down`" — for BOTH its press and its release. One tap produced two
+`Refused(UnknownKey)` for a key beckon cannot bind in any case.
+
+Fixed on this branch: `fn` passes through. `Chord` has no slot for it and
+Windows has no counterpart to name it with, so passing it through is the honest
+answer and costs nothing — `fn` alone does nothing.
+`the_fn_key_passes_through_rather_than_being_refused_twice` is the pin, with
+`caps_still_reaches_the_state_machine_while_fn_does_not` as the contrast.
+
+### Not measured, and named rather than left to assumption
+
+**Touch ID and the power button.** A tap sees keys; those are not keys.
+Pressing one to find out risks sleeping or shutting the machine down
+mid-measurement, so the probe lists them under *NOT measurable this way*
+instead of leaving a reader to assume they were covered.

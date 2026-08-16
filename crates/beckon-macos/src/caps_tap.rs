@@ -311,6 +311,20 @@ pub fn install() -> Result<(), String> {
         );
     }
 
+    // **`NX_SYSDEFINED` (14) is deliberately NOT in this mask, and the reason
+    // is a measurement rather than an assumption.**
+    //
+    // Media, brightness and the rest of the fn row arrive as that type, not
+    // as `keyDown`. The guess was that a tap simply cannot reach them;
+    // `capture_probe` on airm3 2026-08-16 measured the opposite -- adding the
+    // type to ITS mask swallowed them, and the brightness keys stopped
+    // working for the length of the run.
+    //
+    // So the choice is real and it is this one: registering them would mean a
+    // person recording a shortcut loses screen brightness and volume until
+    // they stop. `key_table()` has no row for those keys either, so the typed
+    // path cannot bind one and the two paths stay consistent -- a key beckon
+    // cannot name is a key it does not take.
     let events = (1u64 << KEY_DOWN) | (1u64 << KEY_UP) | (1u64 << FLAGS_CHANGED);
     let port = unsafe {
         CGEventTapCreate(
@@ -514,9 +528,23 @@ fn project(etype: u32, code: u16, flags: u64) -> Option<KeyEvent> {
                 K_CONTROL | 0x3E => FLAG_CONTROL,
                 K_OPTION | 0x3D => FLAG_ALTERNATE,
                 K_COMMAND | 0x36 => FLAG_COMMAND,
-                // Caps, or a modifier with no bit. It reaches `step_on` as an
-                // ordinary key-down so `refusal_for` can refuse it.
-                _ => return ordinary(code, Edge::Down),
+                // Caps reaches `step_on` as an ordinary key-down so
+                // `refusal_for` can refuse it: the lock toggles before any tap
+                // runs, so swallowing cannot undo the light, and that is a
+                // verdict the reader deserves rather than silence.
+                K_CAPSLOCK => return ordinary(code, Edge::Down),
+                // **`fn` (0x3F), and anything else with no flag bit.**
+                // Measured on airm3 2026-08-16 (MacBook Air M3, built-in
+                // keyboard): `fn` arrives as `flagsChanged` with **no bit of
+                // its own**, so there is no edge to read -- both its press and
+                // its release projected to `Edge::Down`, producing TWO
+                // `Refused(UnknownKey)` for one tap of a key beckon cannot
+                // bind anyway.
+                //
+                // Passing it through costs nothing (`fn` alone does nothing)
+                // and is the honest answer: `Chord` has no slot for it, and
+                // Windows has no counterpart to name it with.
+                _ => return None,
             };
             if flags & bit != 0 {
                 Edge::Down
@@ -851,6 +879,32 @@ mod tests {
             ev.is_some(),
             "an unknown keycode must still produce an event"
         );
+    }
+
+    /// **`fn` has no flag bit, so it has no edge**, and treating it as an
+    /// ordinary key made BOTH its transitions project to `Edge::Down` --
+    /// two `Refused(UnknownKey)` for one tap of a key beckon cannot bind.
+    ///
+    /// Measured on airm3 2026-08-16 with `capture_probe`: the log shows
+    /// `mod ???? 0x3F` four times across two `fn+F<n>` presses, once per
+    /// transition. Passing it through is the honest answer -- `Chord` has no
+    /// slot for it and Windows has no counterpart to name it with.
+    #[test]
+    fn the_fn_key_passes_through_rather_than_being_refused_twice() {
+        assert_eq!(project(FLAGS_CHANGED, 0x3F, 0), None, "fn down");
+        assert_eq!(
+            project(FLAGS_CHANGED, 0x3F, FLAG_COMMAND),
+            None,
+            "fn while another modifier is held is still fn"
+        );
+    }
+
+    /// The neighbouring arm, and the contrast is the point: Caps still goes
+    /// through as an ordinary key so `refusal_for` can give it a verdict.
+    #[test]
+    fn caps_still_reaches_the_state_machine_while_fn_does_not() {
+        assert!(project(FLAGS_CHANGED, K_CAPSLOCK, 0).is_some());
+        assert!(project(FLAGS_CHANGED, 0x3F, 0).is_none());
     }
 
     #[test]
