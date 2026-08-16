@@ -259,6 +259,20 @@ pub fn key_label(name: &str) -> String {
 /// follows.
 ///
 /// **Display only.** See `display_never_reaches_the_serialiser`.
+///
+/// **The three modifier labels are WINDOWS words, and this is the one thing in
+/// this module that is not cross-platform.** `super_` prints `Win`, which is
+/// what is written on the key beside the space bar on a PC and is nothing at
+/// all on a Mac, where the same modifier is Command. `key_label` below has no
+/// such problem — the main keys are named the same on both — so it is exactly
+/// three strings, not a general portability question.
+///
+/// Left as-is deliberately rather than fixed speculatively: beckon draws a
+/// settings window on Windows only today. Whoever builds the macOS one owns
+/// this, and the shape to avoid is an `os` parameter on this function — it
+/// would put a platform branch inside a display helper that four call sites
+/// share. Lift the three labels out instead, so the caller supplies them and
+/// this function keeps doing one thing.
 pub fn combo_caps(s: &str) -> Vec<String> {
     let Ok(c) = Combo::parse(s) else {
         return Vec::new();
