@@ -421,6 +421,16 @@ pub fn is_capturing() -> bool {
     CAPTURE.lock().map(|c| c.is_some()).unwrap_or(false)
 }
 
+/// The chord just recorded, canonically spelled, or `None`.
+///
+/// **Read it before `end_capture`**, which drops the state it lives in. The
+/// sink is called while the recording is still armed precisely so this is
+/// reachable from inside it.
+pub fn captured_combo() -> Option<String> {
+    let g = CAPTURE.lock().ok()?;
+    g.as_ref()?.captured().map(|c| c.canonical())
+}
+
 /// The modifiers physically held, as this event reports them.
 ///
 /// `step_on` takes these as a parameter rather than a snapshot precisely so a
