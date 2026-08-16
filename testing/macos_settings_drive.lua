@@ -61,6 +61,13 @@
 --     and only a DIRTY one to the banner. A measurement that does not edit
 --     something first is testing the other branch and will conclude the
 --     watcher is dead when it is working perfectly.
+--   * **A control binary must keep the basename `beckon`.** `app()` below
+--     matches `a:name() == "beckon"`, which is the process name -- so a
+--     control deployed as `/tmp/beckon-ctl` is never found and the harness
+--     reports `serve not running` while `ps` plainly shows it. That reads as
+--     "the control does not reproduce the bug", which is the most misleading
+--     answer available: it turns a REAL crash into a clean bill of health.
+--     Deploy controls to a different DIRECTORY, never a different filename.
 
 local R = {}
 
