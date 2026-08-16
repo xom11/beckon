@@ -146,18 +146,31 @@ enum Command {
         #[arg(value_name = "CONFIG")]
         config: std::path::PathBuf,
 
-        /// Send stderr to PATH and detach the console (Windows).
+        /// Where this run's log is.
         ///
-        /// For supervisor-hosted runs: a Scheduled Task cannot redirect
-        /// stderr, and stderr is the only place beckon reports how many
-        /// hotkeys actually registered. Detaching the console is part of the
-        /// same flag on purpose — detaching without redirecting would leave
-        /// stderr pointing at a destroyed console, where a failed write panics
-        /// instead of returning.
+        /// **The flag means two different things, because the two platforms
+        /// own different amounts of it, and that is worth reading before
+        /// touching either.**
+        ///
+        /// On **Windows** it is an instruction: send stderr to PATH and
+        /// detach the console. A Scheduled Task cannot redirect stderr, and
+        /// stderr is the only place beckon reports how many hotkeys actually
+        /// registered. Detaching is part of the same flag on purpose —
+        /// detaching without redirecting would leave stderr pointing at a
+        /// destroyed console, where a failed write panics instead of
+        /// returning.
+        ///
+        /// On **macOS it is a declaration**, and beckon redirects nothing:
+        /// launchd already owns the file through `StandardErrorPath`, and a
+        /// second writer on the same fd is how a log gets interleaved
+        /// garbage. What beckon lacks is not the redirect but the PATH —
+        /// without it the tray's `Open log` and the System page's log row
+        /// cannot be drawn at all, over a file that exists. The Homebrew
+        /// formula passes the same path it gives launchd.
         ///
         /// Scoped to this subcommand, so it is rejected everywhere else
         /// structurally; it used to need `requires = "serve"`.
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
         #[arg(long, value_name = "PATH")]
         log: Option<std::path::PathBuf>,
     },
@@ -284,7 +297,7 @@ fn run(args: &Args) -> Result<()> {
     match &args.command {
         Some(Command::Serve {
             config,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             log,
         }) => {
             #[cfg(target_os = "windows")]
@@ -303,7 +316,12 @@ fn run(args: &Args) -> Result<()> {
             }
             #[cfg(target_os = "macos")]
             {
-                serve::cmd_serve(config, None)
+                // No `redirect_to_log` here, and that is the whole difference
+                // from the Windows arm above: launchd already owns this file
+                // through `StandardErrorPath`. The path is threaded through
+                // only so the tray's `Open log` and the System page's log row
+                // know where it is -- see the flag's own doc.
+                serve::cmd_serve(config, log.clone())
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {

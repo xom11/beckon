@@ -1015,6 +1015,28 @@ struct MenuModel {
     settings: bool,
 }
 
+/// Whether the tray draws `Open log`, and whether it is enabled.
+///
+/// The two platforms answer differently because they own different things,
+/// and `MenuModel::log` cannot say which without being told.
+///
+/// **Windows owns its log**, so the row is always meaningful: shown, and
+/// greyed when this run has no `--log`. A missing row would be the lie there
+/// -- see the `MenuModel::log` doc, which this function replaces the `cfg` in.
+///
+/// **macOS does not.** launchd owns the file through `StandardErrorPath`, so
+/// beckon knows a path only when one was handed to it. With none, a greyed
+/// `Open log` would ask "why is this greyed?" with no answer in the row --
+/// the same reasoning that omits `Start with Windows` under `beckon.exe
+/// serve` rather than greying it.
+pub(crate) fn menu_log_row(has_log_path: bool, beckon_owns_the_log: bool) -> Option<bool> {
+    if beckon_owns_the_log {
+        Some(has_log_path)
+    } else {
+        has_log_path.then_some(true)
+    }
+}
+
 fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
     let head = if m.paused {
         format!("beckon - paused ({})", m.phrase)
@@ -1086,8 +1108,10 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                 .map(|_| beckon_windows::autostart::is_enabled()),
             // Shown-but-greyed when this run has no log, rather than
             // omitted: on Windows beckon DOES own its log, so the row is
-            // always meaningful and a missing one would be the lie.
-            log: Some(s.log.is_some()),
+            // always meaningful and a missing one would be the lie. That
+            // clause is the `true` below; `menu_log_row` holds both readings
+            // so the two platforms cannot drift apart silently.
+            log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
             settings: true,
         })
     });
@@ -1178,7 +1202,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // Login lifecycle belongs to `brew services` / launchd here, and
             // beckon must not write a competing LaunchAgent behind it.
             autostart: None,
-            log: None,
+            // Was a flat `None`, i.e. never a log row. launchd owns the file
+            // through `StandardErrorPath`, so beckon has a path only when one
+            // was handed to it -- which `--log` now allows on this platform
+            // too, for exactly this. `menu_log_row` is the decision and its
+            // test carries the reasoning.
+            log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
             settings: true,
         })
     });
@@ -1200,12 +1229,25 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             set_paused(&st, &mg, now);
             refresh_settings(&st);
         }
+        // Reached only when `--log` gave this run a path, because that is
+        // exactly when `menu_log_row` draws the row. The borrow is dropped
+        // before `open_path` for the reason the module doc gives about
+        // `backend.beckon()`: the open goes through LaunchServices and may
+        // re-enter this module.
+        MENU_LOG => {
+            let path = st.borrow().log.clone();
+            if let Some(path) = path {
+                if let Err(e) = beckon_macos::shell::open_path(&path) {
+                    eprintln!("beckon serve: {e}");
+                }
+            }
+        }
         MENU_QUIT => {
             eprintln!("beckon serve: quit requested from the menu bar");
             tray::request_quit();
         }
-        // MENU_LOG / MENU_AUTOSTART never reach here: those rows are not
-        // built on macOS at all.
+        // MENU_AUTOSTART never reaches here: that row is not built on macOS
+        // at all, because `brew services` owns the launch agent.
         _ => {}
     });
 
@@ -2426,6 +2468,35 @@ mod tests {
             BrokenConfig::Refuse,
             "a person watching the output gets the error and a non-zero exit"
         );
+    }
+
+    /// A greyed row must be able to answer "why?", and on macOS it cannot.
+    ///
+    /// Windows owns its log file, so `Open log` greyed means "this run had no
+    /// `--log`" -- a fact about the command line, which the reader controls.
+    /// launchd owns the macOS log through `StandardErrorPath`, so with no path
+    /// handed in beckon does not know where the file is; a greyed row there
+    /// says nothing and offers nothing. Omit it, for the same reason
+    /// `Start with Windows` is omitted rather than greyed under
+    /// `beckon.exe serve`.
+    #[test]
+    fn the_log_row_is_omitted_where_beckon_does_not_own_the_log() {
+        assert_eq!(
+            menu_log_row(false, false),
+            None,
+            "no path and not ours: nothing truthful to draw"
+        );
+        assert_eq!(
+            menu_log_row(true, false),
+            Some(true),
+            "a path was handed in, so the row opens something real"
+        );
+
+        // Control: Windows is unchanged, and that is the half that would be a
+        // regression. Greyed is the right answer there because beckon owns the
+        // file and the reader owns the flag.
+        assert_eq!(menu_log_row(false, true), Some(false), "shown but greyed");
+        assert_eq!(menu_log_row(true, true), Some(true));
     }
 
     #[test]
