@@ -19,19 +19,45 @@ pub struct DesktopEntry {
     /// Equal to sway's `app_id` for Wayland apps that set this hint.
     pub startup_wm_class: Option<String>,
     pub no_display: bool,
+    /// `Hidden=true` — the spec's "the user deleted this entry", which
+    /// implementations must treat as if the file were not there at all.
+    /// Nothing outside `scan_dirs` sees one: it is carried this far only so
+    /// the entry can still CLAIM its desktop file id, which is the whole
+    /// point of the flag. kmenuedit writes such a file into
+    /// `~/.local/share/applications/` when a KDE user deletes an app from
+    /// their menu — a full copy of the system entry plus the flag — and it
+    /// has to outrank and remove the entry it shadows, not be skipped so
+    /// that entry surfaces instead.
+    pub hidden: bool,
 }
 
 pub fn scan() -> Vec<DesktopEntry> {
+    // Spec precedence: $XDG_DATA_HOME wins over $XDG_DATA_DIRS, and within
+    // $XDG_DATA_DIRS "the first directory listed is the most important". So
+    // the highest-precedence root goes first and `collect_dir` keeps the
+    // first entry to claim an id. Scanning system-first and overwriting got
+    // the $XDG_DATA_HOME half right and inverted the other: on a NixOS host
+    // whose profile shadows a system `code.desktop`, beckon launched the
+    // system one while rofi, gtk-launch and the menu all opened the profile
+    // one.
+    let mut dirs = user_app_dirs();
+    dirs.extend(system_app_dirs());
+    scan_dirs(&dirs)
+}
+
+/// Walk `applications/` roots, highest precedence first. Split out of `scan()`
+/// so a test can supply its own roots instead of the machine's environment.
+fn scan_dirs(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     let mut by_id: HashMap<String, DesktopEntry> = HashMap::new();
 
-    // Spec precedence: $XDG_DATA_HOME wins over $XDG_DATA_DIRS. We scan
-    // user dir last so it overwrites system entries with the same id.
-    let mut dirs = system_app_dirs();
-    dirs.extend(user_app_dirs());
-
     for dir in dirs {
-        collect_dir(&dir, &dir, &mut by_id);
+        collect_dir(dir, dir, &mut by_id);
     }
+
+    // `Hidden=true` is dropped HERE rather than in `parse_str`, and the order
+    // is the fix: the entry has to win its id first — otherwise the very
+    // system entry the user deleted takes the id back and beckon launches it.
+    let mut out: Vec<DesktopEntry> = by_id.into_values().filter(|e| !e.hidden).collect();
 
     // Sorted, not HashMap order. `resolve_detailed_in`'s first three tiers
     // take the first entry that matches, so an unordered vector makes the
@@ -42,7 +68,6 @@ pub fn scan() -> Vec<DesktopEntry> {
     // between focusing the window and launching a second copy. Sorting by
     // id gives every tier the same "alphabetically first .desktop id wins"
     // rule the substring tier already documents.
-    let mut out: Vec<DesktopEntry> = by_id.into_values().collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
 }
@@ -86,7 +111,11 @@ fn collect_dir(root: &Path, dir: &Path, by_id: &mut HashMap<String, DesktopEntry
             // application". Discovery filters with `visible()`; resolution
             // must see everything, because a user typing a name is not
             // browsing a menu. See `a_hidden_entry_still_resolves_by_name`.
-            by_id.insert(d.id.clone(), d);
+            //
+            // First root to claim an id keeps it — `scan()` hands the roots
+            // over in precedence order, so an override must not be overwritten
+            // by the entry it shadows.
+            by_id.entry(d.id.clone()).or_insert(d);
         }
     }
 }
@@ -296,6 +325,7 @@ pub fn parse_str(content: &str, id: &str) -> Option<DesktopEntry> {
     let mut exec = None;
     let mut wm_class = None;
     let mut no_display = false;
+    let mut hidden = false;
     let mut entry_type = None;
     let mut in_section = false;
 
@@ -321,6 +351,8 @@ pub fn parse_str(content: &str, id: &str) -> Option<DesktopEntry> {
             wm_class = Some(v.to_string());
         } else if let Some(v) = line.strip_prefix("NoDisplay=") {
             no_display = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("Hidden=") {
+            hidden = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("Type=") {
             entry_type = Some(v.to_string());
         }
@@ -336,6 +368,7 @@ pub fn parse_str(content: &str, id: &str) -> Option<DesktopEntry> {
         exec: strip_field_codes(&exec?),
         startup_wm_class: wm_class,
         no_display,
+        hidden,
     })
 }
 
@@ -486,6 +519,7 @@ mod tests {
             exec: format!("{} %U", id),
             startup_wm_class: None,
             no_display: false,
+            hidden: false,
         }
     }
 
@@ -717,6 +751,22 @@ mod tests {
         assert!(parse_str(s, "h").unwrap().no_display);
     }
 
+    /// Two different keys with two different meanings, and the parser used to
+    /// read only one of them: `Hidden=` was matched by no arm at all, so a
+    /// file the user deleted came back as an ordinary installed app.
+    #[test]
+    fn hidden_and_no_display_are_read_as_separate_keys() {
+        let del = "[Desktop Entry]\nType=Application\nName=K\nExec=k\nHidden=TRUE\n";
+        let e = parse_str(del, "k").unwrap();
+        assert!(e.hidden);
+        assert!(!e.no_display);
+
+        let menu = "[Desktop Entry]\nType=Application\nName=K\nExec=k\nNoDisplay=true\n";
+        let e = parse_str(menu, "k").unwrap();
+        assert!(!e.hidden);
+        assert!(e.no_display);
+    }
+
     #[test]
     fn parse_picks_first_name_only() {
         // Spec says localized Name[xx]= entries follow; we ignore them but
@@ -777,6 +827,126 @@ mod tests {
         // Exec missing.
         let s = "[Desktop Entry]\nType=Application\nName=Foo\n";
         assert!(parse_str(s, "foo").is_none());
+    }
+
+    // ---------- scan_dirs ----------
+
+    /// Per-test scratch root under the system temp dir — the same trick
+    /// `state.rs` uses, and for the same reason: no `tempfile` dependency for
+    /// a handful of tests.
+    fn scratch_root(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "beckon-desktop-test-{}-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos,
+            n
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_desktop(root: &Path, stem: &str, body: &str) {
+        fs::write(root.join(format!("{}.desktop", stem)), body).unwrap();
+    }
+
+    /// The sort at the end of `scan_dirs` had no assertion anywhere: every
+    /// other test here hands `resolve_detailed_in` a hand-ordered `Vec`, so
+    /// they pin "the first element wins" and say nothing about the order the
+    /// scan produces. Delete the sort and `by_id.into_values()` hands the
+    /// tiers HashMap order, reseeded per process — the 12/8-out-of-20 split
+    /// CLAUDE.md records under "Scanning rules that the tiers depend on".
+    #[test]
+    fn scan_dirs_returns_entries_sorted_by_id() {
+        let root = scratch_root("sorted");
+        // Neither sorted nor reversed on the way in, and eight of them, so a
+        // HashMap order that happened to agree would be a 1-in-40320 fluke.
+        for stem in [
+            "kitty",
+            "brave",
+            "zoom",
+            "alacritty",
+            "firefox",
+            "code",
+            "discord",
+            "emacs",
+        ] {
+            write_desktop(
+                &root,
+                stem,
+                &format!(
+                    "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/{}\n",
+                    stem, stem
+                ),
+            );
+        }
+        let ids: Vec<String> = scan_dirs(&[root]).into_iter().map(|e| e.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted);
+    }
+
+    /// Basedir spec: `$XDG_DATA_HOME` outranks `$XDG_DATA_DIRS`, and inside
+    /// the latter "the first directory listed is the most important". `scan`
+    /// used to walk the system roots first and let every later root OVERWRITE
+    /// the earlier one, so among `XDG_DATA_DIRS` the LAST-listed directory
+    /// won. On a NixOS host whose profile shadows a system `code.desktop`,
+    /// `beckon Code` launched the system binary while rofi, gtk-launch and the
+    /// desktop menu all opened the profile one.
+    #[test]
+    fn the_first_root_listed_wins_an_id_collision() {
+        let high = scratch_root("precedence-high");
+        let low = scratch_root("precedence-low");
+        write_desktop(
+            &high,
+            "code",
+            "[Desktop Entry]\nType=Application\nName=Code\nExec=/profile/bin/code\n",
+        );
+        write_desktop(
+            &low,
+            "code",
+            "[Desktop Entry]\nType=Application\nName=Code\nExec=/system/bin/code\n",
+        );
+
+        let entries = scan_dirs(&[high.clone(), low.clone()]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].exec, "/profile/bin/code");
+
+        // It is the ORDER that decides and nothing else about the directory.
+        assert_eq!(scan_dirs(&[low, high])[0].exec, "/system/bin/code");
+    }
+
+    /// `Hidden=true` is the spec's "the user deleted this entry", and unlike
+    /// `NoDisplay=` the file must be treated as if it were not there. It has
+    /// to claim its id on the way out, though: kmenuedit writes a full copy of
+    /// the system entry plus the flag into `~/.local/share/applications/`, so
+    /// dropping it at parse time would hand the id straight back to the entry
+    /// it was written to delete.
+    #[test]
+    fn a_hidden_user_override_deletes_the_system_entry_it_shadows() {
+        let user = scratch_root("hidden-user");
+        let system = scratch_root("hidden-system");
+        write_desktop(
+            &user,
+            "konsole",
+            "[Desktop Entry]\nType=Application\nName=Konsole\nExec=konsole\nHidden=true\n",
+        );
+        write_desktop(
+            &system,
+            "konsole",
+            "[Desktop Entry]\nType=Application\nName=Konsole\nExec=konsole\n",
+        );
+        assert!(scan_dirs(&[user, system]).is_empty());
     }
 
     // ---------- resolve_detailed_in priority ----------
