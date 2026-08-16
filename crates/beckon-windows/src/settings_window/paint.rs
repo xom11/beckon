@@ -2485,9 +2485,29 @@ fn hc_severity_word(m: Mark) -> &'static str {
 /// `Role::Caption` font -- so what is painted here never exceeds the
 /// two-line budget that function reserves, as long as `notes` holds at most
 /// two entries (`show_notes`'s own cap in `mod.rs`, unchanged by this task).
+/// Which surface these notes are painted ON.
+///
+/// **New 2026-08-16, and design §6.4 asked for it by name**: "`draw_notes`
+/// cannot be reused verbatim for that line -- it hard-codes a `card` ground
+/// and the command bar is `bg`. Give it a `ground` parameter." The editor
+/// card's notes sit on a card; the service line sits on the window's own
+/// ground one band lower, and a note that fills its rect with the wrong one
+/// draws a card-coloured patch across the bar.
+///
+/// An enum rather than a `COLORREF`, so the two callers name a SURFACE and
+/// the mapping to a palette token stays in one place -- and so high contrast,
+/// where both resolve through different `GetSysColor` indices, cannot be got
+/// wrong at a call site.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum NoteGround {
+    Card,
+    Window,
+}
+
 pub(super) unsafe fn draw_notes(
     di: &DRAWITEMSTRUCT,
     notes: &[Note],
+    ground: NoteGround,
     cache: &mut ThemeCache,
     dpi: u32,
 ) {
@@ -2495,7 +2515,10 @@ pub(super) unsafe fn draw_notes(
     let rc = di.rcItem;
     let hc = cache.theme() == beckon_core::theme::Theme::HighContrast;
 
-    let bg = cache.col(|p| p.card, COLOR_WINDOW);
+    let bg = match ground {
+        NoteGround::Card => cache.col(|p| p.card, COLOR_WINDOW),
+        NoteGround::Window => cache.col(|p| p.bg, COLOR_BTNFACE),
+    };
     FillRect(hdc, &rc, cache.brush(bg));
 
     if notes.is_empty() {

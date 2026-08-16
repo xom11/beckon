@@ -108,6 +108,19 @@ pub(super) const IDC_REVERT: i32 = 1033;
 /// page that does save.
 pub(super) const IDC_CAPS_SHORTHAND: i32 = 1060;
 
+/// The command bar's live service line (design §6.4), on all four doors.
+///
+/// **1044, out of the SHELL range, not the Keyboard one.** `CONTROL_IDS`'
+/// table gives 1040-1049 to "shell: the tab strip and the command bar", and
+/// core reserved this exact number under this exact name before the control
+/// existed. Its two neighbours, `SAVED` 1045 and `UNDO` 1046, stay reserved:
+/// both belong to design §6's auto-save, which is not built.
+///
+/// **Chrome, like the pills**: it is drawn on every page and belongs to none,
+/// so it goes in the `chrome` group of `every_control_belongs_to_exactly_one_group`
+/// and NOT in `PAGE_CONTROLS`.
+pub(super) const IDC_SERVICE_LINE: i32 = 1044;
+
 // 1034 was `IDC_GRP_EDITOR`, the editor card's `Editing "…"` caption, and
 // 1035 was `IDC_LBL_COUNT`, the `· 18 bindings` STATIC beside the `Shortcuts`
 // heading. Both deleted 2026-08-15 and RETIRED in
@@ -298,6 +311,7 @@ mod tests {
         ("RECORD", super::IDC_RECORD),
         ("REVERT", super::IDC_REVERT),
         ("CAPS_SHORTHAND", super::IDC_CAPS_SHORTHAND),
+        ("SERVICE_LINE", super::IDC_SERVICE_LINE),
         ("TAB_SHORTCUTS", super::IDC_TAB_SHORTCUTS),
         ("TAB_KEYBOARD", super::IDC_TAB_KEYBOARD),
         ("TAB_SYSTEM", super::IDC_TAB_SYSTEM),
@@ -484,6 +498,7 @@ mod tests {
             super::IDC_OPENFILE,
             super::IDC_CLOSE,
             super::IDC_APPLY,
+            super::IDC_SERVICE_LINE,
         ];
         let banner = [super::IDC_BANNER, super::IDC_RELOAD, super::IDC_KEEPMINE];
         for (name, id) in MINE {

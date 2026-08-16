@@ -154,8 +154,8 @@ use beckon_core::settings::{
     about_state, banner_shown, caps_view_enabled, caps_view_fold, combo_needs_placing,
     command_bar_shown, copy_text, default_button, image_identity, opacity_alpha, system_state,
     warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton, Field,
-    FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, SettingsCommand, SystemInputs,
-    SystemState, Target, Transparency, BANNER_PAGE,
+    FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, ServiceLine, SettingsCommand,
+    SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{
     combo_display_folded, combo_view, key_table, CapsTap, Chord, ComboView,
@@ -796,9 +796,13 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
     //
     // **The BAND is not hidden with them.** `compute_card_rects` reserves
     // `pad + ctl` at the bottom of all four doors whatever this says, so
-    // `content_bottom` stays one expression with one meaning -- and an empty
-    // bar is indistinguishable from the window ground it is painted on, so
-    // there is nothing on screen to explain away.
+    // `content_bottom` stays one expression with one meaning.
+    //
+    // **The band is no longer empty where these three are gone.** This said
+    // "an empty bar is indistinguishable from the window ground it is painted
+    // on", which held for one day: design §6.4's service line
+    // (`IDC_SERVICE_LINE`) is chrome, is drawn on all four doors, and on
+    // System and About has the whole bar to itself.
     let bar = command_bar_shown(page);
     for id in [IDC_OPENFILE, IDC_CLOSE, IDC_APPLY] {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
@@ -3206,6 +3210,36 @@ unsafe fn hidden_child(parent: HWND, h: HWND) -> bool {
 }
 
 thread_local! {
+    /// What `IDC_SERVICE_LINE` is currently showing -- `SHOWN_NOTES`' twin,
+    /// for that mirror's exact reason: `WM_DRAWITEM` can arrive while `UI` is
+    /// already borrowed, and a window's plain text cannot carry the `Mark` the
+    /// dot is drawn from.
+    ///
+    /// **`None` is a real state and the painter must survive it.** The control
+    /// is created `WS_VISIBLE`, so it can be asked to paint before the first
+    /// push ever runs -- and a `WM_DRAWITEM` that draws nothing leaves
+    /// whatever was last in that rect.
+    static SHOWN_SERVICE: RefCell<Option<ServiceLine>> = const { RefCell::new(None) };
+}
+
+/// Push the service line: mirrored for `WM_DRAWITEM`, and written as plain
+/// text so `GetWindowText` still answers -- `show_notes`' arrangement exactly,
+/// one band lower.
+unsafe fn show_service(hwnd: HWND, line: &ServiceLine) {
+    let changed = SHOWN_SERVICE.with(|c| c.borrow().as_ref() != Some(line));
+    if !changed {
+        return;
+    }
+    SHOWN_SERVICE.with(|c| *c.borrow_mut() = Some(line.clone()));
+    if let Ok(h) = GetDlgItem(Some(hwnd), IDC_SERVICE_LINE) {
+        // `set_text` first, then invalidate: the mirror is what the painter
+        // reads, and the text is what a screen reader and the probe read.
+        set_text(h, &line.text);
+        let _ = InvalidateRect(Some(h), None, false);
+    }
+}
+
+thread_local! {
     /// What `IDC_NOTES` is currently showing, one severity-tagged line per
     /// entry -- `paint::draw_notes`'s own input, and the paint-side mirror
     /// of `CHIPS` for exactly `CHIPS`'s own reason: `WM_DRAWITEM` can arrive
@@ -4468,6 +4502,22 @@ unsafe fn build_children(hwnd: HWND) {
         "",
         SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
         IDC_NOTES,
+        &fonts,
+    );
+
+    // The command bar's service line (design §6.4). `SS_OWNERDRAW`, on
+    // `IDC_NOTES`' reasoning one band lower: the dot is a drawn GDI `Ellipse`
+    // and a `Mark` cannot ride in window text, so the paint has to be ours.
+    //
+    // **Chrome: created once, never hidden, on all four doors** -- which is
+    // what makes it §6.4's answer to a bar whose buttons are now drawn on
+    // two. It is not in `PAGE_CONTROLS` for the reason the pills are not.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_OWNERDRAW_STYLE | SS_NOPREFIX_STYLE,
+        IDC_SERVICE_LINE,
         &fonts,
     );
 
@@ -6372,6 +6422,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         enable(hwnd, IDC_ADD, st.editable);
         enable(hwnd, IDC_FILTER, st.editable);
         enable(hwnd, IDC_LIST, st.editable);
+        // The service line, pushed on every state: it is the one thing in the
+        // window that answers "are the hotkeys working", and it is chrome, so
+        // it is written whichever door is open. `show_service` no-ops when
+        // nothing changed, so this costs a comparison on the common push.
+        show_service(hwnd, &st.service);
         enable(hwnd, IDC_CAPS, st.editable);
         // **The view switch is NOT gated on `st.editable`**, and that is
         // design §1's split by store rather than an oversight -- the same
@@ -8607,7 +8662,45 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_NOTES {
                     let dpi = GetDpiForWindow(hwnd).max(96);
                     let body = SHOWN_NOTES.with(|c| c.borrow().clone());
-                    PAINT_THEME.with(|c| paint::draw_notes(di, &body, &mut c.borrow_mut(), dpi));
+                    PAINT_THEME.with(|c| {
+                        paint::draw_notes(
+                            di,
+                            &body,
+                            paint::NoteGround::Card,
+                            &mut c.borrow_mut(),
+                            dpi,
+                        )
+                    });
+                    return LRESULT(1);
+                }
+                // The command bar's service line (design §6.4), on
+                // `IDC_NOTES`' arrangement: the same painter, a one-element
+                // slice, and `NoteGround::Window` because the bar is the
+                // window's own ground rather than a card.
+                //
+                // **The `None` arm still paints.** The control is created
+                // `WS_VISIBLE`, so a paint can arrive before the first push;
+                // returning without filling would leave whatever was last in
+                // that rect, which is the fault this arm exists to avoid.
+                if di.CtlType == ODT_STATIC && di.CtlID as i32 == IDC_SERVICE_LINE {
+                    let dpi = GetDpiForWindow(hwnd).max(96);
+                    let line = SHOWN_SERVICE.with(|c| c.borrow().clone());
+                    let body: Vec<Note> = line
+                        .into_iter()
+                        .map(|l| Note {
+                            mark: l.mark,
+                            text: l.text,
+                        })
+                        .collect();
+                    PAINT_THEME.with(|c| {
+                        paint::draw_notes(
+                            di,
+                            &body,
+                            paint::NoteGround::Window,
+                            &mut c.borrow_mut(),
+                            dpi,
+                        )
+                    });
                     return LRESULT(1);
                 }
                 // About's two owner-draw STATICs (design §3.4). Neither is

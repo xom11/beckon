@@ -1899,10 +1899,33 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // -- The command bar. Save is the outermost button on the right, Close
     // inboard of it, `Open config file` hard left -- as far from Save as
     // the bar allows. Not a card; anchored at `bar_y`, same as before.
+    // The service line (design §6.4) takes the bar's LEFT end, on every door.
+    // It runs from the card column's left edge to wherever the leftmost button
+    // starts, less a gap -- so on System and About, where no button is drawn,
+    // it has the whole bar and the band stops being empty ground.
+    //
+    // Placed unconditionally like the three buttons: it is chrome. Its width
+    // is what is left rather than a measurement of its own text, because the
+    // text changes with the service and `layout` must not run on a data push.
     let bw_open = btn(cap::OPEN_FILE);
     let bw_apply = btn(cap::SAVE);
     let bw_close = btn(cap::CLOSE);
     place(IDC_OPENFILE, cx, bar_y, bw_open, ctl);
+    // `command_bar_shown` decides whether the buttons are there to make room
+    // for -- the same predicate that hides them, so the two cannot disagree
+    // about which doors have a gap on the left.
+    let service_right = if command_bar_shown(ui.page) {
+        cx + clamp(cw - bw_apply - gap - bw_close - gap * 2)
+    } else {
+        cx + cw
+    };
+    place(
+        IDC_SERVICE_LINE,
+        cx + gap,
+        bar_y,
+        clamp(service_right - cx - gap),
+        ctl,
+    );
     place(IDC_APPLY, cx + clamp(cw - bw_apply), bar_y, bw_apply, ctl);
     place(
         IDC_CLOSE,

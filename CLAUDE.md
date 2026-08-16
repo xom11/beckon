@@ -1292,7 +1292,11 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   the System page already lists with its own two glyphs. **The BAND stays on
   all four**: `compute_card_rects` reserves `pad + ctl` whatever the page
   says, so `content_bottom` is one expression with one meaning, and an empty
-  bar is indistinguishable from the window ground it is painted on.
+  bar carried no buttons and nothing else. **Since 2026-08-16 it is not
+  empty**: design §6.4's service line (`IDC_SERVICE_LINE`, 1044) is chrome and
+  is drawn on all four doors, so the band says whether the hotkeys are working
+  from every page. What §6.4 still owes is its right half -- the `Saved`
+  readout and `Undo`, both of which belong to §6's auto-save.
 
   Two consequences that are not obvious and are load-bearing:
 

@@ -401,6 +401,15 @@ pub struct ControlState {
     /// that this flag is off, exactly as it knows `apply_enabled` without
     /// knowing what makes Save legal.
     pub editable: bool,
+    /// The command bar's live service line (design §6.4), on all four doors.
+    ///
+    /// **Here rather than in a push of its own**, which settles design §12's
+    /// open question 4 in the direction that question points: every input
+    /// `service_line` needs is already in this projection's two arguments, so
+    /// a fourth push would be a second route to state this one already
+    /// carries — and it would have to be `cfg`-gated per platform, where this
+    /// is free on all three.
+    pub service: ServiceLine,
 }
 
 /// Which door the window is showing.
@@ -481,6 +490,73 @@ impl Page {
     }
 }
 
+/// The live service line at the left end of the command bar (design §6.4).
+///
+/// **On all four doors**, which is the point: since the store split the bar
+/// draws no buttons on System or About, so that band is empty ground on half
+/// the window. This is what §6.4 fills it with, and it is the only thing on
+/// screen that says whether the hotkeys are actually working.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceLine {
+    /// Drawn as a GDI `Ellipse`, never as a character. Design §6.4 is
+    /// explicit: an em-dash in `serve --log` already came back as `?"` once,
+    /// and a text face draws a missing glyph as a box.
+    pub mark: Mark,
+    pub text: String,
+}
+
+/// What the service line says.
+///
+/// Four inputs, all of which `control_state` already holds, which is why this
+/// needs no push of its own — see design §12 q4, which phrases the data as
+/// "the new `ControlState` fields" and is settled that way here.
+///
+/// **The denominator is the MODEL's row count, not the registration map's.**
+/// The Shortcuts pill's badge is `binding_count` (`m.rows.len()`), and the
+/// drawing puts `Shortcuts 19` and `Serving · 18 of 19` on screen together —
+/// so the two 19s have to be the same 19. `registered` is the last
+/// registration PASS, so a row added in the window but not yet saved makes it
+/// the smaller number: `Serving · 19 of 20` is then true and legible, where a
+/// denominator taken from the map would read `19 of 19` beside a badge saying
+/// 20 and neither number would explain the other.
+///
+/// **The mark is a function of the text**, and that is fine but is not a
+/// reason for the window to cache it: `WM_DRAWITEM` cannot re-derive a `Mark`
+/// from a window's text, so the painter needs it pushed alongside.
+pub fn service_line(
+    editable: bool,
+    paused: bool,
+    registered_ok: usize,
+    total: usize,
+) -> ServiceLine {
+    // Order matters and is the status vocabulary's own precedence, one
+    // surface up: a file that did not parse outranks a pause, because pausing
+    // a service that was never serving is not the fact worth printing.
+    if !editable {
+        return ServiceLine {
+            mark: Mark::Bad,
+            text: "Not serving — the config did not parse".to_string(),
+        };
+    }
+    if paused {
+        return ServiceLine {
+            mark: Mark::Warn,
+            text: "Paused".to_string(),
+        };
+    }
+    ServiceLine {
+        // `Warn`, not `Bad`, when some chord did not take: the ones that did
+        // are still working, which is the same reading `row_condition` gives
+        // `in use` on a single row.
+        mark: if registered_ok == total {
+            Mark::Ok
+        } else {
+            Mark::Warn
+        },
+        text: format!("Serving · {registered_ok} of {total}"),
+    }
+}
+
 /// Which chord the Shortcuts list folds into a single `Caps` cap, if any.
 ///
 /// Design §3.2's `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]`, as
@@ -529,12 +605,17 @@ pub fn caps_view_enabled(caps_on: bool) -> bool {
 /// nothing on screen having offered to write it.
 ///
 /// **The BAND is not what this hides.** `compute_card_rects` reserves
-/// `pad + ctl` at the bottom of every page whatever this answers, so the
-/// stop every card shares stays one expression on all four doors -- and the
-/// bar has no ground of its own to give away, so an empty one is
-/// indistinguishable from the window ground beside it. Design §6.4 fills that
-/// band on all four pages with the service line; this is the button row, not
-/// the band.
+/// `pad + ctl` at the bottom of every page whatever this answers, so the stop
+/// every card shares stays one expression on all four doors. This is the
+/// BUTTON ROW, not the band.
+///
+/// **And the band is no longer empty where the buttons are gone.** This
+/// comment used to end "an empty bar is indistinguishable from the window
+/// ground beside it", which was the honest reading for one day and stopped
+/// being true on 2026-08-16: design §6.4's service line (`IDC_SERVICE_LINE`)
+/// is chrome, drawn on all four doors, and on System and About it has the
+/// whole bar to itself. What §6.4 still owes is the band's right half -- the
+/// `Saved` readout and `Undo` -- both of which belong to §6's auto-save.
 pub fn command_bar_shown(page: Page) -> bool {
     page.writes_config()
 }
@@ -2593,6 +2674,12 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         // `m.rows`, never `items.len()` -- see the field's own doc. `vis` is
         // already computed above and is the filtered set; this is the file.
         binding_count: m.rows.len(),
+        service: service_line(
+            true,
+            rt.paused,
+            rt.registered.values().filter(|r| r.is_ok()).count(),
+            m.rows.len(),
+        ),
         selected,
         detail,
         filter: m.filter().to_string(),
@@ -2984,6 +3071,10 @@ pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
         remove_enabled: false,
         marked_count: 0,
         editable: false,
+        // The one state where the phrase is not about counts at all: there is
+        // no model to count. `service_line`'s first branch is exactly this,
+        // and it outranks a pause for the reason stated there.
+        service: service_line(false, false, 0, 0),
     }
 }
 
@@ -4988,6 +5079,73 @@ mod tests {
             );
             assert_eq!(s.build.copy, s.build.shown);
         }
+    }
+
+    /// The four phrases, and the precedence between the first two.
+    ///
+    /// A file that did not parse outranks a pause, because pausing a service
+    /// that was never serving is not the fact worth printing -- the same
+    /// reading `row_condition` gives its own four words one surface down.
+    #[test]
+    fn the_service_line_says_one_thing_at_a_time() {
+        let broken = service_line(false, false, 0, 0);
+        assert_eq!(broken.mark, Mark::Bad);
+        assert!(broken.text.starts_with("Not serving"));
+        // ...and it still outranks a pause.
+        assert_eq!(service_line(false, true, 0, 0), broken);
+
+        let paused = service_line(true, true, 3, 19);
+        assert_eq!(paused.mark, Mark::Warn);
+        assert_eq!(paused.text, "Paused");
+
+        let all = service_line(true, false, 19, 19);
+        assert_eq!(all.mark, Mark::Ok);
+        assert_eq!(all.text, "Serving · 19 of 19");
+
+        // Some chord did not take. `Warn`, not `Bad`: the rest are working,
+        // which is `row_condition`'s own reading of `in use` on one row.
+        let some = service_line(true, false, 18, 19);
+        assert_eq!(some.mark, Mark::Warn);
+        assert_eq!(some.text, "Serving · 18 of 19");
+    }
+
+    /// **The denominator is the same number the Shortcuts pill shows.** The
+    /// drawing puts `Shortcuts 19` and `Serving · 18 of 19` on screen at once,
+    /// so the two 19s must be one number -- and the trap is that
+    /// `RuntimeStatus::registered` is the last registration PASS while the
+    /// badge is the pending model. A row added and not yet saved has to make
+    /// the numerator smaller, never the denominator.
+    #[test]
+    fn the_service_lines_total_is_the_badges_total() {
+        let mut m = model();
+        let rt = RuntimeStatus::default();
+        let before = control_state(&m, &rt);
+        assert_eq!(
+            before.service.text,
+            format!("Serving · 0 of {}", before.binding_count)
+        );
+
+        m.add_row();
+        let after = control_state(&m, &rt);
+        assert_eq!(
+            after.binding_count,
+            before.binding_count + 1,
+            "precondition: the badge counts the new row"
+        );
+        assert_eq!(
+            after.service.text,
+            format!("Serving · 0 of {}", after.binding_count),
+            "the bar and the badge must not print two different totals"
+        );
+    }
+
+    /// A file that did not parse has no model to count, and the line says so
+    /// rather than printing `0 of 0` as though it were serving nothing.
+    #[test]
+    fn the_unreadable_state_carries_the_broken_phrase() {
+        let ro = unreadable_state(explain("\"ctrl+alt+t\" = \"A\"\noops\n"));
+        assert_eq!(ro.service.mark, Mark::Bad);
+        assert!(!ro.service.text.contains("Serving"));
     }
 
     /// Design §1's split by store, pinned as a table rather than as prose.
