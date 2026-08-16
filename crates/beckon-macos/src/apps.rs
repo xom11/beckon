@@ -373,6 +373,9 @@ pub(crate) fn resolve_running_in(
     bundle_path_for: impl Fn(&str) -> Option<PathBuf>,
 ) -> Option<ResolvedMatch> {
     let needle = normalize(id);
+    if needle.is_empty() {
+        return None;
+    }
 
     if let Some(app) = running.iter().find(|a| normalize(a.name) == needle) {
         return Some(ResolvedMatch {
@@ -399,6 +402,13 @@ pub(crate) fn resolve_installed_in(
     installed: &[InstalledAppInfo],
 ) -> Option<ResolvedMatch> {
     let needle = normalize(id);
+    // An empty needle is a substring of every name, so without this guard the
+    // substring tier resolves an id that is all format marks — a lone U+200E
+    // survives every `trim()` at the CLI and config boundaries — to whichever
+    // installed app sorts first, and launches it.
+    if needle.is_empty() {
+        return None;
+    }
 
     if let Some(app) = installed.iter().find(|a| normalize(&a.name) == needle) {
         return Some(ResolvedMatch {
@@ -601,6 +611,22 @@ mod tests {
     #[test]
     fn empty_inputs_return_none() {
         assert!(resolve_test("anything", &[], vec![]).is_none());
+    }
+
+    /// An id that normalizes to nothing must not resolve. It reaches here:
+    /// U+200E is a format mark, not whitespace, so it survives every
+    /// `trim()` at the CLI and config boundaries, and an empty needle is a
+    /// substring of every name — so the substring tier used to launch
+    /// whichever installed app sorted first.
+    #[test]
+    fn an_id_that_normalizes_to_nothing_resolves_to_nothing() {
+        let running = vec![rref("com.example.alpha", "Alpha")];
+        let inst = vec![
+            installed("com.example.alpha", "Alpha"),
+            installed("com.example.beta", "Beta"),
+        ];
+        assert!(resolve_test("\u{200E}", &running, inst.clone()).is_none());
+        assert!(resolve_test("", &running, inst).is_none());
     }
 
     // ---------- bidi-prefixed Name (PWA case) ----------
