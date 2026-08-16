@@ -12,6 +12,123 @@ Cross-platform focus-or-launch app switcher for macOS, Windows, and Linux. A thi
 
 **Name-first identifiers.** The id can be a human-readable Name (e.g. `Claude`, `Brave`) or a canonical OS-level id (e.g. sway `app_id`, macOS `bundle_id`). beckon resolves Names against installed-app metadata (`.desktop` `Name=` on Linux). Names are stable across machines; OS-level ids often are not (Brave PWA hashes vary per install). Bindings should prefer Names; canonical ids are a fallback for ambiguity.
 
+## One worktree per session
+
+**Every session that is going to change anything works in its own git
+worktree. Never in the primary checkout, and never directly on `main`.**
+`.worktrees/` has been in `.gitignore` since before this entry existed — the
+rule was implicit, and being implicit is exactly how it got broken.
+
+```sh
+cd ~/Documents/dev/beckon
+git worktree add .worktrees/<branch> -b <branch> origin/main
+cd .worktrees/<branch>
+```
+
+**Why this is a rule and not a preference.** Measured on 2026-08-14: the
+primary checkout held **970 uncommitted lines belonging to two unrelated
+workstreams at once** — a Hyprland-parity change (`hyprland.rs`, `CLAUDE.md`,
+`testing/linux_live_test.py`) and a `check --resolve` implementation
+(`beckon-cli/src/lib.rs`, two test files) — while `ListAgents` showed three
+Claude sessions with that directory open. The failure modes are not
+hypothetical and not visible from inside any one session:
+
+- `git status` cannot say which change belongs to whom, so nobody can commit
+  without either sweeping in a stranger's work or hand-picking hunks.
+- **`git switch` in one session silently re-homes every commit another
+  session makes next.** One did, mid-edit. The victim is not warned at any
+  point, and the obvious defence does not exist. Committing to `main` is not
+  an error, so git has nothing to say: the most it would print is the ordinary
+  `[main abc1234] …` — and that line was not printed either, because the
+  commits went through `git commit -q`, which suppresses it. The check that
+  followed looked conclusive and was not: **`git log --oneline -1` never names
+  the branch you are on.** Five commits landed on `main` while every command
+  involved reported success. This is why the rule below is *run
+  `git branch --show-current`*, not *read the output more carefully* — on this
+  path there is no output to read.
+  - And the push that should have caught it does not. `git push -u origin
+    <branch>` pushed that untouched branch and printed
+    `remote: Create a pull request for '<branch>' …` — **an empty push and a
+    real one print the same thing**, and `-q` does not suppress it because it
+    is a remote message. It surfaced only when `gh pr create` refused with
+    *"you must first push the current branch"*, which is a different tool,
+    much later. Verify instead of reading output: `git branch --show-current`
+    **before** committing, and `git branch -vv` (it prints
+    `[origin/<branch>: ahead N]`) or `git ls-remote --heads origin <branch>`
+    against your local SHA **after** pushing.
+- A `CLAUDE.md` edit from either session lands on top of the other's
+  uncommitted text and is swept into whichever commit is made first.
+- **Two sessions independently designed the *same* flag with *opposite*
+  semantics** — `--resolve` exiting non-zero versus never changing the exit
+  code. Note what did *not* cause this: one side's design was **committed**,
+  on its own branch, the whole time. It was invisible because nobody fetched
+  or listed branches, not because it was unwritten.
+
+**So: a worktree prevents two sessions colliding on a FILE. It does nothing
+about two sessions building the same THING.** Two spotless worktrees produce
+the duplicate-design failure just as readily. Only the last rule below catches
+that one.
+
+Rules that follow from that:
+
+- **Share the build directory for `check`, `clippy` and `fmt`. Do not trust it
+  for `build` and `run`.** `target/` is ~7.4 GB and this workspace also
+  cross-compiles to `aarch64-pc-windows-msvc`, so a fresh worktree rebuilds
+  all of it: export `CARGO_TARGET_DIR=~/Documents/dev/beckon/target` and take
+  the saving. Cargo locks the directory, so concurrent builds serialise rather
+  than interleave — but "they do not corrupt each other" is where the useful
+  half of that sentence stops. Three failure modes, all measured 2026-08-15
+  with several worktrees live, in ascending order of how long they cost:
+
+  1. **A stale rlib produces a compile error naming a symbol that is plainly
+     in your source.** Ours said `no variant named 'Reset' for enum
+     DefaultButton` about a file the task had never touched, while `Reset` sat
+     in the enum three lines from where `grep` found it. **Rule: an error
+     about code you can grep is a stale artifact, not a bug.**
+  2. **`cargo clean -p <pkg>` does not clean cross-target artifacts**, so the
+     obvious fix appears to disprove the diagnosis: the clean runs, removes
+     ~99 MB, and the build fails *identically*, which reads as "so it is not
+     the cache" and sends you hunting a real bug. Pass the flag —
+     `cargo clean -p beckon-core -p beckon-windows --target
+     aarch64-pc-windows-msvc` removed a further 882 MB and the check then
+     passed in 0.8 s.
+  3. **`target/debug/beckon` is one path shared by every worktree, so the
+     binary you run may be another branch's** — and this one reports nothing
+     at all. `cargo build` said `Finished in 0.08s` and the binary at that
+     path had no `--resolve` flag, i.e. it predated `origin/main`. There is no
+     error to notice; you simply measure the wrong program. **Build into a
+     private `CARGO_TARGET_DIR` whenever you intend to run the binary and
+     believe its output.**
+
+  Unrelated to worktrees but it compounds all three: **the first exec of a
+  freshly linked binary is killed on this machine** (exit 137, empty output),
+  and the second succeeds. It makes a fresh `--help | grep` return nothing and
+  a fresh test binary report a failure, neither of which is true. Re-run
+  before believing either.
+- **The primary checkout stays on `main` and stays clean.** It is for reading,
+  for `git log`, and for owning the shared `target/`.
+- **Clean up when the branch merges**: `git worktree remove .worktrees/<branch>`.
+  `git worktree list` is the inventory. Two strays predate this rule and are
+  not covered by it — `~/Documents/dev/beckon-fix-linux` and
+  `.claude/worktrees/four-doors-phase-0`.
+- **Before starting, look for company — and look at branches, not just at the
+  working tree.** This is the only rule here that catches duplicate *design*,
+  and the three obvious checks are all blind to it:
+
+  ```sh
+  git worktree list                 # other checkouts
+  git status                        # in the PRIMARY checkout: someone mid-task
+  ListAgents                        # other sessions, but not what they are building
+  git fetch --all && git branch -a  # committed work you would otherwise never see
+  git log --all --oneline -20       # including branches nobody has merged
+  ```
+
+  Uncommitted work in the shared checkout means somebody is mid-task. A
+  *branch* carrying a spec or a design doc means somebody has already decided
+  something — and other people's work is far more often committed-but-unmerged
+  than uncommitted. Either way the answer is the same: reconcile the plan
+  before executing it, and talk to the other session if there is one.
+
 ## Architecture
 
 ### Workspace layout (Rust)
@@ -149,7 +266,15 @@ all. Every Linux bug fixed in the 2026-08 pass was found by it, and none of
 them were visible to the 65 unit tests that were green the whole time.
 
 It detects its environment the same way `pick_backend` does, so run it inside
-the session under test. All four backends currently pass 19/19 on Ubuntu
+the session under test. **All five backends now pass 19/19.** Hyprland was the
+last to be brought up — 0.56.2 on 2026-08-15, nested inside a live GNOME
+session rather than on its own tty, which costs nothing and leaves the host
+desktop untouched (recipe in `testing/README.md`, config in
+`testing/hypr-nested.conf`). Two of the three defects that run found were the
+suite's own, and both looked like focus bugs: on NixOS `pkill -x <name>` never
+matches a wrapped binary (`comm` is `.xterm-wrapped`), so the suite left its
+own windows behind and step 5c skipped itself while 5b failed expecting a
+launch it already had. The other four pass on Ubuntu
 26.04 arm64 (GNOME Shell 50.1 headless, sway 1.11, i3 + Xvfb, openbox + Xvfb)
 — see `testing/README.md` for the headless bring-up recipes, including the
 D-Bus service-directory trick that keeps `gnome-shell --headless` from
@@ -182,7 +307,7 @@ beckon installed                     # list installed apps with launch ids
 beckon search <NAME>                 # fuzzy search across running + installed
 beckon resolve <ID>                  # validate id, print metadata + suggestions
 beckon doctor                        # check environment (permissions, IPC, etc.)
-beckon check <CONFIG>                # validate a shortcuts TOML file (CI-friendly)
+beckon check <CONFIG> [--resolve]    # validate a shortcuts TOML file (CI-friendly)
 beckon serve <CONFIG> [--log PATH]   # resident hotkey service (macOS, Windows)
 beckon -v, --verbose                 # debug logging (combine with any command)
 beckon -h, --help
@@ -233,6 +358,34 @@ escape hatch that strictly dominates is the one that already exists.
 
 Full measurements and the rejected alternatives are in
 `docs/superpowers/specs/2026-08-10-cli-subcommands-design.md`.
+
+#### `check` validates shape; `check --resolve` validates meaning
+
+`beckon check` never consults the machine — that is what makes it usable in
+CI, where none of the apps are installed, and it is pinned by
+`check_without_resolve_says_nothing_about_whether_the_app_exists`.
+
+`--resolve` grades every app name against this machine's catalog using
+`beckon_core::certainty::Certainty`. Every backend already computed the tier
+and threw it away on one line (`resolve_inner(..).is_some()` on macOS,
+`resolve_detailed_in(..).is_none()` on Linux, `apps::resolve(..).is_none()`
+on Windows); the grade is that projection removed.
+
+**Only `NoMatch` changes the exit code.** A `Guess` — the single substring
+tier every backend has — resolves, so it prints and exits 0. Two of the
+author's own bindings depend on that tier deliberately (`Settings` matching
+*System Settings*, `DeepSeek` matching *DeepSeek - Into the Unknown*), so
+failing on `Guess` would turn a correct file red, which is how a check stops
+being run. The scale is why the flag exists at all: measured on `rog`,
+**14 of 18 shortcuts did not resolve** while `beckon check` reported
+`ok: 18 shortcuts`.
+
+A `Guess` reports **two different hazards** and says which: one candidate
+means a later install can take the name; several means the winner is already
+decided by sort order over `.desktop` ids or display names, not by anything
+the user wrote. Before `desktop::scan()` sorted its output, 20 runs of
+`beckon resolve` split 12/8 between two entries sharing a `Name=` — the same
+keypress, two answers.
 
 ### Linux backend dispatch
 
@@ -621,22 +774,46 @@ fallback ladder.
   (Hyprland 0.40+) with `/tmp/hypr/<sig>/.socket.sock` as fallback for older
   installs. Each request opens a fresh `UnixStream` — Hyprland closes the
   socket after responding.
-- **Cycle order (5a)**: pick the same-app window with the lowest non-current
-  `focusHistoryID`. Two-window apps end up oscillating between the most-recent
-  pair, mirroring the practical i3ipc behaviour.
-- **Hide (5c)**: `dispatch movetoworkspacesilent special:beckon,address:0xN`.
-  All apps that beckon hides land on the same shared `special:beckon`
-  workspace; the next `beckon <id>` finds the window in `j/clients`, sees
-  it's not focused, and `dispatch focuswindow` brings the special workspace
-  back into view automatically (Hyprland surfaces the window's workspace on
-  focus). No state file or per-app special workspaces required.
-- **MRU (5b)**: reuses the same `state.rs` file at
-  `$XDG_RUNTIME_DIR/beckon-mru` as the i3ipc backend. Sharing is safe — a
-  user runs only one Linux compositor at a time.
-- **Decision logic** is split into a pure `decide(clients, active, target,
-  previous_app) -> Decision` function that the IPC layer then translates
-  into dispatch commands. This is what makes the algorithm unit-testable
-  without a live Hyprland session (19 tests in `hyprland::tests`).
+- **Cycle order (5a)** is the shared address-ordered ring in
+  `algorithm::decide`, *not* `focusHistoryID`. This entry used to say
+  "pick the same-app window with the lowest non-current `focusHistoryID`",
+  which describes code that was deleted: because `focusHistoryID` is real
+  focus history, focusing a window promotes it to 0 and demotes the one just
+  left, so that ring is a 2-cycle and windows 3..N are unreachable. Verified
+  live on Hyprland 0.56.0 — three `foot` windows, six presses, the ring walks
+  all three and laps.
+- **Hide (5c)**: `dispatch movetoworkspacesilent special:beckon,address:0xN`,
+  and **coming back out is beckon's job** — `focus_window` moves a window off
+  `special:beckon` before focusing it. This entry used to claim `dispatch
+  focuswindow` alone was enough because "Hyprland surfaces the window's
+  workspace on focus". Measured on 0.56.0, that is wrong in the way that
+  matters: the special workspace is *shown* as an overlay, but the window
+  keeps belonging to it, so the moment focus moves elsewhere it disappears
+  and `$mod+1..4`, `movefocus` and `movetoworkspace` all behave as if it does
+  not exist — only `beckon <id>` could surface it again. sway does not have
+  this problem because `focus` on a scratchpad container runs
+  `root_scratchpad_show`, which re-parents it onto the workspace the user is
+  looking at. The same bug also made the *second* hide a silent no-op
+  (`movetoworkspace` early-returns when the window is already there) while
+  beckon reported `Hidden`. Only `special:beckon` is unparked; a user's own
+  `special:*` workspace is left where they put it.
+- **No MRU state file (5b)**: unlike every other Linux backend, this one
+  passes `previous_app = None` to `decide`. `$XDG_RUNTIME_DIR/beckon-mru`
+  exists because the sway tree carries no focus history; `focusHistoryID` is
+  real MRU and — measured on 0.56.0 — reorders on focus changes beckon never
+  made, including mouse clicks and native binds. Consulting a file that only
+  records beckon's own actions could only make step 5b less accurate.
+- **Window filter**: `list_clients` drops clients with an empty `class` and
+  those with `hidden = true` (Hyprland sets it on windows it deliberately
+  keeps off screen, e.g. terminal swallowing). It must **never** filter on
+  `visible`: measured on 0.56.0, a group tab that is not on top reports
+  `hidden=false, visible=false`, so filtering there would hide every tab but
+  the front one and break step 5a through a tabbed group. Windows parked on
+  `special:beckon` stay in the list on purpose — drop them and the next
+  keypress launches a duplicate instead of bringing the window back.
+- **Decision logic** lives in `algorithm::decide`, shared with every other
+  Linux backend; `hyprland.rs` owns only the `Client` → `WindowSnapshot`
+  projection and the `Decision` → dispatch translation.
 - **No `hyprctl` dep**: keeps the hot path at a single short-lived socket
   connection per query, and works in containers/Nix builds where `hyprctl`
   may not be on PATH.
@@ -898,7 +1075,9 @@ PWAs installed via Brave/Chrome get an extension hash inside their `.desktop` fi
 2. **MRU tracking source per backend**
    Step 5b (toggle-back) on Linux uses a single-app state file at
    `$XDG_RUNTIME_DIR/beckon-mru` containing the `app_id` focused before
-   the most recent beckon action. Each invocation reads the live focus
+   the most recent beckon action — **except on Hyprland**, which has real
+   focus history in `focusHistoryID` and therefore reads and writes nothing
+   (see the Phase 1c note). Each invocation reads the live focus
    from IPC, so transitions made by mouse / native hotkeys reconcile on
    the next beckon call. Limitation: only beckon-mediated focus changes
    are recorded; a sequence of mouse-only switches between beckon calls
@@ -1439,6 +1618,25 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
 - **Scoop bucket** (Windows, x86_64 + arm64): `scoop bucket add xom11 https://github.com/xom11/scoop-bucket && scoop install xom11/beckon` — bucket repo `xom11/scoop-bucket`. Manifest auto-bumped by the same workflow.
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
+
+  **`nix build` was broken from v0.8.0 to v0.9.3 and nobody noticed for a
+  month.** `c33fcf6` inserted `pub mod settings_window;` between
+  `#[cfg(target_os = "windows")]` and `pub mod shell;` in
+  `crates/beckon-windows/src/lib.rs`, leaving `shell` ungated; `package.nix`
+  built the whole workspace, so every Linux/macOS `nix build` hit
+  `E0433: unresolved module \`windows\``. The user's Hyprland laptop sat on
+  0.6.0 the whole time because `nix flake update beckon` could not succeed.
+  Nothing in CI could see it: the build matrix passes
+  `--exclude beckon-windows` off Windows and `release.yml` builds
+  `-p beckon-cli`. Two guards now exist and they cover *different* halves —
+  `package.nix` passes `-p beckon-cli --bin beckon`, so **nix no longer
+  compiles `beckon-windows` at all** and the `nix` CI job cannot catch a
+  future ungated `mod`; the step that can is `the whole workspace still
+  compiles, unexcluded` (`cargo check --workspace --all-targets`, Linux and
+  macOS legs) in the `build` matrix. Do not delete one believing the other
+  covers it — and note the trap in that step's own history: it was written
+  as "mirroring what nix does", which stopped being true in the same commit
+  range that made it load-bearing.
 
 **Landing page**: `site/`, deployed by `.github/workflows/pages.yml` (Pages
 source = **GitHub Actions**, set by hand in repo settings — left at *Deploy

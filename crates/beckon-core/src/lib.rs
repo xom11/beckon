@@ -72,6 +72,7 @@ pub trait Backend {
 
 pub mod caps;
 pub mod capture;
+pub mod certainty;
 pub mod config_write;
 pub mod menu;
 pub mod page_plan;

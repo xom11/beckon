@@ -5,6 +5,9 @@
 .DS_Store
 /.claude
 
+# Byte-compiled live-test suite (`python3 -m py_compile testing/...`).
+__pycache__/
+
 # Built GNOME Shell extension bundle (gnome-extensions pack output).
 # The source lives under extensions/beckon@xom11.github.io/.
 extensions/*.shell-extension.zip
@@ -12,3 +15,8 @@ extensions/*.shell-extension.zip
 # Local git worktrees (isolated workspaces)
 .worktrees/
 .gstack/
+
+# Per-plan scratch for subagent-driven execution: ledger, task briefs,
+# implementer reports, review packages. Recovery state for a session in
+# progress, never part of the history.
+.superpowers/

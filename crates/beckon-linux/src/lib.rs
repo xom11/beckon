@@ -111,6 +111,28 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     ))
 }
 
+/// One resolution report per name, for `beckon check --resolve`.
+///
+/// A batch rather than a loop over `desktop::resolve_detailed`, which re-runs
+/// `scan()` — every `applications/` directory in `$XDG_DATA_DIRS`, recursively
+/// — on every call.
+///
+/// Takes no backend: this is the resolution half of step 2, and `.desktop`
+/// files are on disk whether or not a compositor is running.
+#[cfg(target_os = "linux")]
+pub fn resolve_reports(names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Ok(desktop::resolve_reports(names))
+}
+
+/// Returns an error rather than an empty vector: an empty one reads as
+/// "every name resolved", which is the one answer this cannot know.
+#[cfg(not(target_os = "linux"))]
+pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-linux only compiles on Linux".to_string(),
+    ))
+}
+
 /// Distinguishes which compositor we resolved via env vars. Used by
 /// `beckon doctor` to give the user a precise message even though the IPC
 /// backend is shared.

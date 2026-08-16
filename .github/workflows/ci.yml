@@ -40,6 +40,37 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace ${{ matrix.exclude_flags }} --all-targets
+      - name: the whole workspace still compiles, unexcluded
+        # Every step around this one passes `--exclude`, so no job in this
+        # file ever compiled `beckon-macos` or `beckon-windows` off its own
+        # OS. A bare `cargo check` at the workspace root does.
+        #
+        # Measured at v0.9.3: `beckon-windows/src/lib.rs` declared `pub mod
+        # shell;` with no `#[cfg(target_os = "windows")]`, all three jobs here
+        # were green, and `nix build` failed with four E0433s for the
+        # target-gated `windows` crate -- taking down every NixOS and nix-
+        # darwin host that carries beckon as a flake input.
+        #
+        # This step used to be justified as "mirroring what nix does", and
+        # that is no longer true in the same commit range: `nix/package.nix`
+        # now passes `-p beckon-cli --bin beckon`, so nix does not compile
+        # `beckon-windows` at all any more. That makes this step the ONLY
+        # thing in the project that compiles that crate off Windows -- it is
+        # load-bearing on its own merits now, not as a stand-in for the `nix`
+        # job, and the two do not cover for each other.
+        #
+        # Windows is deliberately left out: nothing builds beckon with nix
+        # there (scoop packages the `release.yml` artefact), so the same rule
+        # would only add an unmeasured leg to the one job that must stay
+        # trustworthy.
+        #
+        # `check` rather than `build`: E0433 is a name-resolution error, so
+        # metadata-only catches the whole class at a fraction of the time.
+        # `--all-targets` because examples are workspace targets too and carry
+        # their own guards.
+        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
+        run: cargo check --workspace --all-targets
+
       - name: Test
         run: cargo test --workspace ${{ matrix.exclude_flags }}
       - name: manifest reached the binary
@@ -91,6 +122,65 @@ jobs:
           Write-Host "starts cleanly: $out"
       - name: Clippy
         run: cargo clippy --workspace ${{ matrix.exclude_flags }} --all-targets -- -D warnings
+
+  # `nix build .#beckon` failed on Linux and darwin from v0.8.0 to v0.9.3
+  # with E0433 in `beckon-windows/src/shell.rs`, with every CI job green the
+  # whole time, and users on nix were stuck on the last version that built.
+  # The compile half of that is now guarded in the `build` job above; this
+  # job guards the half no `cargo` invocation can reach -- that
+  # `nix/package.nix`, `flake.nix` and `Cargo.lock` still agree well enough
+  # to produce a package at all.
+  #
+  # One runner, not a matrix: the failure mode is "a workspace member that
+  # does not compile off Windows", which is identical on Linux and darwin,
+  # and Linux is where beckon's nix users are.
+  nix:
+    name: nix build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          # Both steps below use flake syntax (`.#beckon`). Enable what that
+          # needs here rather than depending on the installer's default.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build
+        run: nix build .#beckon --print-build-logs
+
+      - name: the package ships one binary, named and versioned correctly
+        run: |
+          set -euo pipefail
+
+          # `beckon-cli` declares a second [[bin]], `beckon-serve`, and cargo
+          # cannot gate a [[bin]] on target_os -- off Windows it builds a stub
+          # whose main() prints "Windows-only" and exits 1. nixpkgs'
+          # cargoInstallPostBuildHook copies *every* executable at the top of
+          # target/<triple>/release, so dropping `--bin beckon` from
+          # cargoBuildFlags puts that stub in $out/bin silently. Listing the
+          # directory is what catches it; `test -x result/bin/beckon` would
+          # not. meta.mainProgram claims the name, so check the name too.
+          got=$(ls result/bin)
+          if [ "$got" != "beckon" ]; then
+            echo "expected result/bin to hold only 'beckon', got:"; echo "$got"
+            exit 1
+          fi
+
+          # nix/package.nix reads the version from [workspace.package] rather
+          # than carrying its own. It used to carry its own, and had drifted
+          # to 0.1.0 against a 0.9.3 workspace -- so a nix-installed beckon
+          # reported a version that never existed. This pins the whole chain:
+          # Cargo.toml -> nix eval -> what the binary prints.
+          want=$(nix eval --raw .#beckon.version)
+          # Captured, not piped into grep: `set -o pipefail` above turns a
+          # SIGPIPE from grep -q closing the pipe early into a job failure
+          # that looks like a version mismatch.
+          got_version=$(./result/bin/beckon --version)
+          case "$got_version" in
+            *"$want"*) ;;
+            *) echo "beckon --version ($got_version) disagrees with Cargo.toml ($want)"; exit 1 ;;
+          esac
+          echo "ships $got at $want"
 
   site:
     name: Landing page checks

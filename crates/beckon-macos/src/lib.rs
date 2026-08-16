@@ -106,6 +106,33 @@ pub fn is_accessibility_trusted() -> bool {
     false
 }
 
+/// One resolution report per name, for `beckon check --resolve`.
+///
+/// A batch rather than a loop over `apps::resolve`, because the scans are the
+/// expensive half and they are per-call there: `installed_apps()` walks three
+/// roots one level deep and reads one `Info.plist` per bundle, and a shortcuts
+/// file with eighteen bindings is an ordinary one.
+///
+/// `running_apps()` is part of the answer because it is tiers 1 and 2 of the
+/// ladder — an app running but installed somewhere this scan does not reach
+/// still resolves, and resolves *exactly*. `Finder` is the everyday case: its
+/// bundle is `/System/Library/CoreServices/Finder.app`, under none of the
+/// three roots. That is the one place this answer depends on the session
+/// rather than on the disk, and it matches what `beckon resolve` reports.
+#[cfg(target_os = "macos")]
+pub fn resolve_reports(names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Ok(apps::resolve_reports(names))
+}
+
+/// Returns an error rather than an empty vector: an empty one reads as
+/// "every name resolved", which is the one answer this cannot know.
+#[cfg(not(target_os = "macos"))]
+pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::NameReport>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-macos only compiles on macOS".to_string(),
+    ))
+}
+
 /// Print a `resolve` resolution report for `id` on stdout. Mirrors the Linux
 /// `cmd_resolve_linux` shape but uses macOS metadata (running apps + installed
 /// .app bundles).

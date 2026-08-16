@@ -18,6 +18,7 @@ backend, so run it inside the session you want to test:
 | environment | probe | notes |
 |---|---|---|
 | `SWAYSOCK` / `I3SOCK` | `swaymsg` / `i3-msg` tree | covers sway *and* i3 |
+| `HYPRLAND_INSTANCE_SIGNATURE` | `hyprctl -j clients` / `activewindow` | matched **before** `WAYLAND_DISPLAY`, which Hyprland also sets |
 | `WAYLAND_DISPLAY` (GNOME) | the beckon shell extension over `busctl` | extension must be installed and enabled |
 | `WAYLAND_DISPLAY` (KDE) | KWin scripting over `busctl` | nothing to install; KWin ships the engine |
 | `DISPLAY` | `xprop` / `xdotool` (EWMH) | any EWMH window manager |
@@ -34,8 +35,9 @@ without a second run.
 
 ## Bringing up test compositors in a headless VM
 
-All four Linux backends were exercised this way on Ubuntu 26.04 arm64 under
-Lima (`vmType: vz`), with no display attached.
+GNOME, KDE, sway/i3 and generic X11 were exercised this way on Ubuntu 26.04
+arm64 under Lima (`vmType: vz`), with no display attached. Hyprland is the one
+backend that has not been — see its section below.
 
 ### GNOME Wayland (GNOME Shell 50.1)
 
@@ -164,6 +166,73 @@ GTK4 apps do **not** map a window on a headless sway output here — no
 the same thing with beckon out of the picture. Use `foot` (Wayland) and
 `xterm` (XWayland) instead; between them they cover both window-identity
 paths.
+
+### Hyprland
+
+**19/19 on Hyprland 0.56.2, 2026-08-15**, nested inside a live GNOME Shell
+50.4 session on `rog` (NixOS, x86_64). Recipe below is what actually worked.
+
+Nesting inside the sway rig is ruled out — Hyprland needs `xdg_wm_base` v6 and
+sway 1.11 / weston 14.0.2 only expose v5 (measured; recorded at the top of
+`crates/beckon-cli/tests/hyprland_e2e.rs`, which is why that file drives a
+fake compositor instead). **A GNOME session is a good enough host**, and using
+one costs nothing: Hyprland opens as an ordinary window inside it, so the
+suite never touches the desktop you are sitting in. Hyprland 0.56 has no
+headless flag of its own — it moved from wlroots to Aquamarine — so nesting is
+the route.
+
+```sh
+# from an ssh shell; the host session supplies WAYLAND_DISPLAY=wayland-0
+XTERM=$(nix build --no-link --print-out-paths nixpkgs#xterm)
+export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0
+export PATH=$XTERM/bin:$PATH
+export XDG_DATA_DIRS=$XTERM/share:$XDG_DATA_DIRS
+setsid -f sh -c "Hyprland -c testing/hypr-nested.conf > /tmp/hypr-nested.log 2>&1"
+
+# then, for the suite itself, point at the NESTED instance
+export HYPRLAND_INSTANCE_SIGNATURE=$(ls -t $XDG_RUNTIME_DIR/hypr | head -1)
+export WAYLAND_DISPLAY=wayland-1   # the socket Hyprland just created
+./testing/linux_live_test.py --beckon ./target/release/beckon
+```
+
+Three things that cost time here, all of them environmental rather than
+beckon's:
+
+- **`xterm` and its `.desktop` must be visible to *both* sides.** The
+  compositor launches it (`hyprctl dispatch exec xterm` inherits Hyprland's
+  own `PATH`, fixed at the moment you started it) and beckon resolves it
+  (`XDG_DATA_DIRS` in the shell running the suite). Miss the first and every
+  spawn fails; miss the second and `beckon xterm` answers *"no .desktop entry
+  matches"*, which reads exactly like a resolver bug.
+- **On NixOS, `pkill -x <name>` never matches a wrapped binary.** The process
+  that actually runs is the wrapper: `xterm` reports `comm=.xterm-wrapped`,
+  `kitty` reports `.kitty-wrapped`. `-f` does not save you either, because the
+  command line is the store path ending in `/bin/xterm`. `Suite.kill_apps`
+  therefore also tries `.<name>-wrapped`. Before that, the suite left its own
+  windows behind and the symptom was misleading: step 5c and the hide/restore
+  pair skipped with *"session has extra windows"* while step 5b failed
+  expecting a launch it already had — three results that all look like focus
+  bugs and are all one `pkill` away from green.
+- **Pick the app pair from what is installed.** `rog` has no `xterm` by
+  default, and `--other kitty` is not a substitute: it is wrapped, so it
+  survives the cleanup and poisons the next test's preconditions.
+
+`foot` and `xterm` are the default pair for the same reason they are on sway —
+Wayland-native `app_id` on one side, XWayland `WM_CLASS` on the other. Note
+that the XWayland side advertises `XTerm`, capitalised, which is exactly the
+case-insensitive match `algorithm::Target` exists to handle.
+
+Two things specific to this backend:
+
+- Step 5c does not unmap the window, it parks it on the special workspace
+  `special:beckon` (`HIDE_WORKSPACE` in `crates/beckon-linux/src/hyprland.rs`).
+  A hidden window is therefore still in `hyprctl -j clients`, and
+  `HyprEnv.is_hidden` reads the workspace name rather than the window's
+  absence. If the two ever drift apart, that constant is the thing to grep.
+- `HyprEnv` is the only probe that treats a refused command as a hard error:
+  `hyprctl dispatch` answers `ok` or says why not, and nothing in the suite
+  polls those calls for success, so a dropped `focuswindow` would otherwise
+  surface as an unexplained skip out of `force_focus`.
 
 ### i3 and generic X11
 

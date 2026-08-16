@@ -403,6 +403,23 @@ apply live, and a broken edit keeps the current bindings and fires a
 notification instead of dropping your keys. One `serve` per config path is
 enforced with a lock file.
 
+`beckon check --resolve shortcuts.toml` additionally grades each app name
+against what *this machine* has installed. There are three tiers — an exact
+match, a substring guess, or no match at all — and **only a no-match fails
+the check.** A no-match exits 1 and lists the dead bindings, the case where a
+file is perfectly valid and the keys still do nothing, because the apps were
+never installed here. A guess still resolves, so it prints in its own block
+instead, saying why: one candidate means a later install can quietly take
+the name; several means the winner is already decided by sort order, not by
+anything you wrote. It does not fail the check — two of this project's own
+bindings live on that tier on purpose (`Settings` matching *System
+Settings*). Naming the app exactly is what turns a guess into an exact
+match. It reads installed-app metadata (`.desktop` files / LaunchServices /
+the Start menu), and on macOS the running apps too, since that is where
+`resolve` starts there. It never asks the compositor, so it runs over SSH
+and in a headless VM. Keep it off in CI: a runner has none of your apps, so
+every name comes back a no-match.
+
 **Trust the registration count, not the shortcut count.** Startup and reload
 report `5 shortcuts registered` when clean and `3 of 5 shortcuts registered
 (2 failed)` when another app already owns a chord — a config can parse
