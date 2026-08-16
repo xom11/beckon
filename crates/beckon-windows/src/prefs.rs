@@ -7,12 +7,18 @@
 //! not parse -- a theme switch has nothing to do with a TOML error, and before
 //! the split it was greyed out by one.
 //!
-//! Two values, both `REG_DWORD`:
+//! Three values, all `REG_DWORD`:
 //!
 //! | Name | Meaning |
 //! |---|---|
 //! | `DarkMode` | 0 light, anything else dark. Absent means DARK -- design §3.3's stated behaviour change |
 //! | `Opacity` | 85..=100, the transparency slider. Absent means `OPACITY_DEFAULT` |
+//! | `CapsView` | 1 folds the caps chord to `[Caps]` in the Shortcuts list. Absent or 0 means OFF -- design §3.2 |
+//!
+//! **The table is the list of what to delete**, which is why `CapsView` being
+//! missing from it mattered: it read "Two values" from the day `caps_view` was
+//! added, so a profile reset built from this header left the fold behind and
+//! the Shortcuts list came back folded on a machine the user believed clean.
 //!
 //! **Absent is not zero**, and every read here says so explicitly: a fresh
 //! profile has neither value, and a missing `DarkMode` read as 0 would ship

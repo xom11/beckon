@@ -3487,77 +3487,92 @@ unsafe fn create() -> Result<(), String> {
     let _ = InitCommonControlsEx(&icc);
 
     let class = w!("BeckonSettingsWindow");
-    // Resource id 1, the same icon beckon.rc embeds and the tray already
-    // uses. hIcon wants the large (SM_CXICON, 32x32) variant LoadIconW
-    // returns; hIconSm wants the small (SM_CXSMICON, typically 16x16) one,
-    // loaded explicitly via LoadImageW exactly like the tray's own
-    // tray_add -- letting the shell downsample the large icon to 16x16 on
-    // the fly is what tray_add's comment says blurs an icon that is crisp
-    // at 16x16 in the .ico itself. Both fall back to the stock
-    // IDI_APPLICATION icon, matching tray_add, so a build without the .rc
-    // resource still shows an icon instead of none.
-    let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
+    // **Once per process, icons included.** `RegisterClassExW` fails
+    // harmlessly for an already-registered class, which is what happens when
+    // the window is reopened from the tray -- but the small icon does not:
+    // `LoadImageW` without `LR_SHARED` hands back a handle this process owns,
+    // the class keeps the FIRST registration's icon (`chrome::paint` reads it
+    // back with `GetClassLongPtrW(GCLP_HICONSM)`), and nothing calls
+    // `DestroyIcon`. Loading it on every `create` leaked one HICON per reopen
+    // in a process that runs from logon to logoff, for a handle that was never
+    // used. `LR_SHARED` was the other candidate and is worse here: it is
+    // documented to return a cached handle whose size may not match the
+    // request, and the request is the whole point of the call.
+    static REGISTER_CLASS: std::sync::Once = std::sync::Once::new();
+    REGISTER_CLASS.call_once(|| {
+        // Resource id 1, the same icon beckon.rc embeds and the tray already
+        // uses. hIcon wants the large (SM_CXICON, 32x32) variant LoadIconW
+        // returns; hIconSm wants the small (SM_CXSMICON, typically 16x16) one,
+        // loaded explicitly via LoadImageW exactly like the tray's own
+        // tray_add -- letting the shell downsample the large icon to 16x16 on
+        // the fly is what tray_add's comment says blurs an icon that is crisp
+        // at 16x16 in the .ico itself. Both fall back to the stock
+        // IDI_APPLICATION icon, matching tray_add, so a build without the .rc
+        // resource still shows an icon instead of none.
+        let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
+            .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+            .unwrap_or_default();
+        let icon_sm = LoadImageW(
+            Some(hinst.into()),
+            PCWSTR(1 as *const u16),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_DEFAULTCOLOR,
+        )
+        .map(|h| HICON(h.0))
         .or_else(|_| LoadIconW(None, IDI_APPLICATION))
         .unwrap_or_default();
-    let icon_sm = LoadImageW(
-        Some(hinst.into()),
-        PCWSTR(1 as *const u16),
-        IMAGE_ICON,
-        GetSystemMetrics(SM_CXSMICON),
-        GetSystemMetrics(SM_CYSMICON),
-        LR_DEFAULTCOLOR,
-    )
-    .map(|h| HICON(h.0))
-    .or_else(|_| LoadIconW(None, IDI_APPLICATION))
-    .unwrap_or_default();
-    // WNDCLASSEXW, not WNDCLASSW: the brief called for hIconSm, but that
-    // field only exists on the Ex struct (paired with RegisterClassExW) --
-    // WNDCLASSW has no small-icon slot at all. Same feature flag either way
-    // (Win32_UI_WindowsAndMessaging), so this is not a new dependency.
-    let wc = WNDCLASSEXW {
-        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        // Deliberately NOT `CS_HREDRAW | CS_VREDRAW`. The client became a
-        // painted layer of cards in Task 8, so a resize genuinely does need
-        // a full repaint -- but `WM_SIZE`/`WM_DPICHANGED` are not the only
-        // way the card stack moves: the banner appearing or disappearing
-        // (`apply_state`'s `relayout` block) reflows every card below it
-        // with no `WM_SIZE` in sight, so a class style that only fires on a
-        // size change would leave that path uncovered. `WM_SIZE`,
-        // `WM_DPICHANGED` and `apply_state`'s `relayout` block each call
-        // `InvalidateRect(hwnd, None, true)` explicitly instead -- one
-        // mechanism that covers all three, rather than a class style plus a
-        // hand-rolled special case for the one it cannot reach.
-        style: WNDCLASS_STYLES(0),
-        lpfnWndProc: Some(wndproc),
-        hInstance: hinst.into(),
-        lpszClassName: class,
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        // **No class background brush at all.** WNDCLASS takes a system
-        // colour index PLUS ONE here, and this was `COLOR_BTNFACE + 1` -- a
-        // LIGHT system colour, which is the only light thing anywhere in this
-        // window's paint path once the theme took over.
-        //
-        // It showed. Measured on a14 2026-08-13, right after `nccalcsize`
-        // began reclaiming the whole frame: a #B1B1B1 band 10 px wide down
-        // the inside of the left and top edges -- exactly the strip that had
-        // just stopped being non-client -- which vanished on the next
-        // repaint. `DefWindowProc` erases a newly-exposed region with this
-        // brush before `WM_PAINT` gets to it, so any region the theme has not
-        // painted yet flashes a system colour, and the wider the client grows
-        // the more of it there is to flash.
-        //
-        // A null brush means `DefWindowProc` erases nothing and
-        // `WM_ERASEBKGND` owns the ground unconditionally -- which it already
-        // did for every tier that paints, and deliberately does not under
-        // Mica, where painting is the thing that would hide the backdrop.
-        hbrBackground: HBRUSH(std::ptr::null_mut()),
-        hIcon: icon,
-        hIconSm: icon_sm,
-        ..Default::default()
-    };
-    // Non-zero on success; a second call for an already-registered class
-    // fails harmlessly, which is what happens when the window is reopened.
-    RegisterClassExW(&wc);
+        // WNDCLASSEXW, not WNDCLASSW: the brief called for hIconSm, but that
+        // field only exists on the Ex struct (paired with RegisterClassExW) --
+        // WNDCLASSW has no small-icon slot at all. Same feature flag either way
+        // (Win32_UI_WindowsAndMessaging), so this is not a new dependency.
+        let wc = WNDCLASSEXW {
+            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            // Deliberately NOT `CS_HREDRAW | CS_VREDRAW`. The client became a
+            // painted layer of cards in Task 8, so a resize genuinely does need
+            // a full repaint -- but `WM_SIZE`/`WM_DPICHANGED` are not the only
+            // way the card stack moves: the banner appearing or disappearing
+            // (`apply_state`'s `relayout` block) reflows every card below it
+            // with no `WM_SIZE` in sight, so a class style that only fires on a
+            // size change would leave that path uncovered. `WM_SIZE`,
+            // `WM_DPICHANGED` and `apply_state`'s `relayout` block each call
+            // `InvalidateRect(hwnd, None, true)` explicitly instead -- one
+            // mechanism that covers all three, rather than a class style plus a
+            // hand-rolled special case for the one it cannot reach.
+            style: WNDCLASS_STYLES(0),
+            lpfnWndProc: Some(wndproc),
+            hInstance: hinst.into(),
+            lpszClassName: class,
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
+            // **No class background brush at all.** WNDCLASS takes a system
+            // colour index PLUS ONE here, and this was `COLOR_BTNFACE + 1` -- a
+            // LIGHT system colour, which is the only light thing anywhere in this
+            // window's paint path once the theme took over.
+            //
+            // It showed. Measured on a14 2026-08-13, right after `nccalcsize`
+            // began reclaiming the whole frame: a #B1B1B1 band 10 px wide down
+            // the inside of the left and top edges -- exactly the strip that had
+            // just stopped being non-client -- which vanished on the next
+            // repaint. `DefWindowProc` erases a newly-exposed region with this
+            // brush before `WM_PAINT` gets to it, so any region the theme has not
+            // painted yet flashes a system colour, and the wider the client grows
+            // the more of it there is to flash.
+            //
+            // A null brush means `DefWindowProc` erases nothing and
+            // `WM_ERASEBKGND` owns the ground unconditionally -- which it already
+            // did for every tier that paints, and deliberately does not under
+            // Mica, where painting is the thing that would hide the backdrop.
+            hbrBackground: HBRUSH(std::ptr::null_mut()),
+            hIcon: icon,
+            hIconSm: icon_sm,
+            ..Default::default()
+        };
+        // Non-zero on success; a failure here leaves `CreateWindowExW` below
+        // to report it, which it does by returning an error for an unknown
+        // class.
+        RegisterClassExW(&wc);
+    });
 
     // CW_USEDEFAULT for position, but the SIZE must be scaled by hand:
     // under per-monitor-v2 these are physical pixels, and no WM_DPICHANGED
@@ -5615,9 +5630,14 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// notes at once reads like, which is exactly the gap the followups record.
 /// It is a cheap guess to change and an expensive band to leave empty.
 ///
-/// **It is an input to `MIN_HEIGHT`.** The floor is derived from `card2_h`
-/// (Task 8's card wrapping `grp_h`), and `card2_h` is derived from this --
-/// change what a notes line costs and the floor moves with it. 16 px (96
+/// **It stopped being an input to `MIN_HEIGHT` on 2026-08-15, and everything
+/// below about the floor is a RECORD rather than an instruction.** The floor
+/// was derived from `card2_h` (Task 8's card wrapping `grp_h`), which is
+/// derived from this -- until the floor changed SUBJECT to the About card.
+/// The Shortcuts list yields its room to `card2_h` before anything else moves
+/// (`editor_min = card2_h` in `compute_card_rects`), so what a notes line
+/// costs is list rows, and the floor cannot move with it. Change this and
+/// re-read `MIN_HEIGHT`'s own table; do not re-derive it from here. 16 px (96
 /// DPI, derived) / 24 px (144 DPI, measured): the 144 figure IS a fresh a14
 /// reading -- item 10 of the 2026-08-11 a14 pass sized the read-only notes
 /// STATIC against "5 lines x 24" at 144 DPI, the same Caption face this line
@@ -5626,9 +5646,10 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// 21, i.e. 4/3) to Caption's 12 px request -- and that same ratio, applied
 /// to Caption's 144-DPI request of 18, reproduces the hardware 24 exactly,
 /// which is why it is trusted for the DPI nobody has measured. If a real
-/// 96-DPI reading disagrees, `MIN_HEIGHT` must be re-derived from it, not
-/// nudged -- though the disagreement is bounded, not open-ended: the derived
-/// window height is `543 + 2(L - 16)` for a real Caption line height `L`.
+/// 96-DPI reading disagrees, what moves is the list's row count, not the
+/// floor -- and while the floor was still derived here the disagreement was
+/// bounded rather than open-ended: the window height these anchors solve for
+/// was `543 + 2(L - 16)` for a real Caption line height `L`.
 /// The FORM has never changed -- `notes_h` is a single linear term inside
 /// `card2_h`, which is a single linear term inside the total, so the
 /// coefficient survives every re-derivation and only the anchor moves. Six
@@ -5672,15 +5693,19 @@ unsafe fn set_column_width(list: HWND, col: usize, cx: i32) {
 /// was non-client when 675 was derived. It records an old geometry; only the
 /// current anchor answers for this one.)
 ///
-/// `MIN_HEIGHT`'s own table is where 543 comes from; re-read it there rather
-/// than trusting this sentence.
+/// 543 was the last anchor derived here, against a 560 window. `MIN_HEIGHT`'s
+/// own table has since been re-derived from the About card and carries no such
+/// figure -- looking for 543 there is a dead end, not a cross-check.
 ///
-/// **The shipped 560 absorbs `L = 16` with the two-row banner-up guarantee
-/// intact, and 17 px to spare.** The list is handed `114 - 2L` px at the
-/// floor, against the 65 two rows need, so the guarantee holds to `L <= 24`;
-/// at `L = 25` the list draws one whole row and 21 px of a second, and it
-/// does not lose that one until `L = 36`. Nothing
-/// there can overlap: `editor_min = card2_h` in `compute_card_rects` (see its
+/// **(That pass's arithmetic, kept as the record: the shipped 560 absorbed
+/// `L = 16` with the two-row banner-up guarantee intact, and 17 px to
+/// spare.)** The list was handed `114 - 2L` px at that floor, against the 65
+/// two rows need, so the guarantee held to `L <= 24`; at `L = 25` the list
+/// drew one whole row and 21 px of a second, and did not lose that one until
+/// `L = 36`. The window ships at 500 over a 480 floor now, and the current
+/// margin is in `MIN_HEIGHT`'s own comment. What survives the move unchanged
+/// is the safety argument: nothing
+/// there can overlap, because `editor_min = card2_h` in `compute_card_rects` (see its
 /// own comment) is computed from the RUNTIME value, not from this estimate,
 /// so a wrong `L` can only shrink the list at the absolute floor. That is the
 /// safe direction, and it is why a large `L` would be a note rather than a

@@ -43,7 +43,8 @@ struct ProcessInfo {
     aumid: Option<String>,
 }
 
-/// Enumerate all visible, non-cloaked, titled top-level windows.
+/// Enumerate all visible, non-cloaked, titled top-level windows that are not
+/// the shell's own (`is_shell_window`).
 /// Returned in z-order (front-to-back = MRU).
 pub fn enum_visible_windows() -> Result<Vec<WindowInfo>> {
     let mut hwnds: Vec<HWND> = Vec::new();
@@ -129,6 +130,11 @@ fn build_window_info(
         let class_len = GetClassNameW(hwnd, &mut class_buf);
         let class_name = String::from_utf16_lossy(&class_buf[..class_len as usize]);
 
+        // Skip the shell's own windows.
+        if is_shell_window(&class_name) {
+            return None;
+        }
+
         // Get executable and packaged-app identity (cached by pid).
         let process = process_cache
             .entry(pid)
@@ -205,6 +211,29 @@ fn get_window_aumid(hwnd: HWND) -> Option<String> {
     }
 }
 
+/// Is this class one of the shell's own windows rather than an app's?
+///
+/// **The desktop passes every other filter in `build_window_info`** — class
+/// `Progman`, caption "Program Manager", visible, uncloaked, not a tool
+/// window, unowned — so without this it sat in `enum_visible_windows`
+/// permanently. Step 5b then always found an "other app" to toggle to, step
+/// 5c (minimize) was unreachable, and `beckon list` printed a running app
+/// called "Program Manager". It is the same role `_NET_WM_WINDOW_TYPE` plays
+/// in `beckon-linux`'s X11 backend, added for the same failure: beckon
+/// focuses a shell window, reports success, and nothing moves.
+///
+/// `Windows.UI.Core.CoreWindow` was proposed alongside these and is
+/// deliberately left out. A UWP app that is not hosted by
+/// ApplicationFrameHost presents one as its own top-level window, so denying
+/// it would make beckon launch a second copy on every keypress — the more
+/// expensive of the two failures, and the one CLAUDE.md records Hyprland's
+/// `visible` filter causing.
+fn is_shell_window(class_name: &str) -> bool {
+    ["Progman", "WorkerW", "Shell_TrayWnd"]
+        .iter()
+        .any(|c| class_name.eq_ignore_ascii_case(c))
+}
+
 fn built_in_window_aumid(class_name: &str) -> Option<String> {
     if class_name.eq_ignore_ascii_case("CabinetWClass") {
         Some("Microsoft.Windows.Explorer".to_string())
@@ -276,4 +305,28 @@ pub fn minimize_window(hwnd: HWND) -> Result<()> {
         let _ = ShowWindow(hwnd, SW_MINIMIZE);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_desktop_is_not_an_app_beckon_can_toggle_back_to() {
+        assert!(is_shell_window("Progman"));
+        assert!(is_shell_window("WorkerW"));
+        assert!(is_shell_window("Shell_TrayWnd"));
+        // GetClassNameW reports the registered spelling, but every other
+        // class comparison in this file is case-insensitive.
+        assert!(is_shell_window("progman"));
+    }
+
+    #[test]
+    fn an_ordinary_app_window_is_not_a_shell_window() {
+        assert!(!is_shell_window("CabinetWClass"));
+        assert!(!is_shell_window("Notepad"));
+        assert!(!is_shell_window("ApplicationFrameWindow"));
+        // Left out on purpose -- see `is_shell_window`'s own comment.
+        assert!(!is_shell_window("Windows.UI.Core.CoreWindow"));
+    }
 }
