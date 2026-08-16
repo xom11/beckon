@@ -132,6 +132,12 @@ mod mac {
     const KEY_DOWN: u32 = 10;
     const KEY_UP: u32 = 11;
     const FLAGS_CHANGED: u32 = 12;
+    /// `NX_SYSDEFINED`. Media, brightness and the other fn-row keys arrive as
+    /// this, **not** as `keyDown` -- so a tap that registers only the three
+    /// types above is blind to them, and a chord built on one could never
+    /// fire. Asking is the only way to know which side of that line a key is
+    /// on.
+    const SYSDEFINED: u32 = 14;
     const TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
     const TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
     const KEYBOARD_EVENT_KEYCODE: u32 = 9;
@@ -173,6 +179,7 @@ mod mac {
     static UNPROJECTED: AtomicUsize = AtomicUsize::new(0);
     static EDGE_READABLE: AtomicUsize = AtomicUsize::new(0);
     static EDGE_FROZEN: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_SYS: AtomicUsize = AtomicUsize::new(0);
 
     fn mods_of(flags: u64) -> String {
         let mut s = String::new();
@@ -215,7 +222,16 @@ mod mac {
         // destroyed the output. A probe that can trap you is a probe whose
         // results you cannot collect.
         let ctrl_c = etype == KEY_DOWN && code == KC_C && flags & FLAG_CONTROL != 0;
-        let escape = etype == KEY_DOWN && code == KC_ESCAPE;
+        // **BARE Escape only.** The first version matched every Escape
+        // key-down, which made `Cmd+Option+Esc` -- the Force Quit chord this
+        // probe now exists to measure -- stop the run instead of being
+        // recorded. An escape hatch that eats the measurement is worse than
+        // none, because the run still looks successful.
+        //
+        // It is also what `capture::step` does: bare Escape cancels, Escape
+        // with a modifier is an ordinary chord.
+        let bare = flags & (FLAG_CONTROL | FLAG_COMMAND | FLAG_ALTERNATE | FLAG_SHIFT) == 0;
+        let escape = etype == KEY_DOWN && code == KC_ESCAPE && bare;
         if ctrl_c || escape {
             say(&format!(
                 "  EXIT   {}  -- passed through, stopping",
@@ -266,6 +282,13 @@ mod mac {
                 }
                 None => say(&format!("  mod   ????      0x{code:02X}")),
             },
+            SYSDEFINED => {
+                SEEN_SYS.fetch_add(1, Ordering::Relaxed);
+                say(&format!(
+                    "  sys   ----      0x{code:02X}  mods {:<16} -> NX_SYSDEFINED (a media/fn key, not a keyDown)",
+                    mods_of(flags)
+                ));
+            }
             _ => {}
         }
 
@@ -354,6 +377,21 @@ mod mac {
         say("  4. Cmd+Space      -- Spotlight");
         say("  5. Cmd+Tab        -- app switcher");
         say("  6. Ctrl+Up        -- Mission Control");
+        say("  7. Cmd+Option+Esc -- Force Quit. Bare Esc still stops the run;");
+        say("                       THIS one is a chord and is measured.");
+        say("  8. fn+F1 or F2    -- brightness (a media key)");
+        say("  9. the volume keys, and `fn` on its own");
+        say("");
+        say("7 answers the last chord question: Force Quit is the remaining");
+        say("`Win+L` candidate. 8 and 9 answer a different one -- whether a key");
+        say("exists that a tap CANNOT see, which would make a binding on it");
+        say("dead on arrival. They arrive as NX_SYSDEFINED if at all.");
+        say("");
+        say("NOT in the list, and not measurable this way:");
+        say("  Touch ID / power  a tap sees KEYS. Those are not keys, and the");
+        say("                    honest answer is that this probe cannot ask --");
+        say("                    pressing one to find out risks sleeping or");
+        say("                    shutting the machine mid-measurement.");
         say("");
         say("NOT in the list, on purpose:");
         say("  Cmd+Q      quits the front app, which is THIS terminal. The");
@@ -367,7 +405,8 @@ mod mac {
         say("whether Spotlight opened, whether the switcher appeared.");
         say("");
 
-        let mask = (1u64 << KEY_DOWN) | (1u64 << KEY_UP) | (1u64 << FLAGS_CHANGED);
+        let mask =
+            (1u64 << KEY_DOWN) | (1u64 << KEY_UP) | (1u64 << FLAGS_CHANGED) | (1u64 << SYSDEFINED);
         let tap = unsafe {
             CGEventTapCreate(
                 HID_EVENT_TAP,
@@ -418,6 +457,20 @@ mod mac {
         ));
         say("Q3  system chords seen / swallowed          : read the lines above");
         say("Q4  seen but NOT suppressible               : you say -- what acted?");
+        let sys = SEEN_SYS.load(Ordering::Relaxed);
+        let q5 = if sys == 0 {
+            "no NX_SYSDEFINED seen -- either none was pressed, or the tap is \
+             not given them at all"
+                .to_string()
+        } else {
+            format!(
+                "{sys} NX_SYSDEFINED events. Those are NOT keyDown, so a tap \
+                 registering only key events is blind to them"
+            )
+        };
+        say(&format!(
+            "Q5  keys a tap cannot see as keyDown        : {q5}"
+        ));
         say("");
         if !swallow {
             say("Now the other half. A tap that receives nothing and a tap that");
