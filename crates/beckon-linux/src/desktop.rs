@@ -81,12 +81,26 @@ fn collect_dir(root: &Path, dir: &Path, by_id: &mut HashMap<String, DesktopEntry
             continue;
         };
         if let Some(d) = parse(&path, &id) {
-            if d.no_display {
-                continue;
-            }
+            // `NoDisplay=true` is NOT filtered here, and that is the point:
+            // it means "keep this out of the menu", not "this is not an
+            // application". Discovery filters with `visible()`; resolution
+            // must see everything, because a user typing a name is not
+            // browsing a menu. See `a_hidden_entry_still_resolves_by_name`.
             by_id.insert(d.id.clone(), d);
         }
     }
+}
+
+/// The entries a person could pick out of a menu — everything `scan()` found
+/// minus `NoDisplay=true`.
+///
+/// This is the discovery half of the split `scan()` deliberately does not make.
+/// `installed` and `search` answer "what could I bind a key to?", so a hidden
+/// entry is noise there. Resolution answers "what did this name mean?", where a
+/// hidden entry is a real answer — Brave marks a policy-installed PWA hidden
+/// when it cannot fetch the manifest, and that app is installed and launchable.
+pub fn visible(entries: Vec<DesktopEntry>) -> Vec<DesktopEntry> {
+    entries.into_iter().filter(|e| !e.no_display).collect()
 }
 
 /// `<root>/kde4/konsole.desktop` → `kde4-konsole`.
@@ -506,6 +520,65 @@ mod tests {
         let m = resolve_detailed_in(&entries, "Firefox").expect("resolves");
         assert_eq!(m.entry.id, "firefox");
         assert_eq!(m.match_type, MatchType::NameExact);
+    }
+
+    // ---------- NoDisplay ----------
+
+    fn hidden(id: &str, name: &str) -> DesktopEntry {
+        let mut e = entry(id, name);
+        e.no_display = true;
+        e
+    }
+
+    /// `NoDisplay=true` means "keep this out of the menu", not "this is not an
+    /// application". Brave writes it on a policy-installed PWA whose manifest
+    /// it could not fetch — the app is installed, has an `Exec=`, and launches
+    /// fine from anywhere else. Measured on rog 2026-08-16:
+    /// `Name=https://keep.google.com/` became `Name=Google Keep` with
+    /// `NoDisplay=true` alongside it, and `beckon check --resolve` reported
+    /// "no .desktop entry" about a file sitting right there.
+    ///
+    /// So resolution must see these. A user who types a name is not browsing
+    /// a menu.
+    #[test]
+    fn a_hidden_entry_still_resolves_by_name() {
+        let entries = vec![hidden("brave-hcfcmg-Default", "Google Keep")];
+        let m = resolve_detailed_in(&entries, "Google Keep").expect("resolves");
+        assert_eq!(m.entry.id, "brave-hcfcmg-Default");
+        assert_eq!(m.match_type, MatchType::NameExact);
+    }
+
+    /// Discovery is the other half: `installed` lists what a person could
+    /// pick from, so it drops them. One scan, two audiences.
+    #[test]
+    fn visible_drops_hidden_entries_and_keeps_the_rest() {
+        let entries = vec![
+            entry("kitty", "Kitty"),
+            hidden("brave-hcfcmg-Default", "Google Keep"),
+            entry("firefox", "Firefox"),
+        ];
+        let shown: Vec<String> = visible(entries).into_iter().map(|e| e.id).collect();
+        assert_eq!(shown, vec!["kitty".to_string(), "firefox".to_string()]);
+    }
+
+    /// A hidden entry must not win a tie against a visible one that a person
+    /// can actually see in their menu — otherwise unhiding beckon's view
+    /// silently changes which app an existing binding opens. `scan()` sorts
+    /// by id and every tier takes the first match, so the rule is the same
+    /// "alphabetically first id wins" as everywhere else; this pins that
+    /// `no_display` is not a tiebreaker in either direction.
+    #[test]
+    fn hidden_entries_do_not_get_their_own_priority() {
+        let visible_first = vec![entry("a-visible", "Dup"), hidden("b-hidden", "Dup")];
+        assert_eq!(
+            resolve_detailed_in(&visible_first, "Dup").unwrap().entry.id,
+            "a-visible"
+        );
+        let hidden_first = vec![hidden("a-hidden", "Dup"), entry("b-visible", "Dup")];
+        assert_eq!(
+            resolve_detailed_in(&hidden_first, "Dup").unwrap().entry.id,
+            "a-hidden"
+        );
     }
 
     /// XDG menu spec: the desktop file id is the path relative to the
