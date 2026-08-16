@@ -94,16 +94,34 @@ pub fn render(
     //    never as a `[keyboard]` header — a header captures every bare
     //    key-value pair written after it, which would silently swallow the
     //    next shortcut appended by hand.
+    //
+    //    "Whatever shape the user gave it" includes `keyboard = { caps =
+    //    true }`. `as_table_mut()` returns `None` for an `InlineTable`, so
+    //    that one spelling — which `parse_config` accepts, `beckon check`
+    //    calls valid and `serve` runs on — made every Save from the settings
+    //    window fail with "`keyboard` is not a table", permanently and with
+    //    nothing on screen naming the line at fault. `as_table_like_mut()`
+    //    is the accessor that covers a header, a dotted key AND an inline
+    //    table; the error is kept for the shapes that really are not a table
+    //    (`keyboard = 5`).
+    //
+    //    The writes go through `entry(..).or_insert(Item::None)` rather than
+    //    `TableLike::insert`, which is what `kb["caps"] = ..` was doing
+    //    before through `Table`'s `IndexMut`. `Table::insert` calls
+    //    `fmt()` on an existing key, which drops that key's decor: a
+    //    hand-aligned `caps      = true` would come back as `caps = true` on
+    //    an unrelated Save — the same gratuitous diff `RowWrite::orig_key`
+    //    exists to avoid, documented at the top of this file.
     if doc.get(KEYBOARD_KEY).is_none() {
         let mut t = Table::new();
         t.set_dotted(true);
         doc.insert(KEYBOARD_KEY, Item::Table(t));
     }
     let kb = doc[KEYBOARD_KEY]
-        .as_table_mut()
+        .as_table_like_mut()
         .ok_or_else(|| "`keyboard` is not a table".to_string())?;
-    kb["caps"] = toml_edit::value(keyboard.caps);
-    kb["caps_tap"] = toml_edit::value(keyboard.caps_tap.as_str());
+    *kb.entry("caps").or_insert(Item::None) = toml_edit::value(keyboard.caps);
+    *kb.entry("caps_tap").or_insert(Item::None) = toml_edit::value(keyboard.caps_tap.as_str());
     // Written ONLY when it carries information. Unknown keys under
     // `keyboard` are a hard error by design, so a file that always carried
     // this key would be rejected outright by any beckon built before it
@@ -112,7 +130,8 @@ pub fn render(
     if keyboard.caps_hold.is_default() {
         kb.remove("caps_hold");
     } else {
-        kb["caps_hold"] = toml_edit::value(keyboard.caps_hold.canonical());
+        *kb.entry("caps_hold").or_insert(Item::None) =
+            toml_edit::value(keyboard.caps_hold.canonical());
     }
 
     // 4. Put the file's header back if step 1 ate it.
@@ -322,6 +341,80 @@ mod tests {
             2,
             "a new row was swallowed by [keyboard]:\n{out}"
         );
+    }
+
+    /// The reader accepts three spellings of the settings block and the
+    /// writer has to survive all three. This is the one it did not: `toml`
+    /// hands an inline table back as a table, so `parse_config` is happy,
+    /// `beckon check` says `ok` and `serve` registers every shortcut -- while
+    /// `as_table_mut()` returned `None` and EVERY Save from the settings
+    /// window failed with "`keyboard` is not a table", for the life of the
+    /// file. Measured before the fix: `render` returned
+    /// `Err("`keyboard` is not a table")` on exactly this input.
+    #[test]
+    fn an_inline_keyboard_table_is_edited_rather_than_refused() {
+        let original =
+            "keyboard = { caps = true, caps_tap = \"escape\" }\n\"ctrl+alt+t\" = \"Terminal\"\n";
+        let kb = KeyboardConfig {
+            caps: false,
+            caps_tap: CapsTap::CapsLock,
+            caps_hold: crate::shortcuts::Chord::default(),
+        };
+        let out = render(original, &[row("ctrl+alt+t", "Terminal")], &kb)
+            .unwrap_or_else(|e| panic!("an inline table is a table: {e}"));
+        let c = parse_config(&out).unwrap_or_else(|e| panic!("must round-trip: {e}\n{out}"));
+        assert_eq!(c.keyboard, kb, "the edit did not land:\n{out}");
+        assert_eq!(c.shortcuts.len(), 1, "{out}");
+    }
+
+    /// And the removal arm reaches inside one too: `caps_hold` is dropped
+    /// when it goes back to the default, whatever shape holds it.
+    #[test]
+    fn resetting_caps_hold_to_default_removes_it_from_an_inline_table() {
+        let original = "keyboard = { caps = true, caps_hold = \"ctrl+alt\" }\n";
+        let out = render(original, &[], &KeyboardConfig::default()).unwrap();
+        assert!(
+            !out.contains("caps_hold"),
+            "the stale line survived inside the inline table:\n{out}"
+        );
+        let c = parse_config(&out).unwrap_or_else(|e| panic!("{e}\n{out}"));
+        assert_eq!(c.keyboard.caps_hold, crate::shortcuts::Chord::default());
+        assert!(!c.keyboard.caps, "unticking did not persist:\n{out}");
+    }
+
+    /// A shape that is genuinely not a table still says so, rather than
+    /// panicking through `Index` — `as_table_like_mut` widened what counts
+    /// as a table, it did not delete the guard.
+    #[test]
+    fn a_keyboard_key_that_is_not_a_table_at_all_is_still_an_error() {
+        let err = render("keyboard = 5\n", &[], &KeyboardConfig::default())
+            .expect_err("`keyboard = 5` is not a settings block");
+        assert!(err.contains("not a table"), "{err}");
+    }
+
+    /// The decor of a key that is only being re-valued must survive. This is
+    /// why the writes go through `entry(..).or_insert(..)` and not
+    /// `TableLike::insert`, whose `Table` arm calls `fmt()` on the existing
+    /// key and would return `caps = true` for the aligned line below.
+    #[test]
+    fn a_hand_aligned_keyboard_block_is_not_re_aligned_by_a_save() {
+        let original = "[keyboard]\ncaps      = false\ncaps_tap  = \"none\"\n";
+        let kb = KeyboardConfig {
+            caps: true,
+            caps_tap: CapsTap::Escape,
+            caps_hold: crate::shortcuts::Chord::default(),
+        };
+        let out = render(original, &[], &kb).unwrap();
+        assert!(
+            out.contains("caps      ="),
+            "the key's own spacing was reformatted:\n{out}"
+        );
+        assert!(
+            out.contains("caps_tap  ="),
+            "the key's own spacing was reformatted:\n{out}"
+        );
+        let c = parse_config(&out).unwrap_or_else(|e| panic!("{e}\n{out}"));
+        assert_eq!(c.keyboard, kb, "the edit did not land:\n{out}");
     }
 
     #[test]
