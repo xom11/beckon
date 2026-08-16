@@ -265,9 +265,9 @@ class HyprEnv(Env):
         `wait_for` polls working the way they do on every other backend, where
         a failed probe reads as "nothing yet". `__init__` is the loud gate.
 
-        `is_hidden` is the one poll that reads the other way — an empty client
-        list means "gone", so a failed query there passes instead of retrying.
-        Same shape as `KdeEnv.is_hidden`, and unmeasured on either.
+        `is_hidden` therefore reads this value itself rather than going
+        through `_clients`, which cannot tell a failed query from a session
+        with no windows in it — see the comment there.
         """
         res = run(["hyprctl", "-j", kind], timeout=15)
         if res.returncode != 0:
@@ -334,10 +334,22 @@ class HyprEnv(Env):
         # property of where the window lives, not of whether it is still
         # listed — the same shape as SwayEnv, where the node stays in the tree
         # but hangs off `__i3_scratch`.
-        for c in self._clients():
+        #
+        # Only a client that is really parked there answers True. This used to
+        # end `return True  # gone from the list entirely`, which is wrong
+        # twice over: a window beckon hid stays in `j/clients` on purpose
+        # (`list_clients` keeps `special:beckon` windows so the next keypress
+        # brings the window back instead of launching a duplicate), and
+        # `_clients()` hands back `[]` for a query that FAILED. So the step-5c
+        # assertion this feeds passed on the first poll whenever `hyprctl`
+        # was unreachable — reporting a hide it had not looked at.
+        data = self._json("clients")
+        if not isinstance(data, list):
+            return False
+        for c in data:
             if c.get("address") == wid:
                 return (c.get("workspace") or {}).get("name") == self.HIDE_WORKSPACE
-        return True  # gone from the list entirely
+        return False
 
 
 class GnomeEnv(Env):
@@ -526,10 +538,19 @@ class KdeEnv(Env):
         self._run_js(js, expect_output=False)
 
     def is_hidden(self, wid: str) -> bool:
-        for r in self._rows() or []:
+        # `_rows()` answers None when the script never reported back, and the
+        # `or []` every other reader uses would turn that into "hidden" — a
+        # step-5c assertion that passes without looking. Only a row that
+        # parsed and says `minimized` counts; QUERY_JS keeps minimized windows
+        # in the list, so a window that is gone from a good answer is closed,
+        # not hidden.
+        rows = self._rows()
+        if rows is None:
+            return False
+        for r in rows:
             if r["id"] == wid:
                 return bool(r.get("minimized"))
-        return True  # gone from the list entirely
+        return False
 
 
 class X11Env(Env):
@@ -792,9 +813,21 @@ class Suite:
             raise AssertionError(f"installed listed almost nothing:\n{res.stdout[:300]}")
 
     def t_search(self) -> None:
-        res = run([self.beckon, "search", self.multi[:4]], timeout=30)
+        needle = self.multi[:4]
+        res = run([self.beckon, "search", needle], timeout=30)
         if res.returncode != 0:
             raise AssertionError(f"search exited {res.returncode}: {res.stderr[:300]}")
+        # Exit 0 is not a result: `search` prints `no matches for <needle>` and
+        # exits 0, so this case used to pass on a machine where the command
+        # matched nothing at all. `--multi` is the app the focus half of the
+        # suite goes on to launch, so a prefix of it must find a row.
+        rows = [ln for ln in res.stdout.splitlines()[1:] if needle.lower() in ln.lower()]
+        if not rows:
+            raise AssertionError(
+                f"search {needle!r} listed no row containing it, while {self.multi!r} "
+                f"is installed enough for the rest of this suite to launch it:\n"
+                f"{res.stdout[:300]}"
+            )
 
     def t_resolve(self) -> None:
         res = run([self.beckon, "resolve", self.multi], timeout=30)
@@ -1046,7 +1079,7 @@ class Suite:
         for name, fn in [
             ("doctor reports a backend", self.t_doctor),
             ("installed lists installed apps", self.t_list_installed),
-            ("search runs", self.t_search),
+            ("search finds the app the suite launches", self.t_search),
             ("resolve resolves a known id", self.t_resolve),
             ("resolve on unknown id reports no match", self.t_resolve_unknown),
             ("unknown id is a hard error", self.t_unknown_id_fails),
@@ -1074,6 +1107,73 @@ class Suite:
         return self.report
 
 
+def self_test() -> int:
+    """Check this file's own decisions against fabricated compositor answers.
+
+    Everything else here is asserted by a live compositor, which is the point
+    of the suite — but a probe that answers "hidden" to a query that FAILED
+    makes the step-5c case pass on its first poll without looking at anything,
+    and a green run is exactly what that looks like. These two cases need no
+    compositor, so run them on the machine that edits the file:
+
+        ./testing/linux_live_test.py --self-test
+    """
+    report = Report()
+
+    def case(name: str, fn) -> None:
+        try:
+            fn()
+        except AssertionError as e:  # noqa: PERF203 — one try per case is the point
+            report.fail(name, str(e))
+        else:
+            report.ok(name)
+
+    # `__new__` skips the constructor, which is a `hyprctl`/`busctl` gate.
+    # Both probes are stubbed at the one method that shells out.
+    hypr = HyprEnv.__new__(HyprEnv)
+    kde = KdeEnv.__new__(KdeEnv)
+
+    def hyprland_reads_the_parked_workspace_as_hidden() -> None:
+        hypr._json = lambda kind: [
+            {"address": "0x1", "workspace": {"name": HyprEnv.HIDE_WORKSPACE}}
+        ]
+        assert hypr.is_hidden("0x1"), "a client on special:beckon is what Hidden means"
+        hypr._json = lambda kind: [{"address": "0x1", "workspace": {"name": "1"}}]
+        assert not hypr.is_hidden("0x1"), "a client on workspace 1 is on screen"
+
+    def a_failed_hyprctl_query_is_not_hidden() -> None:
+        hypr._json = lambda kind: None
+        assert not hypr.is_hidden("0x1"), (
+            "a failed `hyprctl -j clients` answered 'hidden', so the step-5c "
+            "assertion passes without measuring the hide"
+        )
+
+    def kwin_reads_minimized_as_hidden() -> None:
+        kde._rows = lambda: [{"id": "{u}", "cls": "foot", "minimized": True}]
+        assert kde.is_hidden("{u}"), "a minimized window is what Hidden means"
+        kde._rows = lambda: [{"id": "{u}", "cls": "foot", "minimized": False}]
+        assert not kde.is_hidden("{u}"), "an unminimized window is on screen"
+
+    def a_failed_kwin_script_is_not_hidden() -> None:
+        kde._rows = lambda: None
+        assert not kde.is_hidden("{u}"), (
+            "a KWin script that never reported back answered 'hidden', so the "
+            "step-5c assertion passes without measuring the hide"
+        )
+
+    print("\nprobe decisions (no compositor needed)")
+    for name, fn in [
+        ("Hyprland: special:beckon is hidden", hyprland_reads_the_parked_workspace_as_hidden),
+        ("Hyprland: a failed query is not hidden", a_failed_hyprctl_query_is_not_hidden),
+        ("KDE: minimized is hidden", kwin_reads_minimized_as_hidden),
+        ("KDE: a failed script is not hidden", a_failed_kwin_script_is_not_hidden),
+    ]:
+        case(name, fn)
+
+    print(f"\n{len(report.passed)} passed, {len(report.failed)} failed")
+    return 1 if report.failed else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--beckon", default="beckon", help="path to the beckon binary")
@@ -1081,7 +1181,17 @@ def main() -> int:
     ap.add_argument("--other", help="a second app id to toggle back to")
     ap.add_argument("--only", help="run only tests whose name contains this substring")
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="check this file's own probe decisions; needs no compositor",
+    )
     args = ap.parse_args()
+
+    # Ahead of `detect_env`, which is the whole point: these cases run where
+    # the file is edited, not where the compositor is.
+    if args.self_test:
+        return self_test()
 
     try:
         env = detect_env()

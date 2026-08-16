@@ -742,9 +742,69 @@ fn cmd_list_installed() -> Result<()> {
     Ok(())
 }
 
+/// One printed row of `beckon search`: which list the app came from, its id
+/// and its name.
+///
+/// Borrowed rather than owned: `cmd_search` holds both lists for the whole
+/// call, and the table is the only consumer.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SearchHit<'a> {
+    pub where_: &'static str,
+    pub id: &'a str,
+    pub name: &'a str,
+}
+
+/// The pure half of `beckon search` — everything except the two backend
+/// calls and the printing.
+///
+/// **Running apps lead the catalog**, and within each half the backend's own
+/// order is kept. That is the ranking the table has always had and it is the
+/// one worth keeping: a running app is the one the user can act on now, and
+/// each backend already sorts its own list deterministically
+/// (`desktop::scan()` by id, for the reason recorded at that function).
+///
+/// **An empty needle matches nothing.** `require_id` rejects it one call
+/// above, so this arm is unreachable through the CLI today — but an empty
+/// string is a substring of every id and every name, which is exactly the
+/// tier-4 failure the Linux resolver was fixed for, so the property is
+/// pinned here where a test can read it rather than resting on one caller.
+pub(crate) fn search_hits<'a>(
+    running: &'a [beckon_core::RunningApp],
+    installed: &'a [beckon_core::InstalledApp],
+    name: &str,
+) -> Vec<SearchHit<'a>> {
+    let needle = name.to_lowercase();
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let matches = |id: &str, name: &str| {
+        id.to_lowercase().contains(&needle) || name.to_lowercase().contains(&needle)
+    };
+
+    let mut hits = Vec::new();
+    for a in running {
+        if matches(&a.id, &a.name) {
+            hits.push(SearchHit {
+                where_: "running",
+                id: a.id.as_str(),
+                name: a.name.as_str(),
+            });
+        }
+    }
+    for a in installed {
+        if matches(&a.id, &a.name) {
+            hits.push(SearchHit {
+                where_: "installed",
+                id: a.id.as_str(),
+                name: a.name.as_str(),
+            });
+        }
+    }
+    hits
+}
+
 fn cmd_search(name: &str) -> Result<()> {
     let backend = pick_backend()?;
-    let needle = name.to_lowercase();
 
     let running = backend.list_running().unwrap_or_else(|e| {
         eprintln!("warning: list_running failed: {e}");
@@ -755,17 +815,7 @@ fn cmd_search(name: &str) -> Result<()> {
         Vec::new()
     });
 
-    let mut hits = Vec::new();
-    for a in &running {
-        if a.id.to_lowercase().contains(&needle) || a.name.to_lowercase().contains(&needle) {
-            hits.push(("running", a.id.as_str(), a.name.as_str()));
-        }
-    }
-    for a in &installed {
-        if a.id.to_lowercase().contains(&needle) || a.name.to_lowercase().contains(&needle) {
-            hits.push(("installed", a.id.as_str(), a.name.as_str()));
-        }
-    }
+    let hits = search_hits(&running, &installed, name);
 
     if hits.is_empty() {
         println!("no matches for `{name}`");
@@ -773,8 +823,8 @@ fn cmd_search(name: &str) -> Result<()> {
     }
 
     println!("{:<10} {:<40} NAME", "WHERE", "ID");
-    for (where_, id, name) in hits {
-        println!("{where_:<10} {id:<40} {name}");
+    for hit in hits {
+        println!("{:<10} {:<40} {}", hit.where_, hit.id, hit.name);
     }
     Ok(())
 }
@@ -1435,6 +1485,79 @@ mod tests {
         let e = beckon_ladder(&b, "Google Keep || ", false).unwrap_err();
         assert!(b.asked.borrow().is_empty(), "{:?}", b.asked.borrow());
         assert!(format!("{e:#}").contains("empty candidate"), "{e:#}");
+    }
+
+    // ---- search ----
+
+    fn running(id: &str, name: &str) -> beckon_core::RunningApp {
+        beckon_core::RunningApp {
+            id: id.to_string(),
+            name: name.to_string(),
+            window_count: 1,
+        }
+    }
+
+    fn installed(id: &str, name: &str) -> beckon_core::InstalledApp {
+        beckon_core::InstalledApp {
+            id: id.to_string(),
+            name: name.to_string(),
+            exec: None,
+        }
+    }
+
+    /// Every beckon resolver is case-insensitive and `search` is the command
+    /// people use to find the spelling to put in a dotfile, so it has to
+    /// match the way the resolver will.
+    #[test]
+    fn search_matches_the_id_and_the_name_case_insensitively() {
+        let inst = vec![
+            installed("org.mozilla.firefox", "Firefox"),
+            installed("kitty", "Terminal"),
+        ];
+        let hits = search_hits(&[], &inst, "FIRE");
+        assert_eq!(hits.len(), 1, "matched the Name through a case difference");
+        assert_eq!(hits[0].id, "org.mozilla.firefox");
+
+        let hits = search_hits(&[], &inst, "KiTtY");
+        assert_eq!(hits.len(), 1, "matched the id through a case difference");
+        assert_eq!(hits[0].name, "Terminal");
+    }
+
+    /// The table's ranking, such as it is: a running app is the one the user
+    /// can act on now, so it comes first even when the catalog carries the
+    /// same app under the same name.
+    #[test]
+    fn running_apps_lead_the_installed_catalog() {
+        let run = [running("kitty", "kitty")];
+        let inst = [installed("kitty.desktop", "kitty")];
+        let hits = search_hits(&run, &inst, "kitty");
+        assert_eq!(
+            hits.iter().map(|h| h.where_).collect::<Vec<_>>(),
+            vec!["running", "installed"]
+        );
+    }
+
+    /// The tier-4 bug respelled: an empty string is a substring of every id
+    /// and every name, so a needle that says nothing must not select
+    /// everything. `require_id` also rejects it at the CLI boundary — this
+    /// pins the function, which is what a future caller would reach for.
+    #[test]
+    fn an_empty_needle_matches_nothing() {
+        let run = [running("kitty", "kitty")];
+        let inst = [installed("firefox", "Firefox")];
+        let hits = search_hits(&run, &inst, "");
+        assert!(hits.is_empty(), "an empty needle listed the whole machine");
+    }
+
+    /// The live suite's `search runs` case passes on zero matches, so this is
+    /// the only place that distinguishes "nothing matched" from "the search
+    /// matched nothing because it matches nothing".
+    #[test]
+    fn a_needle_that_matches_nothing_returns_nothing() {
+        let run = [running("kitty", "kitty")];
+        let inst = [installed("firefox", "Firefox")];
+        let hits = search_hits(&run, &inst, "nothing-is-called-this");
+        assert!(hits.is_empty());
     }
 
     // ---- reserved words ----
