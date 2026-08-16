@@ -1427,16 +1427,35 @@ pub fn about_state(i: AboutInputs) -> AboutState {
     // date came from nowhere for a day: `AboutInputs` had no member for one.
     //
     // **It costs no new plumbing, because the page already holds it.**
-    // `i.disk` is the running image's mtime, read for `image_age`'s clock half
-    // -- so the date beside the triple is the date of the FILE THIS PROCESS IS
-    // RUNNING, which is the only build date this page could honestly show. A
-    // compile-time constant baked by a `build.rs` would date the source, and
-    // the a14 incident this page exists for is precisely a process running an
-    // image its source no longer describes.
+    // `i.disk` is `image_age`'s clock half, and the date is that mtime.
+    //
+    // **CORRECTED within a day of landing: this said "the date of the FILE
+    // THIS PROCESS IS RUNNING", and that is false.** `disk` is a `stat` of
+    // `current_exe()` — the LAUNCH PATH — which on a scoop install runs
+    // through the `current` junction, so after an update it dates the image
+    // the junction names NOW, not the one executing. That is the very surface
+    // the a14 incident showed lying, and asserting the opposite here would
+    // have put a fresh false claim into the file whose whole discipline is
+    // removing them. `about_now`'s own doc already drew the distinction —
+    // `stat` is the clock half, `QueryFullProcessImageNameW` is the identity
+    // half — and this comment contradicted the function it reads from.
+    //
+    // **Stat'ing the running image instead does not rescue it**, which is why
+    // the wording moved rather than the code. `running_image_path()` is
+    // available, but on a14 `QueryFullProcessImageNameW` gave back the launch
+    // path (`about_now` records the measurement), so that `stat` traverses the
+    // same junction and reaches the same file. There is no cheap route to a
+    // date that is guaranteed to be the running image's.
+    //
+    // **What makes the row honest is the page, not this cell.** `Location`
+    // carries the stale-image verdict from `image_age`, so when the launch
+    // path has been repointed the reader is told so one row down — and a date
+    // that agrees with a `Replaced` verdict is read as "this is what is on
+    // disk now", which is what it is.
     //
     // Measured 2026-08-16: after `scoop update beckon` to 0.9.5 on a14 the
     // image's mtime read 03:50:34 against a release built at 03:50 -- so the
-    // timestamp survives the release zip and the extraction, and this is the
+    // timestamp survives the release zip and scoop's extraction, and it is a
     // build date rather than an install date.
     //
     // Absent when the file is `Gone` or `Unknown`, and then the row is the
