@@ -2101,18 +2101,51 @@ Reasonable next-session order:
 
 - **Window enumeration**: `EnumWindows` returns windows in z-order (front-to-back), which gives us MRU order for free — no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`). We filter out invisible, cloaked (via `DwmGetWindowAttribute(DWMWA_CLOAKED)`), tool windows (`WS_EX_TOOLWINDOW`), and owner windows.
 
-  **CORRECTED 2026-08-16: there is a fifth filter, and the four above are
-  exactly why it had to exist.** `window_ops::is_shell_window` denies the
-  classes `Progman`, `WorkerW` and `Shell_TrayWnd` (case-insensitively, like
-  every other class compare in that file). **The desktop passes all four
-  filters listed above** — class `Progman`, caption `Program Manager`,
-  visible, uncloaked, not a tool window, unowned — so it sat in
-  `enum_visible_windows` permanently: step 5b always found an "other app" to
-  toggle to, **step 5c (minimize) was therefore unreachable**, and `beckon
-  list` printed a running app called *Program Manager*. It is the role
-  `_NET_WM_WINDOW_TYPE` plays in `beckon-linux`'s X11 backend, added for the
-  identical failure — beckon focuses a shell window, reports success, and
-  nothing moves.
+  **There is a fifth filter, `window_ops::is_shell_window`** — the classes
+  `Progman`, `WorkerW` and `Shell_TrayWnd`, case-insensitively like every
+  other class compare in that file. It is **defence, not a bug fix**, and the
+  entry that landed with it said otherwise.
+
+  **CORRECTED 2026-08-16, same day, by measurement on a14.** The version
+  written a few hours earlier claimed *"The desktop passes all four filters
+  listed above — class `Progman`, caption `Program Manager`, visible,
+  uncloaked, not a tool window, unowned — so it sat in `enum_visible_windows`
+  permanently: step 5b always found an 'other app' to toggle to, **step 5c
+  (minimize) was therefore unreachable**, and `beckon list` printed a running
+  app called *Program Manager*."* **Every clause after "class `Progman`" is
+  false on Windows 11 ARM64 build 26200.** Enumerated in session 1 through a
+  scheduled task, 182 top-level windows, printing each filter input beside
+  the class:
+
+  ```text
+  Progman       visible=True  cloaked=0x0 toolwin=True  owned=False  title='Program Manager'
+  WorkerW  x15  visible=False cloaked=0x0 toolwin=False owned=False
+  Shell_TrayWnd visible=True  cloaked=0x0 toolwin=True  owned=False
+  CoreWindow x4 visible=True  cloaked=0x2 toolwin=False owned=False  title='Settings' / 'Windows Input Experience'
+  ```
+
+  **`Progman` carries `WS_EX_TOOLWINDOW`**, so the tool-window filter already
+  excluded it; not one shell-class window passes all four. The control
+  settles it rather than the reasoning: the pre-fix binary — scoop's
+  `0.9.6 (2488702)`, which predates `84ace1e` — was run through the same
+  probe in the same session and **its `beckon list` does not print *Program
+  Manager* either**. So step 5c was never unreachable and nothing was ever
+  mis-listed here.
+
+  Keep the filter: it is cheap, it is the role `_NET_WM_WINDOW_TYPE` plays in
+  the X11 backend, and `WS_EX_TOOLWINDOW` on `Progman` is a shell
+  implementation detail no document promises. But **do not cite this entry as
+  a bug that was observed** — it was found by reading code, survived two
+  adversarial verifiers who also only read code, and was refuted the first
+  time anyone ran it on Windows.
+
+  **The `CoreWindow` rows above are the load-bearing measurement in this
+  block**, and they belong to a different question: both real ones read
+  `cloaked=0x2`, which is `DWM_CLOAKED_SHELL` — *the same value a window on
+  another virtual desktop carries*. Anything that tries to fix the
+  other-virtual-desktop miss by admitting `0x2` re-admits these two as
+  focusable ghosts. That is why the branch attempting it uses
+  `IVirtualDesktopManager` and not a cloak-value test.
 
   **`Windows.UI.Core.CoreWindow` was proposed alongside these and is
   deliberately left out**, pinned by
