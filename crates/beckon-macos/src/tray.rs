@@ -38,7 +38,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSApplication, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
@@ -206,9 +206,36 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
     let Some(button) = item.button(mtm) else {
         return Err("status item has no button (no window server?)".into());
     };
-    // The template asset is a separate step; until it exists the item is
-    // legible as text, which is also what the probe reads back.
-    button.setTitle(&NSString::from_str("beckon"));
+    // **An icon, not the word.** The item read `beckon` in menu-bar text
+    // while every neighbour was a glyph, which is what a person notices
+    // first and reported before anything else about the port.
+    //
+    // `b.square.fill` is an SF Symbol and is the same shape as the About
+    // door's mark: a rounded square carrying the letter. Two reasons it is a
+    // symbol rather than the `.ico` in `assets/` or a bitmap of the mark:
+    // that file is a Windows format nothing here reads, and a menu bar image
+    // must be a TEMPLATE — monochrome plus alpha, tinted by the system — so
+    // it stays legible in a light menu bar, in a dark one, and under
+    // increased contrast, none of which a coloured bitmap survives.
+    // `setTemplate(true)` is what asks for that treatment.
+    //
+    // The title is cleared explicitly. An `NSStatusBarButton` draws both if
+    // both are set, and the result is the icon followed by the word.
+    let symbol = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str("b.square.fill"),
+        Some(&NSString::from_str("beckon")),
+    );
+    match symbol {
+        Some(img) => {
+            img.setTemplate(true);
+            button.setImage(Some(&img));
+            button.setTitle(&NSString::from_str(""));
+        }
+        // Older systems have no SF Symbols. The word is a poor menu bar
+        // citizen but it is visible, and an item with neither image nor
+        // title is a blank gap nobody can click on purpose.
+        None => button.setTitle(&NSString::from_str("beckon")),
+    }
 
     let target: Retained<MenuTarget> = unsafe { msg_send![MenuTarget::alloc(mtm), init] };
 

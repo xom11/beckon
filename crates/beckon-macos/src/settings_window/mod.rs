@@ -876,6 +876,28 @@ fn hstack(views: &[&NSView], mtm: MainThreadMarker) -> Retained<NSStackView> {
     s
 }
 
+/// Bring the window to the front and give the app the keyboard.
+///
+/// **`makeKeyAndOrderFront` alone is not enough here, and the reason is what
+/// `serve` is.** `hotkey::install` puts the process in the Accessory
+/// activation policy — no Dock tile, no menu bar — which is what a
+/// background hotkey daemon should be. An Accessory app is never the active
+/// application on its own, so a window it orders front appears BEHIND
+/// whatever the user was in, with its close/minimise buttons greyed and its
+/// fields not taking keys. Photographed 2026-08-16: the settings window came
+/// up whole and unfocused underneath System Settings, which reads exactly
+/// like "clicking Settings did nothing".
+///
+/// `activate` asks for the application; `makeKeyAndOrderFront` asks for the
+/// window. Both, in that order, and neither on its own.
+fn raise(w: &NSWindow) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
+    w.makeKeyAndOrderFront(None);
+}
+
 /// Is the window open?
 pub fn is_open() -> bool {
     UI.with(|u| u.borrow().is_some())
@@ -893,7 +915,7 @@ pub fn open_existing() -> bool {
     // Borrow released first: ordering a window front can raise its delegate
     // before returning, and anything that re-enters here would find the
     // RefCell held. Same rule as `controls()`.
-    c.window.makeKeyAndOrderFront(None);
+    raise(&c.window);
     true
 }
 
@@ -1286,7 +1308,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         let save_cell = save.cell().unwrap();
         let _: () = msg_send![&*window, setDefaultButtonCell: &*save_cell];
     }
-    window.makeKeyAndOrderFront(None);
+    raise(&window);
 
     UI.with(|u| {
         *u.borrow_mut() = Some(Ui {
