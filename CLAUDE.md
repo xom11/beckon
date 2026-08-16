@@ -2219,6 +2219,43 @@ Reasonable next-session order:
   which is the one that demonstrably delivers hotkeys in production, and that
   is what said the injector was wrong rather than the thing under test.
 
+- **Three defects a person found by looking, none reachable by any assertion
+  in the tree** (2026-08-16). `settings_drive` reported 10/10 the whole time
+  and was right; these are what it structurally cannot ask.
+
+  - **A menu bar image must be a TEMPLATE.** The status item drew the word
+    `beckon` while every neighbour was a glyph. It is now the SF Symbol
+    `b.square.fill` with `setTemplate(true)`, without which it does not
+    invert for a light menu bar or survive increased contrast.
+    `assets/beckon.ico` is not usable here: a Windows container, and a
+    coloured bitmap cannot be a template. Clear the title explicitly —
+    an `NSStatusBarButton` given both draws the icon AND the word.
+  - **`makeKeyAndOrderFront` is not enough for an Accessory app.**
+    `hotkey::install` puts `serve` in the Accessory activation policy, where
+    an application is never frontmost on its own, so the settings window came
+    up BEHIND whatever the user was in, with grey traffic lights and fields
+    that took no keys — indistinguishable from "clicking Settings did
+    nothing". `NSApplication::activate` asks for the app;
+    `makeKeyAndOrderFront` asks for the window. Both, in that order.
+    `settings_window::raise` is the one place that knows it.
+  - **The window's catalog must be what the RESOLVER can find, not the
+    installed scan.** `row_condition` prints `missing` against the catalog,
+    which was `installed_apps()` alone — `/Applications`,
+    `/System/Applications`, `~/Applications`. `Finder` lives in
+    `/System/Library/CoreServices`, so a working `ctrl+super+alt+f =
+    "Finder"` sat flagged while `beckon resolve Finder` answered *resolved —
+    running app localizedName (exact)*. **The window was contradicting the
+    resolver about one name.** `installed_app_names` now unions the RUNNING
+    apps, which is the tier `resolve` matched on and is resolvable by
+    definition, so the catalog cannot start over-claiming. Widening the scan
+    roots was rejected: CoreServices is mostly unlaunchable helpers, and it
+    would change what `beckon installed` prints — a different surface with a
+    different job, and now the control (`examples/catalog_probe.rs`).
+
+  The tray MENU was never broken. Clicking the icon opens it; `Settings…`
+  works. There is no double-click-to-open path on macOS, which is why the
+  window seemed unreachable.
+
 - **Phase B is built and measured end to end.** `beckon_macos::caps_tap` is
   the `CGEventTap` twin of `beckon_windows::caps_hook`, against the same
   design: Caps is an **alias for the configured chord**, so the tap swallows
