@@ -107,10 +107,26 @@ Rules that follow from that:
   before believing either.
 - **The primary checkout stays on `main` and stays clean.** It is for reading,
   for `git log`, and for owning the shared `target/`.
-- **Clean up when the branch merges**: `git worktree remove .worktrees/<branch>`.
-  `git worktree list` is the inventory. Two strays predate this rule and are
-  not covered by it — `~/Documents/dev/beckon-fix-linux` and
-  `.claude/worktrees/four-doors-phase-0`.
+- **Clean up when the branch merges**: `git worktree remove .worktrees/<branch>`,
+  then `git branch -d <branch>` and `git push origin --delete <branch>`.
+  `git worktree list` is the inventory. One stray predates this rule and is
+  not covered by it — `~/Documents/dev/beckon-fix-linux`.
+
+  **Two things about the removal, both learned the hard way 2026-08-16.**
+
+  A session **cannot remove its own worktree**: git refuses while the branch is
+  checked out there, and a Claude session is `cd`'d inside it. So the last
+  session on a branch does the merge, deletes the REMOTE branch, and leaves the
+  worktree and the local branch for someone standing in the primary checkout —
+  which means saying so out loud rather than reporting "cleaned up".
+
+  **`.claude/worktrees/` is a second home for these and the rule above does not
+  name it.** Claude Code makes its own worktrees there rather than in
+  `.worktrees/`, so `git worktree list` shows both shapes and a cleanup that
+  only looks at `.worktrees/` misses half the inventory. `four-doors-phase-0`
+  lived at `.claude/worktrees/four-doors-phase-0` for its whole life and was
+  recorded here as a "stray" for being in the wrong directory, when it was
+  simply made by a different tool.
 - **Before starting, look for company — and look at branches, not just at the
   working tree.** This is the only rule here that catches duplicate *design*,
   and the three obvious checks are all blind to it:
@@ -121,6 +137,7 @@ Rules that follow from that:
   ListAgents                        # other sessions, but not what they are building
   git fetch --all && git branch -a  # committed work you would otherwise never see
   git log --all --oneline -20       # including branches nobody has merged
+  git branch -vv                    # <-- and how stale YOUR OWN refs are
   ```
 
   Uncommitted work in the shared checkout means somebody is mid-task. A
@@ -128,6 +145,23 @@ Rules that follow from that:
   something — and other people's work is far more often committed-but-unmerged
   than uncommitted. Either way the answer is the same: reconcile the plan
   before executing it, and talk to the other session if there is one.
+
+  **`git branch -vv` was added 2026-08-16, after the list above sent a session
+  to the wrong conclusion.** `git fetch --all` updates `origin/main`; it does
+  **not** update `main`. A session on the primary checkout ran
+  `git rev-list --left-right --count main...four-doors-phase-0`, read `0 55`,
+  and concluded *"the branch is 55 commits ahead and unmerged"* — while the
+  truth was *"my local `main` is 55 commits behind"*. The branch was already
+  merged and `origin/main` pointed at it. **The same number supports both
+  readings and nothing in that output distinguishes them**, which is why the
+  fix is a different command rather than closer reading: `git branch -vv`
+  prints `[origin/main: behind 55]` and says which side is stale. The session
+  had run `fetch --all` and still got it wrong, then told the user that
+  landed work was an unmerged design about to overwrite `main`.
+
+  It is the same shape as the push trap in the paragraphs above — an empty
+  push and a real one print the same line — and it has the same escape: ask
+  git for the state, do not squint at output that does not carry it.
 
 ## Architecture
 
