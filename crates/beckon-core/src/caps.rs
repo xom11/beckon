@@ -153,6 +153,33 @@ pub fn bound_keys(
         .collect()
 }
 
+/// `bound_keys`, in Carbon virtual keycodes.
+///
+/// **A sibling rather than a parameter.** The two differ by one field
+/// access, and the alternative — passing a selector, or returning `KeyDef`s
+/// and letting each caller project — would put a choice at every call site
+/// for a decision that is fixed per platform. `KeyDef` has carried both
+/// columns since the key table was written precisely so `check` could
+/// validate a file without knowing which machine it belongs to; this is that
+/// same property spent a second time.
+///
+/// The `u32`/`u16` split is not cosmetic: a Win32 virtual key is a `u32` and
+/// a Carbon keycode is a `u16`, and the platform layers hand them to
+/// different APIs. Returning one width for both would put a cast in the one
+/// place that must not get a keycode wrong.
+pub fn bound_keys_mac(
+    registered: &std::collections::HashMap<String, Result<(), String>>,
+    hold: Chord,
+) -> HashSet<u16> {
+    registered
+        .iter()
+        .filter(|(_, outcome)| outcome.is_ok())
+        .filter_map(|(canonical, _)| Combo::parse(canonical).ok())
+        .filter(|c| c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt)
+        .map(|c| c.key.mac)
+        .collect()
+}
+
 /// The modifier VKs a chord presses, in a fixed order.
 fn modifier_vks(hold: Chord) -> Vec<u32> {
     let mut v = Vec::with_capacity(3);
@@ -1219,5 +1246,61 @@ mod tests {
             rel.iter().any(|s| s.vk == VK_LWIN && s.edge == Edge::Up),
             "Win was pressed by the OLD chord and must still be released: {rel:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod bound_keys_mac_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn reg(pairs: &[(&str, bool)]) -> HashMap<String, Result<(), String>> {
+        pairs
+            .iter()
+            .map(|(k, ok)| {
+                (
+                    k.to_string(),
+                    if *ok { Ok(()) } else { Err("taken".into()) },
+                )
+            })
+            .collect()
+    }
+
+    fn hold() -> Chord {
+        Chord {
+            ctrl: true,
+            super_: true,
+            alt: true,
+        }
+    }
+
+    /// The two functions must select the SAME bindings and differ only in
+    /// which code they report. A divergence here would mean Caps reached a
+    /// different set of apps depending on the platform, from one config file.
+    #[test]
+    fn the_two_projections_select_the_same_bindings() {
+        let r = reg(&[
+            ("ctrl+super+alt+t", true),
+            ("ctrl+super+alt+c", true),
+            // wrong chord: not reachable through Caps on either platform
+            ("ctrl+alt+b", true),
+            // registration failed: not reachable either
+            ("ctrl+super+alt+j", false),
+        ]);
+        assert_eq!(bound_keys(&r, hold()).len(), 2);
+        assert_eq!(bound_keys_mac(&r, hold()).len(), 2);
+    }
+
+    #[test]
+    fn it_reports_carbon_keycodes_not_win32_ones() {
+        let r = reg(&[("ctrl+super+alt+t", true)]);
+        // kVK_ANSI_T = 0x11, VK_T = 0x54. Same binding, two numbers.
+        assert!(bound_keys_mac(&r, hold()).contains(&0x11));
+        assert!(bound_keys(&r, hold()).contains(&0x54));
+    }
+
+    #[test]
+    fn an_empty_table_reaches_nothing() {
+        assert!(bound_keys_mac(&reg(&[]), hold()).is_empty());
     }
 }

@@ -2219,6 +2219,45 @@ Reasonable next-session order:
   which is the one that demonstrably delivers hotkeys in production, and that
   is what said the injector was wrong rather than the thing under test.
 
+- **Phase B is built and measured end to end.** `beckon_macos::caps_tap` is
+  the `CGEventTap` twin of `beckon_windows::caps_hook`, against the same
+  design: Caps is an **alias for the configured chord**, so the tap swallows
+  `Caps+T` and injects `ctrl+cmd+opt+T`, which `RegisterEventHotKey` already
+  listens for. `examples/caps_live.rs`, with the tap uninstalled as the
+  control:
+
+  ```text
+  off : hotkey fired = false     <- nothing else on this machine maps Caps
+  on  : HOTKEY FIRED             <- beckon's alias did it
+  ```
+
+  The control is not ceremony here: with kanata running the `off` run FIRES,
+  and the probe would be measuring kanata.
+
+  **The edge is parity, not a flag.** Nothing in a Caps event says whether it
+  is a press or a release — both arrive with identical flags because
+  suppression freezes the lock the flag reports, and
+  `CGEventSourceKeyState` reports that same frozen lock for a lock key. So
+  transitions alternate and the first is a press, which has exactly one
+  failure mode: a dropped event inverts the phase. `caps_tap::resync()` is
+  the answer and is called from every path that can drop one — the tap being
+  disabled by timeout or by user input, and any configuration change, which
+  is also a moment nobody is holding a key.
+
+  **`caps::decide` is NOT shared, and this is why**, beyond the edge: its
+  `KeyEvent` is `{ vk: u32, edge }` with a down and an up, and macOS has
+  neither; its `time_ms` is documented as `KBDLLHOOKSTRUCT.time` in
+  milliseconds since boot while `CGEventTimestamp` is nanoseconds of mach
+  absolute time. What IS shared is `caps::bound_keys_mac`, the Carbon-keycode
+  sibling of `bound_keys`, pinned to select the same bindings by
+  `the_two_projections_select_the_same_bindings`.
+
+  **Input Monitoring, not Accessibility.** It is a separate grant in a
+  separate pane, and `caps_tap::install` refuses with that sentence rather
+  than installing a tap that receives nothing. The Keyboard door says the
+  same thing under its first group, because it is the one thing a reader
+  cannot discover by trying.
+
 - **Phase B, measured before it was written** (`examples/caps_probe.rs`,
   2026-08-16). The Windows Caps feature is an ALIAS: the hook swallows
   `Caps+T` and injects `ctrl+win+alt+T`, because `RegisterHotKey` cannot bind

@@ -1248,7 +1248,64 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn sync_caps_hook(_state: &Rc<RefCell<ServeState>>) {}
+fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
+    use beckon_macos::caps_tap;
+
+    let (want, tap, hold, bound) = {
+        let s = state.borrow();
+        (
+            s.keyboard.caps && !s.paused,
+            s.keyboard.caps_tap,
+            s.keyboard.caps_hold,
+            // The macOS projection of the same set: Carbon keycodes rather
+            // than Win32 virtual keys. `bound_keys_mac` selects exactly the
+            // bindings `bound_keys` does -- pinned by
+            // `the_two_projections_select_the_same_bindings`.
+            beckon_core::caps::bound_keys_mac(&s.registered, s.keyboard.caps_hold),
+        )
+    };
+
+    if !want {
+        // Forget the key set BEFORE giving up the tap, and unconditionally.
+        // An empty set makes the callback pass every event through whatever
+        // else is true, so the window between disabling and the run loop
+        // noticing cannot eat a keystroke. `clear_bindings` resets `tap` to
+        // `capslock` too, so a configured `caps_tap = "escape"` stops
+        // remapping the key the moment the feature it belongs to is off.
+        caps_tap::clear_bindings();
+        let was = caps_tap::is_installed();
+        caps_tap::uninstall();
+        if was {
+            eprintln!("beckon serve: caps event tap removed");
+        }
+        return;
+    }
+
+    let keys = bound.len();
+    caps_tap::set_bindings(bound, hold, tap);
+    let was = caps_tap::is_installed();
+    match caps_tap::install() {
+        Ok(()) => {
+            if !was {
+                eprintln!(
+                    "beckon serve: caps event tap active, {keys} keys reachable through Caps"
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("beckon serve: {e}");
+            // The user just ticked this; tell them every time.
+            crate::notify::report(
+                &format!("could not enable Caps Lock: {e}"),
+                crate::notify::Cause::HumanAction,
+            );
+            // Do not leave the in-memory state claiming a feature that is not
+            // running. The file still says `caps = true`; this only stops the
+            // settings window being lied to.
+            state.borrow_mut().keyboard.caps = false;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Settings window

@@ -22,6 +22,8 @@ use beckon_core::{Backend, Result};
 #[cfg(target_os = "macos")]
 mod apps;
 #[cfg(target_os = "macos")]
+pub mod caps_tap;
+#[cfg(target_os = "macos")]
 mod ffi;
 #[cfg(target_os = "macos")]
 pub mod hotkey;

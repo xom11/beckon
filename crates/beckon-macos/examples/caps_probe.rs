@@ -170,6 +170,14 @@ mod mac {
     static SEEN_ANY: AtomicU32 = AtomicU32::new(0);
     static LAST_TYPE: AtomicU32 = AtomicU32::new(999);
     static LAST_CODE: AtomicU32 = AtomicU32::new(999);
+    /// A ring of every event, so the SEQUENCE can be read rather than only
+    /// the last one. Caps is a LOCK key: whether macOS reports a press and a
+    /// release as two events, and whether the two can be told apart once
+    /// suppression has stopped the lock from moving, is what decides whether
+    /// "hold Caps and press T" is detectable at all.
+    /// One traced event: `(type, keycode, flags, keyState combined, keyState hid)`.
+    type Traced = (u32, u16, u64, bool, bool);
+    static TRACE: std::sync::Mutex<Vec<Traced>> = std::sync::Mutex::new(Vec::new());
 
     /// Whether the probe is currently trying to SWALLOW Caps.
     static SWALLOW: AtomicBool = AtomicBool::new(false);
@@ -190,6 +198,21 @@ mod mac {
         }
 
         SEEN_ANY.fetch_add(1, Ordering::SeqCst);
+        {
+            let c = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) } as u16;
+            let f = unsafe { CGEventGetFlags(event) };
+            if let Ok(mut t) = TRACE.lock() {
+                if t.len() < 64 {
+                    // `CGEventSourceKeyState` for the Caps KEYCODE, from two
+                    // different source states. If either flips between the
+                    // press and the release, it is the discriminator the
+                    // flags cannot provide.
+                    let combined = unsafe { CGEventSourceKeyState(0, c) };
+                    let hid = unsafe { CGEventSourceKeyState(1, c) };
+                    t.push((etype, c, f, combined, hid));
+                }
+            }
+        }
         LAST_TYPE.store(etype, Ordering::SeqCst);
         let code = unsafe { CGEventGetIntegerValueField(event, FIELD_KEYCODE) } as u16;
         let flags = unsafe { CGEventGetFlags(event) };
@@ -351,8 +374,8 @@ mod mac {
                         SWALLOW.store(true, Ordering::SeqCst);
                         say("swallow armed -- driver may press Caps");
                     }
-                    // The driver injects Caps here.
-                    5 => {
+                    // The driver injects Caps twice, at ticks 4 and 5.
+                    6 => {
                         say("");
                         say(&format!(
                             "SAW CAPS          : {}",
@@ -392,10 +415,26 @@ mod mac {
                             TAP_DIED.load(Ordering::SeqCst)
                         ));
                         say("");
+                        say("--- every event, in order ---");
+                        if let Ok(t) = TRACE.lock() {
+                            for (idx, (ty, c, f, comb, hid)) in t.iter().enumerate() {
+                                say(&format!(
+                                    "  {idx:>2}  {:<22} code={:<3} flags={:#010x} alpha={} keyState comb={} hid={}",
+                                    type_name(*ty),
+                                    c,
+                                    f,
+                                    f & FLAG_ALPHA_SHIFT != 0,
+                                    comb,
+                                    hid
+                                ));
+                            }
+                            say(&format!("  ({} events traced)", t.len()));
+                        }
+                        say("");
                         say("DONE");
                         std::process::exit(0);
                     }
-                    _ if n > 12 => {
+                    _ if n > 14 => {
                         say("TIMEOUT: the driver never pressed anything");
                         std::process::exit(6);
                     }

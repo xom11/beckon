@@ -18,15 +18,17 @@
 //!
 //! ## Two divergences from the Windows twin, both deliberate
 //!
-//! **The hook disclosure is not drawn yet.** `HOOK_DISCLOSURE` reads *"The
-//! keyboard hook is installed only while Caps Lock is on, or while you are
-//! recording a shortcut."* On macOS neither of those exists: the Caps Lock
-//! shorthand and chord capture both need a `CGEventTap`, and neither is
-//! built. The sentence would be *vacuously* true — no hook is ever installed
-//! — while telling a reader that a keyboard hook is part of this program.
-//! A true sentence that leaves a false impression is worse than no sentence,
-//! and this one is on the page whose whole job is disclosure. It comes back,
-//! reworded for the tap, in the same change that adds it.
+//! **The disclosure is drawn, in this platform's words rather than core's.**
+//! `HOOK_DISCLOSURE` reads *"The keyboard hook is installed only while Caps
+//! Lock is on, or while you are recording a shortcut."* The first half is
+//! now true here — `beckon_macos::caps_tap` installs a `CGEventTap` exactly
+//! then — but the second is not: chord capture is not built on macOS, so
+//! that clause would name a thing this program cannot do. A true sentence
+//! with a false clause in it is worse on the one page whose job is
+//! disclosure, so the string is local until capture lands and the two
+//! converge. It keeps both halves core's version has, and the second is the
+//! one no icon or control could draw: a negative claim about what beckon
+//! does NOT keep.
 //!
 //! **An Accessibility row is drawn instead**, and it is not a substitute
 //! chosen for symmetry. It is this platform's version of the same question —
@@ -184,7 +186,9 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
 
     c.access.setStringValue(&NSString::from_str(if ax_trusted {
         "beckon has Accessibility permission, which is what lets it focus and cycle \
-         windows. It reads window lists and raises windows; it records nothing."
+         windows. It reads window lists and raises windows. The keyboard event tap is \
+         installed only while Caps Lock is on as a shortcut key; beckon keeps no record \
+         of what you type."
     } else {
         "beckon does NOT have Accessibility permission. Hotkeys will launch apps but \
          cannot focus or cycle windows. Grant it in System Settings > Privacy & \

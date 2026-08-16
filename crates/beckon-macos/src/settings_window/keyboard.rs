@@ -16,21 +16,22 @@
 //! every row beneath it does not repeat* — and the same reason the Shortcuts
 //! door lost its own heading.
 //!
-//! ## What this door does NOT do on macOS yet
+//! ## All three groups are live on macOS
 //!
-//! Nothing here is wired to a key. The Caps Lock shorthand needs a
-//! `CGEventTap` — macOS's counterpart to the `WH_KEYBOARD_LL` hook — and it
-//! is not built. So group 1 and group 2 edit real settings in `apps.toml`
-//! that **this platform currently ignores**, while group 3 is live, because
-//! it is a view preference about the list and nothing else.
+//! Groups 1 and 2 drive `beckon_macos::caps_tap`, the `CGEventTap` twin of
+//! the Windows `WH_KEYBOARD_LL` hook — measured end to end in
+//! `examples/caps_live.rs`, with the tap uninstalled as the control:
 //!
-//! That asymmetry is stated rather than hidden: `caps_note()` is drawn under
-//! the first group and says so. The alternative — omitting the two groups
-//! until the tap lands — was rejected because the file is shared across
-//! machines: a person editing on a Mac and running on a PC is a real case,
-//! and a window that silently refuses to show settings the file already
-//! contains is worse than one that shows them and says where they take
-//! effect.
+//! ```text
+//! off : hotkey fired = false
+//! on  : HOTKEY FIRED
+//! ```
+//!
+//! Group 3 is a view preference about the list and touches nothing else.
+//!
+//! The note under group 1 is about the PERMISSION, which is the one thing a
+//! reader cannot discover by trying: Input Monitoring is separate from
+//! Accessibility and its absence is silent.
 
 use beckon_core::settings::ControlState;
 use beckon_core::shortcuts::CapsTap;
@@ -59,16 +60,19 @@ pub(super) struct KeyboardControls {
     pub(super) note: Retained<NSTextField>,
 }
 
-/// Why the first two groups do not do anything on this platform yet.
+/// What ticking the box actually costs, in one sentence.
 ///
-/// One sentence, and it names the cause rather than the effect: a reader who
-/// ticks a box and sees nothing happen needs to know whether they are looking
-/// at a bug, a missing permission, or an unbuilt feature — and those have
-/// three different next actions.
+/// **It replaced a note saying the feature did not exist here.** It does now
+/// (`beckon_macos::caps_tap`, end-to-end in `examples/caps_live.rs`), and
+/// what a reader needs instead is the permission it asks for — because
+/// Input Monitoring is a *separate* grant from Accessibility, in a separate
+/// System Settings pane, and without it the tap is created successfully and
+/// then receives nothing at all. That failure is silent, so the sentence
+/// exists to make it findable before it happens rather than after.
 fn caps_note() -> &'static str {
-    "Caps Lock shorthand is not active on macOS yet -- it needs a keyboard event tap, \
-     which beckon does not install. These two settings are saved to the config file and \
-     honoured by beckon on Windows."
+    "Needs Input Monitoring, in System Settings > Privacy & Security. That is a \
+     different permission from Accessibility, and beckon cannot read the Caps key \
+     without it."
 }
 
 pub(super) fn build(
