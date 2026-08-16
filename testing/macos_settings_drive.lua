@@ -41,6 +41,26 @@
 -- The binary needs Input Monitoring for the capture tests, and that grant is
 -- per binary PATH -- so keep deploying to the same path rather than a fresh
 -- one per build.
+--
+-- FOUR MORE TRAPS, each of which makes a working thing look broken. All were
+-- hit, in this order, while measuring the save paths on 2026-08-17:
+--
+--   * `sudo launchctl asuser $(id -u) <cmd>` runs the child as **root**, so
+--     beckon rewrites the config root-owned and the harness's own external
+--     edit fails with `permission denied` -- which reads exactly like "Save
+--     deleted my line". Use `sudo launchctl asuser $(id -u) sudo -u $USER`.
+--   * A heredoc nested inside `ssh` eats quotes and backslashes out of a
+--     shell command, so `printf '\n"a" = "b"\n'` arrives as
+--     `printf na = bn`. Write the Lua locally and `scp` it; and prefer Lua's
+--     own `io.open(path, "a")` to shelling out at all.
+--   * A segment's caption is **`AXDescription`, not `AXTitle`**: an
+--     `AXRadioButton` with `AXSubrole = AXSegment` answers nil for AXTitle
+--     and `"Shortcuts  1"` for AXDescription. Reading the wrong attribute
+--     makes a warning that IS on screen look absent.
+--   * `settings_saw_external_change` sends a CLEAN model to a silent reload
+--     and only a DIRTY one to the banner. A measurement that does not edit
+--     something first is testing the other branch and will conclude the
+--     watcher is dead when it is working perfectly.
 
 local R = {}
 
