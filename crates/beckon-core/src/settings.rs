@@ -1382,6 +1382,35 @@ pub struct AboutState {
     pub image: ImageAge,
 }
 
+/// `SystemTime` as `YYYY-MM-DD`, UTC, or `None` when it is before the epoch.
+///
+/// **Hand-rolled because the workspace has no date crate and this is the only
+/// date it shows.** Howard Hinnant's `civil_from_days`, which is exact for
+/// every day in the proleptic Gregorian calendar and is about twenty lines --
+/// against a dependency that would be compiled into six release artefacts to
+/// format one string.
+///
+/// UTC, not local. The row it feeds identifies a BUILD, and a build has one
+/// date wherever it is read; rendering it in the reader's zone would make the
+/// same binary claim two different dates on two machines, which is exactly the
+/// confusion the About page exists to end.
+fn ymd(t: std::time::SystemTime) -> Option<String> {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    // Days since 1970-01-01, shifted to an era starting 0000-03-01 so that the
+    // leap day lands at the END of a year and every month has a fixed length.
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097); // day of era, 0..=146096
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // 0..=399
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // 0..=365
+    let mp = (5 * doy + 2) / 153; // 0..=11, March-based
+    let d = doy - (153 * mp + 2) / 5 + 1; // 1..=31
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // 1..=12
+    let y = if m <= 2 { y + 1 } else { y };
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
 /// Build the page. Every branch is a decision the design argues for and the
 /// two CI jobs that never compile a wndproc can check.
 pub fn about_state(i: AboutInputs) -> AboutState {
@@ -1394,11 +1423,44 @@ pub fn about_state(i: AboutInputs) -> AboutState {
         .exe
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "unknown".to_string());
+    // Design §3.4 draws `Build   aarch64-pc-windows-msvc · 2026-08-13`, and the
+    // date came from nowhere for a day: `AboutInputs` had no member for one.
+    //
+    // **It costs no new plumbing, because the page already holds it.**
+    // `i.disk` is the running image's mtime, read for `image_age`'s clock half
+    // -- so the date beside the triple is the date of the FILE THIS PROCESS IS
+    // RUNNING, which is the only build date this page could honestly show. A
+    // compile-time constant baked by a `build.rs` would date the source, and
+    // the a14 incident this page exists for is precisely a process running an
+    // image its source no longer describes.
+    //
+    // Measured 2026-08-16: after `scoop update beckon` to 0.9.5 on a14 the
+    // image's mtime read 03:50:34 against a release built at 03:50 -- so the
+    // timestamp survives the release zip and the extraction, and this is the
+    // build date rather than an install date.
+    //
+    // Absent when the file is `Gone` or `Unknown`, and then the row is the
+    // triple alone: a row that says less is better than one that guesses.
+    let built = match i.disk {
+        ImageOnDisk::Written(t) => ymd(t),
+        ImageOnDisk::Gone | ImageOnDisk::Unknown => None,
+    };
+    let build_text = match &built {
+        Some(d) => format!("{} · {}", i.target, d),
+        None => i.target.to_string(),
+    };
     AboutState {
         name: format!("beckon {}", i.version),
+        // **`copy` is the same string as `shown` here, unlike `Location`
+        // below**, and the difference is what `copy_text`'s rule is actually
+        // about: it says copy the row's bare payload rather than what is on
+        // screen BECAUSE `Location` adds a verdict clause and is shortened by
+        // `SS_PATHELLIPSIS`, so its screen text is neither complete nor
+        // pasteable. This row has no verdict and no ellipsis -- the triple and
+        // the date are both payload, and a bug report wants both.
         build: AboutValue {
-            shown: i.target.to_string(),
-            copy: i.target.to_string(),
+            shown: build_text.clone(),
+            copy: build_text,
         },
         location: AboutValue {
             shown: match age.note() {
@@ -4853,6 +4915,62 @@ mod tests {
         assert_eq!(caps_view_fold(true, true, odd), Some(odd));
     }
 
+    /// The epoch, the day before it, and the four cases the era-shifted
+    /// algorithm exists to get right: a common-year 28 Feb / 1 Mar boundary, a
+    /// leap year's 29 Feb, the century that is NOT a leap year (1900), and the
+    /// 400-year exception that IS (2000).
+    ///
+    /// Spot values rather than a formula, because a formula here would be this
+    /// function's own body written twice and would agree with any bug in it.
+    #[test]
+    fn the_build_date_is_the_gregorian_calendar() {
+        assert_eq!(ymd(t(0)).as_deref(), Some("1970-01-01"));
+        assert_eq!(ymd(t(86_399)).as_deref(), Some("1970-01-01"), "same day");
+        assert_eq!(ymd(t(86_400)).as_deref(), Some("1970-01-02"));
+        // 2000-02-29: a leap day in the century that IS a leap year.
+        assert_eq!(ymd(t(951_782_400)).as_deref(), Some("2000-02-29"));
+        assert_eq!(ymd(t(951_868_800)).as_deref(), Some("2000-03-01"));
+        // 1900 was NOT a leap year, but it is before the epoch, so the nearest
+        // reachable check on the same rule is 2100 -- also not a leap year.
+        assert_eq!(ymd(t(4_107_456_000)).as_deref(), Some("2100-02-28"));
+        assert_eq!(ymd(t(4_107_542_400)).as_deref(), Some("2100-03-01"));
+        // A common year's month boundary, and the release this landed in.
+        assert_eq!(ymd(t(1_709_164_800)).as_deref(), Some("2024-02-29"));
+        assert_eq!(ymd(t(1_735_689_599)).as_deref(), Some("2024-12-31"));
+        assert_eq!(ymd(t(1_735_689_600)).as_deref(), Some("2025-01-01"));
+    }
+
+    /// Before the epoch there is no answer, and `None` is how the row says so
+    /// -- it falls back to the triple alone rather than printing a wrong date.
+    #[test]
+    fn a_time_before_the_epoch_has_no_build_date() {
+        assert_eq!(
+            ymd(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1)),
+            None
+        );
+    }
+
+    /// The row is the triple ALONE when the image cannot be stat'd, and the
+    /// triple plus a date when it can. `copy` follows `shown` on this row --
+    /// see the comment at the construction site for why it differs from
+    /// `Location`.
+    #[test]
+    fn the_build_row_carries_the_running_images_date_or_nothing() {
+        let exe = exe_path();
+        let dated = about(&exe, Some(t(1_000)), ImageOnDisk::Written(t(1_723_000_000)));
+        assert_eq!(dated.build.shown, "aarch64-pc-windows-msvc · 2024-08-07");
+        assert_eq!(dated.build.copy, dated.build.shown);
+
+        for gone in [ImageOnDisk::Gone, ImageOnDisk::Unknown] {
+            let s = about(&exe, Some(t(1_000)), gone);
+            assert_eq!(
+                s.build.shown, "aarch64-pc-windows-msvc",
+                "a row that cannot date itself says less rather than guessing"
+            );
+            assert_eq!(s.build.copy, s.build.shown);
+        }
+    }
+
     /// Design §1's split by store, pinned as a table rather than as prose.
     ///
     /// `Keyboard` is the row worth having a test for: nothing on that door is
@@ -6303,7 +6421,11 @@ mod tests {
         let st = about(&exe, Some(t(1_000)), ImageOnDisk::Written(t(1_100)));
         assert_eq!(copy_text(&st, Field::Location), exe.to_string_lossy());
         assert!(!copy_text(&st, Field::Location).contains('('));
-        assert_eq!(copy_text(&st, Field::Build), "aarch64-pc-windows-msvc");
+        assert_eq!(
+            copy_text(&st, Field::Build),
+            "aarch64-pc-windows-msvc \u{b7} 1970-01-01",
+            "the Build row carries the running image's date since 2026-08-16"
+        );
         assert_eq!(copy_text(&st, Field::Licence), "MIT OR Apache-2.0");
         // Every row copies exactly what it shows, EXCEPT the one that has a
         // verdict to carry -- so the exception is one row and is testable as
