@@ -2529,11 +2529,38 @@ Reasonable next-session order:
   One Accessibility grant for Terminal.app collapses the table into one
   usable process and gives every door an automated click-and-assert loop.
 
-  **The Accessibility *inspection* route is a dead end and was tried first.**
-  System Events reported `count of windows` = 0 for the probe — and, asked as
-  a control, 0 for Terminal and 0 for Finder, on a machine where System
-  Events' own `UI elements enabled` is true. The observer was blind, so an AX
-  press would have measured the grant rather than the thing under test.
+  **CORRECTED 2026-08-16: the table is closed WITHOUT any new grant, and the
+  loop exists — `testing/macos_settings_drive.lua`.** Use one process for each
+  half instead of looking for one process with both:
+
+  - **`sudo launchctl asuser $(id -u) <cmd>` runs in `Aqua`** — measured,
+    `launchctl managername` prints it — so `beckon serve` draws its tray and
+    window from a session that cannot draw anything of its own.
+  - **Hammerspoon drives it.** It is an ordinary GUI app that already holds
+    Accessibility, so `hs.eventtap` posts real events and **`hs.axuielement`
+    reads another process's entire control tree** — buttons, check boxes,
+    popups, the table's rows, and the tray's own menu — by title and value,
+    and presses them.
+
+  Measured on airm3 2026-08-16 by exactly that pair: every phase-D check
+  passed unattended (Record arms, an injected `ctrl+cmd+opt+B` fills the four
+  boxes and the key list, bare Escape cancels, a page switch stops the
+  recording, `Cmd+Q` is swallowed and beckon survives).
+
+  **The `hs -c` call TIMES OUT and that is expected**, because
+  `hs.timer.usleep` blocks Hammerspoon's run loop: the script writes its
+  results to a file and the caller reads that. A session that treats
+  `receive timeout` as failure will rewrite a working harness.
+
+  **The Accessibility *inspection* route is a dead end THROUGH SYSTEM EVENTS,
+  and only there.** System Events reported `count of windows` = 0 for the
+  probe — and, asked as a control, 0 for Terminal and 0 for Finder, on a
+  machine where System Events' own `UI elements enabled` is true. That is a
+  property of the AppleScript bridge, not of AX: Hammerspoon's
+  `hs.axuielement` answered `Finder AX ok, windows=3` on the same machine
+  minutes later. This entry used to stop at the first sentence, which reads as
+  *AX cannot inspect* and sends the next session to write instructions for a
+  human instead of a harness.
 
   What DOES work from the agent's shell with no grant at all:
   `beckon_macos::window_server_windows()` (`CGWindowListCopyWindowInfo`),
