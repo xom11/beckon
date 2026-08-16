@@ -770,14 +770,60 @@ fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings:
     }
 }
 
-/// The macOS window has no System page, so neither command can arrive there.
-/// Present for `set_autostart`'s reason: the `match` is compiled on both
-/// platforms.
+/// The macOS twin.
+///
+/// **These were `{}` until the four doors landed**, with a comment saying
+/// "the macOS window has no System page, so neither command can arrive
+/// there". It does now, and both commands do arrive: the System door's two
+/// file rows raise `Open`/`Reveal`, and the About door's three links raise
+/// `Open` with a URL target.
+///
+/// Same borrow discipline as the Windows pair and for a related reason: the
+/// path is cloned out before the call, because `/usr/bin/open` is spawned
+/// from inside a settings-window callback and anything that re-entered this
+/// module with the `RefCell` still held would panic rather than unwind
+/// cleanly.
 #[cfg(all(target_os = "macos", not(target_os = "windows")))]
-fn open_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings::Target) {}
+fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
+    use beckon_core::settings::Target;
+    if let Some(url) = target.url() {
+        if let Err(e) = beckon_macos::shell::open_url(url) {
+            eprintln!("beckon serve: {e}");
+        }
+        return;
+    }
+    let path = match target {
+        Target::Config => Some(state.borrow().config.clone()),
+        Target::Log => state.borrow().log.clone(),
+        // Unreachable: every target with no `url()` is one of the two above.
+        // Spelled out rather than `unreachable!()`, because this runs inside
+        // an Objective-C message send and a panic there aborts the daemon
+        // instead of unwinding.
+        _ => None,
+    };
+    if let Some(p) = path {
+        if let Err(e) = beckon_macos::shell::open_path(&p) {
+            eprintln!("beckon serve: {e}");
+        }
+    }
+}
 
 #[cfg(all(target_os = "macos", not(target_os = "windows")))]
-fn reveal_target(_state: &Rc<RefCell<ServeState>>, _target: beckon_core::settings::Target) {}
+fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
+    use beckon_core::settings::Target;
+    let path = match target {
+        Target::Config => Some(state.borrow().config.clone()),
+        Target::Log => state.borrow().log.clone(),
+        // Nothing to reveal about a URL, and no control raises `Reveal` for
+        // one -- About's links are `Open`.
+        _ => None,
+    };
+    if let Some(p) = path {
+        if let Err(e) = beckon_macos::shell::reveal_path(&p) {
+            eprintln!("beckon serve: {e}");
+        }
+    }
+}
 
 /// Re-read `config`, replace the shortcut table, and (unless paused)
 /// re-register every hotkey.
@@ -1350,10 +1396,21 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     // `ControlState` out of at all. Riding on the projection above would have
     // made a theme switch hostage to a TOML error.
     //
-    // Windows only, and not through a `swin` alias: the macOS settings window
-    // has no System page, so a no-op there would be a function whose only
-    // purpose is to be called.
-    #[cfg(target_os = "windows")]
+    // **Both platforms now.** This read "Windows only, and not through a
+    // `swin` alias: the macOS settings window has no System page, so a no-op
+    // there would be a function whose only purpose is to be called." The
+    // macOS window has all four doors as of the four-doors port, so the call
+    // is real on both and the alias is the right way to reach it.
+    //
+    // `autostart` is the one argument that still differs, and it differs in
+    // core rather than here: it is gathered only on Windows and is therefore
+    // `None` on macOS, which is `SystemState::autostart`'s documented way of
+    // saying "this process cannot offer autostart at all" -- so the row is
+    // omitted rather than greyed. On macOS that is not a shortfall: the
+    // Homebrew formula's `service do` block owns the launch agent, and a
+    // switch here would be a second writer for a file beckon did not create.
+    #[cfg(not(target_os = "windows"))]
+    let autostart: Option<bool> = None;
     swin::apply_system_state(paused, autostart);
     // **A third push, and it takes no arguments at all.** Every string on the
     // About page is something only the settings window's own process can know
@@ -1367,13 +1424,9 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     // while the window is up, which is the whole subject of the `Location`
     // row.
     //
-    // Windows only, and not through a `swin` alias, for `apply_system_state`'s
-    // reason: the macOS settings window has no About page, so a no-op there
-    // would be a function whose only purpose is to be called.
-    #[cfg(target_os = "windows")]
+    // Both platforms, for `apply_system_state`'s reason: the macOS window has
+    // an About door now.
     swin::apply_about_state();
-    #[cfg(not(target_os = "windows"))]
-    let _ = paused;
 }
 
 /// Decide whether `combo` is free for the row being edited, asking the OS

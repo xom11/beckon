@@ -42,7 +42,7 @@ pub(super) fn label(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> 
 /// reporting rather than offering (`Off in system settings`).
 pub(super) fn secondary(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     let l = label(text, mtm);
-    unsafe { l.setTextColor(Some(&NSColor::secondaryLabelColor())) };
+    l.setTextColor(Some(&NSColor::secondaryLabelColor()));
     l
 }
 
@@ -57,7 +57,7 @@ pub(super) fn heading(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField
 /// and it is the only string in the window long enough to need it.
 pub(super) fn wrapping(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     let l = label(text, mtm);
-    unsafe {
+    {
         l.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
         l.cell().unwrap().setWraps(true);
     }
@@ -114,7 +114,7 @@ pub(super) fn glyph(
     let b = push(sym, action, target, mtm);
     b.setControlSize(NSControlSize::Small);
     b.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-    unsafe { b.setToolTip(Some(&NSString::from_str(tip))) };
+    b.setToolTip(Some(&NSString::from_str(tip)));
     b
 }
 
@@ -177,7 +177,7 @@ pub(super) fn vstack(
     s.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     s.setSpacing(spacing);
     s.setDistribution(NSStackViewDistribution::Fill);
-    unsafe { s.setAlignment(NSLayoutAttribute::Leading) };
+    s.setAlignment(NSLayoutAttribute::Leading);
     for v in views {
         s.addArrangedSubview(v);
     }
@@ -192,7 +192,7 @@ pub(super) fn vstack(
 /// with a low hugging priority is what expands when the row does.
 pub(super) fn spring(mtm: MainThreadMarker) -> Retained<NSView> {
     let v = NSView::new(mtm);
-    unsafe {
+    {
         v.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
         v.setContentCompressionResistancePriority_forOrientation(
             1.0,
@@ -210,7 +210,7 @@ pub(super) fn spring(mtm: MainThreadMarker) -> Retained<NSView> {
 /// so it follows the appearance like everything else here.
 pub(super) fn card(inner: &NSView, mtm: MainThreadMarker) -> Retained<NSBox> {
     let b = NSBox::new(mtm);
-    unsafe {
+    {
         b.setBoxType(NSBoxType::Custom);
         b.setTitlePosition(objc2_app_kit::NSTitlePosition::NoTitle);
         b.setFillColor(&NSColor::controlBackgroundColor());
@@ -235,7 +235,7 @@ pub(super) fn card(inner: &NSView, mtm: MainThreadMarker) -> Retained<NSBox> {
 /// A horizontal hairline between two groups inside one card.
 pub(super) fn divider(mtm: MainThreadMarker) -> Retained<NSBox> {
     let b = NSBox::new(mtm);
-    unsafe {
+    {
         b.setBoxType(NSBoxType::Separator);
     }
     pin_height(&b, 1.0);
@@ -284,6 +284,6 @@ pub(super) fn pin_min_width(v: &NSView, w: f64) {
 /// A right-aligned value slot — the `96%`, the `248 bytes`, the config path.
 pub(super) fn value(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     let l = secondary(text, mtm);
-    unsafe { l.setAlignment(NSTextAlignment::Right) };
+    l.setAlignment(NSTextAlignment::Right);
     l
 }

@@ -45,17 +45,25 @@
 //! what is drawn. `examples/settings_probe.rs` is the only thing that can
 //! answer that, and it has to run in an Aqua session.
 
-use beckon_core::settings::{Callbacks, ControlState, Mark, Page, Paths};
+use beckon_core::settings::{
+    command_bar_shown, copy_text, Callbacks, ControlState, Field, Mark, Page, Paths,
+    SettingsCommand,
+};
+// `beckon_core::settings::Target` names a link destination; `Target` in this
+// file is the Objective-C class every control sends its action to. Aliasing
+// the import rather than renaming the class keeps the two `sel!` tables and
+// the two macOS probes reading the way they already do.
+use beckon_core::settings::Target as SettingsTarget;
 use beckon_core::shortcuts::{combo_view, key_table, CapsTap, Chord, ComboView};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate, NSFont,
-    NSLayoutAttribute, NSLayoutConstraint, NSPopUpButton, NSScrollView, NSStackView,
-    NSStackViewDistribution, NSTableColumn, NSTableView, NSTableViewDataSource,
-    NSTableViewDelegate, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSLayoutAttribute, NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
+    NSScrollView, NSSegmentedControl, NSStackView, NSStackViewDistribution, NSTableColumn,
+    NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -64,6 +72,10 @@ use std::cell::RefCell;
 
 // Construction helpers shared by the four doors. Nothing in there decides
 // anything — see its module doc.
+#[allow(dead_code)]
+mod about;
+#[allow(dead_code)]
+mod system;
 #[allow(dead_code)]
 mod widgets;
 
@@ -90,6 +102,38 @@ const COL_STATUS: &str = "status";
 #[derive(Clone)]
 struct Controls {
     window: Retained<NSWindow>,
+
+    /// The four doors' pill strip.
+    ///
+    /// **`NSSegmentedControl`, not four hand-drawn pills.** The Win32 twin
+    /// draws its own because Win32 has no such control, and it pays for it:
+    /// three `(fill, ink)` pairs, a hover ink swap that exists because
+    /// `text_muted` on `strip_hover` measures 3.700 and fails WCAG, a focus
+    /// ring drawn OUTSIDE the pill in a 3 px margin because the borrowed
+    /// `accent_on` measured 1.360 on the lit pill and was invisible, and a
+    /// fixed four-digit badge slot so the strip's width never becomes a
+    /// function of the data. Every one of those is contrast or geometry
+    /// AppKit already gets right, in both appearances, with a keyboard story
+    /// and a focus ring included.
+    ///
+    /// It also closes a deviation rather than inheriting one: the design's
+    /// own drawing shrink-wraps the trough around the four pills — the
+    /// segmented-control look — and Windows fills the whole band instead,
+    /// recorded as a deferred difference, because hugging needs a width only
+    /// its layout pass computes.
+    tabs: Retained<NSSegmentedControl>,
+    /// One container per door, in `Page` order. Exactly one is unhidden.
+    /// Hidden arranged subviews collapse in an `NSStackView`, so the door
+    /// that is not open contributes no height — the AppKit spelling of
+    /// `compute_card_rects` being page-dependent.
+    pages: [Retained<NSView>; 4],
+    /// `Save` / `Close` / `Open config file`. Drawn on the two doors that
+    /// write the config and on neither of the other two —
+    /// `command_bar_shown`, from `Page::writes_config`.
+    bar: Retained<NSStackView>,
+    sys: system::SystemControls,
+    abt: about::AboutControls,
+
     table: Retained<NSTableView>,
     filter: Retained<NSTextField>,
     app: Retained<NSComboBox>,
@@ -112,6 +156,29 @@ struct Controls {
     add: Retained<NSButton>,
 }
 
+/// The four doors, in `Page` order.
+///
+/// `Page` is an exhaustive enum in core and `Page::next` / `Page::prev`
+/// already spell the cycle, so this is only the index — never a second
+/// spelling of the order.
+fn page_index(p: Page) -> usize {
+    match p {
+        Page::Shortcuts => 0,
+        Page::Keyboard => 1,
+        Page::System => 2,
+        Page::About => 3,
+    }
+}
+
+fn page_at(i: usize) -> Page {
+    match i {
+        1 => Page::Keyboard,
+        2 => Page::System,
+        3 => Page::About,
+        _ => Page::Shortcuts,
+    }
+}
+
 struct Ui {
     c: Controls,
     _target: Retained<Target>,
@@ -127,6 +194,34 @@ struct Ui {
     /// as for a human one, and a push that came back as an edit would make
     /// every open mark the file dirty.
     pushing: bool,
+
+    /// Which door is open. The caller keeps its own mirror (it decides where
+    /// the NEXT open lands) and is told through `SettingsCommand::ShowPage`;
+    /// this is the window's own copy, and it is the one the window acts on.
+    page: Page,
+
+    /// The config and log paths this window was opened for. The System
+    /// door's two file rows are built from them, and `system_state` wants
+    /// them by reference on every push.
+    paths: Paths,
+    /// This window's own transparency, 85..=100.
+    ///
+    /// Held here rather than in a preferences store because there is no
+    /// macOS counterpart to the Win32 twin's `HKCU\Software\beckon` yet:
+    /// the value survives a page switch and dies with the window. Persisting
+    /// it is `NSUserDefaults` and one line, deliberately not taken in this
+    /// pass — a preference that outlives the window should be introduced with
+    /// the reload path that has to honour it, not before.
+    opacity: u8,
+
+    /// The last `AboutState` pushed.
+    ///
+    /// Held because the copy buttons act **in the window** — design §3.4 —
+    /// and so need the row's payload at click time. It cannot come back
+    /// through a callback: `SettingsCommand` is `Copy + Eq` and carries no
+    /// `String` on purpose, so a caller answering `Copy(Field)` would have to
+    /// rebuild this page's state and become a second author for it.
+    about_state: Option<beckon_core::settings::AboutState>,
 }
 
 thread_local! {
@@ -204,6 +299,89 @@ fn block_reason(b: beckon_core::theme::TransparencyBlock) -> &'static str {
         B::HighContrast => "Off in increased contrast",
         B::RemoteSession => "Off in a remote session",
         B::SystemSetting => "Off in system settings",
+    }
+}
+
+/// Raise one `SettingsCommand`.
+///
+/// **Until this existed, `on_command` was never raised on macOS and all
+/// eleven variants were unreachable** — the window had no way to pause the
+/// service, reload it, open a file or follow a link, because there was
+/// nothing on this side to say so. It goes through `with_cb` for that
+/// function's reason: a handler may reload, save or close, every one of
+/// which re-enters this module.
+fn cmd(c: SettingsCommand) {
+    with_cb(|cb| (cb.on_command)(c));
+}
+
+/// Put an About row on the clipboard, then report that it happened.
+///
+/// **The row's bare payload, not the string on screen.** `AboutValue` splits
+/// `shown` from `copy` precisely because `Location` shows a verdict clause
+/// and is shortened for width, while a copied path is for pasting into a
+/// terminal. `copy_text` is the one decision and it lives in core.
+///
+/// The window acts first and reports afterwards, unlike every other command
+/// here. That is design §3.4's rule and it follows from the type:
+/// `SettingsCommand` is `Copy + Eq` and deliberately carries no `String`, so
+/// a caller asked to perform the copy would have to rebuild this page's state
+/// and become a second author for it.
+fn copy_field(f: Field) {
+    let text = UI.with(|u| {
+        u.borrow().as_ref().and_then(|x| {
+            x.about_state
+                .as_ref()
+                .map(|st| copy_text(st, f).to_string())
+        })
+    });
+    let Some(text) = text else { return };
+    let pb = { NSPasteboard::generalPasteboard() };
+    unsafe {
+        pb.clearContents();
+        pb.setString_forType(&NSString::from_str(&text), NSPasteboardTypeString);
+    }
+    cmd(SettingsCommand::Copy(f));
+}
+
+/// The window's own transparency.
+///
+/// `alphaValue` is the same mechanism the Win32 twin uses (a layered
+/// window's alpha), including the same consequence: the text goes
+/// translucent with the ground, because it is one surface being composited
+/// rather than a ground tinted behind opaque ink. Matching the Windows
+/// behaviour is the point — the slider means the same thing on both.
+fn set_window_opacity(w: &NSWindow, pct: u8) {
+    let a = (pct as f64 / 100.0).clamp(0.0, 1.0);
+    w.setAlphaValue(a);
+}
+
+/// Open a door.
+///
+/// Three things happen and none is optional:
+///
+/// 1. the strip's selection follows, so a page opened from anywhere else —
+///    the caller's stored page, a keyboard shortcut — lights the right pill;
+/// 2. exactly one container is unhidden, and a hidden arranged subview
+///    contributes no height, so the door that is shut costs nothing;
+/// 3. the command bar appears only on the doors that WRITE the config
+///    (`command_bar_shown`), while the band itself stays on all four — an
+///    empty bar is indistinguishable from the window ground, and reserving
+///    it keeps one meaning for the content's bottom edge.
+fn show_page(p: Page) {
+    let Some(c) = controls() else { return };
+    let now = UI.with(|u| u.borrow().as_ref().map(|x| x.page));
+    UI.with(|u| {
+        if let Some(x) = u.borrow_mut().as_mut() {
+            x.page = p;
+        }
+    });
+    c.tabs.setSelectedSegment(page_index(p) as isize);
+    for (i, v) in c.pages.iter().enumerate() {
+        v.setHidden(i != page_index(p));
+    }
+    c.bar.setHidden(!command_bar_shown(p));
+    if now != Some(p) {
+        cmd(SettingsCommand::ShowPage(p));
     }
 }
 
@@ -367,6 +545,120 @@ define_class!(
         #[unsafe(method(beckonOpenFile:))]
         fn on_open_file(&self, _s: &AnyObject) {
             with_cb(|cb| (cb.on_open_file)());
+        }
+
+        // --- the tab strip -------------------------------------------------
+
+        #[unsafe(method(beckonPage:))]
+        fn on_page(&self, _s: &AnyObject) {
+            let Some(c) = controls() else { return };
+            let i = { c.tabs.selectedSegment() };
+            if i < 0 {
+                return;
+            }
+            show_page(page_at(i as usize));
+        }
+
+        // --- door 3, System ------------------------------------------------
+        //
+        // Every one of these is a command that acts NOW, on the running
+        // service or on this window, and none of them touches the config —
+        // design §1's split by store. They go out as `SettingsCommand`, which
+        // is why `on_command` had to start being raised at all: on macOS it
+        // never was, so all eleven variants were unreachable.
+
+        #[unsafe(method(beckonPause:))]
+        fn on_pause(&self, _s: &AnyObject) {
+            if suppressed() {
+                return;
+            }
+            let Some(c) = controls() else { return };
+            let on = c.sys.pause.state() == 1;
+            cmd(SettingsCommand::SetPaused(on));
+        }
+
+        /// The System door's Reload — the tray's own, NOT the banner's
+        /// "reload from disk". They answer different questions and the
+        /// banner's is `on_reload_from_disk`.
+        #[unsafe(method(beckonReloadNow:))]
+        fn on_reload_now(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::ReloadNow);
+        }
+
+        #[unsafe(method(beckonOpacity:))]
+        fn on_opacity(&self, _s: &AnyObject) {
+            if suppressed() {
+                return;
+            }
+            let Some(c) = controls() else { return };
+            let v = { c.sys.opacity.doubleValue() };
+            // The window clamps before sending; the caller may assume it.
+            let pct = v.round().clamp(
+                beckon_core::settings::OPACITY_MIN as f64,
+                beckon_core::settings::OPACITY_MAX as f64,
+            ) as u8;
+            UI.with(|u| {
+                if let Some(x) = u.borrow_mut().as_mut() {
+                    x.opacity = pct;
+                }
+            });
+            set_window_opacity(&c.window, pct);
+            c.sys
+                .opacity_value
+                .setStringValue(&NSString::from_str(&format!("{pct}%")));
+            cmd(SettingsCommand::SetOpacity(pct));
+        }
+
+        #[unsafe(method(beckonOpenConfig:))]
+        fn on_open_config(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Open(SettingsTarget::Config));
+        }
+
+        #[unsafe(method(beckonRevealConfig:))]
+        fn on_reveal_config(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Reveal(SettingsTarget::Config));
+        }
+
+        #[unsafe(method(beckonOpenLog:))]
+        fn on_open_log(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Open(SettingsTarget::Log));
+        }
+
+        #[unsafe(method(beckonRevealLog:))]
+        fn on_reveal_log(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Reveal(SettingsTarget::Log));
+        }
+
+        // --- door 4, About -------------------------------------------------
+
+        #[unsafe(method(beckonCopyBuild:))]
+        fn on_copy_build(&self, _s: &AnyObject) {
+            copy_field(Field::Build);
+        }
+
+        #[unsafe(method(beckonCopyLocation:))]
+        fn on_copy_location(&self, _s: &AnyObject) {
+            copy_field(Field::Location);
+        }
+
+        #[unsafe(method(beckonCopyLicence:))]
+        fn on_copy_licence(&self, _s: &AnyObject) {
+            copy_field(Field::Licence);
+        }
+
+        #[unsafe(method(beckonGithub:))]
+        fn on_github(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Open(SettingsTarget::Github));
+        }
+
+        #[unsafe(method(beckonReleases:))]
+        fn on_releases(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Open(SettingsTarget::Releases));
+        }
+
+        #[unsafe(method(beckonBugReport:))]
+        fn on_bug_report(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Open(SettingsTarget::BugReport));
         }
 
         /// Any of the four shortcut check boxes or the key list moved.
@@ -654,10 +946,6 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         return Ok(());
     }
 
-    // Same as the Windows side: accepted and ignored. macOS has no tab strip
-    // and this signature is shared, not per-platform.
-    let _ = page;
-
     let target: Retained<Target> = unsafe { msg_send![Target::alloc(mtm), init] };
 
     // --- banner: the file changed under unsaved edits ---------------------
@@ -816,10 +1104,78 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
 
     // --- command bar ------------------------------------------------------
     let save = push("Save", sel!(beckonSave:), &target, mtm);
-    let reload = push("Reload", sel!(beckonReload:), &target, mtm);
-    let open_file = push("Open file", sel!(beckonOpenFile:), &target, mtm);
+    let open_file = push("Open config file", sel!(beckonOpenFile:), &target, mtm);
     let close_btn = push("Close", sel!(beckonClose:), &target, mtm);
-    let command_row = hstack(&[&open_file, &reload, &close_btn, &save], mtm);
+    // `Open config file` leads, `Close` and `Save` close: the destructive-ish
+    // pair sits where the eye finishes. `Reload` is NOT here — the System
+    // door owns it now, and the banner owns the other one.
+    let bar = hstack(
+        &[
+            &*open_file as &NSView,
+            &*widgets::spring(mtm),
+            &close_btn,
+            &save,
+        ],
+        mtm,
+    );
+
+    // --- door 1: Shortcuts -------------------------------------------------
+    // Two cards, as design §3.1 draws them: the list with its head, then the
+    // editor with its notes. The banner rides above both and contributes no
+    // height while hidden.
+    let list_card = widgets::card(
+        &widgets::vstack(&[&*head_row as &NSView, &*scroll], 8.0, mtm),
+        mtm,
+    );
+    let editor_card = widgets::card(
+        &widgets::vstack(&[&*editor_row as &NSView, &*notes], 8.0, mtm),
+        mtm,
+    );
+    let page_shortcuts: Retained<NSView> = widgets::vstack(
+        &[&*banner_row as &NSView, &*list_card, &*editor_card],
+        10.0,
+        mtm,
+    )
+    .into_super();
+
+    // --- door 2: Keyboard --------------------------------------------------
+    let page_keyboard: Retained<NSView> = widgets::card(
+        &widgets::vstack(
+            &[
+                &*widgets::heading("Keyboard", mtm) as &NSView,
+                &*keyboard_row,
+            ],
+            10.0,
+            mtm,
+        ),
+        mtm,
+    )
+    .into_super();
+
+    // --- doors 3 and 4 -----------------------------------------------------
+    let (page_system, sys) = system::build(&target, mtm);
+    let (page_about, abt) = about::build(&target, mtm);
+
+    // --- the strip ---------------------------------------------------------
+    let tabs = NSSegmentedControl::new(mtm);
+    unsafe {
+        tabs.setSegmentCount(4);
+        tabs.setTrackingMode(objc2_app_kit::NSSegmentSwitchTracking::SelectOne);
+        tabs.setTarget(Some(&*target));
+        tabs.setAction(Some(sel!(beckonPage:)));
+        for (i, cap) in ["Shortcuts", "Keyboard", "System", "About"]
+            .iter()
+            .enumerate()
+        {
+            tabs.setLabel_forSegment(&NSString::from_str(cap), i as isize);
+        }
+        // The Shortcuts segment carries the binding count and therefore has
+        // text whose width changes with the data. Pinning its width is the
+        // rule the Win32 twin spends a measured four-digit slot on: **the
+        // badge must never make the strip's geometry a function of the
+        // config**, or the other three pills move when a binding is added.
+        tabs.setWidth_forSegment(120.0, 0);
+    }
 
     // --- stack them -------------------------------------------------------
     let root = NSStackView::new(mtm);
@@ -833,22 +1189,22 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             right: 12.0,
         });
         for v in [
-            &*banner_row as &NSView,
-            &*head_row,
-            &*scroll,
-            &*editor_row,
-            &*notes,
-            &*keyboard_row,
-            &*command_row,
+            &*tabs as &NSView,
+            &page_shortcuts,
+            &page_keyboard,
+            &page_system,
+            &page_about,
+            &*bar,
         ] {
             root.addArrangedSubview(v);
         }
+        root.setAlignment(NSLayoutAttribute::Width);
     }
 
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 460.0)),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 500.0)),
             NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
                 | NSWindowStyleMask::Miniaturizable
@@ -858,10 +1214,17 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         )
     };
     unsafe {
-        window.setTitle(&NSString::from_str(&format!(
-            "beckon - {}",
-            paths.config.display()
-        )));
+        // **The file NAME, not the path.** A full path in a title bar is
+        // truncated from the right by every window menu and app switcher
+        // there is — i.e. it loses precisely the file name it was there to
+        // show. This window used to set `paths.config.display()`, which is
+        // the whole path.
+        let name = paths
+            .config
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| paths.config.display().to_string());
+        window.setTitle(&NSString::from_str(&format!("beckon - {name}")));
         window.setContentView(Some(&root));
         window.center();
         // Save rests here, but the ring migrates to whichever push button
@@ -875,6 +1238,11 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         *u.borrow_mut() = Some(Ui {
             c: Controls {
                 window,
+                tabs,
+                pages: [page_shortcuts, page_keyboard, page_system, page_about],
+                bar,
+                sys,
+                abt,
                 table,
                 filter,
                 app,
@@ -900,9 +1268,18 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             items: Vec::new(),
             shown_combo: None,
             pushing: false,
+            // Set below by `show_page`, which is also what tells the caller.
+            page: Page::Shortcuts,
+            paths: paths.clone(),
+            opacity: 100,
+            about_state: None,
         });
     });
     CB.with(|c| *c.borrow_mut() = Some(cb));
+    // Open on the door the caller remembered. `page` is no longer accepted
+    // and discarded — that line (`let _ = page;`) was this window's whole
+    // relationship with the four-door design.
+    show_page(page);
     Ok(())
 }
 
@@ -912,6 +1289,218 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
 
 fn set_check(b: &NSButton, on: bool) {
     b.setState(if on { 1 } else { 0 });
+}
+
+const TARGET_TRIPLE: &str = env!("BECKON_TARGET");
+
+/// When did THIS process start?
+///
+/// The About door's stale-image verdict is the comparison of this against the
+/// modification time of the file at `current_exe()`, and without it the row
+/// can only print a path. The incident it exists for is in `CLAUDE.md`: a
+/// beckon on a14 ran a three-hour-old image while `--version`, the package
+/// manager's `current` junction and the install directory all agreed on a
+/// newer one.
+///
+/// `proc_pidinfo(PROC_PIDTBSDINFO)` rather than `sysctl(KERN_PROC_PID)`:
+/// both are FFI, but `kinfo_proc` is a large nested structure whose layout
+/// this file would have to restate exactly, while `proc_bsdinfo` is flat and
+/// ends in the two fields actually wanted. Getting a large `#[repr(C)]`
+/// wrong reads back plausible garbage rather than failing.
+///
+/// Returns `None` rather than guessing: `about_state` renders that as
+/// `ImageAge::Unknown`, which draws no verdict at all — silence, never a
+/// false alarm.
+#[cfg(target_os = "macos")]
+fn process_start_time() -> Option<std::time::SystemTime> {
+    // `struct proc_bsdinfo` from `<libproc.h>`, in order. Only the last two
+    // fields are read; the rest is padding that must be the right size.
+    #[repr(C)]
+    struct ProcBsdInfo {
+        pbi_flags: u32,
+        pbi_status: u32,
+        pbi_xstatus: u32,
+        pbi_pid: u32,
+        pbi_ppid: u32,
+        pbi_uid: u32,
+        pbi_gid: u32,
+        pbi_ruid: u32,
+        pbi_rgid: u32,
+        pbi_svuid: u32,
+        pbi_svgid: u32,
+        rfu_1: u32,
+        pbi_comm: [u8; 16],
+        pbi_name: [u8; 32],
+        pbi_nfiles: u32,
+        pbi_pgid: u32,
+        pbi_pjobc: u32,
+        e_tdev: u32,
+        e_tpgid: u32,
+        pbi_nice: i32,
+        pbi_start_tvsec: u64,
+        pbi_start_tvusec: u64,
+    }
+
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut std::ffi::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+    const PROC_PIDTBSDINFO: i32 = 3;
+
+    let mut info: ProcBsdInfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<ProcBsdInfo>() as i32;
+    let got = unsafe {
+        proc_pidinfo(
+            std::process::id() as i32,
+            PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut std::ffi::c_void,
+            size,
+        )
+    };
+    // The call returns the number of bytes written, so a short read is a
+    // layout mismatch and must not be trusted.
+    if got != size {
+        return None;
+    }
+    Some(
+        std::time::UNIX_EPOCH
+            + std::time::Duration::new(info.pbi_start_tvsec, info.pbi_start_tvusec as u32 * 1000),
+    )
+}
+
+/// Push the System door.
+///
+/// **Two arguments, not a `SystemState`**, mirroring the Win32 twin: the rest
+/// of what the page draws is something only this process can look up — the
+/// log's size on disk, whether the OS is refusing transparency — and
+/// `system_state` is where those become the row a reader sees.
+///
+/// **A second push, separate from `apply_state`, and design §1's split by
+/// store is why.** This door writes the running service or this window,
+/// never `apps.toml` — so it has to keep working in the one state where
+/// there is no `Model` to project a `ControlState` out of at all, which is a
+/// config file that does not parse. Riding on that projection would have made
+/// pausing the hotkeys hostage to a TOML error.
+pub fn apply_system_state(paused: bool, autostart: Option<bool>) {
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(c) = controls() else { return };
+    let Some((paths, opacity)) =
+        UI.with(|u| u.borrow().as_ref().map(|x| (x.paths.clone(), x.opacity)))
+    else {
+        return;
+    };
+
+    // `Written`/`Gone`/`Unknown` matter here for the same reason they do on
+    // About: a log that is not there is a fact, and `system_state` renders it
+    // as `not found` rather than as `0 bytes`.
+    let log_bytes = paths
+        .log
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len());
+
+    let st = beckon_core::settings::system_state(beckon_core::settings::SystemInputs {
+        paused,
+        // `None` OMITS the row. On macOS that is not a shortfall being
+        // papered over: Homebrew's formula owns the launch agent, so a switch
+        // here would be a second writer for a file beckon did not create.
+        autostart,
+        // Read and discarded — this window follows the system appearance.
+        dark: false,
+        opacity,
+        block: transparency_block(),
+        paths: &paths,
+        log_bytes,
+    });
+    system::apply(&c.sys, &st);
+}
+
+/// May this machine be transparent at all, and if not, why not?
+///
+/// The macOS analogues of the Win32 twin's three refusals, in the same
+/// precedence. `RemoteSession` has no reading here — a Screen Sharing client
+/// is not a separate session from the app's point of view — so it is never
+/// returned rather than being guessed at.
+#[cfg(target_os = "macos")]
+fn transparency_block() -> Option<beckon_core::theme::TransparencyBlock> {
+    use beckon_core::theme::TransparencyBlock as B;
+    let mtm = MainThreadMarker::new()?;
+    let ws = { objc2_app_kit::NSWorkspace::sharedWorkspace() };
+    let _ = mtm;
+    if ws.accessibilityDisplayShouldIncreaseContrast() {
+        return Some(B::HighContrast);
+    }
+    if ws.accessibilityDisplayShouldReduceTransparency() {
+        return Some(B::SystemSetting);
+    }
+    None
+}
+
+/// Push the About door.
+///
+/// **It takes no arguments at all.** Every string on this page is something
+/// only the settings window's own process can know — its compiled-in version,
+/// its target triple, its `current_exe()` and the two timestamps behind the
+/// stale-image verdict — so there is nothing for a caller to hand over, and
+/// anything passed would be a copy of a fact this crate reads directly.
+///
+/// Called on every refresh rather than once at open, because one of those
+/// strings genuinely moves: the file at the launch path can be replaced while
+/// the window is up, which is the whole subject of the `Location` row.
+pub fn apply_about_state() {
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(c) = controls() else { return };
+
+    let exe = std::env::current_exe().ok();
+    let disk = match exe.as_ref().map(std::fs::metadata) {
+        Some(Ok(m)) => match m.modified() {
+            Ok(t) => beckon_core::settings::ImageOnDisk::Written(t),
+            Err(_) => beckon_core::settings::ImageOnDisk::Unknown,
+        },
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            beckon_core::settings::ImageOnDisk::Gone
+        }
+        _ => beckon_core::settings::ImageOnDisk::Unknown,
+    };
+
+    // **`exe` goes to the row UNRESOLVED.** Resolving it through
+    // `canonicalize` would report where a symlink points TODAY, and on this
+    // project's own macOS install that is `/etc/profiles/per-user/<user>/bin/
+    // beckon` — a stable wrapper over a Nix store path that changes on every
+    // rebuild. The unresolved launch path is the string the row must show;
+    // resolving it is the exact simplification design §3.4 forbids.
+    let st = beckon_core::settings::about_state(beckon_core::settings::AboutInputs {
+        version: env!("CARGO_PKG_VERSION"),
+        target: TARGET_TRIPLE,
+        exe: exe.as_deref(),
+        started: process_start_time(),
+        disk,
+        // macOS has no second path to compare against: there is no launcher
+        // junction between the caller and the image the way scoop's
+        // `current\` sits in front of a Windows install. `Unknown` is the
+        // documented answer for "one of the two could not be resolved", and
+        // it costs silence rather than a false alarm.
+        identity: beckon_core::settings::ImageIdentity::Unknown,
+        licence: env!("CARGO_PKG_LICENSE"),
+    });
+
+    about::apply(&c.abt, &st, crate::is_accessibility_trusted());
+    UI.with(|u| {
+        if let Some(x) = u.borrow_mut().as_mut() {
+            x.about_state = Some(st);
+        }
+    });
 }
 
 /// Draw `st`. Called on every keystroke, so it must be cheap and must not
@@ -947,6 +1536,32 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         return;
     };
     {
+        // The count badge, on the Shortcuts pill and nowhere else.
+        //
+        // **`binding_count`, never `items.len()`.** The two differ on purpose:
+        // `items` is what is on SCREEN, which is filter-dependent and
+        // additionally exempts the selected row from the filter — and this
+        // badge is read from three doors that have no filter box at all,
+        // where "the rows matching a filter you cannot see" is not a number
+        // that means anything. It is also the only count in the window; a
+        // second one beside the heading was retired precisely because the two
+        // could disagree under a filter while both were right.
+        //
+        // Shown at `0` as well. `unreadable_state` sets it to zero, and zero
+        // is true of a file beckon cannot read: it has no bindings beckon can
+        // act on. A row added and not yet saved counts, for the same reason
+        // the title bar's dirty mark follows the model rather than the disk.
+        {
+            x.tabs.setLabel_forSegment(
+                &NSString::from_str(&format!("Shortcuts  {}", st.binding_count)),
+                0,
+            );
+        }
+        // The dirty mark. `setDocumentEdited:` is AppKit's own — it puts a
+        // dot in the close button — so the Win32 twin's `*` title prefix does
+        // NOT port: both at once would be two marks for one fact.
+        x.window.setDocumentEdited(st.dirty);
+
         x.table.reloadData();
         if let Some(i) = st.selected {
             let set = objc2_foundation::NSIndexSet::indexSetWithIndex(i);

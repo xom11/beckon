@@ -28,25 +28,58 @@
 //! `launchctl managername` for `Aqua` first, the same guard
 //! `settings_probe.rs` and `tray_probe.rs` use.
 //!
-//! ## It does not need a person
+//! ## Three ways to press it, and why there are three
 //!
-//! The button is pressed from *outside* the process, over the Accessibility
-//! API, by the driver in `testing/macos_loop_probe.sh`. That is the whole
-//! point: a probe a human has to click can only be run when a human is
-//! there, which is exactly why §5 sat open. Pressing it through AX also
-//! measures something a human click would not — that the window is a real
-//! accessibility citizen, which is what any later automated UI test needs.
+//! `PRESS=` selects one. They are not redundant; each answers a different
+//! question, and the first two were each believed to be the whole answer
+//! until a control said otherwise.
+//!
+//! - **`post`** (default) — `NSApp.postEvent:atStart:`, in-process. Cheapest
+//!   and needs no permission, but it answers a *narrower* question than it
+//!   looks: it enqueues onto `NSApplication`'s own queue, which only
+//!   `[NSApp nextEventMatchingMask:]` inside `[NSApp run]` drains. Under a
+//!   loop where `isRunning` is false it is undelivered by construction, so a
+//!   negative here proves `NSApp` is not running — not that a real click
+//!   fails.
+//! - **`hid`** — `CGEventPost(kCGHIDEventTap)` from inside the probe: the
+//!   path a real click takes. Currently useless from a Terminal-launched
+//!   probe, which is not Accessibility-trusted, and an untrusted
+//!   `CGEventPost` is a **silent** no-op.
+//! - **`external`** — the probe publishes `CLICK-AT` and a separate,
+//!   trusted process (`examples/hid_click.rs`) posts. This is the shape that
+//!   can eventually give every door an automated click-and-assert loop.
+//!
+//! ## The permission split that makes this awkward
+//!
+//! Measured 2026-08-16, and invisible from inside any one process:
+//!
+//! | | agent's shell | Terminal.app |
+//! |---|---|---|
+//! | Aqua session, i.e. can draw | no (`Background`) | yes |
+//! | `AXIsProcessTrusted()`, i.e. can post | yes | no |
+//!
+//! Neither can do both, so the probe draws where it cannot inject and the
+//! injector is trusted where there is no session to inject into. One
+//! Accessibility grant for Terminal.app collapses the table into one usable
+//! process.
+//!
+//! The Accessibility *inspection* route — System Events, `click button …` —
+//! was tried before any of this and abandoned: it reported
+//! `count of windows` = 0 for the probe, and, asked as a control, 0 for
+//! Terminal and 0 for Finder. The observer was blind, so an AX press would
+//! have measured the grant rather than the loop.
 //!
 //! ## Reading the output
 //!
 //! - `HEARTBEAT` proves the run loop is turning at all. Without it, a silent
-//!   `PRESS` result means "nothing is running", not "Cocoa gets no events".
-//! - `AX-VISIBLE` proves the driver could see the button before it tried to
-//!   press it, so a missing `FIRED` is about event delivery rather than
-//!   about the probe failing to find its target. **A test with no positive
-//!   control cannot tell a clean negative from a broken detector** — that
-//!   rule is written into this repo three times over, and this line is it.
-//! - `FIRED` is the answer.
+//!   result means "nothing is running", not "Cocoa gets no events" — opposite
+//!   conclusions.
+//! - `AXIsProcessTrusted` from the injector proves the press was actually
+//!   sent. **A test with no positive control cannot tell a clean negative
+//!   from a blind detector**; that rule is written into this repo three times
+//!   over, and it caught two false leads here.
+//! - `FIRED` / `NOT-FIRED` is the answer, and it is only an answer about a
+//!   *real* click when the press method was `hid` or `external`.
 
 fn main() {
     #[cfg(not(target_os = "macos"))]
@@ -236,7 +269,7 @@ mod mac {
                 false,
             )
         };
-        unsafe {
+        {
             window.setTitle(&NSString::from_str("beckon loop probe"));
             window.setContentView(Some(&stack));
         }
@@ -252,7 +285,7 @@ mod mac {
         // succeeded, so the loop was not the variable. An in-process
         // `postEvent:` carries a `windowNumber` and ignores z-order
         // entirely; a HID click cannot.
-        unsafe { window.setLevel(objc2_app_kit::NSStatusWindowLevel) };
+        window.setLevel(objc2_app_kit::NSStatusWindowLevel);
         window.makeKeyAndOrderFront(None);
         // An Accessory app is not frontmost by default, and an AX press wants
         // a window that is actually on screen.
@@ -297,7 +330,7 @@ mod mac {
                     let centre = NSPoint::new(b.size.width / 2.0, b.size.height / 2.0);
                     // `None` converts to the window's base coordinate system,
                     // which is what a `windowNumber`-targeted event wants.
-                    let at = unsafe { btn.convertPoint_toView(centre, None) };
+                    let at = { btn.convertPoint_toView(centre, None) };
                     let wnum = win.windowNumber();
 
                     let how = std::env::var("PRESS").unwrap_or_default();
@@ -307,7 +340,7 @@ mod mac {
                         // separate process because the two capabilities live
                         // in different ones on this machine — see
                         // `examples/hid_click.rs`.
-                        let scr = unsafe { win.convertPointToScreen(at) };
+                        let scr = { win.convertPointToScreen(at) };
                         let h = objc2_app_kit::NSScreen::mainScreen(mtm)
                             .map(|s| s.frame().size.height)
                             .unwrap_or(0.0);
@@ -319,7 +352,7 @@ mod mac {
 
                     if how == "hid" {
                         // Window-server path: what a real click does.
-                        let scr = unsafe { win.convertPointToScreen(at) };
+                        let scr = { win.convertPointToScreen(at) };
                         let h = objc2_app_kit::NSScreen::mainScreen(mtm)
                             .map(|s| s.frame().size.height)
                             .unwrap_or(0.0);
@@ -352,7 +385,7 @@ mod mac {
                         (objc2_app_kit::NSEventType::LeftMouseDown, 1isize),
                         (objc2_app_kit::NSEventType::LeftMouseUp, 1isize),
                     ] {
-                        let ev = unsafe {
+                        let ev = {
                             objc2_app_kit::NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
                                 kind,
                                 at,
@@ -366,7 +399,7 @@ mod mac {
                             )
                         };
                         match ev {
-                            Some(ev) => unsafe { app.postEvent_atStart(&ev, false) },
+                            Some(ev) => app.postEvent_atStart(&ev, false),
                             None => say("SELF-PRESS: NSEvent constructor returned nil"),
                         }
                     }
@@ -389,7 +422,7 @@ mod mac {
 
         match mode.as_str() {
             // The loop `serve` actually runs today.
-            "carbon" => beckon_macos::hotkey::HotkeyManager::run_forever(),
+            "carbon" => beckon_macos::hotkey::HotkeyManager::run_carbon_event_loop_for_probe(),
             // The ordinary Cocoa loop, as the control.
             _ => {
                 app.run();

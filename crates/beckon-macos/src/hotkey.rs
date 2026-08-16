@@ -234,7 +234,72 @@ impl HotkeyManager {
         }
     }
 
+    /// Run the main event loop, forever.
+    ///
+    /// **`[NSApp run]`, not Carbon's `RunApplicationEventLoop` — changed
+    /// 2026-08-16 on a measurement, and this is design §5 of the macOS tray
+    /// spec finally being answered.** That spec said to settle it before any
+    /// view code was written; it was not settled, and `tray.rs` and the
+    /// settings window were written anyway.
+    ///
+    /// What was measured (`examples/loop_probe.rs`, one view hierarchy and
+    /// two loops chosen by argv, so the difference in the output IS the
+    /// result):
+    ///
+    /// ```text
+    /// nsapp  : isRunning=true   the button's action ran
+    /// carbon : isRunning=false  it never ran
+    /// ```
+    ///
+    /// Under `RunApplicationEventLoop`, `NSApplication` is instantiated —
+    /// `NSStatusBar` requires it to exist — but never enters its own loop, so
+    /// nothing calls `[NSApp sendEvent:]` and nothing drains the queue that
+    /// routes a mouse event to a window and thence to a view. Every control
+    /// in the four doors would have been decoration.
+    ///
+    /// **The Carbon hotkeys are unaffected, and that is the load-bearing
+    /// half of this change.** `RegisterEventHotKey` installs a handler on
+    /// `GetApplicationEventTarget()`, and `[NSApp run]` pumps the same event
+    /// queue Carbon's loop did — `nextEventMatchingMask:` calls
+    /// `ReceiveNextEvent` underneath, and `[NSApp sendEvent:]` forwards what
+    /// Cocoa does not claim to the Carbon target. This is the ordinary
+    /// configuration rather than a clever one: it is what every Cocoa global-
+    /// hotkey library on this platform does, and the Carbon-loop shape beckon
+    /// had is the unusual one.
+    ///
+    /// **Still unverified on hardware**, and it is the one thing to check
+    /// before believing this change: that a real chord still fires with the
+    /// daemon under this loop. It needs a keystroke injected into the Aqua
+    /// session, and the agent's shell is in `Background` — see
+    /// `loop_probe.rs`'s permission table. `TransformProcessType` is
+    /// untouched, so the window-server identity the hotkeys depend on is the
+    /// same as before.
     pub fn run_forever() -> ! {
+        let mtm = objc2_foundation::MainThreadMarker::new()
+            .expect("run_forever must be called on the main thread");
+        let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+        app.run();
+        // `[NSApp run]` returns only after `stop:` or `terminate:`. beckon
+        // reaches neither — Quit from the tray calls `exit` — so this is the
+        // clean-shutdown path rather than a case that happens today.
+        // `unreachable!()` here would turn an orderly quit into a panic.
+        std::process::exit(0);
+    }
+
+    /// Carbon's `RunApplicationEventLoop`, which `run_forever` used until
+    /// 2026-08-16.
+    ///
+    /// **Kept solely so the measurement that replaced it can be re-run.**
+    /// `examples/loop_probe.rs` needs both loops behind one argv flag, or its
+    /// result stops being a comparison and becomes an assertion — and this
+    /// repository's rule is that a claim is not re-added without re-running
+    /// the probe that settled it. Deleting this function would make the
+    /// finding in `run_forever`'s doc unfalsifiable, which is the failure
+    /// mode three separate entries in `CLAUDE.md` are about.
+    ///
+    /// Nothing in beckon proper calls it, and nothing should.
+    #[doc(hidden)]
+    pub fn run_carbon_event_loop_for_probe() -> ! {
         unsafe { RunApplicationEventLoop() };
         unreachable!("RunApplicationEventLoop returned");
     }

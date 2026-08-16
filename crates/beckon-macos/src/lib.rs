@@ -27,6 +27,16 @@ mod ffi;
 pub mod hotkey;
 #[cfg(target_os = "macos")]
 pub mod settings_window;
+// One `#[cfg]` per `pub mod`, as its own complete pair, and never a `mod`
+// slipped between an existing attribute and the item it gates. That is not
+// style: `c33fcf6` did exactly that in `beckon-windows/src/lib.rs`, leaving
+// `shell` ungated, and every Linux and macOS `nix build` failed E0433 for a
+// month while nothing in CI could see it. The step that catches it now —
+// `cargo check --workspace --all-targets`, unexcluded — runs on this crate
+// too, so a mistake here is caught; the shape below is what keeps it from
+// being made.
+#[cfg(target_os = "macos")]
+pub mod shell;
 #[cfg(target_os = "macos")]
 mod state;
 #[cfg(target_os = "macos")]

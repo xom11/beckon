@@ -101,7 +101,13 @@ pub(super) fn build(
 
     // --- the files --------------------------------------------------------
     let config_value = w::value("", mtm);
-    let config_open = w::glyph("Open", "Open this file", sel!(beckonOpenConfig:), target, mtm);
+    let config_open = w::glyph(
+        "Open",
+        "Open this file",
+        sel!(beckonOpenConfig:),
+        target,
+        mtm,
+    );
     let config_reveal = w::glyph(
         "Reveal",
         "Show in Finder",
@@ -142,7 +148,7 @@ pub(super) fn build(
     );
     // The stack fills the card, so every row's spring has the card's width to
     // push against rather than the widest row's.
-    unsafe { inner.setAlignment(objc2_app_kit::NSLayoutAttribute::Width) };
+    inner.setAlignment(objc2_app_kit::NSLayoutAttribute::Width);
 
     let card = w::card(&inner, mtm);
     let view: Retained<NSView> = card.into_super();
@@ -176,7 +182,7 @@ pub(super) fn apply(c: &SystemControls, st: &SystemState) {
         Transparency::On(pct) => {
             c.opacity_row.setHidden(false);
             c.opacity.setEnabled(true);
-            unsafe { c.opacity.setDoubleValue(pct as f64) };
+            c.opacity.setDoubleValue(pct as f64);
             c.opacity_value
                 .setStringValue(&NSString::from_str(&format!("{pct}%")));
         }
