@@ -129,6 +129,7 @@ struct X11Window {
     /// `algorithm::WindowSnapshot::instance`.
     instance: String,
     /// Best-effort window title (`_NET_WM_NAME` → `WM_NAME` fallback).
+    /// Empty unless the caller asked for it — see `collect_windows`.
     name: String,
 }
 
@@ -136,7 +137,19 @@ struct X11Window {
 /// top-first so the algorithm's "lowest recency = most recent" maps to
 /// "topmost in stack". Returns windows along with their already-loaded
 /// class so `list_running` and `beckon` share one round-trip per window.
-fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result<Vec<X11Window>> {
+///
+/// `want_names` is there for the hot path, not for convenience: only `list_running`
+/// ever reads `X11Window::name`, while `beckon` decides entirely from
+/// `id` / `class` / `instance`. Reading it there bought a blocking
+/// `_NET_WM_NAME` round trip per window — two where the property is absent
+/// and the `WM_NAME` fallback runs — and threw every byte away, on a desktop
+/// where 30 open windows is ordinary and the budget is 50 ms.
+fn collect_windows(
+    conn: &RustConnection,
+    root: Window,
+    atoms: &Atoms,
+    want_names: bool,
+) -> Result<Vec<X11Window>> {
     let reply = conn
         .get_property(
             false,
@@ -171,7 +184,11 @@ fn collect_windows(conn: &RustConnection, root: Window, atoms: &Atoms) -> Result
         if !is_app_window(conn, atoms, win) {
             continue;
         }
-        let name = read_window_name(conn, atoms, win).unwrap_or_default();
+        let name = if want_names {
+            read_window_name(conn, atoms, win).unwrap_or_default()
+        } else {
+            String::new()
+        };
         out.push(X11Window {
             id: win,
             class,
@@ -409,7 +426,7 @@ fn persist_previous(class: Option<&str>) {
 
 impl Backend for X11Backend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        let windows = collect_windows(&self.conn, self.root, &self.atoms)?;
+        let windows = collect_windows(&self.conn, self.root, &self.atoms, false)?;
         let active = active_window(&self.conn, self.root, &self.atoms)?;
         let active_addr = active.map(|w| w.to_string());
 
@@ -504,7 +521,7 @@ impl Backend for X11Backend {
     }
 
     fn list_running(&self) -> Result<Vec<RunningApp>> {
-        let windows = collect_windows(&self.conn, self.root, &self.atoms)?;
+        let windows = collect_windows(&self.conn, self.root, &self.atoms, true)?;
         let mut by_class: std::collections::BTreeMap<String, (String, usize)> = Default::default();
         for w in windows {
             let entry = by_class
