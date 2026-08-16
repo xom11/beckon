@@ -267,13 +267,30 @@ impl HotkeyManager {
     /// hotkey library on this platform does, and the Carbon-loop shape beckon
     /// had is the unusual one.
     ///
-    /// **Still unverified on hardware**, and it is the one thing to check
-    /// before believing this change: that a real chord still fires with the
-    /// daemon under this loop. It needs a keystroke injected into the Aqua
-    /// session, and the agent's shell is in `Background` — see
-    /// `loop_probe.rs`'s permission table. `TransformProcessType` is
-    /// untouched, so the window-server identity the hotkeys depend on is the
-    /// same as before.
+    /// **Measured, 2026-08-16** — `examples/carbon_queue_probe.rs`, with the
+    /// Carbon loop as the baseline in the same run:
+    ///
+    /// ```text
+    /// carbon : DISPATCHED
+    /// nsapp  : DISPATCHED
+    /// ```
+    ///
+    /// It installs a handler on `GetApplicationEventTarget()` — the same
+    /// target `RegisterEventHotKey` installs on — posts an event of its own
+    /// class to the main event queue, and asks whether the handler ran. Under
+    /// both loops it did, so `[NSApp run]` pumps the Carbon application event
+    /// queue and the path a hotkey press travels after the window server has
+    /// decided the press belongs to this app is intact.
+    ///
+    /// **Indirect, and labelled so rather than rounded up.** It does not
+    /// exercise the window server's own half, so a failure living there would
+    /// survive it; the direct test is a person pressing the chord, and
+    /// `examples/hotkey_loop_probe.rs` is waiting for one. What it replaces
+    /// is not a keypress but an argument, which is the weaker thing it was
+    /// standing in for.
+    ///
+    /// `TransformProcessType` is untouched, so the window-server identity the
+    /// hotkeys depend on has not moved either.
     pub fn run_forever() -> ! {
         let mtm = objc2_foundation::MainThreadMarker::new()
             .expect("run_forever must be called on the main thread");

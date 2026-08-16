@@ -2203,13 +2203,21 @@ Reasonable next-session order:
   unfalsifiable, which is the failure mode three other entries in this file
   are about.
 
-  **Not yet verified on hardware: that a real chord still fires under the new
-  loop.** In principle it does — `RegisterEventHotKey` installs on
-  `GetApplicationEventTarget()` and `[NSApp run]` pumps the same queue, which
-  is the ordinary Cocoa configuration rather than a clever one, and is what
-  every macOS global-hotkey library does. `TransformProcessType` is
-  untouched, so the window-server identity the hotkeys depend on has not
-  moved. Check it before trusting the change.
+  **The hotkey half is measured too, indirectly**, by
+  `examples/carbon_queue_probe.rs` with the Carbon loop as the baseline in
+  the same run: `carbon : DISPATCHED` / `nsapp : DISPATCHED`. It installs a
+  handler on `GetApplicationEventTarget()` — the target `RegisterEventHotKey`
+  installs on — posts an event of its own class to the main event queue, and
+  asks whether the handler ran. Both loops deliver, so `[NSApp run]` pumps
+  the Carbon application event queue.
+
+  That is deliberately labelled INDIRECT: it does not exercise the window
+  server's half, so a failure living there would survive it. The direct test
+  is a person pressing the chord and `examples/hotkey_loop_probe.rs` is built
+  and waiting for one — it could not run unattended because injecting a
+  keystroke into the Aqua session needs a grant no process on this machine
+  has. What the queue probe replaces is not that keypress; it is the
+  *argument* that used to stand in for it.
 
 - **`RegisterEventHotKey` does NOT report a chord another application holds,
   so macOS has no availability probe and that is a finding rather than a
