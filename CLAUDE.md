@@ -1286,6 +1286,47 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
     and hiding settings the file already contains is worse than showing them
     and naming where they take effect.
 
+  **CORRECTED 2026-08-16: chord capture is on macOS too, and the `Record`
+  entry below is no longer Windows-only.** `beckon_macos::caps_tap` grew a
+  capture arm consulted BEFORE the Caps arm, for two reasons that are both
+  ordering rather than taste: a recording must work on a machine where the
+  user left `keyboard.caps = false`, and the Caps arm returns early on
+  `reaches_nothing()` — so anything after it would never run there; and if
+  Caps ran first, a `Caps+T` mid-recording would inject `ctrl+cmd+opt+T` and
+  the recorder would write down the ALIAS instead of the key pressed.
+
+  **`capture::step` is REUSED rather than forked**, which is the opposite of
+  `caps::decide` and was the expensive half of the estimate before it was
+  measured. `crates/beckon-macos/examples/capture_probe.rs` on airm3
+  2026-08-16 answered the two questions that decided it: every keycode it saw
+  was in `key_table()` (which carries `mac` and `win` side by side), and a
+  modifier's edge reads straight off its own flag bit — unlike Caps, whose
+  parity tracking exists because suppression freezes the lock its flag
+  reports. `step_on(.., Platform::Mac)` is the one difference.
+
+  **`Platform` exists because the reserved-chord lists are not the same set
+  and one is not even the same KIND of refusal.** `Win+L` is `SystemChord`
+  because the hook cannot stop it; macOS stops `Cmd+Q` and `Ctrl+Cmd+Q` too
+  WELL, so they are `Reserved` — beckon's own limit, whose hint names no
+  mechanism. macOS has **no `SystemChord` members at all**, which is what
+  keeps `HINT_SYSTEM_CHORD` honest: its doc says naming `Win+L` in words is
+  only truthful while that family has one member. `ctrl+super+alt+q` stays
+  recordable, because that is beckon's own default chord shape and macOS
+  quits only on `Cmd+Q` alone.
+
+  **Input Monitoring is per-BINARY and is NOT inherited from the terminal**,
+  unlike Accessibility — measured when `capture_probe`'s first run had no row
+  of its own, received nothing, and looked exactly like "macOS refuses to
+  suppress `Cmd+Q`". `IOHIDCheckAccess` only asks and never prompts, so a
+  binary with no row cannot acquire one through it. **Every fresh `cargo
+  build` therefore loses the tap's grant**, which is the same shape as
+  Accessibility losing its code-signature identity but a different pane and
+  mechanism.
+
+  The About page's disclosure sentence gained `or while you are recording a
+  shortcut` in the same pass. Without it the sentence is a false claim about
+  when beckon can see keystrokes, on the one page whose job is disclosure.
+
   **Modifier names are a table now, not literals.**
   `beckon_core::shortcuts::ModifierLabels` — `WINDOWS` is `Ctrl/Win/Alt/Shift`
   and `MAC` is `Ctrl/Cmd/Option/Shift`. `combo_caps`, `combo_caps_folded` and
