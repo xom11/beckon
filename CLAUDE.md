@@ -136,9 +136,30 @@ Rules that follow from that:
   git status                        # in the PRIMARY checkout: someone mid-task
   ListAgents                        # other sessions, but not what they are building
   git fetch --all && git branch -a  # committed work you would otherwise never see
+  git branch -vv                    # how far behind YOUR local branches are
   git log --all --oneline -20       # including branches nobody has merged
   git branch -vv                    # <-- and how stale YOUR OWN refs are
   ```
+
+  **`git branch -vv` was added 2026-08-16 after the list above produced a
+  confident wrong answer.** A session ran every other line, saw a branch
+  called `four-doors-phase-0` it did not recognise, and measured it with
+  `git rev-list --left-right --count main...four-doors-phase-0`, which
+  returned `0 55`. It read that as *"an unmerged branch, 55 commits ahead of
+  main"* and reported to the user that the settings-window design was about
+  to be replaced. **The truth was the mirror image: the branch was already
+  merged, and the PRIMARY checkout's local `main` was 55 commits behind.**
+  `origin/main`, `four-doors-phase-0` and the `v0.9.4` tag were all one
+  commit.
+
+  The trap is that `git fetch --all` *had* been run, and it does exactly what
+  it says: it updates `origin/main` and does not touch `main`. Every command
+  in the old list reads a ref, and none of them compares a local branch to
+  its upstream — so the one fact that distinguishes "they are ahead" from
+  "you are behind" was not on screen. `git branch -vv` prints
+  `[origin/main: behind 55]` and settles it in one line. Note that this is
+  the same rule already recorded two bullets above for verifying a push: ask
+  git for the state, do not read harder into output that does not carry it.
 
   Uncommitted work in the shared checkout means somebody is mid-task. A
   *branch* carrying a spec or a design doc means somebody has already decided
@@ -173,6 +194,21 @@ beckon/
 ├── crates/
 │   ├── beckon-core/          # Backend trait, shared types (RunningApp, WindowId)
 │   ├── beckon-macos/         # NSWorkspace + AX + CGWindowList — phase 2 done
+│   │   └── src/
+│   │       ├── lib.rs        # pick_backend, doctor, is_accessibility_trusted
+│   │       ├── backend.rs    # Backend trait impl: focus / launch / cycle / hide
+│   │       ├── apps.rs       # LaunchServices + .app bundle catalog, Name resolution
+│   │       ├── windows.rs    # AX window list + AXRaise (the step-5a cycle)
+│   │       ├── ffi.rs        # hand-rolled AX / CGWindowList extern "C"
+│   │       ├── hotkey.rs     # RegisterEventHotKey + [NSApp run] (see the note below)
+│   │       ├── tray.rs       # NSStatusItem menu (serve)
+│   │       ├── shell.rs      # /usr/bin/open: open / reveal / https-only URL
+│   │       └── settings_window/
+│   │           ├── mod.rs      # window, tab strip, state, apply_state
+│   │           ├── widgets.rs  # AppKit builders; semantic NSColors only
+│   │           ├── keyboard.rs # door 2
+│   │           ├── system.rs   # door 3
+│   │           └── about.rs    # door 4
 │   ├── beckon-windows/       # Win32 API (EnumWindows + COM IShellLinkW) — phase 3 done
 │   │   └── src/
 │   │       ├── lib.rs        # pick_backend, resolve report
@@ -1218,10 +1254,70 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
 
 - **Config for the hot path / app aliases** — `beckon <id>` resolves against OS metadata (`.desktop` / LaunchServices / Start menu) directly. No `[apps.claude]` mapping, no resolve cache. The `serve` TOML is a *hotkey table*, not a place to alias ids.
 - **Global hotkey registration on Linux** — handled by the compositor / WM dotfile (sway config, Hyprland, GNOME/KDE Settings → Custom Shortcuts). Out of scope by choice, *not* for lack of an API: routes exist on X11, KDE, Hyprland and GNOME (sway is the one gap) — see *Known constraints → Wayland hotkey* for the survey and the three reasons. On macOS / Windows this is *in* scope and shipped: `serve` registers via RegisterEventHotKey / RegisterHotKey.
-- **GUI / TUI** — CLI only, with one exception, which is Windows-only and is
-  `serve`'s control surface rather than a launcher: `beckon-serve.exe`'s
-  tray context menu (reload, pause, open the log, toggle autostart, quit)
-  and the settings window it opens.
+- **GUI / TUI** — CLI only, with one exception, which is `serve`'s control
+  surface rather than a launcher: the tray context menu (reload, pause, open
+  the log, toggle autostart, quit) and the settings window it opens.
+
+  **CORRECTED 2026-08-16: no longer "Windows-only".** The macOS window has
+  all four doors as of the four-doors port, against the same
+  `beckon_core::settings` contract — `Page`, `ControlState`, `Callbacks`,
+  `SettingsCommand`, `row_condition`, `probe_plan`, `command_bar_shown`,
+  `caps_view_fold`, `page_plan`. Everything below about *what the window
+  decides* is therefore two implementations of one design, and the place to
+  change a decision is still `beckon-core`.
+
+  Where macOS deliberately differs, and why each is a platform fact rather
+  than a shortfall:
+
+  - **No `Dark mode` row.** Every colour in the AppKit window is a *semantic*
+    `NSColor`, so it follows the system between light and dark with no
+    control, no stored preference and no repaint path. The Win32 row exists
+    because Win32 has no appearance to follow — it needs `theme::pairs` and a
+    `prefs.rs` registry value to do what `controlBackgroundColor()` does for
+    free. `SystemState::dark` is read and discarded there.
+  - **No `Start at login` row**, by design §3.3's own rule that a capability
+    this process does not have is omitted rather than greyed: the Homebrew
+    formula's `service do` block owns the launch agent, and a switch here
+    would be a second writer for a file beckon did not create.
+    `SystemState::autostart` is `None`, which is the field's documented way
+    of saying exactly that.
+  - **`NSSegmentedControl` for the tab strip**, not four hand-drawn pills.
+    This closes a deviation rather than inheriting one — the design's own
+    drawing shrink-wraps the trough around the pills, and Windows fills the
+    band instead because hugging needs a width only its layout pass computes
+    — and it brings the contrast, focus ring and keyboard story each Win32
+    pill state needed its own measurement to get right.
+  - **About draws an Accessibility row where Windows draws
+    `HOOK_DISCLOSURE`.** With no `CGEventTap` built, *"the keyboard hook is
+    installed only while…"* is vacuously true while telling the reader a
+    keyboard hook is part of the program — worse than silence, on the one
+    page whose job is disclosure. The Accessibility grant is this platform's
+    version of the same question, and losing it silently on a rebuild is the
+    largest single cause of "beckon does nothing" here.
+  - **The Keyboard door's first two groups edit settings macOS does not yet
+    honour**, because the Caps alias needs the event tap. The door says so in
+    a sentence rather than letting a reader discover it by ticking a box.
+    Omitting them was rejected: the config file is shared across machines,
+    and hiding settings the file already contains is worse than showing them
+    and naming where they take effect.
+
+  **Modifier names are a table now, not literals.**
+  `beckon_core::shortcuts::ModifierLabels` — `WINDOWS` is `Ctrl/Win/Alt/Shift`
+  and `MAC` is `Ctrl/Cmd/Option/Shift`. `combo_caps`, `combo_caps_folded` and
+  `combo_display_folded` keep their signatures and delegate to `*_with(..,
+  WINDOWS)`, so no Windows string moved;
+  `the_default_labels_are_what_combo_caps_always_produced` pins that. Words
+  rather than glyphs (`Cmd`, not `⌘`): the editor's own check boxes read
+  `Cmd`, and a cell showing a symbol beside a box showing a word is two names
+  for one key on one screen. `key_label` was already neutral —
+  **`theme::TransparencyBlock::reason`'s `"Off in Windows settings"` is the
+  one string left in core that names a platform**, worked around locally by
+  `beckon-macos`'s `block_reason` and wanting the same treatment.
+
+  The macOS window is also where `on_command` is raised for the first time on
+  that platform: before the System and About doors, all eleven
+  `SettingsCommand` variants were unreachable there, and `open_target` /
+  `reveal_target` were `{}` stubs.
 
   The window shows the shortcut table with per-row registration state,
   edits it, and writes the same TOML back through `toml_edit` so hand
@@ -2077,6 +2173,79 @@ Reasonable next-session order:
 - **Build requirements**: `aarch64-pc-windows-msvc` target requires VS Build Tools 2022 with the ARM64 component (`Microsoft.VisualStudio.Component.VC.Tools.ARM64`) and Windows SDK. The `.cargo/config.toml` is NOT committed — each machine uses its own MSVC/linker setup.
 
 ### Phase 2 macOS notes (for future maintenance)
+
+- **`serve` runs `[NSApp run]`, not Carbon's `RunApplicationEventLoop` —
+  changed 2026-08-16, and it is why the macOS settings window had never
+  worked.** The macOS tray design's §5 told the implementer to settle this
+  before writing any view code. It was not settled; `tray.rs` and
+  `settings_window.rs` were written anyway, and the file's own module doc
+  said "nothing in this file has been seen on screen" for four days without
+  anyone asking whether it *could* be.
+
+  Measured with `crates/beckon-macos/examples/loop_probe.rs` — one view
+  hierarchy, two loops chosen by argv, so the difference in the output IS the
+  result and cannot be a difference in the thing under test:
+
+  ```text
+  nsapp  : isRunning=true   the button's action ran
+  carbon : isRunning=false  it never ran
+  ```
+
+  `NSApplication` is *instantiated* under the Carbon loop, because
+  `NSStatusBar` requires it to exist — and that is exactly what made this
+  invisible: the tray drew, so the window was assumed to be fine. But nothing
+  ever calls `[NSApp run]`, so nothing calls `[NSApp sendEvent:]`, so nothing
+  drains the queue that routes a mouse event to a window and thence to a
+  view. **Every control in the window was decoration.**
+
+  The Carbon loop survives as `HotkeyManager::run_carbon_event_loop_for_probe`
+  and nothing in beckon calls it. Deleting it would make the finding above
+  unfalsifiable, which is the failure mode three other entries in this file
+  are about.
+
+  **Not yet verified on hardware: that a real chord still fires under the new
+  loop.** In principle it does — `RegisterEventHotKey` installs on
+  `GetApplicationEventTarget()` and `[NSApp run]` pumps the same queue, which
+  is the ordinary Cocoa configuration rather than a clever one, and is what
+  every macOS global-hotkey library does. `TransformProcessType` is
+  untouched, so the window-server identity the hotkeys depend on has not
+  moved. Check it before trusting the change.
+
+- **Two capabilities live in different processes on this machine, and neither
+  one can do both.** Measured 2026-08-16; this is why the macOS UI probes are
+  awkward and it is not a thing any single process can discover:
+
+  | | agent's shell | Terminal.app |
+  |---|---|---|
+  | `launchctl managername` is `Aqua`, i.e. AppKit can draw | **no** (`Background`) | yes |
+  | `AXIsProcessTrusted()`, i.e. `CGEventPost` is not a no-op | **yes** | no |
+
+  So a probe launched through Terminal draws but cannot inject, and an
+  injector run from the agent's shell is trusted but has no session to inject
+  into. `examples/hid_click.rs` exists to be the second half of that split
+  and **prints `AXIsProcessTrusted` before posting**, because an untrusted
+  `CGEventPost` returns `void` and does nothing — silently, which is
+  indistinguishable from a click that missed.
+
+  One Accessibility grant for Terminal.app collapses the table into one
+  usable process and gives every door an automated click-and-assert loop.
+
+  **The Accessibility *inspection* route is a dead end and was tried first.**
+  System Events reported `count of windows` = 0 for the probe — and, asked as
+  a control, 0 for Terminal and 0 for Finder, on a machine where System
+  Events' own `UI elements enabled` is true. The observer was blind, so an AX
+  press would have measured the grant rather than the thing under test.
+
+  What DOES work from the agent's shell with no grant at all:
+  `beckon_macos::window_server_windows()` (`CGWindowListCopyWindowInfo`),
+  which is how "the settings window is on screen, 640x532, layer 0" was
+  confirmed without a screenshot.
+
+- **`WINDOW: up` is not a precondition; the first heartbeat is.** A probe
+  that prints a line after `makeKeyAndOrderFront` has not yet proved
+  anything: an AppKit window is not an accessibility citizen, and does not
+  answer to anything, until its process is pumping events. Wait for a line
+  only a turning run loop can emit.
 
 - **Hot-path cost (measured on airm3, ~95-105 ms total)**. Unlike Windows there
   is no structural win left here — most of the time is Apple's, not ours:
