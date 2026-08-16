@@ -1638,6 +1638,20 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   as "mirroring what nix does", which stopped being true in the same commit
   range that made it load-bearing.
 
+  **It earned its keep on 2026-08-16, one commit after landing.**
+  `crates/beckon-windows/examples/pill_probe.rs` opened with
+  `#![cfg(target_os = "windows")]` — an inner attribute, so it applies to the
+  CRATE: off Windows the whole file disappears, `main` with it, and the
+  example fails **E0601** rather than compiling to a no-op. Every other probe
+  in that directory carries an unconditional `fn main` that dispatches into a
+  `#[cfg(target_os = "windows")] mod win`, which is the shape to copy.
+  **Neither branch could have caught it alone** — the file lived on
+  `four-doors-phase-0`, whose gate excludes the crate, and the step lived on
+  `main`, where the file did not exist — so the merge was the first tree that
+  had both, and CI went red on the merge commit and stayed red through the
+  v0.9.4 tag. A local gate built from the `--exclude` shape alone will not see
+  this class; add a bare `cargo check --workspace --all-targets` to it.
+
 **Landing page**: `site/`, deployed by `.github/workflows/pages.yml` (Pages
 source = **GitHub Actions**, set by hand in repo settings — left at *Deploy
 from a branch* the workflow goes green and publishes nothing). Not `docs/`:
