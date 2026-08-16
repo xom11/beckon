@@ -48,7 +48,14 @@ class Beckon < Formula
   # such treatment, which would leave launchd failing to open it in silence.
   if OS.mac?
     service do
-      run [opt_bin/"beckon", "serve", "#{Dir.home}/.config/beckon/apps.toml"]
+      # `--log` here is a DECLARATION, not a redirect: launchd already writes
+      # this file through the two paths below, and beckon must not be a second
+      # writer on the same fd. It is passed so the tray's `Open log` and the
+      # System page's log row can be drawn at all -- without it beckon has no
+      # way to learn where launchd put the file, and both were omitted over a
+      # log that exists. Keep the three paths identical.
+      run [opt_bin/"beckon", "serve", "#{Dir.home}/.config/beckon/apps.toml",
+           "--log", var/"log/beckon.log"]
       keep_alive true
       process_type :interactive
       log_path var/"log/beckon.log"
