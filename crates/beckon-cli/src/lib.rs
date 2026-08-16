@@ -48,7 +48,18 @@ const RESERVED: &[&str] = &[
 #[derive(Parser, Debug)]
 #[command(
     name = "beckon",
-    version,
+    // `env!`, not the bare `version` attribute, which is `CARGO_PKG_VERSION`
+    // alone. `build.rs` appends the short sha when it can find one, because
+    // the Cargo version cannot identify a build this project actually ships:
+    // a nix flake pins a *rev*, and every rev between two releases prints the
+    // identical `0.9.4`. See `emit_version` there for the two sources and for
+    // the half of the problem a version string cannot fix.
+    //
+    // Both CI assertions on this output match a SUBSTRING -- ci.yml checks
+    // `-notmatch "beckon"` on Windows and `*"$want"*` against
+    // `nix eval .#beckon.version` -- so the suffix is safe by construction,
+    // not by luck. A future check that compares for EQUALITY would break.
+    version = env!("BECKON_VERSION"),
     about = "Cross-platform focus-or-launch app switcher",
     // Fires only on a genuinely empty argv. `beckon -v` parses clean to
     // (None, None) and is caught in `parse_checked` instead.
