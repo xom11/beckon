@@ -609,18 +609,44 @@ the answer:
   the rest of the arithmetic in this document trustworthy enough to change
   constants on.
 
-**The repaired window has NOT been photographed.** a14 was offline for this
-pass (`tailscale status`: *offline, last seen 26m ago*), and the design's own
-note applies — the machine cannot be woken into a signed-in state unattended,
-so this needs a person. Everything above is arithmetic checked against the
-photographs of the window **before** the repair; the numbers agreed to within
-3 px on three doors, which is why the constants were moved on it, and is not
-the same as having seen the result. What is owed:
-`C:\Users\kln\hwpass\run-fourdoors.ps1` (session 1, scheduled task, both
-`-AllowStartIfOnBatteries -Priority 4`), then all four doors against
-`specs/2026-08-14-four-doors-mockup.html` page by page. Kill `beckon*` before
-`cargo build` or the link fails on the locked exe and leaves the old binary
-in place.
+**PHOTOGRAPHED 2026-08-16** — `measurements/fd-after-*.png`, a14, built from
+`45d9eec`, same `run-fourdoors.ps1` as the before set. The window is
+**1020×750** where it was 1020×900: that is 680×500 at 144 DPI, so the height
+change is in the picture before anything else is read off it.
+
+| Door | What the photograph shows |
+|---|---|
+| Shortcuts | command bar **present** (`Open config file` / `Close` / `Save`) — the positive control for the store split, since this door does write the file. List, chips, editor all intact |
+| Keyboard | command bar present, same reason. Card still the fixed 78 px, and **`Keyboard` still appears twice** — see below |
+| System | **no command bar**, path reads `C:\Users\kln\.config\beckon\` with no `\\?\`, rows on the 46 px rhythm. Card bottom 403 px against a hand trace of 404 |
+| About | **no command bar**, card bottom 417 against a trace of 418 |
+
+Both halves of the store split are therefore in evidence, which one door alone
+could not have shown: the bar is drawn where the page saves and absent where it
+does not.
+
+**Two things the photographs corrected.**
+
+- The first capture of the Shortcuts door came out nearly empty — no rows, no
+  buttons, no chips. It is a **probe artefact, not a defect**: that door is the
+  one the window opens on, so `BM_CLICK` on its pill hits `show_page`'s
+  unchanged-door guard and returns early, and `PrintWindow` caught the window
+  mid-paint two seconds after it appeared. The second pass over the same door
+  is complete. A run without a second pass would have reported a catastrophe.
+- `beckon-serve.exe --version` **must never be run over SSH.** It is
+  GUI-subsystem, so `--version` opens a `MessageBox` and blocks forever, in
+  session 0 where nothing can see it. Four such processes accumulated during
+  the survey and one of them — owned by an elevated session-0 shell — is what
+  made `run-fourdoors.ps1` fail with `Access is denied`, because the task runs
+  Limited in session 1 and cannot touch it. The failure names the wrong thing
+  entirely.
+
+**Still owed, and it is the reason the release was paused for a decision:** the
+Keyboard door draws one row where design §3.2 has three sections, two dividers
+and an expander, and its card is captioned `Keyboard` directly beneath a pill
+captioned `Keyboard`. That is the same duplication §3.1 deleted on the
+Shortcuts door (`IDC_LBL_SECTION`), it is what design §7 rule 5 forbids, and it
+is visible in `fd-after-keyboard.png`.
 
 **Not closed, and named so it is not mistaken for done:** the Keyboard door
 carries the LARGEST gap of the three — its card is a fixed 78 px at 96 DPI —
