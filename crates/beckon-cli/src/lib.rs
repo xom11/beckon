@@ -231,17 +231,26 @@ fn explain_shadowed_verb(e: &clap::Error, argv: &[std::ffi::OsString]) {
     if e.kind() != clap::error::ErrorKind::MissingRequiredArgument {
         return;
     }
-    let [_, word] = argv else { return };
-    let Some(word) = word.to_str() else { return };
-    if !RESERVED.contains(&word) {
+    let Some(word) = shadowed_verb(argv) else {
         return;
-    }
+    };
     let _ = e.print();
     eprintln!(
         "\nbeckon: `{word}` is a subcommand name, not an app id.\n\
          \x20       If you meant the app, run:  beckon -- {word}"
     );
     std::process::exit(2);
+}
+
+/// The word `explain_shadowed_verb` speaks up about, if any.
+///
+/// Split out because the rest of that function prints and then exits, so this
+/// is the only half a test can reach — and it is the half that carries both
+/// rules: the shape (`beckon <word>` and nothing else) and the membership.
+fn shadowed_verb(argv: &[std::ffi::OsString]) -> Option<&str> {
+    let [_, word] = argv else { return None };
+    let word = word.to_str()?;
+    RESERVED.contains(&word).then_some(word)
 }
 
 pub fn cli_main() {
@@ -501,18 +510,27 @@ fn check_resolution<'a>(
     shortcuts: &'a [Shortcut],
     report: impl FnOnce(&[&'a str]) -> Result<Vec<NameReport>>,
 ) -> Result<()> {
+    // A value may be a CANDIDATE CHAIN, so the batch below is every candidate
+    // of every binding, not every value. Split once, here, keeping the
+    // failures: a malformed chain is graded as a miss further down rather
+    // than dropped, because `beckon_ladder` refuses the identical string
+    // before it reaches any backend — the key is permanently dead, and this
+    // is the one command whose job is to say so. It does not abort the batch
+    // either: a check that refuses to grade eighteen good bindings because
+    // the nineteenth has a stray `||` is a check that stops being run.
+    let chains: Vec<(&Shortcut, std::result::Result<Vec<&str>, String>)> = shortcuts
+        .iter()
+        .map(|s| (s, beckon_core::candidates::split(&s.app)))
+        .collect();
+
     // Distinct names, asked in one call: several hotkeys aiming at one app is
     // the normal shape of a shortcuts file, and every backend answers a batch
     // with a single catalog scan.
-    //
-    // A value may be a CANDIDATE CHAIN, so the batch is every candidate of
-    // every binding, not every value. A malformed chain is reported per
-    // binding below rather than aborting the batch: a check that refuses to
-    // grade eighteen good bindings because the nineteenth has a stray `||`
-    // is a check that stops being run.
-    let mut names: Vec<&str> = shortcuts
+    let mut names: Vec<&str> = chains
         .iter()
-        .flat_map(|s| beckon_core::candidates::split(&s.app).unwrap_or_default())
+        .filter_map(|(_, cands)| cands.as_ref().ok())
+        .flatten()
+        .copied()
         .collect();
     names.sort_unstable();
     names.dedup();
@@ -529,30 +547,57 @@ fn check_resolution<'a>(
     // feature exists to remove, reintroduced one layer up — and grading it by
     // its BEST would hide a `Guess` that a later exact candidate never gets
     // the chance to beat.
-    let winner = |s: &Shortcut| -> Option<&NameReport> {
-        let cands = beckon_core::candidates::split(&s.app).ok()?;
+    // A name the resolver did not answer for is an error, not a binding that
+    // quietly disappears: every backend documents one report per name, in the
+    // order given, and a silent drop takes the binding out of both the dead
+    // list and the count.
+    let winner = |cands: &[&str]| -> Result<&NameReport> {
         let mut last = None;
         for c in cands {
-            let r = *grade.get(c)?;
+            let r = *grade
+                .get(c)
+                .with_context(|| format!("the resolver returned no report for `{c}`"))?;
             if r.certainty != Certainty::NoMatch {
-                return Some(r);
+                return Ok(r);
             }
             last = Some(r);
         }
         // Every rung missed. Report the LAST one: it is the candidate the
         // user added as the fallback, so it is the one whose absence is news.
-        last
+        // `split` never yields an empty chain, so there is always one.
+        last.ok_or_else(|| anyhow!("`{}` names no candidate at all", cands.join(" || ")))
     };
 
-    let pick = |want: Certainty| -> Vec<(&Shortcut, &NameReport)> {
-        shortcuts
-            .iter()
-            .filter_map(|s| winner(s).map(|r| (s, r)))
-            .filter(|(_, r)| r.certainty == want)
-            .collect()
-    };
-    let dead = pick(Certainty::NoMatch);
-    let guessed = pick(Certainty::Guess);
+    // One grade per binding, in file order. Both arms answer the same
+    // question — what will this key do on this machine? — so a chain that
+    // does not split is a `NoMatch` carrying the parser's own sentence as its
+    // consequence, which is exactly the shape `unresolved_report` prints.
+    let mut graded: Vec<(&Shortcut, NameReport)> = Vec::with_capacity(chains.len());
+    for (s, cands) in &chains {
+        let r = match cands {
+            Ok(cands) => winner(cands)?.clone(),
+            Err(e) => NameReport {
+                id: s.app.clone(),
+                certainty: Certainty::NoMatch,
+                target: None,
+                tier: None,
+                consequence: e.clone(),
+                suggestions: Vec::new(),
+            },
+        };
+        graded.push((*s, r));
+    }
+
+    let dead: Vec<(&Shortcut, &NameReport)> = graded
+        .iter()
+        .filter(|(_, r)| r.certainty == Certainty::NoMatch)
+        .map(|(s, r)| (*s, r))
+        .collect();
+    let guessed: Vec<(&Shortcut, &NameReport)> = graded
+        .iter()
+        .filter(|(_, r)| r.certainty == Certainty::Guess)
+        .map(|(s, r)| (*s, r))
+        .collect();
 
     if dead.is_empty() {
         println!("ok: every app name resolves on this machine");
@@ -1223,5 +1268,222 @@ mod tests {
         })
         .unwrap_err();
         assert!(e.to_string().contains("1 of 1"), "{e}");
+    }
+
+    /// A trailing separator is the typo `candidates::split` was written to
+    /// refuse, and `beckon_ladder` refuses it before any backend is asked —
+    /// so the key can never fire. It used to vanish from both the dead list
+    /// and the count, and `check --resolve` printed the green line.
+    #[test]
+    fn a_chain_that_does_not_split_is_reported_dead_rather_than_dropped() {
+        let s = shortcuts("\"ctrl+super+alt+k\" = \"Google Keep || \"\n");
+        let e = check_resolution(&s, |names| {
+            // Nothing to ask about: the one binding contributes no candidate.
+            assert!(names.is_empty(), "{names:?}");
+            Ok(Vec::new())
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("1 of 1"), "{e}");
+    }
+
+    /// And it must not take the rest of the file down with it: the eighteen
+    /// good bindings are still graded, which is the reason the split is not
+    /// simply propagated.
+    #[test]
+    fn a_malformed_chain_does_not_stop_the_other_bindings_being_graded() {
+        let s = shortcuts("\"ctrl+alt+k\" = \"Google Keep || \"\n\"ctrl+alt+t\" = \"Terminal\"\n");
+        let e = check_resolution(&s, |names| {
+            assert_eq!(names, ["Terminal"]);
+            Ok(vec![report("Terminal", Certainty::Exact)])
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("1 of 2"), "{e}");
+    }
+
+    /// The parser's own sentence is what the reader gets: the report has to
+    /// say `||`, or a dead row reads as an uninstalled app.
+    #[test]
+    fn the_report_prints_why_a_malformed_chain_cannot_fire() {
+        let s = shortcuts("\"ctrl+alt+k\" = \"Google Keep || \"\n");
+        let split = beckon_core::candidates::split(&s[0].app).unwrap_err();
+        let r = NameReport {
+            id: s[0].app.clone(),
+            certainty: Certainty::NoMatch,
+            target: None,
+            tier: None,
+            consequence: split,
+            suggestions: Vec::new(),
+        };
+        let out = unresolved_report(&[(&s[0], &r)]);
+        assert!(out.contains("ctrl+alt+k"), "{out}");
+        assert!(out.contains("empty candidate"), "{out}");
+    }
+
+    /// One report per name is every backend's documented contract. A resolver
+    /// that returns fewer used to make the binding disappear from the dead
+    /// list AND from the count, which is the same silent-pass failure as the
+    /// malformed chain above.
+    #[test]
+    fn a_resolver_that_skips_a_name_fails_rather_than_dropping_the_binding() {
+        let s = shortcuts("\"ctrl+alt+t\" = \"Terminal\"\n");
+        let e = check_resolution(&s, |_| Ok(Vec::new())).unwrap_err();
+        assert!(e.to_string().contains("no report for `Terminal`"), "{e}");
+    }
+
+    // ---- the ladder ----
+
+    /// Answers `beckon` from a script, and counts how many rungs were asked.
+    struct FakeBackend {
+        answers: std::cell::RefCell<Vec<beckon_core::Result<beckon_core::BeckonAction>>>,
+        asked: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl FakeBackend {
+        fn new(answers: Vec<beckon_core::Result<beckon_core::BeckonAction>>) -> Self {
+            Self {
+                answers: std::cell::RefCell::new(answers),
+                asked: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl beckon_core::Backend for FakeBackend {
+        fn list_running(&self) -> beckon_core::Result<Vec<beckon_core::RunningApp>> {
+            Ok(Vec::new())
+        }
+        fn list_installed(&self) -> beckon_core::Result<Vec<beckon_core::InstalledApp>> {
+            Ok(Vec::new())
+        }
+        fn beckon(&self, id: &str) -> beckon_core::Result<beckon_core::BeckonAction> {
+            self.asked.borrow_mut().push(id.to_string());
+            self.answers.borrow_mut().remove(0)
+        }
+    }
+
+    fn no_match(id: &str) -> beckon_core::BackendError {
+        beckon_core::BackendError::NoMatch {
+            id: id.to_string(),
+            hint: "nothing here answers to it".to_string(),
+        }
+    }
+
+    /// The whole reason `NoMatch` is its own variant: the second spelling of
+    /// the app is tried, and it wins.
+    #[test]
+    fn a_no_match_steps_to_the_next_rung_of_the_chain() {
+        let b = FakeBackend::new(vec![
+            Err(no_match("Google Keep")),
+            Ok(beckon_core::BeckonAction::Focused),
+        ]);
+        beckon_ladder(&b, "Google Keep || https://keep.google.com/", false).unwrap();
+        assert_eq!(
+            *b.asked.borrow(),
+            ["Google Keep", "https://keep.google.com/"]
+        );
+    }
+
+    /// And every other error aborts the press. Retrying the next name against
+    /// the same dead socket turns one loud failure into several quiet ones,
+    /// and hides the connection error the user actually needs — so the second
+    /// rung must never be asked.
+    #[test]
+    fn any_error_that_is_not_a_no_match_aborts_the_whole_chain() {
+        let b = FakeBackend::new(vec![Err(beckon_core::BackendError::Ipc(
+            "socket went away".to_string(),
+        ))]);
+        let e = beckon_ladder(&b, "Google Keep || https://keep.google.com/", false).unwrap_err();
+        assert_eq!(*b.asked.borrow(), ["Google Keep"]);
+        assert!(format!("{e:#}").contains("socket went away"), "{e:#}");
+        assert!(
+            format!("{e:#}").contains("beckon failed for id `Google Keep`"),
+            "{e:#}"
+        );
+    }
+
+    /// A single id has no chain to step through, so even a `NoMatch` takes
+    /// the abort arm and keeps the wording beckon has always printed.
+    #[test]
+    fn a_single_id_reports_a_no_match_without_the_chain_summary() {
+        let b = FakeBackend::new(vec![Err(no_match("Claude"))]);
+        let e = beckon_ladder(&b, "Claude", false).unwrap_err();
+        let text = format!("{e:#}");
+        assert!(text.contains("beckon failed for id `Claude`"), "{text}");
+        assert!(!text.contains("no candidate of"), "{text}");
+    }
+
+    /// Every rung missing names them all: the first alone hides that a
+    /// fallback was tried, the last alone names the candidate the user cares
+    /// least about.
+    #[test]
+    fn a_chain_whose_every_rung_misses_names_all_of_them() {
+        let b = FakeBackend::new(vec![Err(no_match("Nope")), Err(no_match("Also nope"))]);
+        let e = beckon_ladder(&b, "Nope || Also nope", false).unwrap_err();
+        let text = format!("{e:#}");
+        assert!(
+            text.contains("no candidate of `Nope || Also nope`"),
+            "{text}"
+        );
+        assert!(text.contains("`Nope`"), "{text}");
+        assert!(text.contains("`Also nope`"), "{text}");
+    }
+
+    /// A malformed chain never reaches the backend at all — which is the
+    /// runtime half of `a_chain_that_does_not_split_is_reported_dead_rather_than_dropped`.
+    #[test]
+    fn a_chain_that_does_not_split_never_reaches_the_backend() {
+        let b = FakeBackend::new(Vec::new());
+        let e = beckon_ladder(&b, "Google Keep || ", false).unwrap_err();
+        assert!(b.asked.borrow().is_empty(), "{:?}", b.asked.borrow());
+        assert!(format!("{e:#}").contains("empty candidate"), "{e:#}");
+    }
+
+    // ---- reserved words ----
+
+    fn argv(words: &[&str]) -> Vec<std::ffi::OsString> {
+        words.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// The case the migration plan named as the proof this explanation
+    /// survived: without it `beckon resolve` reports only clap's "the
+    /// following required arguments were not provided: <ID>", which sends the
+    /// reader hunting for a forgotten argument.
+    #[test]
+    fn a_bare_reserved_word_is_explained_as_a_shadowed_app_name() {
+        assert_eq!(
+            shadowed_verb(&argv(&["beckon", "resolve"])),
+            Some("resolve")
+        );
+        assert_eq!(shadowed_verb(&argv(&["beckon", "help"])), Some("help"));
+    }
+
+    /// Anything longer is a real missing operand, and `beckon search` with a
+    /// name is not ambiguous at all.
+    #[test]
+    fn a_reserved_word_with_anything_after_it_is_a_real_missing_operand() {
+        assert_eq!(shadowed_verb(&argv(&["beckon", "resolve", "Claude"])), None);
+        assert_eq!(shadowed_verb(&argv(&["beckon"])), None);
+    }
+
+    /// Subcommand matching is byte-exact while every beckon resolver is
+    /// case-insensitive, so capitalisation alone decides the reading.
+    #[test]
+    fn a_word_that_is_not_a_subcommand_is_left_to_clap() {
+        assert_eq!(shadowed_verb(&argv(&["beckon", "Resolve"])), None);
+        assert_eq!(shadowed_verb(&argv(&["beckon", "Claude"])), None);
+    }
+
+    /// `RESERVED` is hand-written and nothing tied it to the surface it
+    /// describes, so a ninth subcommand would cost an app name and explain
+    /// nothing. `help` is in the list because clap injects it — this is what
+    /// notices if it ever stops.
+    #[test]
+    fn reserved_names_every_subcommand_clap_knows_about() {
+        for c in Args::command().get_subcommands() {
+            assert!(
+                RESERVED.contains(&c.get_name()),
+                "`{}` is a subcommand but not in RESERVED",
+                c.get_name()
+            );
+        }
     }
 }

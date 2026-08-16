@@ -12,7 +12,14 @@ members = [
 version      = "0.9.6"
 edition      = "2021"
 license      = "MIT OR Apache-2.0"
-rust-version = "1.75"
+# The floor the COMMITTED LOCKFILE can actually build, not an aspiration.
+# This said 1.75 while `Cargo.lock` pinned `clap 4.6.1` (edition 2024,
+# `rust-version = "1.85"`, an unconditional dependency of beckon-cli) and
+# `plist 1.9.0` (`1.88.0`, reached from beckon-macos), so `cargo build
+# --release` on the advertised toolchain aborted with "requires rustc 1.85".
+# One value is inherited by all five crates, so it has to be the highest of
+# them; nothing in CI pins a toolchain, so nothing catches a drift here.
+rust-version = "1.88"
 
 [workspace.dependencies]
 anyhow     = "1"
