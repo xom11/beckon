@@ -1485,17 +1485,37 @@ fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
         ProbePlan::Verdict(v) => v,
         #[cfg(target_os = "macos")]
         ProbePlan::AskTheOs => {
-            // No macOS probe, and reporting `Free` would be a guess. Whether
-            // `RegisterEventHotKey` even refuses a chord another app holds
-            // is unmeasured -- on Windows `RegisterHotKey` says so plainly,
-            // and assuming the Carbon API behaves the same way is exactly
-            // the kind of claim this repo has had to retract before.
+            // **No macOS probe, and this is now MEASURED rather than
+            // cautious.** The comment here used to say the behaviour was
+            // unmeasured and that assuming Carbon matched `RegisterHotKey`
+            // was the kind of claim this repo has had to retract. It was
+            // right, and `examples/hotkey_conflict_probe.rs` is why it can
+            // stop being a hedge -- run in an Aqua session on 2026-08-16,
+            // with the control first:
+            //
+            //   Ctrl+Cmd+Opt+F19            ACCEPTED   <- control: it works
+            //   Ctrl+Cmd+Opt+F19 (again)    REFUSED    <- OSStatus -9878
+            //   Cmd+Space   (Spotlight)     ACCEPTED
+            //   Ctrl+Up     (Mission Ctrl)  ACCEPTED
+            //
+            // So `RegisterEventHotKey` refuses a duplicate **from the same
+            // process** (`eventHotKeyExistsErr`) and accepts a chord another
+            // application already owns. It cannot answer the question the
+            // probe asks, and a successful registration would be a guess
+            // dressed as a measurement -- the exact failure `probe_plan`
+            // exists to prevent by asking the OS last.
+            //
+            // The same-process refusal is not a second-best signal either:
+            // "another row in this file already uses it" is step four, which
+            // core answers before this arm is ever reached.
             //
             // Leaving `probe` as it is renders "not yet probed", which
             // `row_condition` already distinguishes from "free". The five
             // steps BEFORE this one -- parse, the F12 guard, the row's own
             // chord, other rows in the file, the row's saved chord -- all
             // still run, and they are the ones that catch real mistakes.
+            //
+            // Do not re-open this without re-running that probe.
             return;
         }
         #[cfg(target_os = "windows")]

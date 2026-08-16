@@ -2211,6 +2211,32 @@ Reasonable next-session order:
   untouched, so the window-server identity the hotkeys depend on has not
   moved. Check it before trusting the change.
 
+- **`RegisterEventHotKey` does NOT report a chord another application holds,
+  so macOS has no availability probe and that is a finding rather than a
+  gap.** Measured 2026-08-16 with `examples/hotkey_conflict_probe.rs`, in an
+  Aqua session, control first:
+
+  ```text
+  Ctrl+Cmd+Opt+F19            ACCEPTED   <- control: registration works here
+  Ctrl+Cmd+Opt+F19 (again)    REFUSED    <- OSStatus -9878, same process
+  Cmd+Space   (Spotlight)     ACCEPTED
+  Ctrl+Up     (Mission Ctrl)  ACCEPTED
+  ```
+
+  Carbon refuses a duplicate **within one process**
+  (`eventHotKeyExistsErr`) and happily accepts a chord the system owns. So
+  the sixth step of `probe_plan` — *ask the OS* — has nothing to ask on this
+  platform, and `serve.rs`'s `AskTheOs` arm returning without a verdict is
+  correct: a successful registration would be a guess dressed as a
+  measurement. The five steps before it all still run, and they are the ones
+  that catch real mistakes. The same-process refusal is not a fallback
+  signal either — "another row in this file already uses it" is step four,
+  which core answers before that arm is reached.
+
+  This entry used to be a hedge in a code comment (*"whether it even refuses
+  … is unmeasured"*). The hedge was right; it is now a result. Do not
+  re-open it without re-running that probe.
+
 - **Two capabilities live in different processes on this machine, and neither
   one can do both.** Measured 2026-08-16; this is why the macOS UI probes are
   awkward and it is not a thing any single process can discover:
