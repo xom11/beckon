@@ -923,7 +923,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             // external-change path from here would hand an EDITABLE window a
             // file that does not parse, and its answer to that is an error
             // dialog, once per watcher tick.
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             settings_retry_unreadable(state);
         }
         Ok(new) => {
@@ -964,7 +964,7 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             // The file on disk just changed. A clean settings window follows
             // it silently; a dirty one raises a banner and lets the user
             // choose. No-op when the window is closed.
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             settings_saw_external_change(state);
         }
     }
@@ -1217,13 +1217,16 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let on_click = Box::new(move |id: u32| match id {
         MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
         MENU_RELOAD => reload(&st, &mg),
-        // The Windows arm's push, and it earns its place here for a weaker
-        // but real reason: this window has no System page and so no pause
-        // SWITCH, but every Shortcuts row's status word is derived from
-        // `RuntimeStatus::paused`, and `set_paused` clears `registered`. So
-        // a pause from the menu bar leaves an open window claiming nineteen
-        // rows are registered. `settings_saw_external_change` is Windows-only
-        // and is about the FILE, so it does not cover this.
+        // The Windows arm's push, and it earns its place here for exactly the
+        // Windows arm's reason since the four doors landed: this window HAS a
+        // System page with a pause switch, so without the push that switch
+        // goes on showing the state it had before the menu bar changed it. It
+        // would earn its place without one anyway -- every Shortcuts row's
+        // status word is derived from `RuntimeStatus::paused`, and
+        // `set_paused` clears `registered`, so a pause from the menu bar
+        // leaves an open window claiming nineteen rows are registered.
+        // `settings_saw_external_change` is about the FILE, so it does not
+        // cover this on either platform.
         MENU_PAUSE => {
             let now = !st.borrow().paused;
             set_paused(&st, &mg, now);
@@ -1874,7 +1877,14 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
 ///
 /// Returns `false` when the window is not in that state, so callers that
 /// have their own answer for the editable window can carry on.
-#[cfg(target_os = "windows")]
+///
+/// **WIDENED 2026-08-16: both platforms.** This and
+/// `settings_saw_external_change` were the last two `windows`-only items in a
+/// run of `any(windows, macos)` siblings -- the gate outlived the fact it
+/// rested on, which was that macOS had no settings window. It has all four
+/// doors, so a read-only macOS window promised the user it would turn
+/// editable once they fixed the file and never did.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn settings_retry_unreadable(state: &Rc<RefCell<ServeState>>) -> bool {
     if state.borrow().settings_unreadable.is_none() {
         return false;
@@ -1891,7 +1901,13 @@ fn settings_retry_unreadable(state: &Rc<RefCell<ServeState>>) -> bool {
 /// A read-only window is neither: it has no model to follow the file WITH
 /// and no edits to protect, so it goes through `settings_retry_unreadable`
 /// and never reaches the dirty test below.
-#[cfg(target_os = "windows")]
+///
+/// **WIDENED 2026-08-16: both platforms**, for the reason
+/// `settings_retry_unreadable` records. Without it, editing `apps.toml` in
+/// another editor while the macOS window was open and then pressing Save
+/// overwrote the external edit SILENTLY -- the banner this function raises is
+/// the whole protection, and it could never appear there.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
     if settings_retry_unreadable(state) {
         return;
@@ -2567,6 +2583,25 @@ mod tests {
         );
     }
 
+    /// Both halves of the external-change path exist on both windowed
+    /// platforms.
+    ///
+    /// **It asserts nothing at run time and that is the point.** Until
+    /// 2026-08-16 `settings_saw_external_change` and
+    /// `settings_retry_unreadable` were `#[cfg(target_os = "windows")]` while
+    /// every sibling around them was `any(windows, macos)` -- so on macOS an
+    /// external edit never reached an open window, the banner that exists to
+    /// stop Save overwriting it could not appear, and a read-only window
+    /// never became editable once the file was fixed. A missing function is
+    /// not a runtime fact, so naming the two here is the only layer that can
+    /// see the gate: put the old `cfg` back and this test does not compile on
+    /// the macOS job (E0425), which is the failure it is for.
+    #[test]
+    fn both_windowed_platforms_carry_the_external_change_path() {
+        let _: fn(&Rc<RefCell<ServeState>>) = settings_saw_external_change;
+        let _: fn(&Rc<RefCell<ServeState>>) -> bool = settings_retry_unreadable;
+    }
+
     #[test]
     fn event_touches_matches_by_file_name_only() {
         let name = Some(OsStr::new("apps.macos.toml"));
@@ -2635,11 +2670,19 @@ mod tests {
     }
 
     /// The macOS menu says nothing it cannot do, and each absence is
-    /// structural: `--log` is `#[cfg(target_os = "windows")]` so beckon
-    /// never owns a log path there, and login lifecycle belongs to
-    /// `brew services`. (`Settings...` WAS absent while the window did not
-    /// exist; it is built now, which is why this model has `settings:
-    /// true` and the flag survives as a capability rather than a constant.)
+    /// structural: launchd owns the log there through `StandardErrorPath`,
+    /// so beckon has a path only when `--log` handed it one and this model
+    /// carries `log: None`; and login lifecycle belongs to `brew services`.
+    /// (`Settings...` WAS absent while the window did not exist; it is built
+    /// now, which is why this model has `settings: true` and the flag
+    /// survives as a capability rather than a constant.)
+    ///
+    /// **CORRECTED 2026-08-16**: this said *"`--log` is
+    /// `#[cfg(target_os = "windows")]` so beckon never owns a log path
+    /// there"*. The flag is `#[cfg(any(target_os = "windows", target_os =
+    /// "macos"))]` (`lib.rs`, the `Serve` variant), which is why
+    /// `menu_log_row` takes `has_log_path` at all rather than answering from
+    /// the platform -- the absence is this run's, not the platform's.
     ///
     /// Asserted as a whole-shape equality rather than three separate
     /// "row is absent" checks, because the failure this guards against is a
