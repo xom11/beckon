@@ -24,6 +24,7 @@ const VK_RCONTROL: u32 = 0xA3;
 const VK_RMENU: u32 = 0xA5;
 
 const VK_L: u32 = 0x4C;
+const VK_Q: u32 = 0x51;
 const VK_DELETE: u32 = 0x2E;
 const VK_NUMLOCK: u32 = 0x90;
 const VK_SCROLL: u32 = 0x91;
@@ -249,16 +250,72 @@ fn modifier_of(vk: u32) -> Option<Modifier> {
 /// share was disproved for `Win+L` (measurements §48). It reads like a
 /// `SystemChord` and is not one for exactly that reason. `delete` is in the
 /// 81-key table, so without this arm the chord is recordable.
-fn refusal_for(vk: u32, mods: Mods) -> Option<Refusal> {
-    if mods.super_ && vk == VK_L {
-        return Some(Refusal::SystemChord);
+/// **The macOS arm exists for the OPPOSITE reason to the Windows one, and
+/// that is the part to read before adding a member to either.**
+///
+/// `Win+L` is `SystemChord` because the hook **cannot** stop it (measurements
+/// §48: `SEEN SWALLOWED ACTED`), so recording it would write a binding that
+/// can never fire. Measured on airm3 2026-08-16, macOS stops `Cmd+Q` and
+/// `Ctrl+Cmd+Q` **successfully** -- the probe swallowed both and its log
+/// continues past them, which it could not do if the terminal had quit or the
+/// screen had locked. So macOS has **no `SystemChord` members at all**, and
+/// `Cmd+Q` is refused for the mirror-image danger: a live binding, not a dead
+/// one. Record it and quitting any application stops working for as long as
+/// beckon holds the tap.
+///
+/// **The third-modifier exemption is not an oversight.** `ctrl+super+alt` is
+/// beckon's own default `caps_hold`, so `Caps+Q` spells exactly that chord --
+/// and macOS quits on `Cmd+Q` alone, treating anything with a further
+/// modifier as a different chord entirely. Refusing the whole `vk == Q`
+/// family would have taken one letter away from the one chord shape every
+/// beckon binding uses.
+///
+/// **Membership is bounded by the measurement, not by the category** -- the
+/// same rule `SystemChord`'s doc states for `Win+L`. `Cmd+Shift+Q` (log out)
+/// and `Cmd+Opt+Esc` (Force Quit) read like members and are **not measured**,
+/// so they are not here. Measure before adding, or the list starts making
+/// claims the probe never checked.
+fn refusal_for(vk: u32, mods: Mods, on: Platform) -> Option<Refusal> {
+    match on {
+        Platform::Windows => {
+            if mods.super_ && vk == VK_L {
+                return Some(Refusal::SystemChord);
+            }
+            if matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL)
+                || (mods.ctrl && mods.alt && vk == VK_DELETE)
+            {
+                return Some(Refusal::Reserved);
+            }
+            None
+        }
+        Platform::Mac => {
+            // The lock keys answer the same on both platforms and for the
+            // same reason: the light toggles before any hook or tap runs, so
+            // swallowing the key cannot undo it. `caps_probe` saw Caps arrive
+            // as `flagsChanged` with no bit of its own, which is the same
+            // fact from the other side.
+            if matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL) {
+                return Some(Refusal::Reserved);
+            }
+            if vk == VK_Q && mods.super_ && !mods.alt && !mods.shift {
+                return Some(Refusal::Reserved);
+            }
+            None
+        }
     }
-    if matches!(vk, VK_CAPITAL | VK_NUMLOCK | VK_SCROLL)
-        || (mods.ctrl && mods.alt && vk == VK_DELETE)
-    {
-        return Some(Refusal::Reserved);
-    }
-    None
+}
+
+/// Which platform's reserved-chord rules `step` applies.
+///
+/// **The refusals are not the same set, and one of them is not even the same
+/// KIND of refusal.** `step` is otherwise identical on both -- the same held
+/// set, the same drain, the same `Combo` -- which is why this is a parameter
+/// rather than a second `step`. `combo_caps` / `combo_caps_with` is the same
+/// shape for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Platform {
+    Windows,
+    Mac,
 }
 
 /// Everything one recording session needs to remember.
@@ -419,6 +476,13 @@ impl CaptureState {
     }
 }
 
+/// `step` on Windows' rules. Unchanged signature, unchanged behaviour --
+/// every existing caller and test keeps working, which is what keeps this
+/// port from touching the platform that already shipped.
+pub fn step(ev: KeyEvent, st: &mut CaptureState, live: Mods) -> Outcome {
+    step_on(ev, st, live, Platform::Windows)
+}
+
 /// Decide what to do with one key event while recording. Pure apart from
 /// `st`, and -- see the module doc -- free of allocation and formatting.
 ///
@@ -451,7 +515,7 @@ impl CaptureState {
 ///   so the Ctrl the user presses next is silently absent from `mods()`
 ///   and the chord commits without it. Losing a modifier is far worse than
 ///   a repeated refusal, so the repeat is handled at the beep instead.
-pub fn step(ev: KeyEvent, st: &mut CaptureState, live: Mods) -> Outcome {
+pub fn step_on(ev: KeyEvent, st: &mut CaptureState, live: Mods, on: Platform) -> Outcome {
     // Sampled by the caller on every event, so a modifier RELEASED after
     // recording began stops counting the moment it is let go -- which is why
     // this is a parameter rather than a snapshot taken when the hook armed.
@@ -528,7 +592,7 @@ pub fn step(ev: KeyEvent, st: &mut CaptureState, live: Mods) -> Outcome {
         st.refused_vk = Some(ev.vk);
         return Outcome::Refused(Refusal::NoModifier);
     }
-    if let Some(refusal) = refusal_for(ev.vk, mods) {
+    if let Some(refusal) = refusal_for(ev.vk, mods, on) {
         st.refused_keycap = keycap;
         st.refused_vk = Some(ev.vk);
         return Outcome::Refused(refusal);
@@ -811,6 +875,152 @@ mod tests {
     fn up_live(st: &mut CaptureState, vk: u32, live: Mods) -> Outcome {
         step(ev(vk, Edge::Up), st, live)
     }
+    fn down_on(st: &mut CaptureState, vk: u32, live: Mods, on: Platform) -> Outcome {
+        step_on(ev(vk, Edge::Down), st, live, on)
+    }
+
+    fn mods_of(ctrl: bool, super_: bool, alt: bool, shift: bool) -> Mods {
+        Mods {
+            ctrl,
+            super_,
+            alt,
+            shift,
+        }
+    }
+
+    /// macOS refuses `Cmd+Q`, and the reason is the OPPOSITE of `Win+L`'s.
+    ///
+    /// Windows block-lists `Win+L` because the hook **cannot** stop it --
+    /// measurements §48, `SEEN SWALLOWED ACTED` -- so recording it would
+    /// write a binding that can never fire. Measured on airm3 2026-08-16,
+    /// macOS stops `Cmd+Q` and `Ctrl+Cmd+Q` **successfully**: the probe
+    /// swallowed both and the log continues past them, which it could not do
+    /// if the terminal had quit or the screen had locked.
+    ///
+    /// So the danger is not a dead binding, it is a live one: someone who
+    /// records `Cmd+Q` loses the ability to quit any application for as long
+    /// as beckon holds the tap. That is `Refusal::Reserved` -- beckon's own
+    /// limit, whose hint deliberately names no mechanism -- and **not**
+    /// `SystemChord`, whose hint says Windows keeps the chord and whose doc
+    /// says naming one chord in words is only honest while that family has
+    /// exactly one member. On macOS it has none.
+    #[test]
+    fn macos_refuses_cmd_q_because_it_swallows_it_too_well() {
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_Q,
+                mods_of(false, true, false, false),
+                Platform::Mac
+            ),
+            Outcome::Refused(Refusal::Reserved),
+            "bare Cmd+Q quits the front app on every application"
+        );
+
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_Q,
+                mods_of(true, true, false, false),
+                Platform::Mac
+            ),
+            Outcome::Refused(Refusal::Reserved),
+            "Ctrl+Cmd+Q locks the screen"
+        );
+    }
+
+    /// The chord beckon itself recommends must survive the rule above.
+    ///
+    /// `ctrl+super+alt+<key>` is the default `caps_hold`, so `Caps+Q` spells
+    /// exactly this. macOS quits on `Cmd+Q` alone -- a third modifier is a
+    /// different chord to the system -- so refusing the whole `vk == Q`
+    /// family would have taken one letter away from the one chord shape
+    /// every beckon binding uses.
+    #[test]
+    fn macos_still_allows_q_under_the_beckon_chord() {
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_Q,
+                mods_of(true, true, true, false),
+                Platform::Mac
+            ),
+            Outcome::Captured,
+            "ctrl+cmd+alt+q is not a chord macOS acts on, so it records"
+        );
+    }
+
+    /// `Cmd+L` is an ordinary chord on macOS, and Windows must keep refusing
+    /// `Win+L`. The two are the same `(vk, mods)` pair and must not answer
+    /// the same way -- which is the whole reason `step` grew a platform.
+    #[test]
+    fn super_l_is_a_system_chord_on_windows_and_ordinary_on_macos() {
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_L,
+                mods_of(false, true, false, false),
+                Platform::Windows
+            ),
+            Outcome::Refused(Refusal::SystemChord),
+            "control: unchanged on the platform that shipped it"
+        );
+
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_L,
+                mods_of(false, true, false, false),
+                Platform::Mac
+            ),
+            Outcome::Captured,
+            "Cmd+L focuses an address bar; nothing reserves it"
+        );
+    }
+
+    /// `Ctrl+Alt+Del` has no macOS counterpart, and the lock keys have the
+    /// same answer on both: the light toggles before any hook or tap runs,
+    /// so swallowing the key cannot undo it.
+    #[test]
+    fn the_lock_keys_are_refused_on_both_but_ctrl_alt_del_is_windows_only() {
+        for on in [Platform::Windows, Platform::Mac] {
+            let mut st = CaptureState::armed();
+            assert_eq!(
+                down_on(&mut st, VK_CAPITAL, mods_of(true, false, false, false), on),
+                Outcome::Refused(Refusal::Reserved),
+                "a lock key as the MAIN key, on {on:?}"
+            );
+        }
+
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_DELETE,
+                mods_of(true, false, true, false),
+                Platform::Windows
+            ),
+            Outcome::Refused(Refusal::Reserved)
+        );
+
+        let mut st = CaptureState::armed();
+        assert_eq!(
+            down_on(
+                &mut st,
+                VK_DELETE,
+                mods_of(true, false, true, false),
+                Platform::Mac
+            ),
+            Outcome::Captured,
+            "Ctrl+Option+Delete is not a chord macOS reserves"
+        );
+    }
+
     fn ctrl_live() -> Mods {
         Mods {
             ctrl: true,
@@ -956,7 +1166,8 @@ mod tests {
                 Mods {
                     super_: true,
                     ..Mods::default()
-                }
+                },
+                Platform::Windows,
             ),
             Some(Refusal::SystemChord)
         );
@@ -966,12 +1177,16 @@ mod tests {
                 Mods {
                     super_: true,
                     ..Mods::default()
-                }
+                },
+                Platform::Windows,
             ),
             Some(Refusal::Reserved),
             "a lock key is beckon's own limit however it is modified"
         );
-        assert_eq!(super::refusal_for(VK_L, Mods::default()), None);
+        assert_eq!(
+            super::refusal_for(VK_L, Mods::default(), Platform::Windows),
+            None
+        );
     }
 
     /// Spec F.5 carries `Ctrl+Alt+Del` forward as **unverified**, and says
