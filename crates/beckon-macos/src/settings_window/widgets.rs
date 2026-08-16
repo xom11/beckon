@@ -26,11 +26,11 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
 use objc2_app_kit::{
     NSBezelStyle, NSBox, NSBoxType, NSButton, NSColor, NSControlSize, NSFont, NSLayoutAttribute,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutRelation, NSSlider, NSStackView,
-    NSStackViewDistribution, NSSwitch, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
+    NSLayoutRelation, NSSlider, NSStackView, NSStackViewDistribution, NSSwitch, NSTextAlignment,
+    NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
-use objc2_foundation::{MainThreadMarker, NSEdgeInsets, NSString};
+use objc2_foundation::{MainThreadMarker, NSString};
 
 /// A plain, non-editable label.
 pub(super) fn label(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
@@ -53,8 +53,19 @@ pub(super) fn heading(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField
     l
 }
 
-/// Body text that wraps — the About door's disclosure is the only caller,
-/// and it is the only string in the window long enough to need it.
+/// Body text that wraps.
+///
+/// **`preferredMaxLayoutWidth` is the whole function.** Without it a
+/// word-wrapping `NSTextField` still reports its intrinsic size as ONE LINE,
+/// however long — and under autolayout a window sizes itself to its content's
+/// minimum, so one 250-character sentence dragged the whole settings window
+/// to **1072x1048** when it is meant to be 640x500. Measured 2026-08-16 with
+/// `examples/settings_drive.rs`, immediately after the card-constraint fix
+/// that made the window's geometry trustworthy enough to read at all.
+///
+/// The width is the card's interior at the design's window width: 640 less
+/// the root stack's 12-a-side inset and the card's 16-a-side padding. It is a
+/// *preferred* maximum, so a wider window rewraps.
 pub(super) fn wrapping(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     let l = label(text, mtm);
     {
@@ -62,8 +73,19 @@ pub(super) fn wrapping(text: &str, mtm: MainThreadMarker) -> Retained<NSTextFiel
         l.cell().unwrap().setWraps(true);
     }
     l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    l.setPreferredMaxLayoutWidth(CARD_TEXT_WIDTH);
+    // A paragraph must yield horizontally before anything else does: it can
+    // answer a narrower window by growing taller, and a check box or a button
+    // cannot.
+    l.setContentCompressionResistancePriority_forOrientation(
+        249.0,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
     l
 }
+
+/// 640 (the design's window width) − 12 × 2 (root inset) − 16 × 2 (card pad).
+const CARD_TEXT_WIDTH: f64 = 640.0 - 24.0 - 32.0;
 
 pub(super) fn check(
     title: &str,
@@ -162,6 +184,16 @@ pub(super) fn hstack(views: &[&NSView], mtm: MainThreadMarker) -> Retained<NSSta
     s.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     s.setSpacing(8.0);
     s.setDistribution(NSStackViewDistribution::Fill);
+    // **A row is as tall as its tallest control and no taller.** Without
+    // this, a row inside a vertical `Fill` stack absorbs whatever height the
+    // column has spare — measured 2026-08-16: the Shortcuts door's banner
+    // row, whose three children are 16 to 24 points high, came back **618
+    // points tall** and pushed the window to 1048. Nothing errors; the row is
+    // simply enormous and invisible, because it draws nothing of its own.
+    s.setHuggingPriority_forOrientation(
+        NSLayoutPriorityDefaultHigh,
+        NSLayoutConstraintOrientation::Vertical,
+    );
     for v in views {
         s.addArrangedSubview(v);
     }
@@ -178,6 +210,13 @@ pub(super) fn vstack(
     s.setSpacing(spacing);
     s.setDistribution(NSStackViewDistribution::Fill);
     s.setAlignment(NSLayoutAttribute::Leading);
+    // Same rule one axis over: a column hugs its content vertically, so the
+    // slack lands where a caller puts it rather than in whichever child
+    // happens to resist least.
+    s.setHuggingPriority_forOrientation(
+        NSLayoutPriorityDefaultHigh,
+        NSLayoutConstraintOrientation::Vertical,
+    );
     for v in views {
         s.addArrangedSubview(v);
     }
@@ -208,7 +247,36 @@ pub(super) fn spring(mtm: MainThreadMarker) -> Retained<NSView> {
 /// `setCornerRadius` / `setFillColor` / `setContentView` without adding
 /// `objc2-quartz-core` as a direct dependency, and its fill is an `NSColor`,
 /// so it follows the appearance like everything else here.
+///
+/// ## The content view is pinned by hand, and it has to be
+///
+/// **Measured 2026-08-16 with `examples/settings_drive.rs`.** Setting
+/// `contentView` and turning off its autoresizing mask is not enough:
+/// `NSBox` does not create constraints tying the content view's edges to
+/// itself, so the content lays out in an unconstrained space and its children
+/// keep their natural positions there. The window looked right — it was on
+/// screen at the right size, the root stack was correct, and the three hidden
+/// doors collapsed as they should — while every control INSIDE a card sat off
+/// the top of it:
+///
+/// ```text
+/// content bounds 640x500
+/// Add     x=184 y=649   *** OUTSIDE ***
+/// Save    x=574 y=12    (command bar: a direct child of the root, so fine)
+/// ```
+///
+/// Nothing reported an error. A click posted at the button's own centre hit
+/// `<nothing>`, which is what a control wired to nothing also looks like —
+/// the two are distinguishable only by asking `hitTest:` what is actually at
+/// the point, which is why the driver prints that on every step.
+///
+/// The insets live on these constraints rather than on the stack's
+/// `edgeInsets` for the same reason: an `edgeInsets` on a stack that is not
+/// itself positioned has nothing to inset from.
 pub(super) fn card(inner: &NSView, mtm: MainThreadMarker) -> Retained<NSBox> {
+    const PAD_X: f64 = 16.0;
+    const PAD_Y: f64 = 14.0;
+
     let b = NSBox::new(mtm);
     {
         b.setBoxType(NSBoxType::Custom);
@@ -221,14 +289,20 @@ pub(super) fn card(inner: &NSView, mtm: MainThreadMarker) -> Retained<NSBox> {
         b.setContentView(Some(inner));
     }
     inner.setTranslatesAutoresizingMaskIntoConstraints(false);
-    if let Some(stack) = inner.downcast_ref::<NSStackView>() {
-        stack.setEdgeInsets(NSEdgeInsets {
-            top: 14.0,
-            left: 16.0,
-            bottom: 14.0,
-            right: 16.0,
-        });
-    }
+    NSLayoutConstraint::activateConstraints(&objc2_foundation::NSArray::from_retained_slice(&[
+        inner
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&b.leadingAnchor(), PAD_X),
+        inner
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&b.trailingAnchor(), -PAD_X),
+        inner
+            .topAnchor()
+            .constraintEqualToAnchor_constant(&b.topAnchor(), PAD_Y),
+        inner
+            .bottomAnchor()
+            .constraintEqualToAnchor_constant(&b.bottomAnchor(), -PAD_Y),
+    ]));
     b
 }
 

@@ -85,6 +85,17 @@ mod widgets;
 /// from the config, for the same reason the Win32 twin fixes it: a window
 /// that changes height when a binding is added is a window that moves under
 /// the pointer mid-edit.
+/// The design's window, in points.
+///
+/// `MIN_HEIGHT` is the Win32 twin's derivation carried over unchanged, and
+/// its subject is the About door rather than the Shortcuts one: card 1's
+/// list gives room up before anything else moves, so the door that runs out
+/// first is one of the three whose card is FIXED, and About is the only page
+/// whose height depends on a text measurement.
+const WINDOW_WIDTH: f64 = 640.0;
+const WINDOW_HEIGHT: f64 = 500.0;
+const MIN_HEIGHT: f64 = 480.0;
+
 const ROWS: f64 = 8.0;
 const ROW_HEIGHT: f64 = 20.0;
 
@@ -1177,6 +1188,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let root = NSStackView::new(mtm);
     {
         root.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        // Explicit, not relied upon: a hidden door must contribute NO height.
+        // The default is already true, but this stack is the one place where
+        // the whole four-door illusion rests on it.
+        root.setDetachesHiddenViews(true);
         root.setSpacing(10.0);
         root.setEdgeInsets(objc2_foundation::NSEdgeInsets {
             top: 12.0,
@@ -1222,7 +1237,23 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             .unwrap_or_else(|| paths.config.display().to_string());
         window.setTitle(&NSString::from_str(&format!("beckon - {name}")));
         window.setContentView(Some(&root));
-        window.center();
+        // **Set the size deliberately, and do not let AppKit restore one.**
+        //
+        // Measured 2026-08-16 with `examples/settings_drive.rs`: the window
+        // came up **640x1080** while `root.fittingSize()` was 506x430 — the
+        // content was content, the WINDOW was too big, and every row inside
+        // stretched to fill it. The 1080 came from an earlier run of the
+        // same binary, back when an unconstrained wrapping label demanded
+        // 1072 points of width; `NSWindow.isRestorable` defaults to true, so
+        // macOS had saved that frame and handed it back on every launch
+        // afterwards. Nothing reported anything: a window opening at a stale
+        // size looks exactly like a window laid out wrongly.
+        //
+        // A settings window with fixed geometry gains nothing from
+        // restoration and can inherit a bad frame from any single bad build,
+        // which is a defect that survives the fix that caused it.
+        window.setRestorable(false);
+        window.setContentMinSize(NSSize::new(560.0, MIN_HEIGHT));
         // Save rests here, but the ring migrates to whichever push button
         // has focus, so Enter on a tabbed-to Close closes.
         let save_cell = save.cell().unwrap();
@@ -1277,6 +1308,26 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // and discarded — that line (`let _ = page;`) was this window's whole
     // relationship with the four-door design.
     show_page(page);
+
+    // **Size the window AFTER `show_page`, never before, and this ordering is
+    // the whole bug.** Until `show_page` runs, all four doors are visible and
+    // the content genuinely needs about 1048 points of height; a
+    // `setContentSize` there is fought by the constraints and loses. Three
+    // doors then hide, `fittingSize` drops to about 430 — and the window does
+    // NOT shrink back on its own, so it sat at 640x1080 with every row inside
+    // stretched to fill it.
+    //
+    // Nothing reported anything. The window was on screen at a plausible
+    // size, the root stack was laid out correctly for the size it had, and
+    // `fittingSize` said 506x430 while the frame said 640x1080 — the two
+    // numbers that had to be compared were never printed side by side until
+    // `examples/settings_drive.rs` printed them. It is now an assertion
+    // there.
+    if let Some(c) = controls() {
+        c.window
+            .setContentSize(NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT));
+        c.window.center();
+    }
     Ok(())
 }
 
