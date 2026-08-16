@@ -205,6 +205,29 @@ struct Controls {
 /// `Page` is an exhaustive enum in core and `Page::next` / `Page::prev`
 /// already spell the cycle, so this is only the index — never a second
 /// spelling of the order.
+/// The Shortcuts segment's caption: the binding count, and the
+/// external-change warning.
+///
+/// **This is `warn_dot_shown`'s implementation on macOS.** Windows draws a
+/// dot in `paint::tab_pill`; an `NSSegmentedControl` is not owner-drawn, so
+/// the mark rides in the caption instead. Three reasons it goes here rather
+/// than anywhere else:
+///
+/// - segment 0's width is already pinned (`setWidth_forSegment(120.0, 0)`)
+///   for the count, so the mark cannot make the strip's geometry a function
+///   of state -- the rule the Win32 twin spends a measured slot on;
+/// - the Shortcuts pill is the door the announcement is ABOUT, which is what
+///   `BANNER_PAGE` says and what keeps the mark off a lit pill; and
+/// - AX reads a caption, so the harness can assert the warning is on screen
+///   -- a drawn dot is invisible to every check we can automate.
+fn shortcuts_tab_label(binding_count: usize, warn: bool) -> String {
+    if warn {
+        format!("Shortcuts  {binding_count} \u{2022}")
+    } else {
+        format!("Shortcuts  {binding_count}")
+    }
+}
+
 fn page_index(p: Page) -> usize {
     match p {
         Page::Shortcuts => 0,
@@ -325,6 +348,17 @@ fn with_cb(f: impl FnOnce(&mut Callbacks)) {
 /// Cloning is cheap: a `Retained` clone is one retain.
 fn controls() -> Option<Controls> {
     UI.with(|u| u.borrow().as_ref().map(|x| x.c.clone()))
+}
+
+/// The open door, read the same way `controls` reads the widgets: a short
+/// immutable borrow that is released before any AppKit call.
+///
+/// `Page::Shortcuts` when there is no window is the safe answer rather than a
+/// convenient one -- it is `BANNER_PAGE`, so a caller asking `warn_dot_shown`
+/// gets `false` and no mark is drawn for a window nobody is looking at.
+fn current_page() -> Page {
+    UI.with(|u| u.borrow().as_ref().map(|x| x.page))
+        .unwrap_or(Page::Shortcuts)
 }
 
 /// Is this notification a programmatic push rather than a human edit?
@@ -1951,9 +1985,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // is true of a file beckon cannot read: it has no bindings beckon can
         // act on. A row added and not yet saved counts, for the same reason
         // the title bar's dirty mark follows the model rather than the disk.
+        //
+        // It also carries the external-change warning, because
+        // `warn_dot_shown` has no other implementation on this platform --
+        // see `shortcuts_tab_label`. Reading `x.page` rather than taking a
+        // parameter keeps the two facts from drifting: the caption is pushed
+        // on every `apply_state`, and `show_page` sets `x.page` before any
+        // of them.
         {
+            let warn = beckon_core::settings::warn_dot_shown(external_change, current_page());
             x.tabs.setLabel_forSegment(
-                &NSString::from_str(&format!("Shortcuts  {}", st.binding_count)),
+                &NSString::from_str(&shortcuts_tab_label(st.binding_count, warn)),
                 0,
             );
         }
@@ -2127,6 +2169,51 @@ fn caps_hold_now() -> Chord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **`warn_dot_shown` had no implementation on this platform**, and the
+    /// whole design rests on it having one.
+    ///
+    /// `banner_shown` and `warn_dot_shown` partition `external_change` so
+    /// that exactly one of them is up on any door and never neither
+    /// (`settings::the_warning_is_on_screen_from_every_door`). That partition
+    /// is what lets `apply_settings` keep NO external-change guard: the note
+    /// there argues the protection is paid "in the WINDOW, by there being no
+    /// door from which Save can be pressed with nothing on screen saying the
+    /// file moved."
+    ///
+    /// Measured on airm3 2026-08-17, that premise was false here. With the
+    /// file edited underneath a dirty model -- `serve` logging
+    /// `reloaded - 2 shortcuts registered`, so beckon plainly knew -- nothing
+    /// on any door said so, and Save destroyed the external edit silently.
+    ///
+    /// The caption is where it goes because segment 0's width is already
+    /// pinned (`setWidth_forSegment(120.0, 0)`) for the binding count, so the
+    /// mark cannot make the strip's geometry a function of state. It is also
+    /// readable by AX, which is what lets the harness assert it.
+    #[test]
+    fn the_shortcuts_tab_carries_the_warning_when_the_file_moved() {
+        assert_eq!(shortcuts_tab_label(20, false), "Shortcuts  20");
+        assert_eq!(shortcuts_tab_label(20, true), "Shortcuts  20 \u{2022}");
+        assert_eq!(shortcuts_tab_label(0, true), "Shortcuts  0 \u{2022}");
+    }
+
+    /// The mark follows `warn_dot_shown`, not `external_change` -- so it is
+    /// absent on the one door where the banner itself is on screen, and the
+    /// window never says the same thing twice.
+    #[test]
+    fn the_tab_mark_is_the_complement_of_the_banner() {
+        use beckon_core::settings::{banner_shown, warn_dot_shown, Page};
+        for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            let banner = banner_shown(true, page);
+            let dot = warn_dot_shown(true, page);
+            assert!(banner ^ dot, "exactly one of the two is up on {page:?}");
+            assert_eq!(
+                shortcuts_tab_label(3, dot).contains('\u{2022}'),
+                dot,
+                "the caption follows warn_dot_shown on {page:?}"
+            );
+        }
+    }
 
     /// A `Callbacks` whose `on_close_request` answers `may`, and whose other
     /// seventeen fields do nothing.
