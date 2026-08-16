@@ -20,3 +20,9 @@ extensions/*.shell-extension.zip
 # implementer reports, review packages. Recovery state for a session in
 # progress, never part of the history.
 .superpowers/
+
+# Private per-worktree build dir. CLAUDE.md requires one whenever you
+# intend to RUN the binary and believe its output: `target/debug/beckon` is
+# one path shared by every worktree, so the binary you run may be another
+# branch's, and that failure reports nothing at all.
+target-local/

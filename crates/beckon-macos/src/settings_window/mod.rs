@@ -62,6 +62,11 @@ use objc2_foundation::{
 };
 use std::cell::RefCell;
 
+// Construction helpers shared by the four doors. Nothing in there decides
+// anything — see its module doc.
+#[allow(dead_code)]
+mod widgets;
+
 /// How many rows the list shows, at every scale. Fixed rather than grown
 /// from the config, for the same reason the Win32 twin fixes it: a window
 /// that changes height when a binding is added is a window that moves under
@@ -172,6 +177,34 @@ fn controls() -> Option<Controls> {
 /// Is this notification a programmatic push rather than a human edit?
 fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.pushing).unwrap_or(true))
+}
+
+/// What the transparency slot reads instead of a percentage, in this
+/// platform's words.
+///
+/// **Not `TransparencyBlock::reason()`**, which is otherwise the right
+/// function and is used by the Win32 twin: its third arm returns
+/// `"Off in Windows settings"`, and the switch a macOS reader has to go and
+/// find is in System Settings › Accessibility › Display. The other two arms
+/// would survive translation unchanged; the third would send the reader to
+/// an operating system they are not running.
+///
+/// Keeping the mapping here rather than adding a platform parameter to core
+/// is deliberate and temporary. `beckon_core` carries exactly two strings
+/// that name Windows — this one and `combo_caps`' `"Win"` modifier label —
+/// and both want the same fix: a label table the caller supplies. That is a
+/// change to a type the Windows settings window also reads, so it is
+/// announced to whoever owns that side before it is made, not after. Until
+/// then a four-line match in the crate that only builds on macOS is the
+/// cheaper mistake: it can drift from core, but it cannot break a platform
+/// this session cannot run.
+fn block_reason(b: beckon_core::theme::TransparencyBlock) -> &'static str {
+    use beckon_core::theme::TransparencyBlock as B;
+    match b {
+        B::HighContrast => "Off in increased contrast",
+        B::RemoteSession => "Off in a remote session",
+        B::SystemSetting => "Off in system settings",
+    }
 }
 
 define_class!(
