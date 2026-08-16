@@ -308,6 +308,31 @@ about to trust something it has not tested — which is how the two `--examples`
 and `WINCHECK` traps above actually work, and why this one is written up
 despite turning out not to be one.
 
+**Raising `rust-version` turns clippy lints ON, and a cross-target `cargo
+check` cannot see them.** Measured 2026-08-16, twice in one branch, both
+times misfiled as pre-existing. Clippy suppresses any lint whose suggested
+API postdates the declared MSRV, so the floor is a lint gate as well as a
+build gate: moving it 1.75 → 1.88 made `manual_is_multiple_of` (needs 1.87)
+and `manual_dangling_ptr` (needs 1.84) fire in **three files the branch never
+touched**, and CI went red on the merge commit. A/B on one tree is the probe
+— flip `rust-version`, `touch` the file, re-run clippy: `1.75 → 0 hits`,
+`1.88 → 1 hit`.
+
+Two rules follow:
+
+- **A local gate must run `cargo clippy --target aarch64-pc-windows-msvc
+  --all-targets -- -D warnings`, not just `cargo check --target …`.** `check`
+  runs no lints at all, so a macOS host that only cross-*checks* the Windows
+  crate is blind to every Windows-only clippy error CI will hit. That is
+  exactly how this one shipped.
+- **`manual_dangling_ptr`'s suggestion is WRONG for `MAKEINTRESOURCE` and
+  must not be taken.** `PCWSTR(1 as *const u16)` is an integer resource id
+  Win32 packs into a pointer slot and never dereferences; clippy offers
+  `std::ptr::dangling::<u16>()`, which returns the type's ALIGNMENT — measured
+  as **2**, so the icon would load from resource id 2 instead of 1, silently.
+  The right spelling is `std::ptr::without_provenance(1)`, measured as **1**,
+  which also says out loud that the value is not a pointer.
+
 Reading control text across processes needs `SendMessage(WM_GETTEXT)`;
 `GetWindowText` returns the kernel-side caption instead and reads back empty
 for an EDIT or COMBOBOX.

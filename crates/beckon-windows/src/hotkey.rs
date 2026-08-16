@@ -358,11 +358,19 @@ fn tray_add(hwnd: HWND) {
     // 16x16 in the .ico itself. Falls back to the stock icon if the
     // resource is missing, so an icon-less build still shows *something*
     // rather than no tray icon at all.
+    // `without_provenance`, not `1 as *const u16`. This is `MAKEINTRESOURCE(1)`
+    // -- an integer resource id that Win32 packs into the pointer slot and
+    // never dereferences -- so it is deliberately not a pointer at all, and
+    // spelling it as one made `clippy::manual_dangling_ptr` offer
+    // `std::ptr::dangling::<u16>()`. Taking that suggestion would be a silent
+    // defect: `dangling` returns the type's ALIGNMENT, which is 2 for `u16`,
+    // so the icon would be loaded from resource id 2 instead of 1. The lint is
+    // MSRV-gated and only appeared when the workspace floor rose to 1.88.
     nid.hIcon = unsafe {
         let hinst = GetModuleHandleW(None).unwrap_or_default();
         LoadImageW(
             Some(hinst.into()),
-            PCWSTR(1 as *const u16),
+            PCWSTR(std::ptr::without_provenance(1)),
             IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON),
             GetSystemMetrics(SM_CYSMICON),

@@ -3509,12 +3509,16 @@ unsafe fn create() -> Result<(), String> {
         // at 16x16 in the .ico itself. Both fall back to the stock
         // IDI_APPLICATION icon, matching tray_add, so a build without the .rc
         // resource still shows an icon instead of none.
-        let icon = LoadIconW(Some(hinst.into()), PCWSTR(1 as *const u16))
+        // `without_provenance` spells the id, because `MAKEINTRESOURCE` is an
+        // integer Win32 packs into the pointer slot and never dereferences.
+        // See `hotkey.rs`'s tray_add for why `std::ptr::dangling` is the wrong
+        // answer here: it returns the alignment, so `u16` would ask for id 2.
+        let icon = LoadIconW(Some(hinst.into()), PCWSTR(std::ptr::without_provenance(1)))
             .or_else(|_| LoadIconW(None, IDI_APPLICATION))
             .unwrap_or_default();
         let icon_sm = LoadImageW(
             Some(hinst.into()),
-            PCWSTR(1 as *const u16),
+            PCWSTR(std::ptr::without_provenance(1)),
             IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON),
             GetSystemMetrics(SM_CYSMICON),
