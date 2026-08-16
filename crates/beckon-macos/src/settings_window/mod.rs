@@ -37,6 +37,25 @@
 //!   a string compare would make `"super+ctrl+alt+t"` look like an edit and
 //!   mark a file dirty that nobody touched.
 //!
+//! ## There are two ways out, and neither may be the cheap one
+//!
+//! The command bar's `Close` and the title bar's red `X` are different
+//! machinery — a button action and the window's own close path — and until
+//! the `NSWindowDelegate` below existed only the first ran any of the code
+//! that matters. The `X` skipped `on_close_request` (so the unsaved-edits
+//! prompt could be bypassed by clicking three pixels away from it) and
+//! skipped the teardown (so `UI` kept a closed window and `is_open()` stayed
+//! wedged `true`, which makes `open_settings` raise a dead window forever
+//! rather than build a new one). Both routes now meet in `may_close` and
+//! `teardown`, which are the only two places either decision is written.
+//!
+//! An `NSWindow` built with `initWithContentRect:` is `releasedWhenClosed`
+//! by default, and `Controls::window` is a `Retained` — a strong reference.
+//! Those two together are an over-release on the FIRST close, so
+//! `setReleasedWhenClosed(false)` is not tidiness: without it the daemon
+//! dies with the window. It also makes the release ours to time, which is
+//! what `release_later` is for.
+//!
 //! ## Not verified
 //!
 //! Nothing in this file has been seen on screen. See `src/tray.rs`'s module
@@ -63,7 +82,7 @@ use objc2_app_kit::{
     NSLayoutAttribute, NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
     NSScrollView, NSSegmentedControl, NSStackView, NSStackViewDistribution, NSTableColumn,
     NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -612,6 +631,44 @@ define_class!(
         }
     }
 
+    /// The title bar's red `X`, and every other route AppKit owns.
+    ///
+    /// Both methods are deliberately thin. The policy they carry is already
+    /// written for the `Close` button — `may_close` asks about unsaved edits,
+    /// `teardown` forgets the window — and a second spelling of either would
+    /// be a second answer to the same question. See the module doc.
+    unsafe impl NSWindowDelegate for Target {
+        /// May the window close?
+        ///
+        /// This is the ONLY thing standing between the red `X` and a
+        /// discarded config edit: AppKit asks, and a `false` here leaves the
+        /// window up. It runs the same `on_close_request` the command bar's
+        /// `Close` runs, so the prompt cannot be reached by one route and
+        /// missed by the other.
+        ///
+        /// It must NOT close the window itself — returning `true` is the
+        /// instruction to close, and calling `close()` here as well would
+        /// re-enter `NSWindow::close` from inside its own gate.
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _w: &NSWindow) -> bool {
+            may_close()
+        }
+
+        /// The window IS closing — by any route, including our own `close()`.
+        ///
+        /// Idempotent, because `close()` empties the slot before it calls
+        /// `NSWindow::close` and this handler then runs synchronously inside
+        /// that call: on that path `teardown` returns `None` and there is
+        /// nothing left to do. On the red `X` path it is the only thing that
+        /// runs, and without it `UI` keeps a closed window forever.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _n: &NSNotification) {
+            if let Some(ui) = teardown() {
+                release_later(ui);
+            }
+        }
+    }
+
     impl Target {
         #[unsafe(method(beckonFilter:))]
         fn on_filter(&self, _s: &AnyObject) {
@@ -663,9 +720,7 @@ define_class!(
 
         #[unsafe(method(beckonClose:))]
         fn on_close(&self, _s: &AnyObject) {
-            let mut may = true;
-            with_cb(|cb| may = (cb.on_close_request)());
-            if may {
+            if may_close() {
                 close();
             }
         }
@@ -1029,19 +1084,85 @@ pub fn open_existing() -> bool {
     true
 }
 
-fn close() {
-    // **Before the state is taken**, because `stop_recording` reads
-    // `controls()` to put the caption back -- and because a tap that
-    // swallows every keystroke must not outlive the window that armed it.
-    // `end_capture` is idempotent, so the other six callers cost nothing.
+/// May the window close now?
+///
+/// The unsaved-edits prompt lives behind `on_close_request`, and this is the
+/// one place it is asked. Both ways out — the command bar's `Close` and the
+/// title bar's red `X` — call it, so a `Cancel` means the same thing from
+/// either, and neither can be the route that skips the question.
+///
+/// `true` when no callbacks are installed: there is then no model, so there
+/// are no edits to lose, and refusing would strand a window nobody can shut.
+fn may_close() -> bool {
+    let mut may = true;
+    with_cb(|cb| may = (cb.on_close_request)());
+    may
+}
+
+/// Forget the window, WITHOUT closing it.
+///
+/// Returns the state instead of dropping it, because the caller is what
+/// knows whether AppKit is currently standing on those objects — see
+/// `release_later`. Idempotent: a second call answers `None`, which is what
+/// makes the `close()` / `windowWillClose:` pair safe to run in either order.
+///
+/// **`stop_recording` is the first thing it does, and this function is where
+/// it belongs rather than in `close()`.** A `CGEventTap` that swallows every
+/// keystroke must not outlive the window that armed it, and the title bar's
+/// red `X` never reaches `close()` at all — it arrives at `windowWillClose:`,
+/// which calls only this. Put it one level up and the one exit route a user
+/// is most likely to take is the one that leaves the keyboard captured, with
+/// nothing on screen to say so and no `Stop` button left to press.
+///
+/// It runs **before** the state is taken because `stop_recording` reads
+/// `controls()` to put the `Record` caption back; afterwards the slot is
+/// empty and it would be a silent no-op. `end_capture` is idempotent, so the
+/// other callers cost nothing.
+#[must_use]
+fn teardown() -> Option<Ui> {
     stop_recording();
-    // Take the state out FIRST, then close. `NSWindow::close` runs the
-    // window delegate synchronously, and anything that re-enters must find
-    // the slot empty rather than borrowed.
     let ui = UI.with(|u| u.borrow_mut().take());
     CB.with(|c| *c.borrow_mut() = None);
-    if let Some(ui) = ui {
+    ui
+}
+
+/// Release the window's AppKit objects at the end of the current event
+/// rather than here.
+///
+/// `Ui` owns the ONLY strong reference to both roots: `Controls::window` is
+/// a `Retained` and — since `setReleasedWhenClosed(false)` — nothing else
+/// retains the window, while `NSWindow::setDelegate` is a documented **weak**
+/// property, so `Ui::_target` is the only thing keeping the delegate alive.
+///
+/// Dropping that pair inline would deallocate them from inside a frame that
+/// is still using them: `windowWillClose:` is a method ON the delegate, sent
+/// from inside `-[NSWindow close]`, and the `Close` button that starts the
+/// other route is a subview of the content view the window owns — so the
+/// button's own action would return into freed memory. Handing both to the
+/// autorelease pool costs two slots and removes the whole class of failure.
+///
+/// The pool is `[NSApp run]`'s, one per event; see the `serve` note in
+/// `CLAUDE.md` for why that loop and not Carbon's.
+fn release_later(ui: Ui) {
+    let _ = Retained::autorelease_ptr(ui.c.window.clone());
+    let _ = Retained::autorelease_ptr(ui._target.clone());
+    drop(ui);
+}
+
+/// Close the window from our side — the command bar's `Close`, and nothing
+/// else.
+///
+/// **`may_close` is the caller's job**, because AppKit asks that question
+/// itself on the routes it owns (`windowShouldClose:`) and asking twice
+/// would prompt twice.
+fn close() {
+    // Take the state out FIRST, then close. `NSWindow::close` runs
+    // `windowWillClose:` synchronously, and that handler must find the slot
+    // empty rather than borrowed — with the slot already empty it becomes a
+    // no-op and this function stays the single owner of the teardown.
+    if let Some(ui) = teardown() {
         ui.c.window.close();
+        release_later(ui);
     }
 }
 
@@ -1403,6 +1524,20 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             .unwrap_or_else(|| paths.config.display().to_string());
         window.setTitle(&NSString::from_str(&format!("beckon - {name}")));
         window.setContentView(Some(&root));
+        // **The single highest-value line in this function.** A window built
+        // with `initWithContentRect:` defaults to `releasedWhenClosed = YES`,
+        // so AppKit releases it on close — while `Controls::window` is a
+        // `Retained`, i.e. a +1 this module still owns and will release
+        // again. That is an over-release, and the object it frees underneath
+        // is one `serve` keeps a pointer to: closing the settings window
+        // takes the whole daemon with it. `NSWindow::windowWithContentViewController`
+        // sets this to NO for exactly the same reason; we do it by hand
+        // because we build the window ourselves.
+        window.setReleasedWhenClosed(false);
+        // The delegate, so the red `X` reaches the same code the `Close`
+        // button does. **Weak** — the window does not retain it, which is why
+        // `Ui::_target` exists and why `release_later` has to hold it up.
+        window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         // **Set the size deliberately, and do not let AppKit restore one.**
         //
         // Measured 2026-08-16 with `examples/settings_drive.rs`: the window
@@ -1975,4 +2110,103 @@ fn caps_checked_now() -> bool {
 }
 fn caps_hold_now() -> Chord {
     UI.with(|u| u.borrow().as_ref().map(|x| x.caps_hold).unwrap_or_default())
+}
+
+/// **Almost nothing in this file is testable here, and that is a fact about
+/// the platform rather than an omission.** Every function above touches an
+/// `NSWindow`, an `NSTableView` or a `Retained`, and this crate's tests run
+/// in a process with no window server and — measured, see `CLAUDE.md` — no
+/// Aqua session to put one in. `examples/settings_drive.rs` and
+/// `examples/settings_probe.rs` are the layer that can answer anything about
+/// what is on screen, and they have to be run by a person in a real session.
+///
+/// What IS reachable is the pair of decisions the close routes share, because
+/// both are plain thread-local logic with no AppKit in them. That is exactly
+/// the half worth pinning: the defect these tests exist for was one route
+/// answering a question the other route never asked.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `Callbacks` whose `on_close_request` answers `may`, and whose other
+    /// seventeen fields do nothing.
+    ///
+    /// Spelled as a complete literal with no `..`, the same way
+    /// `examples/settings_probe.rs` is: a new field in `beckon-core` should
+    /// be a hard error here rather than something this test silently keeps
+    /// answering the old way.
+    fn callbacks(may: bool, seen: std::rc::Rc<std::cell::Cell<u32>>) -> Callbacks {
+        Callbacks {
+            on_select: Box::new(|_| {}),
+            on_mark: Box::new(|_, _| {}),
+            on_edit_combo: Box::new(|_| {}),
+            on_probe_shortcut: Box::new(|_| {}),
+            on_edit_app: Box::new(|_| {}),
+            on_filter: Box::new(|_| {}),
+            on_add: Box::new(|| {}),
+            on_remove: Box::new(|| {}),
+            on_apply: Box::new(|| {}),
+            on_caps: Box::new(|_| {}),
+            on_caps_tap: Box::new(|_| {}),
+            on_caps_hold: Box::new(|_| {}),
+            on_open_file: Box::new(|| {}),
+            on_catalog: Box::new(|_| {}),
+            on_reload_from_disk: Box::new(|| {}),
+            on_keep_mine: Box::new(|| {}),
+            on_close_request: Box::new(move || {
+                seen.set(seen.get() + 1);
+                may
+            }),
+            on_command: Box::new(|_| {}),
+        }
+    }
+
+    fn install(cb: Callbacks) {
+        CB.with(|c| *c.borrow_mut() = Some(cb));
+    }
+
+    /// The window is not open in a test process, and `may_close` must still
+    /// answer — otherwise a window that lost its callbacks could never be
+    /// shut by either route.
+    #[test]
+    fn a_close_request_with_no_callbacks_is_allowed() {
+        assert!(!is_open());
+        assert!(may_close());
+    }
+
+    /// The point of the whole change: the red `X` and the `Close` button run
+    /// this one function, so `Cancel` means the same thing from either.
+    #[test]
+    fn cancel_refuses_the_close_and_the_callbacks_survive_it() {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+        install(callbacks(false, seen.clone()));
+
+        assert!(!may_close(), "on_close_request said no");
+        // `with_cb` takes the callbacks OUT of the slot and puts them back.
+        // If it did not, a cancelled close would disarm every control in the
+        // window and the SECOND press would come back `true` — i.e. clicking
+        // Cancel once would make the next click discard the edits.
+        assert!(!may_close(), "and says no again");
+        assert_eq!(seen.get(), 2);
+    }
+
+    /// `teardown` is what the red `X` reaches through `windowWillClose:`.
+    /// Clearing `CB` is half its job: a window that has gone must stop being
+    /// able to answer for the model behind it.
+    #[test]
+    fn teardown_clears_the_callbacks_and_repeats_harmlessly() {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+        install(callbacks(false, seen.clone()));
+
+        // No `Ui` to hand back in a test process — the window was never
+        // built — but the callback slot is real and must be emptied.
+        assert!(teardown().is_none());
+        assert!(teardown().is_none(), "idempotent");
+        assert!(!is_open());
+
+        // With the callbacks gone the refusal is gone with them, and nothing
+        // ran a second time.
+        assert!(may_close());
+        assert_eq!(seen.get(), 0);
+    }
 }
