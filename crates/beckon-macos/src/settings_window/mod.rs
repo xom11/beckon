@@ -158,6 +158,10 @@ struct Controls {
     mod_super: Retained<NSButton>,
     mod_alt: Retained<NSButton>,
     mod_shift: Retained<NSButton>,
+    /// `Record` / `Stop` -- one button wearing two captions, exactly as
+    /// `IDC_RECORD` does on Windows. The caption IS the state, which is
+    /// why `end_capture` has to restore it from every exit path.
+    record: Retained<NSButton>,
     notes: Retained<NSTextField>,
     /// The row, not just its contents.
     ///
@@ -362,6 +366,83 @@ fn set_window_opacity(w: &NSWindow, pct: u8) {
     w.setAlphaValue(a);
 }
 
+// ---------------------------------------------------------------------------
+// Chord capture
+// ---------------------------------------------------------------------------
+
+/// Arm the tap and put the window into recording state.
+fn start_recording() {
+    let Some(c) = controls() else { return };
+    let sink: crate::caps_tap::CaptureSink = Box::new(on_capture);
+    match crate::caps_tap::begin_capture(sink) {
+        Ok(()) => {
+            c.record.setTitle(&NSString::from_str("Stop"));
+            c.notes
+                .setStringValue(&NSString::from_str(beckon_core::capture::HINT_ARMED));
+        }
+        Err(e) => {
+            // Input Monitoring is the usual one, and it is per-BINARY on this
+            // platform -- a fresh `cargo build` loses it. Saying so beats a
+            // button that does nothing.
+            c.notes.setStringValue(&NSString::from_str(&e));
+        }
+    }
+}
+
+/// **Idempotent, and called from every exit path.** The list below is the
+/// whole safety argument for holding a tap that swallows every keystroke:
+///
+/// - the `Stop` button
+/// - a page switch (`show_page`) -- **not** covered by any focus notification,
+///   because a tab click is a child-to-child focus move inside one window,
+///   and `Record` is a Shortcuts-page control, so switching doors takes the
+///   only visible way out of a recording off the screen
+/// - the window closing, and being destroyed
+/// - `Quit` from the menu bar, which never reaches a close handler
+///
+/// Windows learned each of these separately; they are ported rather than
+/// rediscovered.
+pub(crate) fn stop_recording() {
+    crate::caps_tap::end_capture();
+    let Some(c) = controls() else { return };
+    c.record.setTitle(&NSString::from_str("Record"));
+    // The notes line is `apply_state`'s to own; clearing it is the honest
+    // hand-back, and the next push rewrites it from the model. Leaving the
+    // last hint up would have the window claiming a recording that ended.
+    c.notes.setStringValue(&NSString::from_str(""));
+}
+
+/// One outcome from the tap, on the run loop's own thread.
+///
+/// Cheap on purpose: a `CGEventTap` whose callback overruns is disabled by
+/// the system, and `on_event` has to notice and re-enable it. Setting a
+/// caption and a hint is the whole budget.
+fn on_capture(outcome: beckon_core::capture::Outcome) {
+    use beckon_core::capture::Outcome;
+    let Some(c) = controls() else { return };
+
+    if let Some(text) = beckon_core::capture::hint(outcome, None) {
+        c.notes.setStringValue(&NSString::from_str(&text));
+    }
+
+    match outcome {
+        Outcome::Captured => {
+            // The chord is complete. Write it into the four boxes and the key
+            // list -- the typed path's own controls, so there is exactly one
+            // place a shortcut is spelled.
+            let combo = crate::caps_tap::captured_combo();
+            if let Some(spelled) = combo {
+                apply_combo_text(&spelled);
+                with_cb(|cb| (cb.on_probe_shortcut)(spelled.clone()));
+                with_cb(|cb| (cb.on_edit_combo)(spelled));
+            }
+            stop_recording();
+        }
+        Outcome::Cancelled | Outcome::Disarmed => stop_recording(),
+        _ => {}
+    }
+}
+
 /// Open a door.
 ///
 /// Three things happen and none is optional:
@@ -375,6 +456,10 @@ fn set_window_opacity(w: &NSWindow, pct: u8) {
 ///    empty bar is indistinguishable from the window ground, and reserving
 ///    it keeps one meaning for the content's bottom edge.
 fn show_page(p: Page) {
+    // **Before the unchanged-door guard would have been wrong**: a recording
+    // must end even when `show_page` is called for the door already open,
+    // because `Add` and the tab strip both route through here.
+    stop_recording();
     let Some(c) = controls() else { return };
     let now = UI.with(|u| u.borrow().as_ref().map(|x| x.page));
     UI.with(|u| {
@@ -546,6 +631,18 @@ define_class!(
         #[unsafe(method(beckonRemove:))]
         fn on_remove(&self, _s: &AnyObject) {
             with_cb(|cb| (cb.on_remove)());
+        }
+
+        /// One button, two captions. `Stop` is `Record` wearing the other
+        /// one, which is why the caption is read back rather than a flag
+        /// kept beside it -- two spellings of one state is how they drift.
+        #[unsafe(method(beckonRecord:))]
+        fn on_record(&self, _s: &AnyObject) {
+            if crate::caps_tap::is_capturing() {
+                stop_recording();
+            } else {
+                start_recording();
+            }
         }
 
         #[unsafe(method(beckonSave:))]
@@ -933,6 +1030,11 @@ pub fn open_existing() -> bool {
 }
 
 fn close() {
+    // **Before the state is taken**, because `stop_recording` reads
+    // `controls()` to put the caption back -- and because a tap that
+    // swallows every keystroke must not outlive the window that armed it.
+    // `end_capture` is idempotent, so the other six callers cost nothing.
+    stop_recording();
     // Take the state out FIRST, then close. `NSWindow::close` runs the
     // window delegate synchronously, and anything that re-enters must find
     // the slot empty rather than borrowed.
@@ -1135,6 +1237,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     for k in key_table() {
         key.addItemWithTitle(&NSString::from_str(&k.name));
     }
+    let record = push("Record", sel!(beckonRecord:), &target, mtm);
     let app = NSComboBox::new(mtm);
     unsafe {
         app.setTarget(Some(&*target));
@@ -1149,6 +1252,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             &mod_alt,
             &mod_shift,
             &key,
+            &record,
             &label("App", mtm),
             &app,
         ],
@@ -1341,6 +1445,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 mod_super,
                 mod_alt,
                 mod_shift,
+                record,
                 notes,
                 banner_row,
                 banner,
@@ -1416,6 +1521,26 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
+
+/// Write a chord into the four boxes and the key list.
+///
+/// **The same four `set_check` calls and the same `selectItemAtIndex`
+/// `apply_state` uses**, deliberately: `ComboView::key` is an INDEX into
+/// `key_table()`, and a second way of writing it is a second place that
+/// index can be got wrong. `CBS_SORT`'s macOS equivalent does not exist
+/// here, but the index discipline is the same.
+fn apply_combo_text(spelled: &str) {
+    let Some(c) = controls() else { return };
+    let v = combo_view(spelled);
+    set_check(&c.mod_ctrl, v.ctrl);
+    set_check(&c.mod_super, v.super_);
+    set_check(&c.mod_alt, v.alt);
+    set_check(&c.mod_shift, v.shift);
+    match v.key {
+        Some(i) => c.key.selectItemAtIndex(i as isize),
+        None => c.key.selectItemAtIndex(-1),
+    }
+}
 
 fn set_check(b: &NSButton, on: bool) {
     b.setState(if on { 1 } else { 0 });
