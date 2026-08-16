@@ -93,9 +93,11 @@ pub(super) fn build(
         mark.setContentView(Some(&glyph));
     }
     w::pin_height(&mark, 34.0);
-    w::pin_min_width(&mark, 34.0);
+    w::pin_exact_width(&mark, 34.0);
+    let mark_row = w::centred(&mark, mtm);
 
     let name = w::heading("beckon", mtm);
+    name.setAlignment(objc2_app_kit::NSTextAlignment::Center);
 
     let (build_row, build) = value_row("Build", sel!(beckonCopyBuild:), target, mtm);
     let (loc_row, location) = value_row("Location", sel!(beckonCopyLocation:), target, mtm);
@@ -120,7 +122,7 @@ pub(super) fn build(
 
     let inner = w::vstack(
         &[
-            &*mark as &NSView,
+            &*mark_row as &NSView,
             &name,
             &w::divider(mtm),
             &build_row,
@@ -134,7 +136,15 @@ pub(super) fn build(
         10.0,
         mtm,
     );
-    inner.setAlignment(objc2_app_kit::NSLayoutAttribute::Width);
+
+    // The disclosure is the one child a `Width`-aligned column does not
+    // stretch on its own -- it came out indented a third of the way across
+    // the card. Pinned to the column instead of argued with.
+    w::pin_width_to(&access, &inner, 0.0);
+    // The name is centred by its own text alignment, which only means
+    // anything once the label is as wide as the card — a label sized to its
+    // text has no room to centre in, and the column put it hard right.
+    w::pin_width_to(&name, &inner, 0.0);
 
     let card = w::card(&inner, mtm);
     let view: Retained<NSView> = card.into_super();

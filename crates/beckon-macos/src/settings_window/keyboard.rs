@@ -156,7 +156,10 @@ pub(super) fn build(
         10.0,
         mtm,
     );
-    inner.setAlignment(objc2_app_kit::NSLayoutAttribute::Width);
+
+    // Same as About's disclosure: a wrapping label is the child a
+    // `Width`-aligned column leaves at its own width.
+    w::pin_width_to(&note, &inner, 0.0);
 
     let view: Retained<NSView> = w::card(&inner, mtm).into_super();
 

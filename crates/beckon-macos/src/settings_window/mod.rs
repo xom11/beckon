@@ -159,6 +159,14 @@ struct Controls {
     mod_alt: Retained<NSButton>,
     mod_shift: Retained<NSButton>,
     notes: Retained<NSTextField>,
+    /// The row, not just its contents.
+    ///
+    /// **Hiding the three children is not enough**: the `NSStackView` that
+    /// holds them kept 70 points of height with all of them hidden, so every
+    /// Shortcuts screenshot had a band of empty window between the tab strip
+    /// and the first card. Photographed 2026-08-16. `banner_row` was not in
+    /// this struct at all, which is why nothing could hide it.
+    banner_row: Retained<NSStackView>,
     banner: Retained<NSTextField>,
     banner_reload: Retained<NSButton>,
     banner_keep: Retained<NSButton>,
@@ -1018,9 +1026,13 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // App leads, Shortcut follows: the app is what the user is looking for.
     for (id, title, width) in [
         (COL_TICK, "", 20.0),
-        (COL_APP, "App", 180.0),
-        (COL_COMBO, "Shortcut", 160.0),
-        (COL_STATUS, "", 90.0),
+        (COL_APP, "App", 170.0),
+        // Wide enough for the longest chord this window can show:
+        // `Ctrl + Cmd + Option + Shift + PgDn`. At 160 it truncated a plain
+        // four-modifier binding to `Ctrl + Cmd + Option + S...`, which hides
+        // exactly the character that says WHICH shortcut it is.
+        (COL_COMBO, "Shortcut", 250.0),
+        (COL_STATUS, "", 80.0),
     ] {
         let col = {
             NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &NSString::from_str(id))
@@ -1193,6 +1205,19 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // the whole four-door illusion rests on it.
         root.setDetachesHiddenViews(true);
         root.setSpacing(10.0);
+        // **Before the children are added, not after.** Setting `alignment`
+        // on an `NSStackView` that already has arranged subviews does not
+        // re-apply to them: the strip, every door and the command bar came out
+        // TRAILING-aligned, each ending at x=628 with a ragged left edge —
+        // 322 wide at 306, 494 at 134, 616 at 12. Photographed 2026-08-16
+        // (`macos-door-shortcuts.png`, first set) and confirmed against the
+        // frame dump in `settings_drive`, where the three trailing edges
+        // agreeing to the pixel is what named the cause.
+        //
+        // The inner `vstack`s never had the bug because `widgets::vstack`
+        // sets alignment before it adds anything, which is why only the
+        // outermost column was wrong and the cards inside each door were not.
+        root.setAlignment(NSLayoutAttribute::Width);
         root.setEdgeInsets(objc2_foundation::NSEdgeInsets {
             top: 12.0,
             left: 12.0,
@@ -1208,8 +1233,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             &*bar,
         ] {
             root.addArrangedSubview(v);
+            // The stack's own `alignment` does not do this -- see
+            // `widgets::pin_width_to`, which carries the measurement.
+            widgets::pin_width_to(v, &root, 12.0);
         }
-        root.setAlignment(NSLayoutAttribute::Width);
     }
 
     let window = unsafe {
@@ -1280,6 +1307,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 mod_alt,
                 mod_shift,
                 notes,
+                banner_row,
                 banner,
                 banner_reload,
                 banner_keep,
@@ -1709,7 +1737,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.key.setEnabled(has_row);
         x.app.setEnabled(has_row);
 
-        // The banner contributes no height when hidden.
+        // The banner contributes no height when hidden -- which needs the
+        // ROW hidden, not only what is in it.
+        x.banner_row.setHidden(!external_change);
         x.banner.setHidden(!external_change);
         x.banner_reload.setHidden(!external_change);
         x.banner_keep.setHidden(!external_change);

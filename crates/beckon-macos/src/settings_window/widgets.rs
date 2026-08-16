@@ -74,6 +74,11 @@ pub(super) fn wrapping(text: &str, mtm: MainThreadMarker) -> Retained<NSTextFiel
     }
     l.setFont(Some(&NSFont::systemFontOfSize(11.0)));
     l.setPreferredMaxLayoutWidth(CARD_TEXT_WIDTH);
+    // Explicit, because a label that is stretched to the column's width by
+    // its stack still draws its text wherever its own alignment says: the
+    // Keyboard door's note came out starting a third of the way across the
+    // card. Photographed 2026-08-16.
+    l.setAlignment(NSTextAlignment::Left);
     // A paragraph must yield horizontally before anything else does: it can
     // answer a narrower window by growing taller, and a check box or a button
     // cannot.
@@ -165,8 +170,13 @@ pub(super) fn slider(
 ) -> Retained<NSSlider> {
     let s = NSSlider::new(mtm);
     unsafe {
-        s.setMinValue(min);
+        // **Max before min.** `NSSlider` starts at 0..1, so `setMinValue(85)`
+        // on a slider whose max is still 1 leaves min above max, and the knob
+        // pins to one end whatever value is written afterwards: the System
+        // door showed `100%` beside a knob hard left. Photographed
+        // 2026-08-16, `macos-door-system.png`.
         s.setMaxValue(max);
+        s.setMinValue(min);
         s.setTarget(Some(target));
         s.setAction(Some(action));
         // Continuous: the window clamps and forwards on every change, and
@@ -209,7 +219,12 @@ pub(super) fn vstack(
     s.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     s.setSpacing(spacing);
     s.setDistribution(NSStackViewDistribution::Fill);
-    s.setAlignment(NSLayoutAttribute::Leading);
+    // **`Width`, not `Leading`.** `Leading` left-aligns each child at its own
+    // intrinsic width, so a card sat at whatever width its widest row wanted
+    // and the window showed a wide empty margin beside every door —
+    // photographed 2026-08-16, `macos-door-shortcuts.png`. `Width` makes each
+    // child as wide as the column, which is what a card is.
+    s.setAlignment(NSLayoutAttribute::Width);
     // Same rule one axis over: a column hugs its content vertically, so the
     // slack lands where a caller puts it rather than in whichever child
     // happens to resist least.
@@ -335,6 +350,65 @@ pub(super) fn pin_height(v: &NSView, h: f64) {
         )
         .setActive(true);
     }
+}
+
+/// Make `v` exactly as wide as `other`, less `inset` on each side.
+///
+/// **This exists because `NSStackView`'s cross-axis `alignment` did not do
+/// it.** `setAlignment(NSLayoutAttribute::Width)` on the root column left
+/// every child TRAILING-aligned at its own intrinsic width — the strip 322
+/// wide at x=306, a door 494 at x=134, the command bar 616 at x=12, all three
+/// ending at 628 — whether it was set before the children were added or
+/// after. The ragged left edge is what the first photographs showed
+/// (`macos-door-shortcuts.png`, first set). The inner columns were never
+/// affected, so the property is specific to that stack rather than general,
+/// and a constraint says what was meant without depending on which reading of
+/// `alignment` this AppKit takes.
+pub(super) fn pin_width_to(v: &NSView, other: &NSView, inset: f64) {
+    v.setTranslatesAutoresizingMaskIntoConstraints(false);
+    v.widthAnchor()
+        .constraintEqualToAnchor_constant(&other.widthAnchor(), -2.0 * inset)
+        .setActive(true);
+}
+
+/// Pin a view to an exact width.
+///
+/// **Not `pin_min_width`.** A column that aligns by `Width` stretches its
+/// children, so a MINIMUM is only a floor and the About door's 34-point mark
+/// came out as a full-width blue bar. Photographed 2026-08-16
+/// (`macos-door-about.png`).
+pub(super) fn pin_exact_width(v: &NSView, w: f64) {
+    v.setTranslatesAutoresizingMaskIntoConstraints(false);
+    unsafe {
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            v,
+            NSLayoutAttribute::Width,
+            NSLayoutRelation::Equal,
+            None,
+            NSLayoutAttribute::NotAnAttribute,
+            1.0,
+            w,
+        )
+        .setActive(true);
+    }
+}
+
+/// A row that centres one view in the column's full width.
+///
+/// **The two springs are constrained to equal width.** A `Fill` stack with
+/// two low-priority spacers does not split the slack evenly — it gives it to
+/// one of them, and which one is not something to rely on: the About door's
+/// mark and name both ended up hard right. Photographed 2026-08-16
+/// (`macos-door-about.png`, second set). Saying "these two are the same
+/// width" is what centring actually means, so it is what is written.
+pub(super) fn centred(v: &NSView, mtm: MainThreadMarker) -> Retained<NSStackView> {
+    let left = spring(mtm);
+    let right = spring(mtm);
+    let row = hstack(&[&*left as &NSView, v, &*right], mtm);
+    left.widthAnchor()
+        .constraintEqualToAnchor(&right.widthAnchor())
+        .setActive(true);
+    row
 }
 
 /// Pin a view to a minimum width, so a value slot does not collapse to its

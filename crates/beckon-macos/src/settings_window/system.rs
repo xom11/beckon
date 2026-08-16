@@ -132,6 +132,12 @@ pub(super) fn build(
         mtm,
     );
     let log_row = row(&log_name, &[&log_value, &log_open, &log_reveal], mtm);
+    // Hidden until a push says otherwise. `apply` hides it whenever `serve`
+    // ran without `--log`, but the window is on screen before the first push
+    // — and an empty row carrying `Open` and `Reveal` beside no file name is
+    // exactly what that gap looked like. Photographed 2026-08-16,
+    // `macos-door-system.png`.
+    log_row.setHidden(true);
 
     let inner = w::vstack(
         &[
@@ -146,9 +152,6 @@ pub(super) fn build(
         10.0,
         mtm,
     );
-    // The stack fills the card, so every row's spring has the card's width to
-    // push against rather than the widest row's.
-    inner.setAlignment(objc2_app_kit::NSLayoutAttribute::Width);
 
     let card = w::card(&inner, mtm);
     let view: Retained<NSView> = card.into_super();
