@@ -1399,6 +1399,31 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         app.setAction(Some(sel!(beckonApp:)));
         app.setCompletes(true);
     }
+    // **Two rows, and the split is arithmetic rather than taste.** Measured
+    // on airm3 2026-08-17 at the window's own 640 pt, one row of these nine
+    // views wants about 700 pt, and `NSStackView` pays for the shortfall by
+    // compressing the view with the weakest hold on its width -- the App
+    // combo, which came out **2.0 pt wide**, with the `App` label clipped to
+    // `Ap` beside it. The frames, in screen coordinates inside a window at
+    // x=400 w=640:
+    //
+    //     Shortcut 54.5 | Ctrl 46 | Cmd 52.5 | Option 65 | Shift 52.5
+    //     | key 123.5 | Record 69 | App 26.5 | ComboBox 2.0
+    //
+    // macOS spends more width than Win32 on the same controls and cannot get
+    // it back: the modifier chips read `Cmd` and `Option` where Windows reads
+    // `Win` and `Alt` (`ModifierLabels::MAC`), and those words are the ones a
+    // Mac keyboard actually carries -- see the note on `ModifierLabels` about
+    // why they are words and not glyphs.
+    //
+    // Widening the window was the alternative and is worse: `WINDOW_WIDTH` is
+    // design §2's derived figure, the other three doors fit inside it today,
+    // and a width chosen to rescue one row would have to be defended on every
+    // door forever. Splitting costs one row of height on ONE door.
+    //
+    // The split is also where the meaning already divides: the chord is one
+    // decision and the app is another, which is exactly the pair a row of the
+    // list shows in two columns.
     let editor_row = hstack(
         &[
             &label("Shortcut", mtm),
@@ -1408,11 +1433,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             &mod_shift,
             &key,
             &record,
-            &label("App", mtm),
-            &app,
         ],
         mtm,
     );
+    let app_row = hstack(&[&label("App", mtm) as &NSView, &app], mtm);
 
     // --- notes ------------------------------------------------------------
     let notes = label("", mtm);
@@ -1452,7 +1476,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         mtm,
     );
     let editor_card = widgets::card(
-        &widgets::vstack(&[&*editor_row as &NSView, &*notes], 8.0, mtm),
+        &widgets::vstack(&[&*editor_row as &NSView, &*app_row, &*notes], 8.0, mtm),
         mtm,
     );
     let page_shortcuts: Retained<NSView> = widgets::vstack(
