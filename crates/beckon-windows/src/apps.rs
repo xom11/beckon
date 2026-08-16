@@ -366,6 +366,14 @@ fn parse_lnk(path: &Path) -> Option<InstalledAppInfo> {
 /// Resolve a user-supplied id against installed Windows apps.
 pub fn resolve(id: &str, installed: &[InstalledAppInfo]) -> Option<ResolvedMatch> {
     let needle = normalize(id);
+    // Tier 4 below is `contains`, and an empty needle is a substring of every
+    // name — so without this guard an id that is all format marks (a lone
+    // U+200E survives every `trim()` at the CLI and config boundaries)
+    // resolves to whichever app sorts first and launches it. The two lazy
+    // resolvers in this file already guard; this one is the gap.
+    if needle.is_empty() {
+        return None;
+    }
 
     // 1. Name exact match.
     if let Some(app) = installed.iter().find(|a| normalize(&a.name) == needle) {
@@ -615,6 +623,17 @@ mod tests {
         let m = resolve("Brave", &installed).unwrap();
         assert_eq!(m.match_type, MatchType::InstalledName);
         assert_eq!(m.name, "Brave");
+    }
+
+    /// An id that normalizes to nothing must not resolve. U+200E is a format
+    /// mark rather than whitespace, so it survives every `trim()` on the way
+    /// in, and tier 4 is `contains` — which every name satisfies.
+    #[test]
+    fn an_id_that_normalizes_to_nothing_resolves_to_nothing() {
+        let installed = vec![app("Brave", "brave.exe"), app("Claude", "claude.exe")];
+        assert_eq!(normalize("\u{200E}"), "");
+        assert!(resolve("\u{200E}", &installed).is_none());
+        assert!(resolve("", &installed).is_none());
     }
 
     #[test]
