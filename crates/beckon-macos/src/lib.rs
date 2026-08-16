@@ -38,6 +38,8 @@ pub mod settings_window;
 // too, so a mistake here is caught; the shape below is what keeps it from
 // being made.
 #[cfg(target_os = "macos")]
+pub mod prefs;
+#[cfg(target_os = "macos")]
 pub mod shell;
 #[cfg(target_os = "macos")]
 mod state;
