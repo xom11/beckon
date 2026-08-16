@@ -80,6 +80,23 @@
 //!   over, and it caught two false leads here.
 //! - `FIRED` / `NOT-FIRED` is the answer, and it is only an answer about a
 //!   *real* click when the press method was `hid` or `external`.
+//!
+//! ## The default mode cannot produce the strong claim, so it says so
+//!
+//! Under `PRESS=post` a `carbon` / `NOT-FIRED` pair is **true by
+//! construction**: the event goes on `NSApplication`'s own queue, only
+//! `[NSApp run]` drains that queue, and `isRunning` is printed as `false` two
+//! lines earlier. That run restates `isRunning`; it does not observe a click.
+//! It is still worth having — it is the cheapest possible demonstration that
+//! `NSApp` is not running under the Carbon loop, needs no permission and no
+//! second process, and the `nsapp` leg of the same pair is a real positive
+//! control — but the strong claim, *every control in the settings window was
+//! decoration*, is about a **real click** and needs `PRESS=hid` or
+//! `PRESS=external`.
+//!
+//! So `PRESS` is printed with the mode's reach beside it, and every `VERDICT`
+//! line is worded for the mode that produced it. A reader who takes a `post`
+//! verdict for the strong one has to ignore a sentence to do it.
 
 fn main() {
     #[cfg(not(target_os = "macos"))]
@@ -172,6 +189,36 @@ mod mac {
         }
     }
 
+    /// Which press method this run used. Read from the environment in each
+    /// place that needs it rather than threaded through, because one of them
+    /// is an Objective-C method the probe does not get to pass arguments to.
+    fn press_mode() -> String {
+        match std::env::var("PRESS").unwrap_or_default().as_str() {
+            "hid" => "hid".into(),
+            "external" => "external".into(),
+            // Anything else, including unset, is the default.
+            _ => "post".into(),
+        }
+    }
+
+    /// How far a verdict from this press method reaches.
+    ///
+    /// **`post` is narrower than it looks, and this is the whole reason the
+    /// mode is printed.** It enqueues onto `NSApplication`'s own queue, which
+    /// only `[NSApp nextEventMatchingMask:]` inside `[NSApp run]` drains — so
+    /// under a loop where `isRunning` is false it is undelivered *by
+    /// construction*, and a `carbon` / `NOT-FIRED` pair from it restates the
+    /// `isRunning=false` printed two lines earlier rather than observing
+    /// anything about a click. `hid` and `external` go through the window
+    /// server, which is the path a real click takes, and only those two can
+    /// carry the strong claim.
+    fn reach(mode: &str) -> &'static str {
+        match mode {
+            "hid" | "external" => "a real window-server click",
+            _ => "NSApplication's own event queue, NOT a real click",
+        }
+    }
+
     define_class!(
         // SAFETY:
         // - NSObject has no subclassing requirements.
@@ -187,7 +234,16 @@ mod mac {
             #[unsafe(method(beckonHit:))]
             fn hit(&self, _s: Option<&AnyObject>) {
                 say("FIRED: the button's action ran");
-                say("VERDICT: Cocoa controls DO receive events under this loop");
+                let mode = press_mode();
+                say(&match mode.as_str() {
+                    "hid" | "external" => "VERDICT: Cocoa controls DO receive a real \
+                                           window-server click under this loop"
+                        .to_string(),
+                    _ => "VERDICT: this loop DOES drain NSApplication's own event queue. \
+                          A real click was not tested -- re-run with PRESS=hid or \
+                          PRESS=external for that."
+                        .to_string(),
+                });
                 // Leave promptly so the driver never has to kill it, and so a
                 // hung exit is distinguishable from a hung loop.
                 std::process::exit(0);
@@ -241,6 +297,12 @@ mod mac {
             "POLICY: {}",
             if regular { "Regular" } else { "Accessory" }
         ));
+        // Printed beside the mode, not left to the reader to remember: the
+        // whole difference between "this loop delivers no clicks" and "this
+        // loop does not run NSApp" is which press method produced the line
+        // below, and the two readings support different decisions.
+        let press = press_mode();
+        say(&format!("PRESS: {press} -- measures {}", reach(&press)));
 
         let target: Retained<Probe> = unsafe { msg_send![Probe::alloc(mtm), init] };
 
@@ -333,7 +395,7 @@ mod mac {
                     let at = { btn.convertPoint_toView(centre, None) };
                     let wnum = win.windowNumber();
 
-                    let how = std::env::var("PRESS").unwrap_or_default();
+                    let how = press_mode();
 
                     if how == "external" {
                         // Publish where to click and wait. The injector is a
@@ -407,14 +469,24 @@ mod mac {
                 // `external` has to wait for a second process to be launched,
                 // read the coordinates and post; the in-process routes fire
                 // on the next turn or never.
-                let budget = if std::env::var("PRESS").as_deref() == Ok("external") {
-                    20
-                } else {
-                    8
-                };
+                let budget = if press_mode() == "external" { 20 } else { 8 };
                 if n >= budget {
-                    say("NOT-FIRED: the click never reached the button");
-                    say("VERDICT: this loop does NOT deliver mouse events to Cocoa controls");
+                    say("NOT-FIRED: the press never reached the button");
+                    let mode = press_mode();
+                    say(&match mode.as_str() {
+                        "hid" | "external" => "VERDICT: this loop does NOT deliver a real \
+                                               window-server click to Cocoa controls"
+                            .to_string(),
+                        // Deliberately weaker than the line it replaced. Under
+                        // `post` this is a restatement of `isRunning=false`,
+                        // and reading it as "a click fails" is the one wrong
+                        // conclusion this probe can be made to support.
+                        _ => "VERDICT: this loop does NOT drain NSApplication's own event \
+                              queue, which is what isRunning above already says. That is \
+                              NOT yet evidence that a real click fails -- re-run with \
+                              PRESS=hid or PRESS=external for that."
+                            .to_string(),
+                    });
                     std::process::exit(4);
                 }
             }),

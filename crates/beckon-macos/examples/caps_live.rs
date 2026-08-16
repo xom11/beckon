@@ -15,7 +15,25 @@
 //! | silent | silent | the alias does not work |
 //! | **FIRED** | * | **something else on this machine already maps Caps** — the result says nothing about beckon |
 //!
-//! The third row is not hypothetical here. This machine runs kanata, and
+//! ## The `off` run needs a control of its own, and now has two
+//!
+//! A silent `off` run reads as *nothing else maps Caps*. It has a second
+//! reading that is far more common and looks identical: **this process cannot
+//! type at all.** `CGEventPost` returns `void` and does nothing whatever when
+//! the caller is not Accessibility-trusted, which is the state a
+//! freshly-`cargo build`-ed binary is always in.
+//!
+//! 1. `AXIsProcessTrusted()` is printed first and the probe REFUSES when it
+//!    is false — `hid_key.rs`'s rule, for the same reason and in both modes:
+//!    an `on` run that cannot inject reports *the alias did NOT work*.
+//! 2. After the Caps sequence, every run posts the chord **directly** —
+//!    `ctrl+cmd+opt+T` with the modifiers as real key events — and that must
+//!    fire. It is the positive control for the whole apparatus: injector,
+//!    registration and hotkey delivery, measured in the same session as the
+//!    result they carry. `DIRECT CONTROL: did not fire` means the run proved
+//!    nothing, in either mode.
+//!
+//! The third row of the table is not hypothetical here. This machine runs kanata, and
 //! `~/.nix/configs/kanata/main.kbd` maps `caps` to
 //! `tap-hold 200 200 esc (multi lmet lctl lalt)` — Caps held IS
 //! Cmd+Ctrl+Option, which is beckon's own hold chord. With kanata running,
@@ -59,28 +77,74 @@ mod mac {
             virtual_key: u16,
             key_down: bool,
         ) -> *mut c_void;
+        fn CGEventSetFlags(event: *mut c_void, flags: u64);
         fn CGEventPost(tap: u32, event: *mut c_void);
     }
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFRelease(cf: *const c_void);
     }
+    #[link(name = "ApplicationServices", kind = "framework")]
+    unsafe extern "C" {
+        fn AXIsProcessTrusted() -> bool;
+    }
 
     const SESSION_TAP: u32 = 1;
     const K_CAPSLOCK: u16 = 0x39;
     const K_T: u16 = 0x11;
+    // The modifier keys themselves, from HIToolbox Events.h.
+    const K_CONTROL: u16 = 0x3B;
+    const K_OPTION: u16 = 0x3A;
+    const K_COMMAND: u16 = 0x37;
+    // `CGEventFlags`, from CGEventTypes.h.
+    const F_CONTROL: u64 = 0x0004_0000;
+    const F_ALTERNATE: u64 = 0x0008_0000;
+    const F_COMMAND: u64 = 0x0010_0000;
 
     static FIRED: AtomicBool = AtomicBool::new(false);
 
     fn post(code: u16, down: bool) {
+        post_with(code, down, 0);
+    }
+
+    fn post_with(code: u16, down: bool, flags: u64) {
         unsafe {
             let ev = CGEventCreateKeyboardEvent(std::ptr::null(), code, down);
             if ev.is_null() {
                 say("CGEventCreateKeyboardEvent returned null");
                 return;
             }
+            CGEventSetFlags(ev, flags);
             CGEventPost(SESSION_TAP, ev);
             CFRelease(ev as *const c_void);
+        }
+    }
+
+    /// Press `ctrl+cmd+opt+T` the way a hand does — the positive control.
+    ///
+    /// **The modifiers are pressed as REAL KEYS, not as flags on `T`.**
+    /// Measured 2026-08-16 and written up in CLAUDE.md: a single event
+    /// carrying `CGEventSetFlags(ctrl|opt|shift)` posts successfully and fires
+    /// no `RegisterEventHotKey` chord under EITHER loop. The system tracks
+    /// modifier state from the modifier keys' own events; the flags field
+    /// describes an event, it does not hold a key down.
+    fn post_chord_directly() {
+        let pressed = [
+            (K_CONTROL, F_CONTROL),
+            (K_OPTION, F_ALTERNATE),
+            (K_COMMAND, F_COMMAND),
+        ];
+        let all = F_CONTROL | F_ALTERNATE | F_COMMAND;
+        let mut acc = 0u64;
+        for (k, f) in pressed {
+            acc |= f;
+            post_with(k, true, acc);
+        }
+        post_with(K_T, true, all);
+        post_with(K_T, false, all);
+        for (k, f) in pressed.iter().rev() {
+            acc &= !f;
+            post_with(*k, false, acc);
         }
     }
 
@@ -95,6 +159,20 @@ mod mac {
         if manager != "Aqua" {
             say("REFUSING: not an Aqua session.");
             std::process::exit(3);
+        }
+
+        // **Both modes, not just `off`.** An untrusted `CGEventPost` does
+        // nothing and says nothing, so an `on` run reports *the alias did NOT
+        // work* and an `off` run reports *nothing else maps Caps* -- two
+        // confident conclusions from one process that never typed anything.
+        // A fresh `cargo build` is always in this state, because the grant is
+        // bound to the binary's code signature.
+        let trusted = unsafe { AXIsProcessTrusted() };
+        say(&format!("AXIsProcessTrusted  : {trusted}"));
+        if !trusted {
+            say("REFUSING: this process cannot post events, so neither mode would be");
+            say("measuring beckon. Grant Accessibility to whatever launched it.");
+            std::process::exit(6);
         }
 
         let mode = std::env::args().nth(1).unwrap_or_default();
@@ -161,6 +239,9 @@ mod mac {
         say("READY");
 
         let mut n = 0u32;
+        // The Caps result, read and latched before the positive control is
+        // allowed to touch `FIRED`.
+        let mut via_caps = false;
         beckon_macos::hotkey::add_tick(
             0.8,
             Box::new(move || {
@@ -180,9 +261,30 @@ mod mac {
                         post(K_CAPSLOCK, false);
                     }
                     6 => {
+                        // Latch the answer, then reuse `FIRED` for the
+                        // control. Two flags would drift; one flag read at a
+                        // known point cannot.
+                        via_caps = FIRED.swap(false, Ordering::SeqCst);
+                        say(&format!("via Caps: hotkey fired = {via_caps}"));
+                        say("DIRECT CONTROL: pressing ctrl+cmd+opt+T with no Caps at all");
+                        post_chord_directly();
+                    }
+                    8 => {
                         say("");
-                        let fired = FIRED.load(Ordering::SeqCst);
-                        say(&format!("RESULT: hotkey fired = {fired}"));
+                        let control = FIRED.load(Ordering::SeqCst);
+                        say(&format!("DIRECT CONTROL: hotkey fired = {control}"));
+                        if !control {
+                            say("");
+                            say("INCONCLUSIVE: the chord this probe registered does");
+                            say("not fire even when pressed directly, so nothing above");
+                            say("is about Caps. Either the injection is not reaching the");
+                            say("window server or the registration never took -- and a");
+                            say("silent Caps result looks the same either way.");
+                            beckon_macos::caps_tap::uninstall();
+                            std::process::exit(7);
+                        }
+                        let fired = via_caps;
+                        say(&format!("RESULT: hotkey fired via Caps = {fired}"));
                         say(match (mode.as_str(), fired) {
                             ("on", true) => {
                                 "VERDICT: Caps+T reached the chord. Read against the `off` run."
@@ -193,8 +295,9 @@ mod mac {
                                  measure beckon's alias until it is stopped"
                             }
                             ("off", false) => {
-                                "VERDICT: nothing else maps Caps, so an `on` run that fires is \
-                                 beckon's doing"
+                                "VERDICT: nothing else maps Caps -- and the direct control DID \
+                                 fire, so this is silence rather than blindness. An `on` run \
+                                 that fires is beckon's doing"
                             }
                             _ => unreachable!(),
                         });

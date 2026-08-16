@@ -2358,10 +2358,40 @@ Reasonable next-session order:
   drains the queue that routes a mouse event to a window and thence to a
   view. **Every control in the window was decoration.**
 
+  **NARROWED 2026-08-17: that pair was measured with the probe's DEFAULT press
+  method, and the default cannot produce the strong claim.** `PRESS=post` is
+  `postEvent:atStart:`, which enqueues onto `NSApplication`'s **own** queue —
+  drained only by `[NSApp nextEventMatchingMask:]` from inside `[NSApp run]`.
+  So the `carbon` leg's `it never ran` follows from the `isRunning=false`
+  printed beside it *by construction*; it is a restatement, not an
+  observation about a click. The probe was honest about this in its module
+  doc and silent about it in its OUTPUT, which is the half a reader quotes.
+  It now prints `PRESS: <mode> -- measures …` and words every `VERDICT` line
+  for the mode that produced it.
+
+  What each half rests on, kept apart because they are not the same strength:
+
+  - *Controls work under `[NSApp run]`* — **measured with real events.** The
+    `nsapp` leg is a genuine positive control (the same enqueue, delivered),
+    and `testing/macos_settings_drive.lua` later drove the shipped window with
+    `hs.eventtap`, which is the window server rather than an in-process queue.
+  - *They were decoration under the Carbon loop* — **inferred from the
+    mechanism**, plus the tautological `post` leg. A real click through that
+    loop has not been run. `PRESS=hid` or `PRESS=external` is the run that
+    would carry it, and both need an Accessibility grant for whatever launches
+    the probe.
+
+  The inference is a strong one and nothing here disputes the conclusion —
+  `sendEvent:` is the only thing that routes a mouse event to a view, and
+  nothing was calling it. But this file's own rule is that reasoning and
+  measurement are labelled differently, and this entry had them labelled the
+  same.
+
   The Carbon loop survives as `HotkeyManager::run_carbon_event_loop_for_probe`
   and nothing in beckon calls it. Deleting it would make the finding above
   unfalsifiable, which is the failure mode three other entries in this file
-  are about.
+  are about — and would also delete the only way to ever run the `hid` leg
+  that upgrades it.
 
   **The hotkey half is measured too, indirectly**, by
   `examples/carbon_queue_probe.rs` with the Carbon loop as the baseline in
@@ -2427,9 +2457,58 @@ Reasonable next-session order:
     would change what `beckon installed` prints — a different surface with a
     different job, and now the control (`examples/catalog_probe.rs`).
 
+    **CORRECTED 2026-08-17: that control was itself over-claiming, in the same
+    direction as the defect it watches for.** It answered with its own
+    `eq_ignore_ascii_case` over `installed_app_names()` while `row_condition`
+    had grown a **substring tier** — the `Certainty::Guess` tier
+    `check --resolve` passes deliberately. Measured on airm3 over the same
+    109-name catalog in one session: the copied rule prints `Settings MISSING`
+    where the window prints it present with *"Matches \"System Settings\" by
+    substring"*. A control whose rule is a stale copy of the rule under test
+    reports a defect that is not there and, worse, would keep reporting it
+    after the real one was fixed. It now builds a one-row `Model` and reads
+    `ControlState::items[0].flag` — the literal word the window draws.
+
   The tray MENU was never broken. Clicking the icon opens it; `Settings…`
   works. There is no double-click-to-open path on macOS, which is why the
   window seemed unreachable.
+
+- **The settings window used to SEGFAULT, and the minimal reproducer is two
+  steps, not three.** Measured on airm3 2026-08-17 through
+  `testing/macos_settings_drive.lua`, control first — `0.9.6 (45298e9)`, the
+  commit immediately before the lifecycle fix, verified to contain zero
+  occurrences of `setReleasedWhenClosed` / `NSWindowDelegate`:
+
+  ```text
+  control 45298e9   PASS close #1 by the X   FAIL reopen from the tray (0 windows)   process GONE
+  fixed   51070f7   PASS close #1   PASS reopen   PASS close #2   PASS reopen again   alive
+  ```
+
+  ```text
+  EXC_BAD_ACCESS / SIGSEGV, KERN_INVALID_ADDRESS
+    libobjc.A.dylib   objc_retain
+    beckon …
+    -[NSApplication(NSResponder) sendAction:to:from:]
+    -[NSMenuItem _corePerformAction:]
+  ```
+
+  **The commit message for the fix got the mechanism wrong and this is the
+  correction.** It said *"It must be closed TWICE in one session … the second
+  release lands when the `Retained` drops"*, i.e. blame the second CLOSE. The
+  stack says the first close deallocates the window (`releasedWhenClosed`
+  defaults to `YES` for `initWithContentRect:`) and the crash comes on the
+  **reopen**, retaining freed memory from the tray's own `Settings…` action.
+  So the reproducer is **close by X, then click Settings…** — and the
+  distinction is not pedantry: the two stories imply *different regression
+  tests*, and one written from "close twice" passes while the bug is live.
+
+  **A probe trap this cost a run to find, and it is the same shape as the
+  `AXTitle`/`AXDescription` one.** The harness finds the process with
+  `a:name() == "beckon"`. The control was deployed as `/tmp/beckon-ctl`, so
+  it reported `FAIL serve not running` while `ps` plainly showed the process.
+  **On a control run that reads as "the control does not reproduce the bug"**
+  — turning a real segfault into a clean bill of health. A control binary
+  must keep the basename `beckon`.
 
 - **Phase B is built and measured end to end.** `beckon_macos::caps_tap` is
   the `CGEventTap` twin of `beckon_windows::caps_hook`, against the same
@@ -2446,15 +2525,48 @@ Reasonable next-session order:
   The control is not ceremony here: with kanata running the `off` run FIRES,
   and the probe would be measuring kanata.
 
-  **The edge is parity, not a flag.** Nothing in a Caps event says whether it
-  is a press or a release — both arrive with identical flags because
-  suppression freezes the lock the flag reports, and
-  `CGEventSourceKeyState` reports that same frozen lock for a lock key. So
-  transitions alternate and the first is a press, which has exactly one
-  failure mode: a dropped event inverts the phase. `caps_tap::resync()` is
-  the answer and is called from every path that can drop one — the tap being
-  disabled by timeout or by user input, and any configuration change, which
-  is also a moment nobody is holding a key.
+  **NARROWED 2026-08-17: `off : hotkey fired = false` had a SECOND reading,
+  and it is the likelier one.** *Nothing else maps Caps* and *this process
+  cannot type at all* print the identical line: `CGEventPost` returns `void`
+  and does nothing whatever from a process that is not Accessibility-trusted,
+  which is the state every freshly `cargo build`-ed binary is in, because the
+  grant is bound to the code signature. `hid_key.rs` already refuses on that
+  reading; `caps_live` did not, so its control could not tell silence from
+  blindness. Two things close it, and both run in the same session as the
+  result they carry:
+
+  - `AXIsProcessTrusted()` is printed and the probe REFUSES when false — in
+    **both** modes, because an `on` run that cannot inject reports *the alias
+    did NOT work*.
+  - Every run, after the Caps sequence, presses `ctrl+cmd+opt+T` **directly**
+    with the modifiers as real key events. That must fire. `DIRECT CONTROL:
+    hotkey fired = false` means the injector or the registration is the
+    broken part and nothing in the run is about Caps.
+
+  The `off : false` above therefore stands only if it was taken from a run
+  whose direct control fired. Re-run it before quoting it.
+
+  **The edge is parity, not a flag.** Nothing in a Caps event distinguishes a
+  press from a release: **observed**, both arrive as `flagsChanged` carrying
+  identical flags, so there is no bit to read an edge off. That observation is
+  all the parity scheme needs, and it is deliberately stated without the
+  mechanism.
+
+  **CORRECTED 2026-08-17: this paragraph used to explain the observation, and
+  the explanation asserted the row four bullets below now marks UNMEASURED.**
+  It read *"both arrive with identical flags because suppression freezes the
+  lock the flag reports, and `CGEventSourceKeyState` reports that same frozen
+  lock for a lock key"* — which is the "suppression stops the lock" claim
+  wearing a causal sentence, plus a second claim about what
+  `CGEventSourceKeyState` reports that `caps_tap.rs:24-26` contradicts.
+  Neither was measured. **A cause quietly restates the effect**, so a reader
+  checking the UNMEASURED row and then reading this paragraph would find the
+  claim apparently settled two screens earlier.
+
+  The failure mode is unchanged and is the reason `resync()` exists: a dropped
+  event inverts the phase. `caps_tap::resync()` is called from every path that
+  can drop one — the tap being disabled by timeout or by user input, and any
+  configuration change, which is also a moment nobody is holding a key.
 
   **`caps::decide` is NOT shared, and this is why**, beyond the edge: its
   `KeyEvent` is `{ vk: u32, edge }` with a down and an up, and macOS has
@@ -2473,18 +2585,52 @@ Reasonable next-session order:
 - **Phase B, measured before it was written** (`examples/caps_probe.rs`,
   2026-08-16). The Windows Caps feature is an ALIAS: the hook swallows
   `Caps+T` and injects `ctrl+win+alt+T`, because `RegisterHotKey` cannot bind
-  Caps. Four facts had to hold for that shape to port, and all four do:
+  Caps. Four facts had to hold for that shape to port. **Three were
+  measured; the third was not, and it is the one the feature rests on:**
 
   | | |
   |---|---|
   | a `CGEventTap` sees Caps | yes -- as **`kCGEventFlagsChanged`**, never `keyDown`/`keyUp` |
   | returning NULL suppresses it | yes |
-  | **suppression also stops the LOCK** | **yes** -- `caps_locked()` read `false` before and `false` after a swallowed press |
+  | **suppression also stops the LOCK** | **UNMEASURED -- see below. This row used to read "yes".** |
   | the tap survived | no timeout in that run |
 
-  The third is the one the feature rests on: beckon can take the key without
-  the lock engaging, so `caps_tap` can offer `capslock` / `escape` / `none`
-  the way Windows does rather than being stuck with whatever the OS did.
+  The third would say: beckon can take the key without the lock engaging, so
+  `caps_tap` can offer `capslock` / `escape` / `none` the way Windows does
+  rather than being stuck with whatever the OS did. It is still what the
+  feature is built on, and `caps_tap`'s `inject_plain(K_CAPSLOCK)` on the tap
+  gesture exists precisely because *"the lock did not move while it was
+  swallowed"*.
+
+  **WITHDRAWN 2026-08-17. The verdict could not have come out any other way,
+  for two independent reasons, and neither is subtle once seen:**
+
+  1. **The lock was read with the wrong instrument.**
+     `CGEventSourceKeyState(_, kVK_CapsLock)` answers *is that KEY down*, and
+     Caps is momentary — down for the instant of the press, up long before the
+     probe sampled it a tick later. It read `false` before and `false` after
+     whether suppression worked or not, so `after == caps_before` was a
+     tautology. The trace columns in the same output said so from the other
+     side: neither `keyState` column ever flipped, recorded at the time as *no
+     discriminator* when it was *wrong instrument*. The lock is the
+     `alphaShift` bit of `CGEventSourceFlagsState`, which is level rather than
+     momentary.
+  2. **The driver presses Caps TWICE**, so a before/after pair is equal even
+     for a lock that toggled on both. Only the sequence can tell "never moved"
+     from "moved and came back", and the probe now samples once per tick.
+
+  **And there was no control**: a run where Caps is NOT swallowed, which must
+  show the lock moving. Without it a working reader and a blind one print the
+  same words — this repository's own rule, applied everywhere else in this
+  file and missing exactly here. `caps_probe` takes an arm now:
+
+  ```text
+  cargo run -p beckon-macos --example caps_probe -- session pass      # control: lock MUST move
+  cargo run -p beckon-macos --example caps_probe -- session swallow   # the test
+  ```
+
+  Re-run both, in that order, on a machine with kanata stopped, and put the
+  result back in the table. Do not restore the "yes" from the old output.
 
   **Caps arriving as `flagsChanged` is the one structural difference from
   Windows** and it is why `beckon_core::caps` is not shared: that state
@@ -2517,10 +2663,13 @@ Reasonable next-session order:
   `caps_tap = "escape"` option. Anyone testing beckon's Caps support here
   must stop `org.nixos.kanata` first or they are measuring kanata.
 
-- **`RegisterEventHotKey` does NOT report a chord another application holds,
-  so macOS has no availability probe and that is a finding rather than a
-  gap.** Measured 2026-08-16 with `examples/hotkey_conflict_probe.rs`, in an
-  Aqua session, control first:
+- **`RegisterEventHotKey` accepts a chord the SYSTEM holds, so macOS has no
+  availability probe worth building on what has been measured — and the case
+  the headline is about was not one of them.** This entry used to open
+  *"`RegisterEventHotKey` does NOT report a chord another application
+  holds"*; **NARROWED 2026-08-17**, because the run below contains no other
+  application. Measured 2026-08-16 with `examples/hotkey_conflict_probe.rs`,
+  in an Aqua session, control first:
 
   ```text
   Ctrl+Cmd+Opt+F19            ACCEPTED   <- control: registration works here
@@ -2542,6 +2691,32 @@ Reasonable next-session order:
   This entry used to be a hedge in a code comment (*"whether it even refuses
   … is unmeasured"*). The hedge was right; it is now a result. Do not
   re-open it without re-running that probe.
+
+  **What is still unmeasured, and it is the case the old headline named: a
+  chord held by another ordinary application.** The four lines above are a
+  duplicate inside ONE process and two chords the SYSTEM owns. Neither stands
+  in for the third case, and the middle two are weaker than they look —
+  Spotlight and Mission Control are not registered through
+  `RegisterEventHotKey` at all, so Carbon accepting them says nothing about
+  what it does between two clients OF it. A user's conflict is
+  *skhd / Raycast / Hammerspoon already has `ctrl+cmd+opt+T`*, which is
+  exactly the untested shape.
+
+  `hotkey_conflict_probe` grew **case 4** for it: it re-executes itself as a
+  `holder`, which registers `Ctrl+Cmd+Opt+F19` and prints `HOLDER READY`
+  before parking on the event loop; the parent then unregisters everything of
+  its own — otherwise the refusal is the same-process case again wearing a
+  different label — attempts the same chord, kills the holder and attempts
+  once more, which **must** be accepted. Not yet run: this session's shell is
+  in the `Background` bootstrap namespace and the probe refuses there, for the
+  reason two entries down. Run it from Terminal.app and record the
+  `CROSS-PROCESS:` line.
+
+  **The conclusion is unchanged either way and that is not luck.** If case 4
+  comes back ACCEPTED, `AskTheOs` staying silent is confirmed. If it comes
+  back REFUSED, macOS gains an availability probe that works for the
+  conflicts users actually hit — a strictly better outcome, and one nobody
+  would have gone looking for while this entry read as settled.
 
 - **Two capabilities live in different processes on this machine, and neither
   one can do both.** Measured 2026-08-16; this is why the macOS UI probes are

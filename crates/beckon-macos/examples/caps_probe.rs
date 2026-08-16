@@ -6,7 +6,8 @@
 //! events.
 //!
 //! ```text
-//! cargo run -p beckon-macos --example caps_probe
+//! cargo run -p beckon-macos --example caps_probe -- session swallow   # the test
+//! cargo run -p beckon-macos --example caps_probe -- session pass      # the control
 //! ```
 //!
 //! ## What is actually in doubt
@@ -42,6 +43,25 @@
 //! about Caps until that has happened. This branch has now been caught four
 //! times by a detector that was simply blind, and every one of those was
 //! caught by a control rather than by care.
+//!
+//! **Question 2 shipped without one, and it is the question the whole Caps
+//! feature rests on.** Two separate faults made
+//! `SUPPRESSION STOPS THE LOCK: YES` unfalsifiable:
+//!
+//! 1. The lock was read with `CGEventSourceKeyState(_, kVK_CapsLock)`, which
+//!    answers *is that KEY down* — momentary, and long up again by the time
+//!    the probe samples a tick later. It reads `false` before and `false`
+//!    after whether suppression works or not. `CGEventSourceFlagsState`'s
+//!    `alphaShift` bit is the lock, and it is level rather than momentary.
+//! 2. The driver presses Caps **twice**, so a before/after pair is equal even
+//!    for a lock that toggled both times. The probe now samples the lock once
+//!    per tick and asks whether it moved at ANY point.
+//!
+//! And the missing control is the `pass` arm: the same run with suppression
+//! disarmed, which **must** show the lock moving. A `swallow` verdict read
+//! without a `pass` run beside it says nothing at all — it is the same shape
+//! as the F19 false negative recorded below, and the same shape as the
+//! Windows `caps_probe`'s bare-Win-tap control.
 
 fn main() {
     #[cfg(not(target_os = "macos"))]
@@ -83,6 +103,7 @@ mod mac {
         fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
         fn CGEventGetFlags(event: *mut c_void) -> u64;
         fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
+        fn CGEventSourceFlagsState(state_id: i32) -> u64;
     }
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
@@ -244,11 +265,52 @@ mod mac {
         }
     }
 
-    /// Is the Caps Lock LOCK currently on? Read from the HID system state, so
-    /// it is the lock itself rather than any one event's flags.
+    /// Is the Caps Lock LOCK currently on?
+    ///
+    /// **`CGEventSourceKeyState(_, kVK_CapsLock)` is NOT this, and reading
+    /// the lock through it is what made this probe's headline verdict
+    /// unfalsifiable.** `CGEventSourceKeyState` answers *is that KEY down*,
+    /// and Caps is a momentary key: it is down for the instant of the press
+    /// and up again long before the probe samples it a tick later. So it read
+    /// `false` before and `false` after **whatever suppression did**, and
+    /// `after == caps_before` -- the whole test -- was a tautology. The trace
+    /// columns below say the same thing from the other side: neither keyState
+    /// column ever flipped, which was recorded as "no discriminator" when it
+    /// was really "wrong instrument".
+    ///
+    /// The lock is the `alphaShift` bit of the source's FLAGS state, which is
+    /// level rather than momentary. `kCGEventSourceStateHIDSystemState` = 1.
     fn caps_locked() -> bool {
-        // `kCGEventSourceStateHIDSystemState` = 1.
-        unsafe { CGEventSourceKeyState(1, K_CAPSLOCK) }
+        unsafe { CGEventSourceFlagsState(1) & FLAG_ALPHA_SHIFT != 0 }
+    }
+
+    /// Which arm this run is: does it swallow the Caps press, or let it
+    /// through?
+    ///
+    /// **The `pass` arm is the missing control**, and without it the `swallow`
+    /// arm cannot fail: a reader that never moves and a lock that never moves
+    /// print the same line. `pass` must show the lock CHANGING; a `pass` run
+    /// where it does not means the reader is blind and the `swallow` verdict
+    /// beside it is worth nothing.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Arm {
+        Swallow,
+        Pass,
+    }
+
+    /// The lock, sampled once per tick from the arming tick onward.
+    ///
+    /// **A before/after pair is not enough, and this is the second reason the
+    /// old verdict could not fail:** the driver presses Caps TWICE, so a lock
+    /// that toggled on both presses is back where it started by the time an
+    /// "after" sample is taken. Only the sequence can tell "never moved" from
+    /// "moved and came back".
+    static LOCK_SAMPLES: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
+    fn sample_lock() {
+        if let Ok(mut s) = LOCK_SAMPLES.lock() {
+            s.push(caps_locked());
+        }
     }
 
     pub fn run() {
@@ -287,6 +349,23 @@ mod mac {
             }
         };
         say(&format!("tap location         : {where_} ({location})"));
+
+        let want_arm = std::env::args().nth(2).unwrap_or_else(|| "swallow".into());
+        let arm = match want_arm.as_str() {
+            "swallow" => Arm::Swallow,
+            "pass" => Arm::Pass,
+            other => {
+                say(&format!("unknown arm `{other}`; use swallow|pass"));
+                std::process::exit(2);
+            }
+        };
+        say(&format!(
+            "arm                  : {}",
+            match arm {
+                Arm::Swallow => "swallow -- return NULL for Caps (the thing under test)",
+                Arm::Pass => "pass -- let Caps through (the CONTROL; the lock MUST move)",
+            }
+        ));
 
         let events = mask(KEY_DOWN) | mask(KEY_UP) | mask(FLAGS_CHANGED);
         let tap = unsafe {
@@ -370,12 +449,20 @@ mod mac {
                         }
                         say("CONTROL OK: an ordinary key reaches the tap");
                         caps_before = caps_locked();
+                        sample_lock();
                         say(&format!("caps lock before the test press: {caps_before}"));
-                        SWALLOW.store(true, Ordering::SeqCst);
-                        say("swallow armed -- driver may press Caps");
+                        SWALLOW.store(arm == Arm::Swallow, Ordering::SeqCst);
+                        say(match arm {
+                            Arm::Swallow => "swallow armed -- driver may press Caps",
+                            Arm::Pass => "pass armed (control) -- driver may press Caps",
+                        });
                     }
-                    // The driver injects Caps twice, at ticks 4 and 5.
+                    // The driver injects Caps twice, at ticks 4 and 5. The
+                    // lock is sampled after each, because two presses put a
+                    // toggling lock back where it started.
+                    4 | 5 => sample_lock(),
                     6 => {
+                        sample_lock();
                         say("");
                         say(&format!(
                             "SAW CAPS          : {}",
@@ -394,22 +481,43 @@ mod mac {
                             "RETURNED NULL     : {}",
                             SUPPRESSED_CAPS.load(Ordering::SeqCst)
                         ));
-                        let after = caps_locked();
+                        let samples = LOCK_SAMPLES.lock().map(|s| s.clone()).unwrap_or_default();
+                        let moved = samples.iter().any(|&s| s != caps_before);
                         say(&format!(
-                            "caps lock after   : {after}  (before: {caps_before})"
+                            "caps lock samples : {:?}  (before: {caps_before})",
+                            samples
                         ));
-                        say(&format!(
-                            "SUPPRESSION STOPS THE LOCK: {}",
-                            if SUPPRESSED_CAPS.load(Ordering::SeqCst) {
-                                if after == caps_before {
-                                    "YES -- the lock did not move"
-                                } else {
-                                    "NO -- the lock toggled anyway"
-                                }
-                            } else {
-                                "untested, nothing was swallowed"
+                        say(&format!("lock MOVED at any point: {moved}"));
+                        let mut exit = 0;
+                        match arm {
+                            Arm::Swallow => {
+                                say(&format!(
+                                    "SUPPRESSION STOPS THE LOCK: {}",
+                                    if !SUPPRESSED_CAPS.load(Ordering::SeqCst) {
+                                        "untested, nothing was swallowed"
+                                    } else if moved {
+                                        "NO -- the lock toggled anyway"
+                                    } else {
+                                        "YES -- the lock never moved"
+                                    }
+                                ));
+                                say("  Read against a `pass` run in the same session.");
+                                say("  On its own this line cannot fail: a lock that");
+                                say("  never moves and a reader that cannot see it");
+                                say("  print the same words.");
                             }
-                        ));
+                            Arm::Pass => {
+                                say(&format!(
+                                    "CONTROL -- the lock moves when Caps is NOT swallowed: {}",
+                                    if moved { "YES" } else { "NO" }
+                                ));
+                                if !moved {
+                                    say("  The reader is blind, or the driver never pressed Caps.");
+                                    say("  Any `swallow` verdict measured with it says nothing.");
+                                    exit = 8;
+                                }
+                            }
+                        }
                         say(&format!(
                             "TAP DIED          : {}",
                             TAP_DIED.load(Ordering::SeqCst)
@@ -432,7 +540,7 @@ mod mac {
                         }
                         say("");
                         say("DONE");
-                        std::process::exit(0);
+                        std::process::exit(exit);
                     }
                     _ if n > 14 => {
                         say("TIMEOUT: the driver never pressed anything");
