@@ -4,17 +4,22 @@
 //! which is inherently MRU — the foreground window is first.
 
 use anyhow::{Context, Result};
+use beckon_core::cloak::{self, Desktop};
 use std::collections::HashMap;
 use windows::core::{BOOL, GUID, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, PROPERTYKEY};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Storage::Packaging::Appx::GetApplicationUserModelId;
 use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToString};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow};
+use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 const PKEY_APP_USER_MODEL_ID: PROPERTYKEY = PROPERTYKEY {
@@ -43,8 +48,83 @@ struct ProcessInfo {
     aumid: Option<String>,
 }
 
-/// Enumerate all visible, non-cloaked, titled top-level windows that are not
-/// the shell's own (`is_shell_window`).
+/// Answers "which virtual desktop is this window on?" — the second test that
+/// can rescue a window `DWMWA_CLOAKED` would drop. See
+/// `beckon_core::cloak` for *why* the cloak word cannot answer it alone.
+///
+/// **The COM object is created at most once per `enum_visible_windows` call,
+/// never once per window**, and lazily even then: the constructor does not
+/// run until the first cloaked window actually asks. On a machine with one
+/// virtual desktop and no suspended UWP apps it therefore costs nothing at
+/// all. The hot path (`beckon <id>`) is budgeted at 50 ms and already
+/// measured at ~57 ms, so a per-window `CoCreateInstance` is not affordable —
+/// see the *Hot-path catalog cost* note in `CLAUDE.md`, which this is the
+/// same class of mistake as.
+///
+/// The failure is memoised alongside the success (`Some(None)`): a machine
+/// where the object cannot be created must pay one failed
+/// `CoCreateInstance`, not one per cloaked window.
+struct DesktopOracle {
+    /// `None` = not asked yet. `Some(None)` = asked, and it failed.
+    manager: Option<Option<IVirtualDesktopManager>>,
+}
+
+impl DesktopOracle {
+    fn new() -> Self {
+        Self { manager: None }
+    }
+
+    fn manager(&mut self) -> Option<&IVirtualDesktopManager> {
+        self.manager
+            .get_or_insert_with(|| unsafe {
+                // Idempotent — returns S_FALSE when the thread is already in
+                // an STA, which it often is by the time we get here (`apps.rs`
+                // and `backend.rs` both do this). `CoCreateInstance` returns
+                // CO_E_NOTINITIALIZED without it, so it is not optional, and
+                // the result is deliberately discarded exactly as at the four
+                // other call sites in this crate.
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                // `CLSCTX_ALL` rather than the `CLSCTX_INPROC_SERVER` used
+                // elsewhere here: this CLSID is served by the shell, and
+                // pinning the context would turn a working machine into a
+                // silent fallback to today's behaviour.
+                CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL).ok()
+            })
+            .as_ref()
+    }
+
+    /// **Never returns `Current` on failure.** An error is `Unknown`, which
+    /// `cloak::admit_window` sends back to today's behaviour — see its doc
+    /// for why the three-way answer is not collapsible to a bool.
+    fn locate(&mut self, hwnd: HWND) -> Desktop {
+        let Some(manager) = self.manager() else {
+            return Desktop::Unknown;
+        };
+        // Fails for a window that is not top-level or is mid-creation, and
+        // returns TYPE_E_ELEMENTNOTFOUND for one the shell has not assigned
+        // to a desktop. All of those are `Unknown`, not "no".
+        match unsafe { manager.IsWindowOnCurrentVirtualDesktop(hwnd) } {
+            Ok(on_current) if on_current.as_bool() => Desktop::Current,
+            Ok(_) => Desktop::Other,
+            Err(e) => {
+                if beckon_core::verbose() {
+                    eprintln!(
+                        "verbose: IsWindowOnCurrentVirtualDesktop failed for {:?} ({}); \
+                         treating the window as cloaked, i.e. dropping it",
+                        hwnd, e
+                    );
+                }
+                Desktop::Unknown
+            }
+        }
+    }
+}
+
+/// Enumerate all visible, titled top-level windows that are not the shell's
+/// own (`is_shell_window`), and not cloaked — **except** for windows whose
+/// only reason for being cloaked is that they sit on another virtual desktop,
+/// which are kept (`beckon_core::cloak::admit_window`).
+///
 /// Returned in z-order (front-to-back = MRU).
 pub fn enum_visible_windows() -> Result<Vec<WindowInfo>> {
     let mut hwnds: Vec<HWND> = Vec::new();
@@ -57,10 +137,13 @@ pub fn enum_visible_windows() -> Result<Vec<WindowInfo>> {
 
     // Cache pid -> process identity to avoid opening the same process repeatedly.
     let mut process_cache: HashMap<u32, Option<ProcessInfo>> = HashMap::new();
+    // One COM object for the whole enumeration, and only if a cloaked window
+    // asks for it. See `DesktopOracle`.
+    let mut oracle = DesktopOracle::new();
     let mut windows = Vec::new();
 
     for hwnd in hwnds {
-        if let Some(info) = build_window_info(hwnd, &mut process_cache) {
+        if let Some(info) = build_window_info(hwnd, &mut process_cache, &mut oracle) {
             windows.push(info);
         }
     }
@@ -76,6 +159,7 @@ unsafe extern "system" fn enum_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
 fn build_window_info(
     hwnd: HWND,
     process_cache: &mut HashMap<u32, Option<ProcessInfo>>,
+    oracle: &mut DesktopOracle,
 ) -> Option<WindowInfo> {
     unsafe {
         // Must be visible.
@@ -83,18 +167,13 @@ fn build_window_info(
             return None;
         }
 
-        // Skip cloaked windows (hidden UWP, other virtual desktops).
-        let mut cloaked: u32 = 0;
-        let _ = DwmGetWindowAttribute(
-            hwnd,
-            DWMWA_CLOAKED,
-            &mut cloaked as *mut u32 as *mut _,
-            std::mem::size_of::<u32>() as u32,
-        );
-        if cloaked != 0 {
-            return None;
-        }
-
+        // NOTE: the cloak test used to sit HERE, immediately after the
+        // visibility test. It now runs after the four cheap tests below,
+        // because it grew a COM call and those tests are pure reads. Every
+        // test in this function is an independent predicate of `hwnd`
+        // ANDed with the others, so reordering them cannot change which
+        // windows survive — only how much is paid for the ones that do not.
+        //
         // Must have a title.
         let mut title_buf = [0u16; 512];
         let title_len = GetWindowTextW(hwnd, &mut title_buf);
@@ -132,6 +211,27 @@ fn build_window_info(
 
         // Skip the shell's own windows.
         if is_shell_window(&class_name) {
+            return None;
+        }
+
+        // Cloaked windows are dropped -- unless the ONLY thing wrong with
+        // them is that they are parked on another virtual desktop, in which
+        // case they are the app the user is asking for and dropping them
+        // makes the hotkey launch a second copy. `DWMWA_CLOAKED` cannot tell
+        // those two apart (a suspended UWP app reports the same `0x2`), so a
+        // second, different question decides it. All of that lives in
+        // `beckon_core::cloak` -- read its module doc before touching this.
+        let mut cloaked: u32 = 0;
+        let _ = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut _,
+            std::mem::size_of::<u32>() as u32,
+        );
+        // The closure is what keeps the COM round-trip off the uncloaked
+        // majority: `admit_window` returns before calling it when `cloaked`
+        // is 0. Do not hoist `oracle.locate(hwnd)` out to a local.
+        if !cloak::admit_window(cloaked, || oracle.locate(hwnd)) {
             return None;
         }
 
