@@ -101,6 +101,20 @@ fn emit_version() {
 /// the sha from whenever the tree was first built. `--git-path` resolves both
 /// correctly from anywhere inside either kind of checkout.
 ///
+/// It answers in two different SHAPES and both are right, so do not "fix" one
+/// into the other. Measured from `crates/beckon-cli`, which is the cwd cargo
+/// gives a build script: a plain clone answers the relative `../../.git/HEAD`
+/// and a linked worktree answers an absolute path under
+/// `.git/worktrees/<name>/`. Cargo resolves a relative `rerun-if-changed`
+/// against the package root -- the same directory -- so the relative form
+/// lands on the real file; canonicalising it here would buy nothing and would
+/// have to get the worktree case right by hand.
+///
+/// `cargo install --git` is the third shape and needs no special case: it
+/// leaves a DETACHED HEAD, where `symbolic-ref` exits 1 and contributes
+/// nothing, while `packed-refs` exists and does. Verified against a
+/// `--depth 1` clone checked out detached.
+///
 /// The ref file is emitted only when it exists, because a packed ref has no
 /// file of its own; `packed-refs` is named for that case. A path that does
 /// not exist is not an error to cargo, but it does make the script re-run on
