@@ -209,7 +209,7 @@ caps_hold = "ctrl+super+alt"
                 // been laid out before it is photographed, and a switch and a
                 // capture in the same turn of the loop photographs the door
                 // that was open a moment ago.
-                if step % 2 == 0 {
+                if step.is_multiple_of(2) {
                     let i = step / 2;
                     if i < 4 {
                         if let Some(sc) = segmented(&w) {

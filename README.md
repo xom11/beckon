@@ -93,7 +93,8 @@ cargo build --release
 # binary: ./target/release/beckon
 ```
 
-Requirements: Rust 1.75+. Linux supports sway, i3, Hyprland, any
+Requirements: Rust 1.88+ (`rust-version` in `Cargo.toml`, and the floor the
+committed `Cargo.lock` can actually build). Linux supports sway, i3, Hyprland, any
 EWMH-compliant X11 desktop (GNOME-X11, KDE-X11, XFCE, openbox, awesome),
 GNOME Wayland via the bundled shell extension in
 [`extensions/`](./extensions/) — install it with `gnome-extensions install`
@@ -291,15 +292,23 @@ The window is bands stacked top to bottom, not panes side by side:
   **Shortcut** follows, because the app is what you are looking for. Every row
   carries a checkbox: tick as many as you like and **Remove** takes them all
   at once;
-- an editor strip — **App** as a combo box you can type into or pick from,
-  **Shortcut** as plain text — plus a notes line explaining the selected row;
+- an editor strip — **App** as a combo box you can type into or pick from, and
+  the shortcut as four modifier buttons (**Ctrl**, **Win**, **Alt**, **Shift**)
+  beside a closed list of key names, so a chord that cannot exist cannot be
+  entered. **Record** and **Revert** close the strip: **Record** captures a
+  chord you press, **Revert** clears the row's shortcut. A notes line under the
+  strip explains the selected row;
 - a command bar: **Open config file** on the left, then **Close** and
   **Save**. **Save** is where the default button ring rests, so Enter saves
   from any of the text fields, the list or the check boxes. Tab onto a push
   button and the ring follows your focus — Enter then presses *that* button,
   which is deliberate: Enter on a focused **Reload** used to save instead,
   overwriting the very external change the banner exists to warn you about.
-  **`Ctrl+S` saves unconditionally**, wherever focus is.
+  **`Ctrl+S` saves too**, wherever focus is, on the two pages that write
+  `apps.toml`. The other two write nothing to it, and there the keystroke
+  does nothing rather than saving behind your back. The page is the only
+  gate: being on a writing page is what the accelerator checks, not whether
+  **Save** looks pressable.
 
 Rows say nothing when they are fine. When they are not, the App cell carries
 one word:
@@ -326,11 +335,19 @@ The App combo box types freely — it does not autocomplete or jump to a
 catalogue entry as you type. Apps with no Start Menu entry are typed in by
 hand, which is why.
 
-Combos are typed, not captured by pressing them. That is deliberate: the
-stock Windows control for chord capture cannot see the Windows key, and
-Explorer eats `Win+T` and its siblings before a normal window ever gets
-them, so a capture field would quietly fail on exactly the chords beckon
-recommends.
+**Record** captures a chord by pressing it, and **Stop** — the same button,
+while it is armed — ends the recording. It works on the chords beckon
+recommends: it arms a low-level keyboard hook rather than a capture field, so
+it sees the Windows key, and `Win+T` and its siblings reach beckon instead of
+Explorer because the hook runs before the shell does and swallows the key.
+`Win+L` and `Ctrl+Alt+Del` are refused rather than recorded, and so are Caps
+Lock, Num Lock and Scroll Lock as the main key. The hook is armed only while
+the button reads **Stop**; leaving the page, closing the window or quitting
+disarms it.
+
+The buttons and the key list stay the primary path. They are the only way in
+for anyone who cannot physically produce a chord, and they hold the keys a
+recording can never see — a bare `escape`, a bare `tab`.
 
 **If `apps.toml` does not parse, `beckon-serve.exe` starts anyway.** You get
 the tray icon, no hotkeys registered, and nothing written to the file — and
@@ -388,7 +405,8 @@ Three things to know before ticking it:
   sees the key. Use one of them, not both.
 - **It installs a low-level keyboard hook,** which is the same mechanism
   every remapper uses and the same one antivirus software associates with
-  keyloggers. beckon does not install it unless you turn this on.
+  keyloggers. Turning this on is one of two things that installs it; the
+  other is **Record** in Settings, for the seconds a recording lasts.
 
 Modifiers: `ctrl`, `super` (Cmd / Win key), `alt` (Option), `shift` — order
 is free. Keys are lowercase only (`a`-`z`, `0`-`9`, `f1`-`f20`, plus named

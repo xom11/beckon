@@ -195,6 +195,8 @@ beckon/
 │   │           ├── system.rs   # door 3
 │   │           └── about.rs    # door 4
 │   ├── beckon-windows/       # Win32 API (EnumWindows + COM IShellLinkW) — phase 3 done
+│   │   ├── build.rs          # stamps BECKON_TARGET; embeds the examples' manifest (comctl32 v6)
+│   │   ├── examples.rc       # resource script for the probes; names examples.exe.manifest
 │   │   └── src/
 │   │       ├── lib.rs        # pick_backend, resolve report
 │   │       ├── backend.rs    # Backend trait impl: focus / launch / cycle / hide
@@ -1216,9 +1218,15 @@ OS metadata on every call.
 
 **CORRECTED 2026-08-15: there is now a second store, and it is deliberately
 not a file.** The settings window's System page (design §3.3) keeps the
-window's own look — `DarkMode` and `Opacity` — in
-`HKCU\Software\beckon`, two `REG_DWORD`s written by
-`crates/beckon-windows/src/prefs.rs`. That is the split the Four Doors design
+window's own look — `DarkMode`, `Opacity` and `CapsView` — in
+`HKCU\Software\beckon`, **three** `REG_DWORD`s written by
+`crates/beckon-windows/src/prefs.rs`. **CORRECTED 2026-08-16: this said "two"
+and named only the first pair.** `CapsView` (design §3.2, `1` folds the caps
+chord to `[Caps]` in the Shortcuts list) has been the third since it was
+added, and `prefs.rs`'s own header records what the undercount costs: **the
+table is the list of what to DELETE**, so a profile reset built from a
+two-value list leaves the fold behind and the Shortcuts list comes back folded
+on a machine the user believes is clean. That is the split the Four Doors design
 asks for: Shortcuts and Keyboard write `apps.toml`, System writes the
 registry, the Run key, or nothing. The split is what makes a theme switch keep
 working when `apps.toml` does not parse, which is the one state a user most
@@ -1279,12 +1287,16 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
     page whose job is disclosure. The Accessibility grant is this platform's
     version of the same question, and losing it silently on a rebuild is the
     largest single cause of "beckon does nothing" here.
-  - **The Keyboard door's first two groups edit settings macOS does not yet
-    honour**, because the Caps alias needs the event tap. The door says so in
-    a sentence rather than letting a reader discover it by ticking a box.
-    Omitting them was rejected: the config file is shared across machines,
-    and hiding settings the file already contains is worse than showing them
-    and naming where they take effect.
+  - **The Keyboard door's first two groups are live here too, and what
+    differs is the PERMISSION.** This bullet used to say macOS did not yet
+    honour them; `beckon_macos::caps_tap` landed the same day and
+    `serve`'s `sync_caps_hook` drives it from the same `keyboard.caps` /
+    `caps_hold` / `caps_tap` settings the Windows hook reads. So the note
+    under group 1 names **Input Monitoring** instead — a *separate* grant
+    from Accessibility, in a separate System Settings pane, and without it
+    the tap is created successfully and then receives nothing at all. That
+    failure is silent, which makes it the one thing a reader cannot
+    discover by ticking the box.
 
   **CORRECTED 2026-08-16: chord capture is on macOS too, and the `Record`
   entry below is no longer Windows-only.** `beckon_macos::caps_tap` grew a
@@ -1335,10 +1347,24 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   `the_default_labels_are_what_combo_caps_always_produced` pins that. Words
   rather than glyphs (`Cmd`, not `⌘`): the editor's own check boxes read
   `Cmd`, and a cell showing a symbol beside a box showing a word is two names
-  for one key on one screen. `key_label` was already neutral —
-  **`theme::TransparencyBlock::reason`'s `"Off in Windows settings"` is the
-  one string left in core that names a platform**, worked around locally by
-  `beckon-macos`'s `block_reason` and wanting the same treatment.
+  for one key on one screen. `key_label` was already neutral.
+
+  **CORRECTED 2026-08-16: the platform string in `theme.rs` is a table too,
+  and there is no local workaround left to name.** This paragraph used to end
+  *"`theme::TransparencyBlock::reason`'s `"Off in Windows settings"` is the one
+  string left in core that names a platform, worked around locally by
+  `beckon-macos`'s `block_reason` and wanting the same treatment"* — it got
+  the treatment. `theme::BlockReasons` is `ModifierLabels`' sibling, `WINDOWS`
+  and `MAC`; `reason()` delegates to `reason_with(BlockReasons::WINDOWS)`, so
+  no Windows string moved and
+  `the_default_reasons_are_what_reason_always_returned` pins that, exactly as
+  `the_default_labels_are_what_combo_caps_always_produced` does one paragraph
+  up. The macOS System page calls
+  `block.reason_with(BlockReasons::MAC)` directly
+  (`beckon-macos/src/settings_window/system.rs:199`), and grepping
+  `block_reason` in that crate now finds nothing — so a session going looking
+  for the workaround this entry promised finds an absence and cannot tell
+  whether it was deleted or never existed.
 
   The macOS window is also where `on_command` is raised for the first time on
   that platform: before the System and About doors, all eleven
@@ -1858,10 +1884,13 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   time instead.
 
   **`beckon-windows` still prints its own `env!("CARGO_PKG_VERSION")`** in the
-  About page and `chrome.rs` — untouched, because that crate has no build
-  script and the About page already answers the identity question a better
-  way. If the sha is ever wanted there, it needs its own `build.rs`, not a
-  reach into beckon-cli's.
+  About page and `chrome.rs` — untouched, because the About page already
+  answers the identity question a better way. **CORRECTED 2026-08-16: this
+  used to add "because that crate has no build script", and it has one** —
+  `crates/beckon-windows/build.rs`, which stamps `BECKON_TARGET` for the
+  About page's `Build` row and embeds the examples' manifest. So a sha there
+  is one more `cargo:rustc-env=` line beside `stamp_target`, not a new build
+  script — and still never a reach into beckon-cli's.
 
   **`nix build` was broken from v0.8.0 to v0.9.3 and nobody noticed for a
   month.** `c33fcf6` inserted `pub mod settings_window;` between
@@ -2046,6 +2075,27 @@ Reasonable next-session order:
 ### Phase 3 Windows notes (for future maintenance)
 
 - **Window enumeration**: `EnumWindows` returns windows in z-order (front-to-back), which gives us MRU order for free — no state file needed (mirrors macOS `CGWindowListCopyWindowInfo`). We filter out invisible, cloaked (via `DwmGetWindowAttribute(DWMWA_CLOAKED)`), tool windows (`WS_EX_TOOLWINDOW`), and owner windows.
+
+  **CORRECTED 2026-08-16: there is a fifth filter, and the four above are
+  exactly why it had to exist.** `window_ops::is_shell_window` denies the
+  classes `Progman`, `WorkerW` and `Shell_TrayWnd` (case-insensitively, like
+  every other class compare in that file). **The desktop passes all four
+  filters listed above** — class `Progman`, caption `Program Manager`,
+  visible, uncloaked, not a tool window, unowned — so it sat in
+  `enum_visible_windows` permanently: step 5b always found an "other app" to
+  toggle to, **step 5c (minimize) was therefore unreachable**, and `beckon
+  list` printed a running app called *Program Manager*. It is the role
+  `_NET_WM_WINDOW_TYPE` plays in `beckon-linux`'s X11 backend, added for the
+  identical failure — beckon focuses a shell window, reports success, and
+  nothing moves.
+
+  **`Windows.UI.Core.CoreWindow` was proposed alongside these and is
+  deliberately left out**, pinned by
+  `an_ordinary_app_window_is_not_a_shell_window`. A UWP app that is not hosted
+  by `ApplicationFrameHost` presents one as its own top-level window, so
+  denying it makes beckon launch a second copy on every keypress — the more
+  expensive of the two failures, and the same shape as the Hyprland `visible`
+  filter recorded under *Phase 1c*.
 - **Anti-focus-stealing**: Win10+ blocks `SetForegroundWindow` from background processes. We use the `AttachThreadInput` trick: attach our thread input to the foreground thread, call `SetForegroundWindow` + `BringWindowToTop`, then detach. This works because beckon is invoked from AHK which holds the foreground.
 - **Name resolution**: Start Menu `.lnk` files are parsed via COM `IShellLinkW` + `IPersistFile::Load`; MSIX/AppX entries and the built-in `File Explorer` shell app are enumerated natively from shell `AppsFolder` with friendly name and AUMID. Priority: display name (exact) > AUMID > exe stem/name > display name (substring). Use the exact name `File Explorer`, since `Explorer` may collide with a shortcut targeting `explorer.exe`.
 - **Hot-path catalog cost (three layers, measured on ARM64 Windows 11)**. The

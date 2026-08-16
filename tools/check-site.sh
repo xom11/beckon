@@ -246,6 +246,80 @@ if grep -q 'id="how-press"' "$H"; then
 fi
 [ "$ctl_fail" -eq 0 ] && ok "every JS-only control ships hidden"
 
+# --- 8b. and none of them is announced as nothing at all -------------------
+# The same six ids, asked a second question. `hidden` is about a control that
+# would be inert; this is about one that WORKS and is unreachable: every id in
+# CTLS is filled by beckon.js with real buttons, and a focusable control inside
+# an `aria-hidden` subtree is a defect — the browser hands it to Tab and hands
+# the screen reader nothing to say about it.
+#
+# This is a REGRESSION guard, not a hypothetical. `#hero-os` shipped under
+# `<div class="desks" aria-hidden="true">`: the picture below it is what has
+# nothing to announce, so the attribute belongs on the slot, and with it one
+# level up all three OS buttons were reachable and nameless. Nothing else in
+# this file could see it — the id was present, it shipped `hidden`, check 8 was
+# green, and the page looked right.
+#
+# Why a parser and not a grep: the answer is a question about ANCESTRY, and
+# `site/index.html` now carries two `.desks` grids — the hero's (line ~205,
+# attribute moved down onto `.desk-slot`) and #how's (line ~422, still hidden
+# whole, correctly, because it contains no control). A line-based check cannot
+# tell those apart, and an indentation-based one is guessing. So: strip
+# comments to newlines (line numbers survive, and the prose in them says
+# "aria-hidden" often enough to poison any regex over the raw file), walk the
+# tags keeping a stack, and report an id whose ancestors — or whose own tag —
+# carry the attribute.
+#
+# Skipped rather than failed without node, like check 6, and for the same
+# reason: this is a Rust repository, and CI has node.
+if command -v node >/dev/null 2>&1; then
+  if a11y=$(node - "$H" os-switch theme hero-press hero-os how-readout hud <<'NODE'
+const fs = require('fs');
+const [file, ...ids] = process.argv.slice(2);
+// Blank the comments but keep their newlines, so reported lines match the file.
+const src = fs.readFileSync(file, 'utf8')
+  .replace(/<!--[\s\S]*?-->/g, c => c.replace(/[^\n]/g, ''));
+const VOID = new Set(['area','base','br','col','embed','hr','img','input',
+                      'link','meta','param','source','track','wbr']);
+const tag = /<(\/?)([a-zA-Z][\w:.-]*)((?:"[^"]*"|'[^']*'|[^>"'])*?)(\/?)>/g;
+const stack = [], bad = [];
+let m;
+while ((m = tag.exec(src)) !== null) {
+  const [, slash, rawName, attrs, selfClose] = m;
+  const name = rawName.toLowerCase();
+  if (slash) {
+    // Pop to the matching open tag, tolerating anything left unclosed inside.
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].name === name) { stack.length = i; break; }
+    }
+    continue;
+  }
+  const hidden = /\baria-hidden\s*=\s*"true"/.test(attrs);
+  const id = (/\bid\s*=\s*"([^"]*)"/.exec(attrs) || [])[1];
+  if (id && ids.includes(id)) {
+    const owner = stack.find(f => f.hidden) || (hidden ? { name, line: null } : null);
+    if (owner) {
+      const line = src.slice(0, m.index).split('\n').length;
+      bad.push(`#${id} (line ${line}) is inside <${owner.name}` +
+               (owner.line ? ` line ${owner.line}` : ' (itself)') + ' aria-hidden="true">');
+    }
+  }
+  if (!selfClose && !VOID.has(name)) {
+    stack.push({ name, hidden, line: src.slice(0, m.index).split('\n').length });
+  }
+}
+if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
+NODE
+  ); then
+    ok "no JS-only control sits under an aria-hidden ancestor"
+  else
+    bad "a JS-only control is hidden from assistive tech:"
+    printf '%s\n' "$a11y" | sed 's/^/       /'
+  fi
+else
+  skip "node not installed, aria-hidden ancestry not checked"
+fi
+
 if grep -qE 'class="panel"[^>]*hidden' "$H"; then
   bad "an install panel ships hidden — JS-off readers lose it"
 else

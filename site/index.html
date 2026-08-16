@@ -193,7 +193,14 @@
              more (the real chord on all three machines). -->
         <div class="press" id="hero-press" hidden></div>
 
-        <div class="desks" aria-hidden="true">
+        <!-- `aria-hidden` IS ON THE SLOT, NOT ON `.desks`, and that is the whole
+             reason this grid is not the hidden thing. The picture is what has
+             nothing for a screen reader to say; the OS strip below is three real
+             buttons, and a focusable control inside an aria-hidden subtree is a
+             defect — the same rule the HUD states in its own words further down.
+             With the attribute one level up, all three buttons were reachable by
+             Tab and announced as nothing at all. -->
+        <div class="desks">
 
           <!-- The OS strip. Ships hidden — it is inert without JS — and beckon.js
                fills it with three buttons that write the same `data-os` the title
@@ -202,7 +209,7 @@
                the picture below it, not a caption. -->
           <div class="os-seg" id="hero-os" hidden></div>
 
-          <div class="desk-slot is-wide">
+          <div class="desk-slot is-wide" aria-hidden="true">
             <div class="desk" data-os="macos" data-scene="hero" id="hero-desk">
               <div class="desk-sky"></div>
               <!-- `data-key` is the letter that beckons this app, printed on the
@@ -263,6 +270,17 @@
              Printing only Caps Lock would be the other kind of wrong:
              `"ctrl+super+alt+t"` is what actually goes in apps.toml, and a
              reader has to be able to copy it.
+
+             WHO DOES THE MAPPING IS IN THE FAQ, and it has to be somewhere: the
+             three notes that used to sit in these rows — "Hyper, via Karabiner",
+             "built into beckon", "via kanata or xkb" — were the only place the
+             page said beckon holds Caps ITSELF on some machines and not on
+             others, and for a while after they went nothing said it at all. The
+             `=` on the macOS and Linux rows was then claiming a gesture beckon
+             has no part in on either — in a RELEASED beckon it holds Caps on
+             Windows and nowhere else, which is the FAQ entry's whole subject.
+             The rows keep all three Caps caps, because the demo below asks
+             every reader for the same key; the entry says who answers it.
 
              ALL THREE ROWS NAME THE SAME THREE MODIFIERS, and examples/linux/
              was changed to match: it used to bind a bare `Super`. Three rows
@@ -647,20 +665,47 @@ scoop install xom11/beckon</code></pre>
   <!-- QUESTIONS. Native <details>/<summary>, so every answer is reachable with JS
        off; beckon.js only closes the siblings when one opens.
 
-       FOUR ENTRIES, DOWN FROM NINE. The nine were 951 words — 54% of the old
-       page's visible text — and the four that survive are the ones a reader hits
+       FIVE ENTRIES, DOWN FROM NINE. The nine were 951 words — 54% of the old
+       page's visible text — and the ones that survive are the ones a reader hits
        before they can succeed: what the config file is for, why an app is named
-       rather than identified, the permission macOS will ask for, and whether it is
-       fast. They are collapsed, so they cost nothing on screen and everything is
-       one click away.
+       rather than identified, the permission macOS will ask for, who maps Caps
+       Lock, and whether it is fast. They are collapsed, so they cost nothing on
+       screen and everything is one click away.
 
        The five that went: why the demo asks for a bare letter (it is now obvious
        from the demo), Linux hotkey registration and GNOME Wayland (both name
        compositors, which this page no longer does), the Windows settings window
-       (it is a picture in #config now), and Caps Lock. Caps Lock is a Windows-only
-       opt-in that installs a low-level keyboard hook and has three real failure
-       modes; it cannot be carried honestly in under 200 words, and carrying it
-       dishonestly is worse than linking the README. -->
+       (it is a picture in #config now), and Caps Lock.
+
+       CAPS LOCK IS BACK, AND IT ANSWERS ONE QUESTION RATHER THAN CARRYING THE
+       FEATURE. The old entry tried to explain an opt-in that installs a
+       low-level keyboard hook and has three real failure modes, which cannot be
+       done honestly in under 200 words — that is still true, and the README is
+       still where it goes. But cutting it left NOTHING on the page saying who
+       does the mapping, while the chord rows in the hero print `Caps Lock C =`
+       on all three machines. Those rows are the only place the page makes the
+       claim, so this is the one line that keeps them honest — see the note over
+       `.hero-chords`.
+
+       IT SAYS WINDOWS, AND ONLY WINDOWS, BECAUSE THAT IS WHAT SHIPS. A draft of
+       this entry read "on macOS and Windows it can", which is true of `main`
+       and false of every released beckon: `crates/beckon-macos/src/caps_tap.rs`
+       is in no tag — `git cat-file -e v0.9.6:<that path>` fails, and so does
+       v0.9.5 and v0.9.4. (`git show v0.9.6:crates/beckon-cli/src/serve.rs |
+       grep caps_tap` returns five hits and not one of them is the module; they
+       are the config field `keyboard.caps_tap`, which has parsed far longer
+       than anything has honoured it on that OS. A grep is not a release.) This
+       page is the landing page for the SHIPPED product — `tools/check-site.sh`
+       pins the version printed on it to `Cargo.toml` — so a reader who installs
+       the version this page names has to get every behaviour it promises.
+
+       THE LINK IS PLACED, NOT DECORATIVE. It sits inside the Windows sentence
+       because README's section is headed "Caps Lock as the beckon key (Windows,
+       opt-in)" and its three caveats — UIPI under an elevated window, other
+       remappers, and the low-level keyboard hook — are all Windows facts. A
+       macOS reader sent there finds nothing that addresses them. When macOS
+       Caps ships, this entry and that heading move together or the link starts
+       lying again. -->
   <section id="faq" aria-labelledby="faq-h">
     <div class="wrap">
       <h2 id="faq-h">Questions.</h2>
@@ -688,6 +733,17 @@ scoop install xom11/beckon</code></pre>
           gates it behind an explicit grant. The grant is bound to the binary&rsquo;s code signature,
           so rebuilding beckon yourself can invalidate it. <code>beckon doctor</code> reports
           whether the process it is running in is trusted.</p>
+        </details>
+
+        <details>
+          <summary>Does beckon map Caps Lock for me?</summary>
+          <p>On Windows it can, once you turn it on &mdash; beckon holds the key itself, and
+          Caps then stands in for the chord. The
+          <a href="https://github.com/xom11/beckon/blob/main/README.md">README</a> has what
+          turning that on costs. On macOS and Linux it does not: there Caps Lock is whatever
+          your own remapper makes it &mdash; Karabiner, kanata, xkb &mdash; and beckon only
+          ever sees the chord that comes out. Either way it is the chord, not the Caps key,
+          that goes in your config.</p>
         </details>
 
         <details>

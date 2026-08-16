@@ -16,7 +16,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The page's own test suite, AHEAD of the publish rather than beside it.
+  # `ci.yml` runs the same script on the same push, but `needs:` cannot reach
+  # across workflows — so without this job the artifact went live while that
+  # run was still going red, and a wrong install command sat on the public
+  # page until a human noticed. `tools/check-site.sh` calls that "the one
+  # error a landing page cannot afford"; ~5 s of ubuntu buys it.
+  check:
+    name: Landing page checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: ./tools/check-site.sh
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
     environment:
       name: github-pages
