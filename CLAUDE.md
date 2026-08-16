@@ -1585,13 +1585,39 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   the one window built for exactly this file unreachable from the one
   starting condition that most needs it. **`beckon.exe serve` still refuses
   and exits non-zero** (`BrokenConfig::Refuse`): it has a console to print
-  to and callers that check the code. macOS `serve` refuses too — no tray,
-  no window, nothing for a tolerant start to rescue — and `beckon check` is
-  untouched. Note the interaction the old behaviour had with
-  `examples/windows/serve/beckon-serve.xml`: `<RestartOnFailure>` there is
-  `PT1M` x 3, and pairing it with a deterministic exit 1 spends all three
-  restarts on a file only a human can fix, then gives up — leaving no
-  hotkeys and, before `4f82b94`, no tray to say so.
+  to and callers that check the code. `beckon check` is untouched.
+
+  **CORRECTED 2026-08-16: macOS takes BOTH arms, chosen at run time.** This
+  entry used to read *"macOS `serve` refuses too — no tray, no window, nothing
+  for a tolerant start to rescue"*. That was true when it was written and
+  false from `db4aabc`, which gave the platform a tray and four working doors
+  — so the justification outlived the fact it rested on, in the direction that
+  strands the user. macOS has **one** binary where Windows has two, so it
+  cannot split the decision by PE subsystem; it asks whether anyone is
+  watching stderr, which is the same signal `notify.rs` already uses to decide
+  whether to post a notification:
+
+  - **stderr is a terminal** — a person ran it by hand. `Refuse`, print the
+    parser's message, exit non-zero. Unchanged, and that is the half that
+    keeps this from being a regression.
+  - **stderr is not** — launchd, whose `StandardErrorPath` is a file. Nobody
+    reads the message and nobody reads the code, so refusing spends both and
+    buys nothing. `ServeAnyway`.
+
+  `macos_broken_config` is the whole decision, pure and ungated, so all three
+  CI jobs test it; only the caller that samples the terminal is
+  platform-bound. **Windows keeps `Refuse` unconditionally** and must not
+  adopt this: there the answer is already carried by which binary is running,
+  and sampling the terminal would let a shell redirect quietly change a
+  documented exit code.
+
+  The restart interaction is worse on macOS than the Windows note below it,
+  and is the second reason: `examples/windows/serve/beckon-serve.xml` caps
+  `<RestartOnFailure>` at `PT1M` x 3 and then gives up, but the Homebrew
+  formula's launch agent is `KeepAlive { SuccessfulExit: false }` with
+  `ThrottleInterval 60` — **no cap at all**. Pairing that with a deterministic
+  exit 1 is an infinite restart loop, once a minute, on a file only a human
+  can repair, with no tray anywhere to say so.
 
   **The availability probe asks the OS last, and always gives the chord
   back.** Order, from `beckon_core::settings::probe_plan`: parse, the F12

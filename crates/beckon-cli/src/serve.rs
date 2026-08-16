@@ -124,16 +124,23 @@ pub struct AutostartCapability {
 /// front doors: `load_settings_model` returns `Err` for that too, so
 /// `open_settings` would refuse to open and a tray installed for its sake
 /// could do nothing at all.
+///
+/// **CORRECTED: macOS takes both arms, chosen at run time.** This doc used to
+/// end *"macOS `serve` runs under launchd with no tray and no settings window,
+/// so there would be nothing for it to rescue"*. True when written; false from
+/// `db4aabc`, which gave that platform a tray and four working doors. macOS
+/// has one binary where Windows has two, so it cannot split the decision by
+/// subsystem -- it asks whether anyone is watching stderr instead. See
+/// `macos_broken_config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrokenConfig {
     Refuse,
-    /// Constructed only by `serve_app_main` (`beckon-serve.exe`), which is
-    /// Windows-only -- so the other two CI jobs see a variant nothing builds.
-    /// Same annotation, and the same reasoning, as `ServeState::log`: the
-    /// decision it selects is tested on all three jobs, only the caller is
-    /// platform-bound. macOS `serve` runs under launchd with no tray and no
-    /// settings window, so there would be nothing for it to rescue.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    /// Constructed by `serve_app_main` (`beckon-serve.exe`, Windows-only) and
+    /// by `cmd_serve` on macOS when stderr is not a terminal -- so the Linux
+    /// CI job is the only one that sees a variant nothing builds. The decision
+    /// it selects is tested on all three jobs; only the callers are
+    /// platform-bound.
+    #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
     ServeAnyway,
 }
 
@@ -354,10 +361,51 @@ fn acquire_lock(config: &Path) -> Result<std::fs::File> {
     Ok(crate::lockfile::acquire(config)?)
 }
 
+/// Which `BrokenConfig` the one macOS front door takes, from whether anyone
+/// is watching its stderr.
+///
+/// **Pure, and uncompiled-out on purpose.** The decision is testable on all
+/// three CI jobs; only the caller that samples the terminal is platform-bound.
+/// Same shape as `plan_startup`, and the same reason.
+///
+/// The `allow` is the price of that, and it is the same annotation
+/// `ServeState::log` carries for the same reason: off macOS the only caller is
+/// `mod tests`, so a `--all-targets` clippy is happy while the plain `(lib)`
+/// build is not. **A gate that runs only on this host cannot see that** — the
+/// function is live here — which is why it went out red. `cargo clippy
+/// --target aarch64-pc-windows-msvc -p beckon-cli` reproduces it from macOS in
+/// seconds.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn macos_broken_config(stderr_is_terminal: bool) -> BrokenConfig {
+    if stderr_is_terminal {
+        BrokenConfig::Refuse
+    } else {
+        BrokenConfig::ServeAnyway
+    }
+}
+
+/// What `cmd_serve` does with a file that does not parse.
+///
+/// **Windows keeps `Refuse` unconditionally**, because there the question is
+/// already answered by which binary is running: `beckon.exe serve` is
+/// console-subsystem and `beckon-serve.exe` is not. Sampling the terminal
+/// there would let a redirect quietly change a documented exit code.
+///
+/// macOS has one binary for both jobs, so it asks the same question the only
+/// way it can -- see `macos_broken_config`, and `notify.rs`, which decides
+/// whether to post a desktop notification off exactly this signal.
+#[cfg(target_os = "macos")]
+fn front_door_broken_config() -> BrokenConfig {
+    macos_broken_config(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn front_door_broken_config() -> BrokenConfig {
+    BrokenConfig::Refuse
+}
+
 pub fn cmd_serve(config: &Path, log: Option<PathBuf>) -> Result<()> {
-    // `Refuse`: this front door has a console to print the parse error to and
-    // a caller to hand the exit code to. See `BrokenConfig`.
-    cmd_serve_app(config, log, None, BrokenConfig::Refuse)
+    cmd_serve_app(config, log, None, front_door_broken_config())
 }
 
 /// Shared implementation for both Windows front doors (`cmd_serve`, the CLI
@@ -2335,6 +2383,49 @@ mod tests {
             assert!(plan.keyboard.caps, "the keyboard block is carried through");
             assert_eq!(plan.broken, None, "nothing is wrong with this file");
         }
+    }
+
+    /// macOS has ONE front door, so it cannot split the decision by binary
+    /// the way Windows does, and answering `Refuse` for both callers costs
+    /// something on each.
+    ///
+    /// Under launchd nobody reads stderr and nobody reads the exit code, so
+    /// refusing loses the tray and the settings window -- the only thing that
+    /// can fix the file -- in exactly the situation that needs them. That is
+    /// the same finding `4f82b94` recorded for `beckon-serve.exe` on a14,
+    /// where refusing ended in a dialog with **no tray icon at all**.
+    ///
+    /// `BrokenConfig`'s own doc still said *"macOS `serve` runs under launchd
+    /// with no tray and no settings window, so there would be nothing for it
+    /// to rescue"*. That was true when it was written and stopped being true
+    /// at `db4aabc`: the window has four working doors now.
+    ///
+    /// Worse than losing the window: the launch agent on this machine is
+    /// `KeepAlive { SuccessfulExit: false }` with `ThrottleInterval 60`, so a
+    /// deterministic exit 1 is an **infinite restart loop**, once a minute,
+    /// on a file only a human can repair. Windows caps that at three
+    /// (`<RestartOnFailure> PT1M x 3`) and gives up; launchd never does.
+    #[test]
+    fn macos_serve_under_launchd_starts_on_a_broken_file() {
+        assert_eq!(
+            macos_broken_config(false),
+            BrokenConfig::ServeAnyway,
+            "no terminal means launchd: nobody reads stderr, nobody reads the \
+             exit code, and refusing strands the window that fixes the file"
+        );
+    }
+
+    /// The other half, and it is what keeps the change from being a
+    /// regression: run by hand there IS a console for the parse error and a
+    /// shell that can read `$?`, which is the contract `beckon.exe serve`
+    /// documents and scripts already depend on.
+    #[test]
+    fn macos_serve_from_a_terminal_still_refuses() {
+        assert_eq!(
+            macos_broken_config(true),
+            BrokenConfig::Refuse,
+            "a person watching the output gets the error and a non-zero exit"
+        );
     }
 
     #[test]
