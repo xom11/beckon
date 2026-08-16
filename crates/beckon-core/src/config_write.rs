@@ -43,11 +43,22 @@ pub fn render(
         .filter(|r| r.orig_key.as_deref() == Some(r.combo.as_str()))
         .filter_map(|r| r.orig_key.as_deref())
         .collect();
+    //
+    //    Only keys that ARE shortcuts are candidates. The filter used to be
+    //    "not `keyboard` and not kept", which made every top-level key beckon
+    //    did not recognise collateral damage: a `[defaults]` block, a
+    //    `version = 2`, anything a later format or a hand edit adds would be
+    //    silently deleted by the first Save from the settings window. A
+    //    removed binding still parses as a combo, so removal is unaffected.
     let doomed: Vec<String> = doc
         .as_table()
         .iter()
         .map(|(k, _)| k.to_string())
-        .filter(|k| k != KEYBOARD_KEY && !keep.contains(k.as_str()))
+        .filter(|k| {
+            k != KEYBOARD_KEY
+                && !keep.contains(k.as_str())
+                && crate::shortcuts::Combo::parse(k).is_ok()
+        })
         .collect();
     for k in doomed {
         doc.remove(&k);
@@ -57,8 +68,19 @@ pub fn render(
     //    fresh `Item` over it would drop that line's decor, and the decor
     //    is where a trailing `# comment` lives. Swap only the value and put
     //    the decor back. Anything else is a plain insert at the end.
+    //
+    //    A value that is not a string is left exactly as it was.
+    //    `as_value_mut()` succeeds on an array and an inline table too, and
+    //    the assignment below would flatten either one to whatever single
+    //    string the model holds — silently, on a row nobody touched.
+    //    `RowWrite.app` is a `String`, so the model cannot carry a richer
+    //    shape and therefore cannot faithfully write one back; declining is
+    //    the only lossless answer it has.
     for r in rows {
         if let Some(existing) = doc.get_mut(r.combo.as_str()).and_then(|i| i.as_value_mut()) {
+            if !existing.is_str() {
+                continue;
+            }
             let decor = existing.decor().clone();
             *existing = toml_edit::Value::from(r.app.as_str());
             *existing.decor_mut() = decor;
@@ -161,6 +183,56 @@ mod tests {
             "an untouched row was re-spelled:\n{out}"
         );
         assert!(out.contains("Files"), "the edit did not land:\n{out}");
+    }
+
+    /// A Save must not delete what beckon does not recognise.
+    ///
+    /// The `doomed` filter used to be "not `keyboard` and not kept", so every
+    /// other top-level key in the file was collateral: a `[defaults]` block, a
+    /// `version = 2`, anything a later format or a hand edit adds. The window
+    /// would have eaten it on the first Save of an unrelated row, with no
+    /// error and nothing on screen to notice.
+    #[test]
+    fn a_top_level_key_that_is_not_a_shortcut_survives_a_save() {
+        let src = "version = 2\n\n\"ctrl+alt+t\" = \"kitty\"\n\n[defaults]\nmatch = \"exact\"\n";
+        let out = render(
+            src,
+            &[row("ctrl+alt+t", "Alacritty")],
+            &KeyboardConfig::default(),
+        )
+        .expect("renders");
+        assert!(out.contains("version = 2"), "{out}");
+        assert!(out.contains("[defaults]"), "{out}");
+        assert!(out.contains("match = \"exact\""), "{out}");
+        assert!(out.contains("Alacritty"), "the edit still lands: {out}");
+    }
+
+    /// And must not flatten a value it cannot represent.
+    ///
+    /// `as_value_mut()` succeeds on an array as readily as on a string, so the
+    /// assignment used to rewrite `["A", "B"]` as whatever single string the
+    /// model held — on a row the user never touched, because `Model::render`
+    /// sends every row on every Save.
+    #[test]
+    fn a_value_the_model_cannot_hold_is_left_exactly_as_it_was() {
+        let src = "\"ctrl+alt+b\" = [\"Brave Browser\", \"Brave\"]\n\"ctrl+alt+t\" = \"kitty\"\n";
+        let out = render(
+            src,
+            &[
+                row("ctrl+alt+b", "Brave Browser"),
+                row("ctrl+alt+t", "foot"),
+            ],
+            &KeyboardConfig::default(),
+        )
+        .expect("renders");
+        assert!(
+            out.contains("[\"Brave Browser\", \"Brave\"]"),
+            "the array must survive verbatim: {out}"
+        );
+        assert!(
+            out.contains("\"foot\""),
+            "the string row still edits: {out}"
+        );
     }
 
     #[test]
