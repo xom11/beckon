@@ -260,19 +260,18 @@ pub fn key_label(name: &str) -> String {
 ///
 /// **Display only.** See `display_never_reaches_the_serialiser`.
 ///
-/// **The three modifier labels are WINDOWS words, and this is the one thing in
-/// this module that is not cross-platform.** `super_` prints `Win`, which is
-/// what is written on the key beside the space bar on a PC and is nothing at
-/// all on a Mac, where the same modifier is Command. `key_label` below has no
-/// such problem — the main keys are named the same on both — so it is exactly
-/// three strings, not a general portability question.
+/// **The three modifier labels are WINDOWS words**, and the labels are a table
+/// rather than literals: this is `combo_caps_with(s, ModifierLabels::WINDOWS)`,
+/// and the macOS window passes `ModifierLabels::MAC`. `super_` prints `Win`,
+/// which is what is written on the key beside the space bar on a PC and is
+/// nothing at all on a Mac, where the same modifier is Command. `key_label`
+/// below has no such problem — the main keys are named the same on both — so it
+/// is exactly three strings, not a general portability question.
 ///
-/// Left as-is deliberately rather than fixed speculatively: beckon draws a
-/// settings window on Windows only today. Whoever builds the macOS one owns
-/// this, and the shape to avoid is an `os` parameter on this function — it
-/// would put a platform branch inside a display helper that four call sites
-/// share. Lift the three labels out instead, so the caller supplies them and
-/// this function keeps doing one thing.
+/// This function keeps the Windows words so that every existing caller and
+/// test is byte-identical; the shape deliberately avoided is an `os` parameter,
+/// which would put a platform branch inside a display helper four call sites
+/// share.
 pub fn combo_caps(s: &str) -> Vec<String> {
     combo_caps_with(s, ModifierLabels::WINDOWS)
 }
@@ -287,10 +286,11 @@ pub fn combo_caps(s: &str) -> Vec<String> {
 ///
 /// **Added 2026-08-16 because the macOS window was drawing `Win`.** Until
 /// then `combo_caps` had the three strings inline, which was correct for the
-/// only window that existed. It is the first of exactly two strings in
-/// `beckon-core` that named one platform — the other is
-/// `theme::TransparencyBlock::reason`'s *"Off in Windows settings"*, still
-/// worked around locally in `beckon-macos` and wanting the same treatment.
+/// only window that existed. It was the first of exactly two strings in
+/// `beckon-core` that named one platform; the other was
+/// `theme::TransparencyBlock::reason`'s *"Off in Windows settings"*, which
+/// took the same treatment as `theme::BlockReasons` in the same pass — see
+/// that type, which says so from the other side.
 ///
 /// `Shift` is here for completeness and is the same word on both. It is
 /// nonetheless a field rather than a literal, so that a future keyboard that

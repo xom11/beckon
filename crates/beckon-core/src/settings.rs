@@ -520,6 +520,14 @@ pub struct ServiceLine {
 /// denominator taken from the map would read `19 of 19` beside a badge saying
 /// 20 and neither number would explain the other.
 ///
+/// **The numerator has to be counted over those same rows, and the paragraph
+/// above only reasons about one direction.** The other one is worse: a row
+/// REMOVED in the window is still in the last registration PASS, so a
+/// numerator taken from the map's own values outran the total and printed
+/// `Serving · 3 of 2` -- in amber, on the one line that says whether the
+/// hotkeys are working. `control_state` therefore counts the rows the model
+/// still has whose chord the last pass registered.
+///
 /// **The mark is a function of the text**, and that is fine but is not a
 /// reason for the window to cache it: `WM_DRAWITEM` cannot re-derive a `Mark`
 /// from a window's text, so the painter needs it pushed alongside.
@@ -999,16 +1007,22 @@ pub struct FileRow {
 /// in Explorer would read as a beckon bug rather than as a units convention.
 pub fn size_label(bytes: u64) -> String {
     const KB: u64 = 1024;
-    const MB: u64 = KB * KB;
     if bytes < KB {
         // Never "0 KB" for a file that has something in it: a log with one
         // line is the ordinary state seconds after `serve` starts.
         return format!("{bytes} bytes");
     }
-    if bytes < MB {
-        return format!("{} KB", (bytes + KB / 2) / KB);
+    // **Round first, then pick the unit.** The test used to be `bytes < MB`,
+    // made on the RAW count, while the rounding that follows it can carry into
+    // 1024 -- so every size from 1_048_064 up printed `1024 KB`, a unit
+    // Explorer never shows and the doc above promises to match. The MB arm
+    // reads the same rounded figure for the same reason: taken from `bytes` it
+    // would answer `0.9 MB` for a file the KB arm had just called 1024.
+    let kb = (bytes + KB / 2) / KB;
+    if kb < KB {
+        return format!("{kb} KB");
     }
-    format!("{}.{} MB", bytes / MB, (bytes % MB) * 10 / MB)
+    format!("{}.{} MB", kb / KB, (kb % KB) * 10 / KB)
 }
 
 /// Everything the System page draws that is not in `ControlState`.
@@ -2717,7 +2731,16 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         service: service_line(
             true,
             rt.paused,
-            rt.registered.values().filter(|r| r.is_ok()).count(),
+            // Over `m.rows` and not over the map's values, so the numerator
+            // is bounded by the denominator beside it -- see `service_line`'s
+            // own doc for the removal direction that closes.
+            m.rows
+                .iter()
+                .filter(|r| {
+                    Combo::parse(&r.combo)
+                        .is_ok_and(|c| matches!(rt.registered.get(&c.canonical()), Some(Ok(()))))
+                })
+                .count(),
             m.rows.len(),
         ),
         selected,
@@ -5274,6 +5297,36 @@ mod tests {
         );
     }
 
+    /// **And the numerator is counted over those same rows.** The test above
+    /// only ever ADDS a row, which is the direction that keeps the numerator
+    /// the smaller number; removing one runs it the other way. `RuntimeStatus`
+    /// is unchanged across the removal here on purpose -- that is what a
+    /// `Remove` before a save does, since nothing re-registers until the file
+    /// is written -- and a numerator taken from `registered`'s own values then
+    /// printed `Serving · 2 of 1`, an impossibility, in amber.
+    #[test]
+    fn removing_a_row_before_saving_cannot_serve_more_than_the_total() {
+        let mut m = model();
+        let rt = status_all_ok();
+        let before = control_state(&m, &rt);
+        assert_eq!(
+            before.service.text, "Serving · 2 of 2",
+            "precondition: both rows are in the last registration pass"
+        );
+        assert_eq!(before.service.mark, Mark::Ok);
+
+        m.selected = Some(1);
+        m.remove_pressed();
+        let after = control_state(&m, &rt);
+        assert_eq!(after.binding_count, 1, "precondition: the row is gone");
+        assert_eq!(after.service.text, "Serving · 1 of 1");
+        assert_eq!(
+            after.service.mark,
+            Mark::Ok,
+            "a binding the model no longer has is not a chord that failed"
+        );
+    }
+
     /// A file that did not parse has no model to count, and the line says so
     /// rather than printing `0 of 0` as though it were serving nothing.
     #[test]
@@ -6099,10 +6152,60 @@ mod tests {
     /// **Every word `row_condition` can produce must be in `FLAGS`**, or the
     /// painter silently stops colouring one. This is the guard that makes the
     /// vocabulary closed rather than merely documented as closed.
+    ///
+    /// **CORRECTED 2026-08-16: it used to restate the table instead of running
+    /// it.** The loop was over a hand-copy of `FLAGS`' own four words and
+    /// asserted `FLAGS.contains`, i.e. `FLAGS ⊇ FLAGS` -- green whatever
+    /// `row_condition` does, and blind in the one direction it exists to
+    /// guard. Measured: a `conditions.push("no key")` added to `row_condition`
+    /// left it, `split_app_cell_inverts_app_cell_for_every_flag` and
+    /// `an_unknown_flag_word_is_neutral` all green while the list drew an
+    /// uncoloured `Notepad   no key`.
+    ///
+    /// It drives the real producer now, the way the round trip beside it does.
+    /// One fixture per word, plus a healthy row that must stay silent -- which
+    /// is where an unconditional fifth push lands. The fixtures ARE the
+    /// coverage: a word pushed on a branch none of them reaches is still
+    /// invisible here, and only a type could close that.
     #[test]
     fn every_flag_row_condition_produces_is_in_the_table() {
-        for f in ["paused", "in use", "missing", "other chord"] {
-            assert!(FLAGS.contains(&f), "{f:?} missing from FLAGS");
+        let mut missing = model();
+        missing.set_app(0, "Nonexistent App");
+        let mut other = model();
+        other.set_combo(0, "ctrl+alt+t");
+        let mut other_rt = status_all_ok();
+        other_rt.registered.insert("ctrl+alt+t".into(), Ok(()));
+
+        let mut taken = status_all_ok();
+        taken
+            .registered
+            .insert("ctrl+super+alt+t".into(), Err("0x581".into()));
+        let paused = RuntimeStatus {
+            paused: true,
+            ..status_all_ok()
+        };
+
+        let mut seen: Vec<&str> = Vec::new();
+        for (m, rt) in [
+            (model(), status_all_ok()),
+            (model(), paused),
+            (model(), taken),
+            (missing, status_all_ok()),
+            (other, other_rt),
+        ] {
+            for it in control_state(&m, &rt).items {
+                let Some(f) = it.flag else { continue };
+                assert!(FLAGS.contains(&f.as_str()), "{f:?} missing from FLAGS");
+                let f = FLAGS.iter().find(|w| **w == f).unwrap();
+                if !seen.contains(f) {
+                    seen.push(f);
+                }
+            }
+        }
+        // The fixtures have to keep reaching every word, or the loop above
+        // stops asserting anything about the ones they dropped.
+        for f in FLAGS {
+            assert!(seen.contains(&f), "no fixture produces {f:?} any more");
         }
     }
 
@@ -6509,6 +6612,22 @@ mod tests {
         // `roll_if_oversized` rolls at 5 MiB and caps the pair at 10.
         assert_eq!(size_label(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(size_label(5_400_000), "5.1 MB");
+    }
+
+    /// **`1024 KB` is not a unit Explorer has**, and the old code printed it
+    /// for the 512 bytes below 1 MiB: the `bytes < MB` branch was decided on
+    /// the raw count, before the rounding that carries into the next unit.
+    /// Reachable on any `--log` file on its way to `roll_if_oversized`'s
+    /// 5 MiB.
+    ///
+    /// The 1023 either side are the controls: the band is exactly the one the
+    /// carry creates, so this is not "KB stops at some other number".
+    #[test]
+    fn a_size_that_rounds_up_to_the_next_unit_is_named_in_that_unit() {
+        assert_eq!(size_label(1_048_063), "1023 KB");
+        assert_eq!(size_label(1_048_064), "1.0 MB");
+        assert_eq!(size_label(1_048_575), "1.0 MB");
+        assert_eq!(size_label(1_048_576), "1.0 MB");
     }
 
     // -- The About page ----------------------------------------------------
