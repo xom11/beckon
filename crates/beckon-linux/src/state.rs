@@ -16,13 +16,33 @@
 //! before consulting the file. Mouse / native-hotkey focus changes between
 //! beckon calls are picked up by the next invocation automatically.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn state_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .map(|d| d.join("beckon-mru"))
+    state_path_in(std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+/// Path implementation parameterized by the raw environment value — the
+/// public API reads `$XDG_RUNTIME_DIR`, but tests want to hand it one.
+///
+/// **A set-but-empty or relative `XDG_RUNTIME_DIR` is treated as unset**, per
+/// the basedir spec, which is the third place in beckon that rule belongs:
+/// `desktop::absolute_or_none` applies it to `XDG_DATA_HOME` /
+/// `XDG_DATA_DIRS`, and `kde::script_path` filters the same variable on
+/// `is_absolute()` before writing a KWin script into it. Taken literally, a
+/// relative value puts `beckon-mru` in whatever directory the hotkey happened
+/// to be invoked from — and the read side is the worse half: beckon then
+/// picks up a *stranger's* file, so step 5b toggles back to an app the user
+/// never came from. No path at all degrades to "no previous app", which the
+/// callers already handle.
+fn state_path_in(dir: Option<OsString>) -> Option<PathBuf> {
+    let dir = PathBuf::from(dir?);
+    if !dir.is_absolute() {
+        return None;
+    }
+    Some(dir.join("beckon-mru"))
 }
 
 /// The `app_id` of the app focused before the most recent beckon action,
@@ -91,6 +111,25 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_relative_xdg_runtime_dir_is_treated_as_unset() {
+        // Taken literally these wrote `beckon-mru` into the process's working
+        // directory — and READ it back from there on the next press, which is
+        // a stranger's toggle-back target rather than the user's.
+        assert!(state_path_in(Some(OsString::from("relative/dir"))).is_none());
+        assert!(state_path_in(Some(OsString::from("."))).is_none());
+        assert!(state_path_in(Some(OsString::new())).is_none());
+        assert!(state_path_in(None).is_none());
+    }
+
+    #[test]
+    fn an_absolute_xdg_runtime_dir_names_the_mru_file() {
+        assert_eq!(
+            state_path_in(Some(OsString::from("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000/beckon-mru"))
+        );
     }
 
     #[test]

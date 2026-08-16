@@ -41,7 +41,7 @@
 //! the same standing-in-for-MRU choice the X11 backend makes with
 //! `_NET_CLIENT_LIST_STACKING`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
@@ -63,6 +63,10 @@ const SINK_IFACE: &str = "com.github.xom11.beckon.KWin";
 /// KWin plugin names for the two scripts we load. Distinct so a read and a
 /// write can never collide, and fixed so a crashed run leaves at most these
 /// two behind — both are unloaded unconditionally before each load.
+///
+/// The FILES are a different matter: `script_path` appends the pid, so every
+/// invocation writes its own pair and the act half is never safe to unlink
+/// inline. `sweep_orphan_scripts_in` is what collects them.
 const READ_PLUGIN: &str = "beckon-read";
 const ACT_PLUGIN: &str = "beckon-act";
 
@@ -150,6 +154,11 @@ impl KdeBackend {
                     ))
                 })?;
         }
+
+        // Now that we know this is a KWin session and are about to write a
+        // script of our own, collect the ones earlier invocations left
+        // behind. See `sweep_orphan_scripts_in` for why they are left.
+        sweep_orphan_scripts();
 
         Ok(Self {
             conn,
@@ -252,12 +261,79 @@ enum Act {
     Minimize,
 }
 
-fn script_path(plugin: &str) -> PathBuf {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+/// Where the generated scripts live: `$XDG_RUNTIME_DIR` when it is usable
+/// (absolute, per the basedir spec), the system temp dir otherwise.
+fn script_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(std::env::temp_dir);
-    dir.join(format!("{plugin}-{}.js", std::process::id()))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn script_path(plugin: &str) -> PathBuf {
+    script_dir().join(format!("{plugin}-{}.js", std::process::id()))
+}
+
+/// The pid encoded in one of *our* script file names, or `None` for anything
+/// else in the directory.
+///
+/// Deliberately strict, because the sweep below deletes whatever this returns
+/// a pid for and `$XDG_RUNTIME_DIR` is everybody's: the name has to be one of
+/// the two plugin names, a `-`, digits that round-trip, and `.js`. `parse`
+/// alone would accept `beckon-act-007.js` and `beckon-act-+7.js`, neither of
+/// which beckon ever wrote.
+fn script_file_pid(file_name: &str) -> Option<u32> {
+    let stem = file_name.strip_suffix(".js")?;
+    let digits = [READ_PLUGIN, ACT_PLUGIN]
+        .into_iter()
+        .find_map(|plugin| stem.strip_prefix(plugin))?
+        .strip_prefix('-')?;
+    let pid: u32 = digits.parse().ok()?;
+    (digits == pid.to_string()).then_some(pid)
+}
+
+/// Does this pid name a live process? `/proc/<pid>` is the answer on the only
+/// platform this backend runs on, and costs no dependency.
+fn pid_is_alive(pid: u32) -> bool {
+    Path::new("/proc").join(pid.to_string()).exists()
+}
+
+/// Delete `beckon-{read,act}-<pid>.js` files whose process is gone.
+///
+/// The act script's file cannot be unlinked inline the way `list_windows`
+/// unlinks the read script's: `act_script` contains no `callDBus`, so there
+/// is no completion signal to wait on, and removing the file straight after
+/// `start()` can beat KWin to reading it. So it outlives the invocation that
+/// wrote it — one file per `beckon <id>` press — and somebody has to collect
+/// them. The next beckon to start does.
+///
+/// Two ways this can be wrong, and doing less answers both. Pids are reused,
+/// so a live pid is not proof the file is still in use — but the mistake it
+/// causes is keeping a file that was already dead, which costs one inode
+/// until the next matching pid dies. And the directory is shared, so only
+/// names `script_file_pid` recognises are considered at all. It is
+/// best-effort throughout: a sweep that fails must never fail the keypress it
+/// is riding on.
+fn sweep_orphan_scripts_in(dir: &Path, is_alive: impl Fn(u32) -> bool) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let self_pid = std::process::id();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(script_file_pid) else {
+            continue;
+        };
+        // Our own file is never an orphan, whatever the liveness oracle says.
+        if pid == self_pid || is_alive(pid) {
+            continue;
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+fn sweep_orphan_scripts() {
+    sweep_orphan_scripts_in(&script_dir(), pid_is_alive);
 }
 
 /// JS string literal escaping for the few values we interpolate. Window ids
@@ -529,5 +605,77 @@ mod tests {
         assert_eq!(rows[0].id, "{a}");
         assert!(rows[0].cls.is_empty());
         assert!(!rows[0].active);
+    }
+
+    /// The sweep deletes what this matches, and `$XDG_RUNTIME_DIR` belongs to
+    /// every program on the machine.
+    #[test]
+    fn only_the_names_beckon_writes_carry_a_pid() {
+        assert_eq!(script_file_pid("beckon-read-1234.js"), Some(1234));
+        assert_eq!(script_file_pid("beckon-act-7.js"), Some(7));
+
+        assert_eq!(script_file_pid("beckon-act.js"), None);
+        assert_eq!(script_file_pid("beckon-act-.js"), None);
+        assert_eq!(script_file_pid("beckon-act-x.js"), None);
+        assert_eq!(script_file_pid("beckon-act-7.txt"), None);
+        assert_eq!(script_file_pid("kwin-act-7.js"), None);
+        assert_eq!(script_file_pid("pulse-7.js"), None);
+        // `parse` accepts both of these; beckon writes neither.
+        assert_eq!(script_file_pid("beckon-act-007.js"), None);
+        assert_eq!(script_file_pid("beckon-act-+7.js"), None);
+    }
+
+    #[test]
+    fn the_sweep_takes_dead_pids_and_leaves_everything_else() {
+        let dir = scratch_dir("sweep");
+        let ours = script_path(READ_PLUGIN);
+        let ours = dir.join(ours.file_name().unwrap());
+        for name in [
+            "beckon-act-4242.js",  // dead beckon: the leak this collects
+            "beckon-read-4242.js", // same
+            "beckon-act-99.js",    // another beckon, still running
+            "beckon-act-notes.js", // not ours: no pid
+            "kwin-act-4242.js",    // not ours: someone else's prefix
+        ] {
+            std::fs::write(dir.join(name), "//").unwrap();
+        }
+        std::fs::write(&ours, "//").unwrap();
+
+        // Only pid 99 is alive — and our own pid must survive regardless,
+        // which is what makes the sweep safe to run before we write.
+        sweep_orphan_scripts_in(&dir, |pid| pid == 99);
+
+        assert!(!dir.join("beckon-act-4242.js").exists());
+        assert!(!dir.join("beckon-read-4242.js").exists());
+        assert!(dir.join("beckon-act-99.js").exists());
+        assert!(dir.join("beckon-act-notes.js").exists());
+        assert!(dir.join("kwin-act-4242.js").exists());
+        assert!(ours.exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_sweep_survives_a_directory_that_is_not_there() {
+        // Best-effort means best-effort: nothing here may fail a keypress.
+        sweep_orphan_scripts_in(Path::new("/nonexistent/beckon/sweep"), |_| false);
+    }
+
+    /// Per-test scratch directory, same shape as `state.rs`'s — avoids a
+    /// `tempfile` dependency for two tests.
+    fn scratch_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "beckon-kde-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

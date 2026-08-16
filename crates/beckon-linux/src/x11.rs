@@ -28,7 +28,7 @@ use x11rb::atom_manager;
 use x11rb::connection::Connection;
 use x11rb::properties::WmClass;
 use x11rb::protocol::xproto::{
-    AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState, Window,
+    Atom, AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, MapState, Window,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::CURRENT_TIME;
@@ -52,6 +52,8 @@ atom_manager! {
         _NET_WM_WINDOW_TYPE_NORMAL,
         _NET_WM_WINDOW_TYPE_DIALOG,
         _NET_WM_WINDOW_TYPE_UTILITY,
+        _NET_WM_DESKTOP,
+        _NET_CURRENT_DESKTOP,
     }
 }
 
@@ -269,11 +271,40 @@ const ICONIC_STATE: u32 = 3;
 const MAP_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
 const MAP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// EWMH's `_NET_WM_DESKTOP` value for "show on all desktops" (sticky).
+const ALL_DESKTOPS: u32 = 0xFFFF_FFFF;
+
 fn is_viewable(conn: &RustConnection, win: Window) -> bool {
     conn.get_window_attributes(win)
         .ok()
         .and_then(|c| c.reply().ok())
         .is_some_and(|a| a.map_state == MapState::VIEWABLE)
+}
+
+/// First word of a single-CARDINAL property, or `None` if it is absent or
+/// unreadable. Both callers want exactly one number.
+fn read_cardinal(conn: &RustConnection, win: Window, prop: Atom) -> Option<u32> {
+    conn.get_property(false, win, prop, AtomEnum::CARDINAL, 0, 1)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .and_then(|r| r.value32()?.next())
+}
+
+/// Is the target parked on a virtual desktop other than the one on screen?
+///
+/// Split from the two X11 reads so the decision itself is testable without a
+/// server. Absence of either property answers `false`: a WM that publishes no
+/// `_NET_CURRENT_DESKTOP` has no virtual desktops to be elsewhere on, and the
+/// old unconditional wait is the safe answer there.
+fn is_on_another_desktop(win_desktop: Option<u32>, current_desktop: Option<u32>) -> bool {
+    match (win_desktop, current_desktop) {
+        // A sticky window is on this desktop too, so it is never elsewhere —
+        // and `0xFFFFFFFF` read as an ordinary desktop number would compare
+        // unequal to every real one, skipping the wait for exactly the
+        // iconified windows it exists for.
+        (Some(w), Some(c)) => w != ALL_DESKTOPS && w != c,
+        _ => false,
+    }
 }
 
 /// Bring an iconified window back before asking for focus, and wait until
@@ -297,14 +328,46 @@ fn is_viewable(conn: &RustConnection, win: Window) -> bool {
 /// issued by two separate `xdotool` invocations (which are naturally spaced
 /// apart) always worked. We poll `map_state`, which is server state rather
 /// than the WM-owned `WM_STATE` property, so there is nothing to race.
-fn ensure_mapped(conn: &RustConnection, target: Window) -> Result<()> {
+///
+/// **A window that is merely on another virtual desktop is exempt from both
+/// halves.** A WM unmaps the windows of the desktops it is not showing, so
+/// `is_viewable` is false for those as well — and nothing ever de-iconifies
+/// them, because they were never iconified, so the loop burned the full
+/// `MAP_WAIT` on an ordinary focus of an app one desktop over. `WM_STATE`
+/// cannot tell the two apart: openbox reports `IconicState` for an
+/// off-desktop window too, so testing it distinguishes nothing.
+/// `_NET_WM_DESKTOP` against `_NET_CURRENT_DESKTOP` can, and getting there is
+/// the activation's job rather than ours — EWMH has the WM handling
+/// `_NET_ACTIVE_WINDOW` switch to the window's desktop, which is the very
+/// request `request_focus` sends on the next line.
+fn ensure_mapped(conn: &RustConnection, root: Window, atoms: &Atoms, target: Window) -> Result<()> {
     if is_viewable(conn, target) {
         return Ok(());
     }
+    // **The MapRequest is sent whatever desktop the window is on.** It is the
+    // half that returns an iconified window to `NormalState` (ICCCM §4.1.4),
+    // and a window beckon itself hid with step 5c can ALSO be sitting on
+    // another desktop — skipping the map for those two conditions together
+    // strands the window exactly the way openbox stranded it before this
+    // function existed, and the hotkey could never bring it back.
     conn.map_window(target)
         .map_err(|e| BackendError::Ipc(format!("map window: {}", e)))?;
     conn.flush()
         .map_err(|e| BackendError::Ipc(format!("flush map request: {}", e)))?;
+
+    // **The WAIT is the half the desktop test may skip**, and skipping it is
+    // the whole point of that test. `map_state` cannot become `Viewable`
+    // while the window belongs to a desktop that is not on screen, so the
+    // poll below is 400 ms that can never succeed — it is not a race we lose,
+    // it is a condition that cannot hold. The `_NET_ACTIVE_WINDOW` request
+    // the caller sends next is what makes the WM switch desktops, and the WM
+    // maps it there.
+    if is_on_another_desktop(
+        read_cardinal(conn, target, atoms._NET_WM_DESKTOP),
+        read_cardinal(conn, root, atoms._NET_CURRENT_DESKTOP),
+    ) {
+        return Ok(());
+    }
 
     let deadline = std::time::Instant::now() + MAP_WAIT;
     while std::time::Instant::now() < deadline {
@@ -328,7 +391,7 @@ fn request_focus(
     target: Window,
     current_active: Option<Window>,
 ) -> Result<()> {
-    ensure_mapped(conn, target)?;
+    ensure_mapped(conn, root, atoms, target)?;
 
     let event = ClientMessageEvent::new(
         32,
@@ -602,6 +665,41 @@ mod tests {
         assert_eq!(snaps[0].recency, 0);
         assert_eq!(snaps[2].class, "firefox");
         assert_eq!(snaps[2].recency, 2);
+    }
+
+    #[test]
+    fn a_window_on_another_desktop_skips_the_map_wait() {
+        // The whole point: an unmapped window one desktop over is not
+        // iconified, so `ensure_mapped` used to poll `MAP_WAIT` (400 ms) on
+        // every ordinary focus of such a window and then give up anyway.
+        assert!(is_on_another_desktop(Some(1), Some(0)));
+        assert!(is_on_another_desktop(Some(0), Some(3)));
+    }
+
+    #[test]
+    fn a_window_on_the_current_desktop_still_waits() {
+        // This is the openbox restore path the wait was written for, and it
+        // must be untouched.
+        assert!(!is_on_another_desktop(Some(2), Some(2)));
+        assert!(!is_on_another_desktop(Some(0), Some(0)));
+    }
+
+    #[test]
+    fn a_sticky_window_is_never_elsewhere() {
+        // 0xFFFFFFFF is EWMH's "on all desktops". Compared as a plain number
+        // it differs from every real desktop, which would skip the wait for a
+        // window that is right here and genuinely iconified.
+        assert!(!is_on_another_desktop(Some(ALL_DESKTOPS), Some(0)));
+        assert!(!is_on_another_desktop(Some(ALL_DESKTOPS), Some(7)));
+    }
+
+    #[test]
+    fn a_missing_desktop_property_keeps_the_unconditional_wait() {
+        // A WM that publishes neither atom has no virtual desktops we can
+        // reason about; the pre-existing behaviour is the safe answer.
+        assert!(!is_on_another_desktop(None, Some(0)));
+        assert!(!is_on_another_desktop(Some(1), None));
+        assert!(!is_on_another_desktop(None, None));
     }
 
     #[test]
