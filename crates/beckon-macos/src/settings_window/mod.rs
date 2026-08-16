@@ -599,6 +599,12 @@ define_class!(
                 }
             });
             c.table.reloadData();
+            // A VIEW preference, so it belongs beside `Opacity` in
+            // `NSUserDefaults` and never in `apps.toml` -- that file stays
+            // byte-identical between a machine with this ticked and one
+            // without, which is what lets one config be shared across
+            // machines. See the field's own doc.
+            crate::prefs::set_caps_view(on);
             cmd(SettingsCommand::SetCapsShorthand(on));
         }
 
@@ -659,6 +665,13 @@ define_class!(
             c.sys
                 .opacity_value
                 .setStringValue(&NSString::from_str(&format!("{pct}%")));
+            // Stored HERE, not by the caller. `SettingsCommand::SetOpacity`
+            // is a notification -- `serve.rs`'s arm for it is empty on both
+            // platforms and says why: answering it there would make the
+            // caller a second author for a value the window already holds.
+            // The Win32 twin writes its registry value from the window for
+            // the same reason.
+            crate::prefs::set_opacity(pct);
             cmd(SettingsCommand::SetOpacity(pct));
         }
 
@@ -1346,8 +1359,14 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             // Set below by `show_page`, which is also what tells the caller.
             page: Page::Shortcuts,
             paths: paths.clone(),
-            opacity: 100,
-            caps_view: false,
+            // **This IS the reload path** the `opacity` field's old comment
+            // said a stored preference should arrive with. The window is
+            // built fresh on every open, so there is exactly one place the
+            // stored value has to be honoured and it cannot be missed by a
+            // later edit. `100` was the hard-coded default that made the
+            // slider forget itself the moment the window closed.
+            opacity: crate::prefs::opacity(),
+            caps_view: crate::prefs::caps_view(),
             caps_checked: false,
             caps_hold: Chord::default(),
             about_state: None,
@@ -1377,6 +1396,19 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         c.window
             .setContentSize(NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT));
         c.window.center();
+
+        // **Reading the stored opacity into `Ui` is only half of honouring
+        // it.** `set_window_opacity` had exactly one caller -- the slider's
+        // own handler -- so a value restored at construction would sit in the
+        // struct while the window drew fully opaque and the slider pointed at
+        // the wrong number. Three surfaces, one value; the handler updates
+        // the same three in the same order.
+        let pct = crate::prefs::opacity();
+        set_window_opacity(&c.window, pct);
+        c.sys.opacity.setDoubleValue(pct as f64);
+        c.sys
+            .opacity_value
+            .setStringValue(&NSString::from_str(&format!("{pct}%")));
     }
     Ok(())
 }
