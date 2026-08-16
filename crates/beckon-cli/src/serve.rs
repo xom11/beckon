@@ -1369,8 +1369,12 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
         // remapping the key the moment the feature it belongs to is off.
         caps_tap::clear_bindings();
         let was = caps_tap::is_installed();
-        caps_tap::uninstall();
-        if was {
+        // **Drop only the Caps reason.** The tap survives if a recording is
+        // holding it -- the same rule `sync_caps_hook` follows on Windows, and
+        // what makes `clear_bindings` above the thing that actually keeps a
+        // paused tap from eating a keystroke rather than the teardown.
+        caps_tap::uninstall_for(beckon_core::capture::HookReason::Caps);
+        if was && !caps_tap::is_installed() {
             eprintln!("beckon serve: caps event tap removed");
         }
         return;
@@ -1379,7 +1383,7 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     let keys = bound.len();
     caps_tap::set_bindings(bound, hold, tap);
     let was = caps_tap::is_installed();
-    match caps_tap::install() {
+    match caps_tap::install_for(beckon_core::capture::HookReason::Caps) {
         Ok(()) => {
             if !was {
                 eprintln!(
