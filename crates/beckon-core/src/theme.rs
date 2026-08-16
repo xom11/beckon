@@ -261,10 +261,114 @@ impl TransparencyBlock {
     /// em-dash came back as `?"` once, and a text face draws a glyph it does
     /// not carry as a box.
     pub fn reason(self) -> &'static str {
+        self.reason_with(BlockReasons::WINDOWS)
+    }
+
+    /// The same slot, in a named platform's words.
+    pub fn reason_with(self, r: BlockReasons) -> &'static str {
         match self {
-            TransparencyBlock::HighContrast => "Off in high contrast",
-            TransparencyBlock::RemoteSession => "Off in a remote session",
-            TransparencyBlock::SystemSetting => "Off in Windows settings",
+            TransparencyBlock::HighContrast => r.high_contrast,
+            TransparencyBlock::RemoteSession => r.remote_session,
+            TransparencyBlock::SystemSetting => r.system_setting,
+        }
+    }
+}
+
+/// What a blocked transparency slider says, per platform.
+///
+/// The three refusals are the same fact on both — the machine will not
+/// composite — but two of the three sentences name a place, and the place is
+/// different. `SystemSetting` is `Themes\Personalize\EnableTransparency` on
+/// Windows and *Accessibility › Display › Reduce transparency* on macOS, and
+/// `HighContrast` is a high-contrast theme on one and *Increase contrast* on
+/// the other. A reader sent to the wrong operating system's Settings app is
+/// worse served than one told nothing.
+///
+/// **Same shape as `shortcuts::ModifierLabels`, deliberately.** These were
+/// the only two strings in `beckon-core` that named one platform, they were
+/// found together, and giving them one shape means a third — if the port to
+/// some other desktop ever finds one — has an obvious form to take rather
+/// than an invented one.
+///
+/// **`reason()` still returns the Windows text**, so no existing caller or
+/// test moved; `the_default_reasons_are_what_reason_always_returned` pins
+/// it.
+///
+/// The design constraint that produced this slot in the first place survives
+/// translation and must not be dropped: the reason belongs **in the control's
+/// own slot on the same line, never in a tooltip**. On Windows that is
+/// because a disabled control receives no mouse messages, so a tooltip there
+/// is silent forever. macOS shows a tooltip on a disabled control, so the
+/// mechanism differs — but a control that explains itself only on hover
+/// still explains itself to nobody who is not already suspicious, which is
+/// the reading that made it a rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockReasons {
+    pub high_contrast: &'static str,
+    pub remote_session: &'static str,
+    pub system_setting: &'static str,
+}
+
+impl BlockReasons {
+    pub const WINDOWS: BlockReasons = BlockReasons {
+        high_contrast: "Off in high contrast",
+        remote_session: "Off in a remote session",
+        system_setting: "Off in Windows settings",
+    };
+
+    pub const MAC: BlockReasons = BlockReasons {
+        high_contrast: "Off in increased contrast",
+        remote_session: "Off in a remote session",
+        // Names the app the reader has to open, exactly as the Windows one
+        // does. Apple's capitalisation, because it is a proper noun on the
+        // screen the sentence is sending them to.
+        system_setting: "Off in System Settings",
+    };
+}
+
+#[cfg(test)]
+mod block_reason_tests {
+    use super::*;
+
+    /// The whole safety claim of adding the table: no existing caller's
+    /// string moved.
+    #[test]
+    fn the_default_reasons_are_what_reason_always_returned() {
+        assert_eq!(
+            TransparencyBlock::HighContrast.reason(),
+            "Off in high contrast"
+        );
+        assert_eq!(
+            TransparencyBlock::RemoteSession.reason(),
+            "Off in a remote session"
+        );
+        assert_eq!(
+            TransparencyBlock::SystemSetting.reason(),
+            "Off in Windows settings"
+        );
+    }
+
+    #[test]
+    fn a_mac_reader_is_not_sent_to_windows_settings() {
+        let s = TransparencyBlock::SystemSetting.reason_with(BlockReasons::MAC);
+        assert!(!s.contains("Windows"), "{s}");
+        assert!(s.contains("System Settings"), "{s}");
+    }
+
+    /// Every arm names a CAUSE, on every platform. "Off" alone would send the
+    /// reader hunting for the switch that turned it off, and each of these
+    /// three is somewhere else entirely.
+    #[test]
+    fn every_reason_says_more_than_off() {
+        for r in [BlockReasons::WINDOWS, BlockReasons::MAC] {
+            for s in [r.high_contrast, r.remote_session, r.system_setting] {
+                assert!(s.starts_with("Off in"), "{s}");
+                assert!(
+                    s.len() > "Off in".len() + 3,
+                    "{s} says nothing after `Off in`"
+                );
+                assert!(s.is_ascii(), "{s} is not ASCII");
+            }
         }
     }
 }

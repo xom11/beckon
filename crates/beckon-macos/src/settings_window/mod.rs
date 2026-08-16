@@ -129,10 +129,12 @@ struct Controls {
     /// that is not open contributes no height — the AppKit spelling of
     /// `compute_card_rects` being page-dependent.
     pages: [Retained<NSView>; 4],
-    /// `Save` / `Close` / `Open config file`. Drawn on the two doors that
-    /// write the config and on neither of the other two —
-    /// `command_bar_shown`, from `Page::writes_config`.
-    bar: Retained<NSStackView>,
+    /// `Serving · N of M` / `Paused` / `Not serving`.
+    ///
+    /// Lives in the command bar and is drawn on **all four** doors, which is
+    /// the whole reason `show_page` hides the three BUTTONS rather than the
+    /// band that holds them.
+    service: Retained<NSTextField>,
     kbd: keyboard::KeyboardControls,
     sys: system::SystemControls,
     abt: about::AboutControls,
@@ -150,6 +152,8 @@ struct Controls {
     banner_reload: Retained<NSButton>,
     banner_keep: Retained<NSButton>,
     save: Retained<NSButton>,
+    close_btn: Retained<NSButton>,
+    open_file: Retained<NSButton>,
     remove: Retained<NSButton>,
     add: Retained<NSButton>,
 }
@@ -286,34 +290,6 @@ fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.pushing).unwrap_or(true))
 }
 
-/// What the transparency slot reads instead of a percentage, in this
-/// platform's words.
-///
-/// **Not `TransparencyBlock::reason()`**, which is otherwise the right
-/// function and is used by the Win32 twin: its third arm returns
-/// `"Off in Windows settings"`, and the switch a macOS reader has to go and
-/// find is in System Settings › Accessibility › Display. The other two arms
-/// would survive translation unchanged; the third would send the reader to
-/// an operating system they are not running.
-///
-/// Keeping the mapping here rather than adding a platform parameter to core
-/// is deliberate and temporary. `beckon_core` carries exactly two strings
-/// that name Windows — this one and `combo_caps`' `"Win"` modifier label —
-/// and both want the same fix: a label table the caller supplies. That is a
-/// change to a type the Windows settings window also reads, so it is
-/// announced to whoever owns that side before it is made, not after. Until
-/// then a four-line match in the crate that only builds on macOS is the
-/// cheaper mistake: it can drift from core, but it cannot break a platform
-/// this session cannot run.
-fn block_reason(b: beckon_core::theme::TransparencyBlock) -> &'static str {
-    use beckon_core::theme::TransparencyBlock as B;
-    match b {
-        B::HighContrast => "Off in increased contrast",
-        B::RemoteSession => "Off in a remote session",
-        B::SystemSetting => "Off in system settings",
-    }
-}
-
 /// Raise one `SettingsCommand`.
 ///
 /// **Until this existed, `on_command` was never raised on macOS and all
@@ -391,7 +367,14 @@ fn show_page(p: Page) {
     for (i, v) in c.pages.iter().enumerate() {
         v.setHidden(i != page_index(p));
     }
-    c.bar.setHidden(!command_bar_shown(p));
+    // **The buttons, not the band.** The band carries the service line on
+    // every door; hiding it would take a status that belongs on all four off
+    // three of them. `command_bar_shown` answers only "does this door write
+    // the config", which is what decides the buttons.
+    let buttons = command_bar_shown(p);
+    for b in [&c.save, &c.close_btn, &c.open_file] {
+        b.setHidden(!buttons);
+    }
     if now != Some(p) {
         cmd(SettingsCommand::ShowPage(p));
     }
@@ -1122,13 +1105,21 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let save = push("Save", sel!(beckonSave:), &target, mtm);
     let open_file = push("Open config file", sel!(beckonOpenFile:), &target, mtm);
     let close_btn = push("Close", sel!(beckonClose:), &target, mtm);
-    // `Open config file` leads, `Close` and `Save` close: the destructive-ish
-    // pair sits where the eye finishes. `Reload` is NOT here — the System
+    // **The service line leads the bar, and it is on ALL FOUR doors.**
+    // Design §6.4: it is chrome, not a page control. That is also why the
+    // BAND survives on the two doors that draw no buttons — `compute_card_rects`
+    // reserves it whatever the page says, so the content's bottom edge has one
+    // meaning, and an empty bar is indistinguishable from the window ground it
+    // is painted on.
+    let service = widgets::secondary("", mtm);
+    // `Open config file` then `Close` and `Save`: the pair that ends the
+    // session sits where the eye finishes. `Reload` is NOT here — the System
     // door owns it now, and the banner owns the other one.
     let bar = hstack(
         &[
-            &*open_file as &NSView,
+            &*service as &NSView,
             &*widgets::spring(mtm),
+            &*open_file,
             &close_btn,
             &save,
         ],
@@ -1245,7 +1236,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 window,
                 tabs,
                 pages: [page_shortcuts, page_keyboard, page_system, page_about],
-                bar,
+                service,
                 kbd,
                 sys,
                 abt,
@@ -1262,6 +1253,8 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 banner_reload,
                 banner_keep,
                 save,
+                close_btn,
+                open_file,
                 remove,
                 add,
             },
@@ -1575,6 +1568,25 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // dot in the close button — so the Win32 twin's `*` title prefix does
         // NOT port: both at once would be two marks for one fact.
         x.window.setDocumentEdited(st.dirty);
+
+        // The service line, on every door.
+        //
+        // **No glyph in front of it.** The Win32 twin owner-draws one because
+        // it also owner-draws the colour; here the colour IS the signal and
+        // AppKit resolves it against the appearance, so a leading `ok` / `!`
+        // / `x` would be a second encoding of the same fact. `Ok` is
+        // deliberately quiet — `secondaryLabelColor`, the same weight as the
+        // rest of the chrome — because a healthy state announcing itself is
+        // the noise the Shortcuts door's status vocabulary already refuses to
+        // make.
+        x.service
+            .setStringValue(&NSString::from_str(&st.service.text));
+        let tone = match st.service.mark {
+            Mark::Bad => objc2_app_kit::NSColor::systemRedColor(),
+            Mark::Warn => objc2_app_kit::NSColor::systemOrangeColor(),
+            Mark::Ok | Mark::Unknown => objc2_app_kit::NSColor::secondaryLabelColor(),
+        };
+        x.service.setTextColor(Some(&tone));
 
         x.table.reloadData();
         if let Some(i) = st.selected {

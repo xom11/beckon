@@ -192,8 +192,9 @@ pub(super) fn apply(c: &SystemControls, st: &SystemState) {
             // looking for a switch that this window does not own.
             c.opacity_row.setHidden(false);
             c.opacity.setEnabled(false);
-            c.opacity_value
-                .setStringValue(&NSString::from_str(super::block_reason(block)));
+            c.opacity_value.setStringValue(&NSString::from_str(
+                block.reason_with(beckon_core::theme::BlockReasons::MAC),
+            ));
         }
     }
 
