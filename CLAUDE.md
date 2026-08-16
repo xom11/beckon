@@ -1638,7 +1638,43 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
   about. `Add` still clears the filter, which is a different question: a new
   row is empty and would match nothing.
 
-  **The status vocabulary is four words, and a healthy row says nothing.**
+  **A "does this platform consult that decision?" guard was designed and
+  REJECTED, 2026-08-17, on its own numbers.** The motivating defect is real:
+  `warn_dot_shown` had **zero callers** in `crates/beckon-macos/` while the
+  core test `the_warning_is_on_screen_from_every_door` passed the whole time,
+  because that test asserts a property of two FUNCTIONS and neither window is
+  reachable from it. Generalised: *any* `beckon_core::settings` output a
+  platform never consults is invisible to the entire suite.
+
+  The obvious guard is a grep — for each `pub fn` in `settings.rs`, fail when
+  either window crate has no call site. **Measured before building it: 13 of
+  the 25 public decisions are legitimately one-platform**, and every one has a
+  design reason already in this file — `opacity_alpha` / `opacity_label`
+  because macOS has no `Dark mode` row and uses semantic `NSColor`s;
+  `default_button` because it is a Win32 dialog concept; `image_identity` /
+  `image_age` because macOS reaches them through `about_state`;
+  `app_cell` / `split_app_cell` / `flag_tone` because Windows folds the status
+  word INTO the app cell and macOS gives it its own `COL_STATUS` column
+  (`settings_window/mod.rs:596`), which is presentation rather than a missing
+  consult. An allowlist of 13 is where the fourteenth hides, so the guard
+  would cry wolf until someone deleted it.
+
+  **A naive count is worse still and is the trap to avoid**: grepping only the
+  two window crates reports 15 alarms, because `serve.rs` builds
+  `ControlState` and both windows consume the OUTPUT — `service_line`,
+  `size_label` and `explain_unreadable` have zero call sites in any window and
+  are all correctly reached.
+
+  So the route is a **smoke test per platform**, not a grep: push a state in
+  and read the rendered value back. That became possible on macOS only once
+  the warn mark rode in an `NSSegmentedControl` caption, which AX can read —
+  and note the two traps that make such a test silently vacuous:
+  **an `AXRadioButton` with `AXSubrole = AXSegment` answers `nil` for
+  `AXTitle`** and carries its caption in `AXDescription`; and
+  `settings_saw_external_change` branches on `dirty`, so a test that does not
+  edit first takes the silent-reload path and asserts nothing.
+
+    **The status vocabulary is four words, and a healthy row says nothing.**
   `paused` > `in use` > `missing` > `other chord`, and that order IS
   the precedence — a row can be several at once while the cell holds one
   word. `paused` sits above the registration map deliberately: `serve`
