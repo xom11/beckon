@@ -34,6 +34,7 @@ use windows::Win32::System::Registry::{
 const KEY: PCWSTR = w!("Software\\beckon");
 const DARK: PCWSTR = w!("DarkMode");
 const OPACITY: PCWSTR = w!("Opacity");
+const CAPS_VIEW: PCWSTR = w!("CapsView");
 
 /// Read one DWORD, or `None` when the key or the value is absent.
 ///
@@ -115,6 +116,28 @@ pub fn dark() -> bool {
 
 pub fn set_dark(on: bool) -> Result<(), String> {
     write(DARK, u32::from(on))
+}
+
+/// Does the Shortcuts list fold the caps chord into one `Caps` cap?
+///
+/// Design §3.2's `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]`.
+///
+/// **Default OFF, which is the opposite of `dark()` above and is deliberate.**
+/// `dark` reads absent-as-ON because §5.2 makes dark the default; this reads
+/// absent-as-OFF because §3.2 says so, and because the fold hides what the
+/// file actually says. A user who has never opened this window should see the
+/// chord their config spells.
+///
+/// It is a **view** preference and lives here rather than in `apps.toml` for
+/// the reason §1 splits the two stores: the file still says
+/// `ctrl+super+alt+b`, so a machine with this on and a machine with it off
+/// share a config byte for byte.
+pub fn caps_view() -> bool {
+    read(CAPS_VIEW) == Some(1)
+}
+
+pub fn set_caps_view(on: bool) -> Result<(), String> {
+    write(CAPS_VIEW, u32::from(on))
 }
 
 /// The transparency percentage, clamped into the slider's own range.

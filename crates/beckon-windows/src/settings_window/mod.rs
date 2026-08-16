@@ -151,12 +151,15 @@ use crate::caps_hook;
 use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
-    about_state, banner_shown, combo_needs_placing, command_bar_shown, copy_text, default_button,
-    image_identity, opacity_alpha, system_state, warn_dot_shown, AboutInputs, AboutState,
-    ComboSpot, ControlState, DefaultButton, Field, FlagTone, ImageOnDisk, ListItem, Mark, Note,
-    Page, Paths, SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
+    about_state, banner_shown, caps_view_enabled, caps_view_fold, combo_needs_placing,
+    command_bar_shown, copy_text, default_button, image_identity, opacity_alpha, system_state,
+    warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton, Field,
+    FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, SettingsCommand, SystemInputs,
+    SystemState, Target, Transparency, BANNER_PAGE,
 };
-use beckon_core::shortcuts::{combo_display, combo_view, key_table, CapsTap, Chord, ComboView};
+use beckon_core::shortcuts::{
+    combo_display_folded, combo_view, key_table, CapsTap, Chord, ComboView,
+};
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
@@ -646,7 +649,7 @@ const PAGE_CONTROLS: [(i32, Page); 50] = [
     (IDC_REVERT, Page::Shortcuts),
     (IDC_NOTES, Page::Shortcuts),
     // -- Keyboard: the Caps line, and nothing else yet.
-    (IDC_GRP_KEYBOARD, Page::Keyboard),
+    (IDC_CAPS_SHORTHAND, Page::Keyboard),
     (IDC_CAPS, Page::Keyboard),
     (IDC_LBL_HOLD, Page::Keyboard),
     (IDC_HOLD_CTRL, Page::Keyboard),
@@ -885,6 +888,15 @@ mod cap {
     pub const RELOAD: &str = "&Reload";
     pub const KEEP_MINE: &str = "&Keep mine";
     pub const CAPS: &str = "&Use Caps Lock as a shortcut key";
+    /// Design §3.2's third group. The mnemonic is `p`, which the table above
+    /// leaves free -- `W`, `S`, `C`, `A`, `R` and `t` are all spoken for, and
+    /// `p` is the first letter in the sentence that is not.
+    ///
+    /// **The drawing sets `[Caps]` and `[Ctrl] [Win] [Alt]` as real keycaps
+    /// inside the sentence, and this is plain text.** No painter in this
+    /// window interleaves text runs with caps; building one blind would put a
+    /// third unverifiable thing on this door. The words are the drawing's.
+    pub const CAPS_SHORTHAND: &str = "Write shortcuts as Ca&ps instead of Ctrl + Win + Alt";
     pub const HOLD: &str = "Hold";
     pub const TAP: &str = "Tap";
     pub const HOLD_CTRL: &str = "C&trl";
@@ -1751,7 +1763,7 @@ fn role_of(id: i32) -> Role {
         // child of `hwnd`. **There is no Header any more** (`LVS_NOCOLUMNHEADER`,
         // same design bullet), so `role_of` now covers every string in the
         // window that is not painted by `paint.rs` directly.
-        IDC_GRP_KEYBOARD | IDC_APPLY => Role::BodyStrong,
+        IDC_APPLY => Role::BodyStrong,
         // Secondary prose, at Caption size. The banner is deliberately NOT
         // here: it announces that the file moved under us, which is the
         // least appropriate text in the window to shrink. `IDC_LBL_COUNT`
@@ -2172,6 +2184,21 @@ struct Ui {
     /// control's contents are unknown" and the next push rebuilds -- which
     /// is always correct, just slower.
     items: Vec<ListItem>,
+    /// The two model facts the Shortcuts list's caps fold needs, recorded at
+    /// the last push (design §3.2).
+    ///
+    /// The third input — the view preference itself — is read from `HKCU` at
+    /// the moment it is needed and deliberately not cached: it changes only
+    /// through `IDC_CAPS_SHORTHAND`, whose handler is the one place that
+    /// wants it, and a cached copy would be a second answer to a question the
+    /// registry already answers.
+    ///
+    /// Cached at all because that handler has no `ControlState` to hand: it
+    /// runs from `WM_COMMAND`, not from a push, and re-deriving these two by
+    /// reading the check boxes back off the screen would make the list's text
+    /// depend on the window's own controls rather than on the model.
+    caps_on: bool,
+    caps_hold: Chord,
     /// Which deferred read of the App combo box is still wanted. Bumped in
     /// two places, and both are load-bearing:
     ///
@@ -4472,12 +4499,18 @@ unsafe fn build_children(hwnd: HWND) {
     // `layout.rs` places this at `kb_x, kb_y, kb_w, s(24)` now, not the
     // card's full interior height -- see `compute_card_rects`'s and
     // `layout`'s own comments on why `kb_card_h`'s budget does not move.
+    // **The `Keyboard` heading is gone (2026-08-16)**, and with it
+    // `IDC_GRP_KEYBOARD`. It drew that word directly beneath a tab pill
+    // captioned `Keyboard`; design §3.1 deleted the same duplication on the
+    // Shortcuts door and §7 rule 5 forbids it. The id is RETIRED, not freed.
+    //
+    // Design §3.2's third group takes its place at the bottom of the card.
     child(
         hwnd,
-        w!("STATIC"),
-        "Keyboard",
-        SS_CENTERIMAGE_STYLE,
-        IDC_GRP_KEYBOARD,
+        w!("BUTTON"),
+        cap::CAPS_SHORTHAND,
+        WINDOW_STYLE(BS_AUTOCHECKBOX as u32) | WS_TABSTOP,
+        IDC_CAPS_SHORTHAND,
         &fonts,
     );
     child(
@@ -5029,6 +5062,12 @@ unsafe fn build_children(hwnd: HWND) {
             suppress: false,
             external_change: false,
             items: Vec::new(),
+            // The resting values are the safe direction, matching `items`
+            // above: no fold until the first push says otherwise. A window
+            // that briefly spells the chord in full is right about the file;
+            // one that briefly folds is claiming a Caps key nobody has armed.
+            caps_on: false,
+            caps_hold: Chord::default(),
             app_epoch: 0,
             shown_combo: None,
             capture: None,
@@ -6334,6 +6373,16 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         enable(hwnd, IDC_FILTER, st.editable);
         enable(hwnd, IDC_LIST, st.editable);
         enable(hwnd, IDC_CAPS, st.editable);
+        // **The view switch is NOT gated on `st.editable`**, and that is
+        // design §1's split by store rather than an oversight -- the same
+        // reasoning `pressable` gives the System page's five. `editable` is
+        // false exactly when `apps.toml` did not parse, and this control
+        // writes `HKCU`, so greying it would make a file beckon cannot read
+        // disable a preference about how beckon draws. What it IS gated on is
+        // `caps_view_enabled`: with Caps unarmed the fold would advertise a
+        // keystroke that does nothing.
+        enable(hwnd, IDC_CAPS_SHORTHAND, caps_view_enabled(st.caps_checked));
+        check(hwnd, IDC_CAPS_SHORTHAND, crate::prefs::caps_view());
         // These four `check` calls need no `suppressed()` guard, unlike every
         // text write above. `IDC_CAPS` is a real check box and `BM_SETCHECK`
         // sets its state without raising `BN_CLICKED`; the three `Hold` chips
@@ -6467,6 +6516,8 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         if let Some(ui) = u.borrow_mut().as_mut() {
             ui.suppress = false;
             ui.items = st.items.clone();
+            ui.caps_on = st.caps_checked;
+            ui.caps_hold = st.caps_hold;
             // Recorded AFTER the write, not instead of it, so a caption that
             // never made it to the screen is retried on the next push.
             ui.shown_dirty = Some(st.dirty);
@@ -6497,8 +6548,17 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
 /// Both the rebuild and the diff go through here, so they cannot disagree
 /// about what a cell says -- and the column set is one edit, in one place,
 /// when it changes.
-fn cells(it: &ListItem) -> Vec<String> {
-    vec![app_cell(it), combo_cell(it)]
+fn cells(it: &ListItem, fold: Option<Chord>) -> Vec<String> {
+    vec![app_cell(it), combo_cell(it, fold)]
+}
+
+/// Which chord the list folds, for a state about to be pushed.
+///
+/// The three inputs meet here and nowhere else: the view preference from
+/// `HKCU`, and the two model facts from the state. `caps_view_fold` is core's
+/// and carries the decision; this only fetches.
+fn fold_for(st: &ControlState) -> Option<Chord> {
+    caps_view_fold(crate::prefs::caps_view(), st.caps_checked, st.caps_hold)
 }
 
 /// The Shortcut column's text: the chord as a keyboard spells it.
@@ -6516,8 +6576,8 @@ fn cells(it: &ListItem) -> Vec<String> {
 /// keycaps land *over* text that is really there, which is what keeps
 /// `LVM_GETITEMTEXT` working for `examples/settings_probe.rs` and keeps a
 /// screen reader announcing what the screen shows.
-fn combo_cell(it: &ListItem) -> String {
-    let d = combo_display(&it.combo);
+fn combo_cell(it: &ListItem, fold: Option<Chord>) -> String {
+    let d = combo_display_folded(&it.combo, fold);
     if d.is_empty() {
         it.combo.clone()
     } else {
@@ -6559,9 +6619,10 @@ unsafe fn sync_list(list: HWND, prev: &[ListItem], st: &ControlState) {
         rebuild_list(list, st);
         return;
     }
+    let fold = fold_for(st);
     for (i, it) in st.items.iter().enumerate() {
-        let now = cells(it);
-        let was = cells(&prev[i]);
+        let now = cells(it, fold);
+        let was = cells(&prev[i], fold);
         for (sub, text) in now.iter().enumerate() {
             if was.get(sub) != Some(text) {
                 set_item_text(list, i, sub as i32, text);
@@ -6579,8 +6640,9 @@ unsafe fn rebuild_list(list: HWND, st: &ControlState) {
 
     SendMessageW(list, WM_SETREDRAW, Some(WPARAM(0)), Some(LPARAM(0)));
     SendMessageW(list, LVM_DELETEALLITEMS, Some(WPARAM(0)), Some(LPARAM(0)));
+    let fold = fold_for(st);
     for (i, it) in st.items.iter().enumerate() {
-        let texts = cells(it);
+        let texts = cells(it, fold);
         let mut first = wide(&texts[0]);
         // The state goes in with the insert, not after it: an item that is
         // inserted without LVIF_STATE has no state image, and the
@@ -7116,7 +7178,17 @@ unsafe fn push_button_custom_draw(hwnd: HWND, p: *const NMCUSTOMDRAW) -> isize {
 /// switches, which reads as a rendering fault rather than as a missing row.
 ///
 /// Every one of them is a real `BS_AUTOCHECKBOX`; see `is_a_toggle`.
-const TOGGLES: [i32; 4] = [IDC_CAPS, IDC_PAUSE, IDC_AUTOSTART, IDC_DARK];
+/// **Five since 2026-08-16**: design §3.2's `Write shortcuts as Caps …`
+/// joins them. It is the second switch on the Keyboard door, and the first
+/// switch anywhere in the window that writes `HKCU` from a page that also
+/// writes `apps.toml` -- see `IDC_CAPS_SHORTHAND`'s own note.
+const TOGGLES: [i32; 5] = [
+    IDC_CAPS,
+    IDC_CAPS_SHORTHAND,
+    IDC_PAUSE,
+    IDC_AUTOSTART,
+    IDC_DARK,
+];
 
 fn is_a_toggle(id: i32) -> bool {
     TOGGLES.contains(&id)
@@ -7907,6 +7979,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     for rc in system_dividers(hwnd)
                         .into_iter()
                         .chain(about_dividers(hwnd))
+                        .chain(keyboard_dividers(hwnd))
                     {
                         divider(hdc, rc, dpi);
                     }
@@ -8453,8 +8526,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let on_card = matches!(
                     id,
                     IDC_BANNER
-                        | IDC_GRP_KEYBOARD
                         | IDC_CAPS
+                        | IDC_CAPS_SHORTHAND
                         | IDC_LBL_HOLD
                         | IDC_LBL_TAP
                         | IDC_PAUSE
@@ -9618,6 +9691,47 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             }
             unsafe { on_theme_changed(hwnd) };
             with_cb(|cb| (cb.on_command)(SettingsCommand::SetDarkMode(on)));
+        }
+        // **`IDC_DARK`'s arrangement, one door across**: it acts here and
+        // does not go through `serve` at all. What it changes is how this
+        // window SPELLS the chord, stored in this window's own key, so a
+        // round trip would leave the list showing the old caps until the next
+        // push -- and there may not be one, since nothing about the model
+        // changed.
+        //
+        // **`sync_list` structurally cannot do this repaint**, which is why
+        // the column is rewritten here by hand. That function diffs
+        // `cells(new)` against `cells(prev)`, and both sides would be spelled
+        // with the SAME (new) fold -- so every cell would compare equal and
+        // nothing would be written. The rebuild path is not reachable either:
+        // it keys off a changed row count, and the count is identical.
+        (IDC_CAPS_SHORTHAND, _) => {
+            let on = is_checked(hwnd, IDC_CAPS_SHORTHAND);
+            if let Err(e) = crate::prefs::set_caps_view(on) {
+                // Swallowed, on `IDC_DARK`'s reasoning: what is lost is that
+                // the choice does not survive a restart, and a modal dialog
+                // about that -- on a switch the user just flipped -- is worse
+                // than the fault. The list has already changed.
+                eprintln!("beckon: cannot store the caps-view preference: {e}");
+            }
+            // The borrow is taken and dropped before anything is SENT: the
+            // `LVM_SETITEMTEXT` below re-enters this wndproc, and a second
+            // `UI` borrow across it aborts the process.
+            let rows: Option<(Vec<ListItem>, Option<Chord>)> = UI.with(|u| {
+                u.borrow().as_ref().map(|ui| {
+                    (
+                        ui.items.clone(),
+                        caps_view_fold(on, ui.caps_on, ui.caps_hold),
+                    )
+                })
+            });
+            if let Some((items, fold)) = rows {
+                if let Ok(list) = unsafe { GetDlgItem(Some(hwnd), IDC_LIST) } {
+                    for (i, it) in items.iter().enumerate() {
+                        unsafe { set_item_text(list, i, 1, &combo_cell(it, fold)) };
+                    }
+                }
+            }
         }
         (IDC_SYS_RELOAD, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::ReloadNow)),
         // The four glyph buttons. `Open` hands the file to whatever is

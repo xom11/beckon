@@ -291,6 +291,53 @@ pub fn combo_display(s: &str) -> String {
     combo_caps(s).join(" + ")
 }
 
+/// The label the Caps key wears when a binding is shown collapsed.
+///
+/// Not `key_label`'s to produce: `caps` is a real key name there (the LOCK
+/// key, which `caps_tap` can select), and this is the shorthand for a chord
+/// the Caps key STANDS IN for. Two different facts that would print the same
+/// word, so they are kept apart -- see `caps_shorthand_is_not_the_lock_key`.
+pub const CAPS_CAP: &str = "Caps";
+
+/// `combo_caps`, with the caps chord folded into a single `Caps` cap.
+///
+/// Design §3.2's `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]`. It
+/// is a **view preference**, so nothing here touches what is written: the file
+/// still says `ctrl+super+alt+b`, `Combo::canonical` is untouched, and the
+/// editor still shows all four real modifiers. Only the list cell changes.
+///
+/// `hold` is `None` when the preference is off, or when Caps is not acting as
+/// a shortcut key at all -- see `settings::caps_view_effective`, which is
+/// where that AND lives so both halves are tested in one place.
+///
+/// **The fold requires an EXACT match and no Shift**, which is the rule the
+/// mock-up draws rather than one invented here: its `Telegram Web` row is
+/// `Ctrl Win Alt Shift T` and sits in `.chips.always`, uncollapsed. That is
+/// the whole value of the preference -- once the common chord is one cap
+/// wide, a binding on any other chord is the one that still looks long, and
+/// spotting it costs no reading. Folding a superset would destroy exactly
+/// that, and would also be a lie: `Caps+Shift+T` is not what the hook sends.
+pub fn combo_caps_folded(s: &str, hold: Option<Chord>) -> Vec<String> {
+    let Ok(c) = Combo::parse(s) else {
+        return Vec::new();
+    };
+    match hold {
+        Some(h) if !c.shift && c.ctrl == h.ctrl && c.super_ == h.super_ && c.alt == h.alt => {
+            vec![CAPS_CAP.to_string(), key_label(&c.key.name)]
+        }
+        _ => combo_caps(s),
+    }
+}
+
+/// `combo_caps_folded` joined the way `combo_display` joins.
+///
+/// The window's list cell holds this string and the painter splits it back on
+/// the same separator, so the two must stay one function apart rather than
+/// two spellings of a join.
+pub fn combo_display_folded(s: &str, hold: Option<Chord>) -> String {
+    combo_caps_folded(s, hold).join(" + ")
+}
+
 /// A parsed key combo. Modifier order in the input is free; `canonical()`
 /// always prints ctrl → super → alt → shift → key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -650,9 +697,9 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_keys, combo_caps, combo_display, combo_view, key_label, key_table, lookup_key,
-        lookup_win_vk, parse_config, parse_shortcuts, CapsTap, Chord, Combo, ComboView,
-        KeyboardConfig,
+        all_keys, combo_caps, combo_caps_folded, combo_display, combo_display_folded, combo_view,
+        key_label, key_table, lookup_key, lookup_win_vk, parse_config, parse_shortcuts, CapsTap,
+        Chord, Combo, ComboView, KeyboardConfig, CAPS_CAP,
     };
 
     #[test]
@@ -1135,6 +1182,113 @@ mod tests {
         // Modifier order is fixed by this function, not by the input string:
         // `Combo::parse` accepts free order, the display must not vary with it.
         assert_eq!(combo_caps("alt+ctrl+f10"), vec!["Ctrl", "Alt", "F10"]);
+    }
+
+    /// The preference OFF is the default, and off must be a no-op rather than
+    /// a subtly different rendering.
+    #[test]
+    fn folding_with_no_chord_is_exactly_combo_caps() {
+        for s in [
+            "ctrl+super+alt+t",
+            "ctrl+super+alt+shift+t",
+            "alt+f4",
+            "not a combo",
+        ] {
+            assert_eq!(combo_caps_folded(s, None), combo_caps(s), "{s}");
+            assert_eq!(combo_display_folded(s, None), combo_display(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn the_caps_chord_folds_to_one_cap() {
+        let hold = Chord::default(); // ctrl + super + alt
+        assert_eq!(
+            combo_caps_folded("ctrl+super+alt+b", Some(hold)),
+            vec!["Caps", "B"]
+        );
+        // Free modifier order in the FILE still folds -- the rule is about the
+        // chord, not about how it was spelled.
+        assert_eq!(
+            combo_caps_folded("alt+ctrl+super+b", Some(hold)),
+            vec!["Caps", "B"]
+        );
+        assert_eq!(
+            combo_display_folded("ctrl+super+alt+b", Some(hold)),
+            "Caps + B"
+        );
+    }
+
+    /// **The row the mock-up draws uncollapsed**, and the reason the whole
+    /// preference is worth having: once the common chord is one cap wide, a
+    /// binding on any OTHER chord is the one that still looks long.
+    #[test]
+    fn a_binding_on_another_chord_never_folds() {
+        let hold = Chord::default();
+        // The mock-up's `Telegram Web`.
+        assert_eq!(
+            combo_caps_folded("ctrl+super+alt+shift+t", Some(hold)),
+            vec!["Ctrl", "Win", "Alt", "Shift", "T"]
+        );
+        // A subset is not the chord either -- `Caps+F4` is not what the hook
+        // sends for `alt+f4`.
+        assert_eq!(combo_caps_folded("alt+f4", Some(hold)), vec!["Alt", "F4"]);
+        assert_eq!(
+            combo_caps_folded("ctrl+super+t", Some(hold)),
+            vec!["Ctrl", "Win", "T"]
+        );
+    }
+
+    /// The fold follows `keyboard.caps_hold`, not a hard-coded ctrl+win+alt.
+    /// A user who set `caps_hold = "ctrl+alt"` must see THEIR chord fold and
+    /// the default chord stay long.
+    #[test]
+    fn the_fold_follows_the_configured_hold_chord() {
+        let hold = Chord {
+            ctrl: true,
+            super_: false,
+            alt: true,
+        };
+        assert_eq!(
+            combo_caps_folded("ctrl+alt+b", Some(hold)),
+            vec!["Caps", "B"]
+        );
+        assert_eq!(
+            combo_caps_folded("ctrl+super+alt+b", Some(hold)),
+            vec!["Ctrl", "Win", "Alt", "B"]
+        );
+    }
+
+    /// An unparsable combo has no chord to compare, so folding cannot invent
+    /// one -- the caller shows the raw text, as it does without the preference.
+    #[test]
+    fn an_unparsable_combo_folds_to_nothing() {
+        assert!(combo_caps_folded("not a combo", Some(Chord::default())).is_empty());
+        assert!(combo_display_folded("", Some(Chord::default())).is_empty());
+    }
+
+    /// **`Caps` cannot be mistaken for a key**, which is what makes the folded
+    /// cap unambiguous rather than merely short.
+    ///
+    /// The first draft of this test asserted that the shorthand differs from
+    /// the LOCK key's own label, on the assumption that `capslock` is a
+    /// bindable key. It is not: `capslock` exists only as a `CapsTap` value,
+    /// and `Combo::parse` rejects it outright -- so the collision the test was
+    /// guarding against cannot be constructed at all. The stronger fact is
+    /// below, and it is checked against the whole table rather than one key.
+    #[test]
+    fn no_key_in_the_table_prints_the_folded_cap() {
+        assert_eq!(CAPS_CAP, "Caps");
+        for k in key_table() {
+            assert_ne!(
+                key_label(&k.name),
+                CAPS_CAP,
+                "key `{}` prints the same cap the fold uses",
+                k.name
+            );
+        }
+        // And the lock key really is unbindable, which is why the ambiguity
+        // has no other route in.
+        assert!(Combo::parse("ctrl+super+alt+capslock").is_err());
     }
 
     #[test]

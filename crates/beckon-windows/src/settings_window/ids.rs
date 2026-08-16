@@ -50,7 +50,12 @@ pub(super) const IDC_KEEPMINE: i32 = 1016;
 // every -1 resolves to the same first match, so sharing one id left all but
 // the first stacked at the origin. `IDC_LBL_HOLD` and `IDC_LBL_TAP` are the
 // remaining two.
-pub(super) const IDC_GRP_KEYBOARD: i32 = 1019;
+// 1019 was `IDC_GRP_KEYBOARD`, the `Keyboard` caption at the top of card 3.
+// Deleted 2026-08-16 and RETIRED in `beckon_core::settings::RETIRED_IDS`, not
+// freed: it drew that word directly beneath a tab pill captioned `Keyboard`,
+// which is the duplication design §3.1 deleted on the Shortcuts door and §7
+// rule 5 forbids. `measurements/fd-after-keyboard.png` is the photograph of it
+// surviving one door longer than the rule.
 // 1020 was `IDC_LBL_SECTION`, the `Shortcuts` heading at the top of card 1.
 // Deleted 2026-08-15 and RETIRED in `beckon_core::settings::RETIRED_IDS`, not
 // freed: design §3.1's drawing and the mock-up both open that card with the
@@ -88,6 +93,20 @@ pub(super) const IDC_MOD_SHIFT: i32 = 1031;
 /// combo and leaves it without a shortcut.
 pub(super) const IDC_RECORD: i32 = 1032;
 pub(super) const IDC_REVERT: i32 = 1033;
+
+/// The Keyboard page's third group (design §3.2): `Write shortcuts as Caps
+/// instead of Ctrl + Win + Alt`.
+///
+/// **1060, out of the Keyboard range, not 1036 out of the tail of the old
+/// block.** `CONTROL_IDS`' range table gives 1060-1069 to this page and core
+/// had already reserved this exact number under this exact name before the
+/// control existed — so taking it is what the table is for.
+///
+/// It is a **view preference**: it writes `HKCU\Software\beckon\CapsView` and
+/// never `apps.toml`, which is why it is handled where `IDC_DARK` is handled
+/// rather than through the editor's dirty/save path, even though it sits on a
+/// page that does save.
+pub(super) const IDC_CAPS_SHORTHAND: i32 = 1060;
 
 // 1034 was `IDC_GRP_EDITOR`, the editor card's `Editing "…"` caption, and
 // 1035 was `IDC_LBL_COUNT`, the `· 18 bindings` STATIC beside the `Shortcuts`
@@ -265,7 +284,6 @@ mod tests {
         ("BANNER", super::IDC_BANNER),
         ("RELOAD", super::IDC_RELOAD),
         ("KEEPMINE", super::IDC_KEEPMINE),
-        ("GRP_KEYBOARD", super::IDC_GRP_KEYBOARD),
         ("FILTER", super::IDC_FILTER),
         ("HOLD_CTRL", super::IDC_HOLD_CTRL),
         ("HOLD_WIN", super::IDC_HOLD_WIN),
@@ -279,6 +297,7 @@ mod tests {
         ("MOD_SHIFT", super::IDC_MOD_SHIFT),
         ("RECORD", super::IDC_RECORD),
         ("REVERT", super::IDC_REVERT),
+        ("CAPS_SHORTHAND", super::IDC_CAPS_SHORTHAND),
         ("TAB_SHORTCUTS", super::IDC_TAB_SHORTCUTS),
         ("TAB_KEYBOARD", super::IDC_TAB_KEYBOARD),
         ("TAB_SYSTEM", super::IDC_TAB_SYSTEM),

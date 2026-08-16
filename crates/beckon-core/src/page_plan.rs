@@ -141,6 +141,74 @@ pub fn system_plan(m: RowMetrics, rows: SystemRows) -> SystemPlan {
     p
 }
 
+/// Where the Keyboard card's three groups sit (design §3.2).
+///
+/// `system_plan`'s shape, three groups instead of three:
+///
+/// ```text
+///   Use Caps Lock as a shortcut key                 ( o==)
+///   ------------------------------------------------------
+///   Hold [Ctrl][Win][Alt]          Tap [ Caps Lock     v ]
+///   ------------------------------------------------------
+///   Write shortcuts as [Caps] instead of
+///   [Ctrl] [Win] [Alt]                              (==o )
+/// ```
+///
+/// **There is no card heading**, and its absence is the design. The card
+/// carried an `IDC_GRP_KEYBOARD` caption reading `Keyboard` directly beneath a
+/// tab pill captioned `Keyboard` — the same duplication design §3.1 deleted on
+/// the Shortcuts door, and visible in `measurements/fd-after-keyboard.png`.
+/// The pill says which door is open from all four doors; a heading repeated it
+/// on one.
+///
+/// **The third group is ONE line here and TWO in the drawing**, and the
+/// difference is deliberate rather than an oversight. §3.2 draws its label with
+/// real keycaps set inside the sentence — `Write shortcuts as [Caps] instead of
+/// [Ctrl] [Win] [Alt]` — which needs a painter that interleaves text runs and
+/// keycaps, measuring each to place the next. No such painter exists:
+/// `draw_keycaps` lays out a row of caps and `paint::toggle` draws a plain
+/// single-line caption, and nothing in the window mixes them. Built blind it
+/// would be the third thing on this door that no test can see and no one can
+/// check without hardware, which is how the four gaps of 2026-08-15 happened.
+///
+/// So the row carries the same sentence as plain text and the same switch, the
+/// FUNCTION is whole, and the chips are recorded as owed rather than faked.
+/// When the mixed painter lands, this becomes two lines and only `content_h`
+/// moves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyboardPlan {
+    pub caps: i32,
+    pub div1: i32,
+    pub hold: i32,
+    pub div2: i32,
+    /// The `Write shortcuts as …` switch, label and track on one line.
+    pub view: i32,
+    pub content_h: i32,
+}
+
+pub fn keyboard_plan(m: RowMetrics) -> KeyboardPlan {
+    let mut p = KeyboardPlan::default();
+    let mut y = 0;
+
+    p.caps = y;
+    y += m.pitch();
+    y -= m.row_gap;
+    p.div1 = y + m.div_gap;
+    y += m.divider();
+
+    p.hold = y;
+    y += m.pitch();
+    y -= m.row_gap;
+    p.div2 = y + m.div_gap;
+    y += m.divider();
+
+    p.view = y;
+    y += m.ctl;
+
+    p.content_h = y.max(0);
+    p
+}
+
 /// Every vertical figure on the About page, at one DPI.
 ///
 /// `system_plan`'s shape exactly, and for the same three readers.
@@ -302,6 +370,43 @@ mod tests {
         assert_eq!(two.build, three.build);
         assert_eq!(two.disclosure, three.disclosure);
         assert_eq!(three.links - two.links, 16);
+    }
+
+    /// The Keyboard card's three groups, and the shape that matters: two
+    /// dividers that part three groups, and a last group of two lines.
+    ///
+    /// **120, where the card's interior was 56** — that is design §3.2
+    /// arriving, not a regrid. The old card was a single control line under a
+    /// caption; this is three groups parted by two dividers, and the ground
+    /// under that door closes by most of a hundred pixels as a consequence.
+    #[test]
+    fn the_keyboard_card_is_three_groups_and_two_dividers() {
+        let p = keyboard_plan(M96);
+        assert_eq!(p.content_h, 120);
+        // Group boundaries are parted by the divider rhythm, exactly as the
+        // System card's are -- one shared rule, not two.
+        assert_eq!(p.hold - (p.caps + M96.ctl), 21);
+        assert_eq!(p.view - (p.hold + M96.ctl), 21);
+        // The hairlines sit inside those boundaries.
+        assert!(p.div1 > p.caps && p.div1 < p.hold);
+        assert!(p.div2 > p.hold && p.div2 < p.view);
+        // The last group is a control line and the card ends with it -- the
+        // trailing row gap is not interior height, `CARD_PAD` is.
+        assert_eq!(p.content_h - p.view, M96.ctl);
+    }
+
+    /// It still fits where the old one did. `MIN_HEIGHT` is derived from the
+    /// About card, so this only has to stay clear of that -- but "stays clear"
+    /// is worth asserting rather than assuming, since the card just doubled.
+    #[test]
+    fn the_keyboard_card_stays_shorter_than_the_card_the_floor_is_derived_from() {
+        let kb = keyboard_plan(M96).content_h;
+        let about = about_plan(M96, 32).content_h;
+        assert!(
+            kb < about,
+            "Keyboard is {kb} and About is {about}; MIN_HEIGHT is derived from \
+             About and would have to move"
+        );
     }
 
     /// The two pages land within a row of each other, which is why one window

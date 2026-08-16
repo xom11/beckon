@@ -22,7 +22,7 @@
 //! one -- which is why there is exactly one.
 
 use super::*;
-use beckon_core::page_plan::{AboutPlan, RowMetrics, SystemPlan};
+use beckon_core::page_plan::{keyboard_plan, AboutPlan, RowMetrics, SystemPlan};
 
 /// Layout tokens, at 96 DPI. Every one of them goes through `scale`.
 ///
@@ -426,6 +426,36 @@ pub(super) unsafe fn system_dividers(hwnd: HWND) -> [RECT; 2] {
     [line(plan.div1), line(plan.div2)]
 }
 
+/// The two divider hairlines inside the Keyboard card, in client coordinates.
+///
+/// `system_dividers`' third twin, separate for that function's own stated
+/// reason: each page computes its offsets from its own plan, so one entry
+/// point taking a `page` would be an `if` wrapped around three unrelated
+/// arithmetics. Card 3, not card 4.
+pub(super) unsafe fn keyboard_dividers(hwnd: HWND) -> [RECT; 2] {
+    let Some(ui) = UI.with(|u| u.borrow().as_ref().map(LayoutHandles::of)) else {
+        return [RECT::default(); 2];
+    };
+    if ui.page != Page::Keyboard {
+        return [RECT::default(); 2];
+    }
+    let dpi = GetDpiForWindow(hwnd).max(96);
+    let s = |v: i32| v * dpi as i32 / 96;
+    let card = compute_card_rects(hwnd, &ui, dpi)[3];
+    if card.bottom <= card.top {
+        return [RECT::default(); 2];
+    }
+    let pad = s(tok::CARD_PAD);
+    let plan = keyboard_plan(row_metrics(dpi));
+    let line = |dy: i32| RECT {
+        left: card.left + pad,
+        top: card.top + pad + dy,
+        right: card.right - pad,
+        bottom: card.top + pad + dy + s(1).max(1),
+    };
+    [line(plan.div1), line(plan.div2)]
+}
+
 /// The two divider hairlines inside the About card, in client coordinates.
 ///
 /// `system_dividers`' twin, and a SEPARATE function rather than a `page`
@@ -670,8 +700,15 @@ unsafe fn compute_card_rects(hwnd: HWND, ui: &LayoutHandles, dpi: u32) -> [RECT;
     // `build_children`) -- only the CONTROL drawing that first `s(24)`
     // changed, not its height. Only the card's own `CARD_PAD` wrapping
     // around it is new, same as before that reclass.
-    let kb_content_h = s(24) + ctl + gap;
-    let kb_card_h = card_pad * 2 + kb_content_h;
+    // **Design §3.2's three groups, since 2026-08-16**, where this was
+    // `s(24) + ctl + gap` -- a caption line, one control line and a bottom
+    // inset. The caption was `IDC_GRP_KEYBOARD` reading `Keyboard` directly
+    // beneath a pill captioned `Keyboard`; §3.1 deleted the same duplication on
+    // the Shortcuts door and `measurements/fd-after-keyboard.png` is the
+    // photograph of it surviving on this one. The card is 56 px of interior
+    // taller as a result, which is design arriving rather than a regrid: the
+    // rhythm is `keyboard_plan`'s, which is `system_plan`'s.
+    let kb_card_h = card_pad * 2 + keyboard_plan(row_metrics(dpi)).content_h;
 
     // The editor card's content is `grp_h`'s pre-Task-8 shape MINUS its
     // caption: two lines, the notes, a bottom inset. Computed HERE, before the
@@ -1572,57 +1609,28 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         let kb_x = card3.left + card_pad;
         let kb_y = card3.top + card_pad;
         let kb_w = clamp(card3.right - card3.left - card_pad * 2);
-        // `IDC_GRP_KEYBOARD` gets its own `s(24)` caption line, not the card's
-        // whole interior -- same reclass, same reasoning as `IDC_GRP_EDITOR`
-        // above. `kb_card_h` (in `compute_card_rects`) still budgets `s(24)`
-        // for this line; only the control drawing it changed.
-        place(IDC_GRP_KEYBOARD, kb_x, kb_y, kb_w, s(24));
+        // **No caption line, since 2026-08-16.** `IDC_GRP_KEYBOARD` drew the
+        // word `Keyboard` here, directly beneath a tab pill captioned
+        // `Keyboard`. Design §3.1 deleted exactly that duplication on the
+        // Shortcuts door (`IDC_LBL_SECTION`) and §7 rule 5 forbids it in
+        // general; this door kept it until a photograph showed it.
+        let plan = keyboard_plan(row_metrics(dpi));
         let inner_x = kb_x + gap;
-        let ry = kb_y + s(24);
+        let ry = kb_y + plan.hold;
         // Every width on this line comes from the caption it has to hold.
         //
-        // `IDC_CAPS` gets its OWN budget, not `glyph` (`glyph` stays exactly as
-        // declared above -- the four modifier chips still need the old `s(24)`).
-        // `paint::toggle` draws a 40 px track inset `off` (2 px) from the
-        // control's own left edge -- so the focus ring it draws around the
-        // track can grow outward without its left edge and arcs falling outside
-        // `NM_CUSTOMDRAW`'s clip rect, see the track-rect comment in `paint.rs`
-        // -- then `tok::GAP` (6 px) before the caption. `off`, the 40 px track
-        // and `gap` are each their own `scale()` call in `paint.rs` (`off` and
-        // `track_w` in the track-rect block, `gap` in the caption block), so a
-        // single `s(50)` call here is provably never short of their sum: floor
-        // is subadditive (`floor(a)+floor(b)+floor(c) <= floor(a+b+c)` for any
-        // a/b/c >= 0) and monotone, and 2 + 40 + tok::GAP is 48, so
-        // `s(2)+s(40)+gap <= s(48) <= s(50)` at every DPI.
+        // **`toggle_glyph` (`s(50)`) went with the one-line card, 2026-08-16.**
+        // It sized `IDC_CAPS` as caption-plus-track when the switch shared a
+        // line with `Hold` and `Tap`; §3.2 gives that switch a row of its own,
+        // full card width, so there is no neighbour to leave room for and
+        // nothing left to budget. Two paragraphs of subadditivity proof went
+        // with it, and only their conclusion is worth carrying: the track's own
+        // `2 + 40 + tok::GAP` budget lives in `paint.rs`, is the authority, and
+        // is not duplicated here any more -- which was the standing hazard the
+        // 2026-08-14 correction in that comment was about. One copy now.
         //
-        // It is never short, and it is no longer tight. Re-derived at every
-        // standard Windows scale step (100/125/150/175/200/225/250/300%, i.e.
-        // dpi 96/120/144/168/192/216/240/288), `s(50)` exceeds the sum by
-        // 2/3/3/4/4/5/5/6 px respectively. Nothing clips, because the slack
-        // falls on the caption's side: `w_caps` is `tw(cap::CAPS)` plus this
-        // budget, so `paint::toggle`'s `DrawTextW` box comes out 2-6 px WIDER
-        // than the caption it holds and `DT_END_ELLIPSIS` never fires. What it
-        // costs is looseness -- `IDC_CAPS`' rect ends 2-6 px past its own
-        // caption, so `IDC_LBL_HOLD` sits that much further right than the
-        // nominal `gap * 2` that separates the line's three sections.
-        //
-        // **CORRECTED 2026-08-14: this said "all eight land on equality, so
-        // this does not over-allocate in practice either".** That was exact
-        // while `tok::GAP` was 8 -- 2 + 40 + 8 == 50 is what made subadditivity
-        // bind at equality, re-derived at all eight steps to check -- and the
-        // compaction pass (`1f46335`) took `GAP` to 6 without moving the 50,
-        // leaving 2 logical px of budget with nothing to spend it on. The
-        // safety half of the old claim needed no rescue: a smaller `GAP` can
-        // only widen the margin. Do not "fix" the looseness by dropping this to
-        // `s(48)` without reading `paint.rs`'s copy of the same budget first --
-        // the two are one number written twice, and the number went stale here
-        // because only one copy was re-derived.
-        //
-        // The two STATICs below get a hair of slack instead of this budget, for
-        // the reason the editor strip's labels do: SS_CENTERIMAGE clips rather
-        // than wraps.
-        let toggle_glyph = s(50);
-        let w_caps = tw(cap::CAPS) + toggle_glyph;
+        // The two STATICs below get a hair of slack, for the reason the editor
+        // strip's labels do: SS_CENTERIMAGE clips rather than wraps.
         let w_hold = tw(cap::HOLD) + s(4);
         // `chip_kc`, not `chip`: the `Hold` chips draw in `Role::Keycap` (Task
         // 8's role_of change), so they must be MEASURED in it too, or each chip
@@ -1635,9 +1643,16 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // `gap * 2` between the three sections of the line, `lblgap` between a
         // word and what it names, `gap` between chips -- so the grouping is
         // legible from the spacing rather than only from the words.
+        // -- Group 1: the switch that arms Caps. A switch row is ONE control
+        // the full width of the card, exactly as the System page's four are:
+        // `paint::toggle` draws the caption at the left and the track at the
+        // right of whatever rect it is given, so a full-width rect is what
+        // puts the track on the card's right edge and makes the two switch
+        // rows on this page line up with each other and with System's.
+        place(IDC_CAPS, kb_x, kb_y + plan.caps, kb_w, ctl);
+
+        // -- Group 2: what holding Caps stands for, and what tapping it does.
         let mut kx = inner_x;
-        place(IDC_CAPS, kx, ry, w_caps, ctl);
-        kx += w_caps + gap * 2;
         place(IDC_LBL_HOLD, kx, ry, w_hold, ctl);
         kx += w_hold + lblgap;
         place(IDC_HOLD_CTRL, kx, ry, w_ctrl, ctl);
@@ -1652,6 +1667,17 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // and the key list take, so every box in the window narrows together.
         let tap_w = s(tok::SHORTCUT_COL).min(clamp(kb_x + kb_w - gap - kx));
         place(IDC_TAP, kx, ry + edit_dy, tap_w, field_h * 5);
+
+        // -- Group 3: the view preference (design §3.2). Full width, on group
+        // 1's reasoning, so the two switches on this page share a right edge.
+        //
+        // **Its caption is plain text where the drawing sets keycaps inside
+        // the sentence.** That needs a painter interleaving text runs and
+        // caps, measuring each to place the next, and nothing in this window
+        // does it -- `draw_keycaps` lays out a row of caps and
+        // `paint::toggle` draws one line of text. Recorded as owed rather
+        // than faked; see `beckon_core::page_plan::KeyboardPlan`.
+        place(IDC_CAPS_SHORTHAND, kb_x, kb_y + plan.view, kb_w, ctl);
     }
 
     // -- Card 4: the System page (design §3.3). Nine slots in three groups,

@@ -481,6 +481,43 @@ impl Page {
     }
 }
 
+/// Which chord the Shortcuts list folds into a single `Caps` cap, if any.
+///
+/// Design §3.2's `Write shortcuts as [Caps] instead of [Ctrl][Win][Alt]`, as
+/// one decision with two inputs, in core so both are tested on all three CI
+/// jobs rather than on the one that can run a ListView.
+///
+/// `want` is the view preference (`HKCU\Software\beckon\CapsView`, default
+/// OFF). `caps_on` is `keyboard.caps` from `apps.toml` — whether the hook is
+/// armed at all.
+///
+/// **The AND is the decision the design did not make, and it is taken here
+/// rather than left to the painter.** §3.2 says the preference is a view
+/// preference and says nothing about the Caps feature being off, which is a
+/// state a user can reach in one click: the switch that arms Caps is the row
+/// directly above this one. With Caps off, `Caps+B` does nothing at all, so a
+/// list drawing `[Caps][B]` would be advertising a keystroke that is not
+/// bound — the window lying about the machine, which is the one thing the
+/// status vocabulary exists to prevent. The chips stay long instead.
+///
+/// **The toggle is disabled rather than silently ineffective** when
+/// `caps_on` is false — see `caps_view_enabled`. §7 rule 7 wants a disabled
+/// control to explain itself in its own slot, and here the explanation is
+/// adjacency: the control immediately above it is the one that is off.
+pub fn caps_view_fold(want: bool, caps_on: bool, hold: Chord) -> Option<Chord> {
+    (want && caps_on).then_some(hold)
+}
+
+/// Is the `Write shortcuts as [Caps]` switch usable?
+///
+/// Split from `caps_view_fold` because the two answer different questions and
+/// a caller that conflated them would grey the switch whenever the fold was
+/// off — including when the fold is off precisely because the user turned
+/// this switch off, which would make it impossible to turn back on.
+pub fn caps_view_enabled(caps_on: bool) -> bool {
+    caps_on
+}
+
 /// Is the command bar's row of buttons on screen?
 ///
 /// **One condition, three readers**, in `banner_shown`'s shape and for the same
@@ -3058,7 +3095,6 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     ("KEEPMINE", 1016),
     // 1017 and 1018 were `LBL_SHORTCUT` and `LBL_APP`, the editor's two field
     // labels. Retired, not free -- see `RETIRED_IDS`.
-    ("GRP_KEYBOARD", 1019),
     // 1020 was `LBL_SECTION`, the `Shortcuts` heading at the top of the
     // Shortcuts card. Retired, not free -- see `RETIRED_IDS`.
     ("FILTER", 1021),
@@ -3194,7 +3230,9 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
 /// of that replacement intact -- the second time Task 7's tail-allocation
 /// reasoning has been paid off, and the last, because there are no
 /// placeholders left.
-pub const RETIRED_IDS: &[i32] = &[1009, 1010, 1011, 1017, 1018, 1020, 1034, 1035, 1084, 1115];
+pub const RETIRED_IDS: &[i32] = &[
+    1009, 1010, 1011, 1017, 1018, 1019, 1020, 1034, 1035, 1084, 1115,
+];
 
 /// The ids `crates/beckon-windows/examples/settings_probe.rs` hard-codes.
 ///
@@ -4781,6 +4819,38 @@ mod tests {
             want,
             Some(ComboSpot { x: 0, y: 0, cx: 10 })
         ));
+    }
+
+    /// The fold needs BOTH the preference and an armed Caps, and the switch
+    /// needs only the latter. Getting the second half wrong is the trap: gate
+    /// the switch on the fold and turning the preference off would grey the
+    /// only control that can turn it back on.
+    #[test]
+    fn the_caps_fold_needs_the_preference_and_an_armed_caps() {
+        let hold = Chord::default();
+        assert_eq!(caps_view_fold(true, true, hold), Some(hold));
+        assert_eq!(caps_view_fold(false, true, hold), None, "preference off");
+        assert_eq!(caps_view_fold(true, false, hold), None, "Caps not armed");
+        assert_eq!(caps_view_fold(false, false, hold), None);
+
+        assert!(caps_view_enabled(true));
+        assert!(!caps_view_enabled(false));
+        // The trap, stated: with the preference off and Caps armed, the fold
+        // is off and the switch is STILL usable.
+        assert_eq!(caps_view_fold(false, true, hold), None);
+        assert!(caps_view_enabled(true));
+    }
+
+    /// The fold carries the CONFIGURED chord through, not a default, so a
+    /// user who changed `caps_hold` sees their own chord fold.
+    #[test]
+    fn the_fold_passes_the_configured_chord_through() {
+        let odd = Chord {
+            ctrl: true,
+            super_: false,
+            alt: false,
+        };
+        assert_eq!(caps_view_fold(true, true, odd), Some(odd));
     }
 
     /// Design §1's split by store, pinned as a table rather than as prose.
