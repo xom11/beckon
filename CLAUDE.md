@@ -136,53 +136,38 @@ Rules that follow from that:
   git status                        # in the PRIMARY checkout: someone mid-task
   ListAgents                        # other sessions, but not what they are building
   git fetch --all && git branch -a  # committed work you would otherwise never see
-  git branch -vv                    # how far behind YOUR local branches are
+  git branch -vv                    # and how stale YOUR OWN refs are
   git log --all --oneline -20       # including branches nobody has merged
-  git branch -vv                    # <-- and how stale YOUR OWN refs are
   ```
 
-  **`git branch -vv` was added 2026-08-16 after the list above produced a
-  confident wrong answer.** A session ran every other line, saw a branch
-  called `four-doors-phase-0` it did not recognise, and measured it with
+  **`git branch -vv` was added 2026-08-16, after the list above sent a session
+  to the wrong conclusion.** It ran every other line, saw a branch called
+  `four-doors-phase-0` it did not recognise, and measured it with
   `git rev-list --left-right --count main...four-doors-phase-0`, which
   returned `0 55`. It read that as *"an unmerged branch, 55 commits ahead of
-  main"* and reported to the user that the settings-window design was about
-  to be replaced. **The truth was the mirror image: the branch was already
-  merged, and the PRIMARY checkout's local `main` was 55 commits behind.**
+  main"* and told the user that the settings-window design was about to be
+  replaced. **The truth was the mirror image: the branch was already merged,
+  and the primary checkout's local `main` was 55 commits behind.**
   `origin/main`, `four-doors-phase-0` and the `v0.9.4` tag were all one
   commit.
 
   The trap is that `git fetch --all` *had* been run, and it does exactly what
-  it says: it updates `origin/main` and does not touch `main`. Every command
-  in the old list reads a ref, and none of them compares a local branch to
-  its upstream — so the one fact that distinguishes "they are ahead" from
-  "you are behind" was not on screen. `git branch -vv` prints
-  `[origin/main: behind 55]` and settles it in one line. Note that this is
-  the same rule already recorded two bullets above for verifying a push: ask
-  git for the state, do not read harder into output that does not carry it.
+  it says: it updates `origin/main` and does **not** touch `main`. Every
+  command in the old list reads a ref, and none of them compares a local
+  branch to its upstream — so **the same number supports both readings and
+  nothing in that output distinguishes them.** That is why the fix is a
+  different command rather than closer reading: `git branch -vv` prints
+  `[origin/main: behind 55]` and says which side is stale.
+
+  It is the same shape as the push trap two bullets above — an empty push and
+  a real one print the same line — and it has the same escape: ask git for
+  the state, do not squint at output that does not carry it.
 
   Uncommitted work in the shared checkout means somebody is mid-task. A
   *branch* carrying a spec or a design doc means somebody has already decided
   something — and other people's work is far more often committed-but-unmerged
   than uncommitted. Either way the answer is the same: reconcile the plan
   before executing it, and talk to the other session if there is one.
-
-  **`git branch -vv` was added 2026-08-16, after the list above sent a session
-  to the wrong conclusion.** `git fetch --all` updates `origin/main`; it does
-  **not** update `main`. A session on the primary checkout ran
-  `git rev-list --left-right --count main...four-doors-phase-0`, read `0 55`,
-  and concluded *"the branch is 55 commits ahead and unmerged"* — while the
-  truth was *"my local `main` is 55 commits behind"*. The branch was already
-  merged and `origin/main` pointed at it. **The same number supports both
-  readings and nothing in that output distinguishes them**, which is why the
-  fix is a different command rather than closer reading: `git branch -vv`
-  prints `[origin/main: behind 55]` and says which side is stale. The session
-  had run `fetch --all` and still got it wrong, then told the user that
-  landed work was an unmerged design about to overwrite `main`.
-
-  It is the same shape as the push trap in the paragraphs above — an empty
-  push and a real one print the same line — and it has the same escape: ask
-  git for the state, do not squint at output that does not carry it.
 
 ## Architecture
 
