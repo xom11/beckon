@@ -1619,6 +1619,64 @@ The path is deliberately **not** resolved through `GetFinalPathNameByHandleW`
 - **Cargo (from git)**: `cargo install --git https://github.com/xom11/beckon beckon-cli`. Requires rustup + a system C/MSVC toolchain.
 - **Nix flake**: `nix run github:xom11/beckon -- list` or pull `inputs.beckon.overlays.default` into your nixpkgs.
 
+  **`beckon --version` carries the short sha, and the nix path is why.** It
+  prints `beckon <version> (<short sha>)` — `beckon 0.9.4 (400b452)` in the
+  measurements below, which is where the 0.9.4 in them comes from; the
+  version half tracks `[workspace.package]` as it always did. A flake input
+  pins a *rev*, so every rev
+  between two releases reports the identical Cargo version: after `nix flake
+  update beckon` there was no way to ask a machine which commit it had, and
+  the only answer available was to read `flake.lock` on whatever built it.
+
+  Three pieces, and each one exists because the obvious shorter version does
+  not work:
+
+  - `crates/beckon-cli/build.rs::emit_version` composes the string and
+    `#[command(version = env!("BECKON_VERSION"))]` prints it. **Not the bare
+    `version` attribute**, which is `CARGO_PKG_VERSION` alone.
+  - It reads `BECKON_GIT_REV` FIRST and falls back to `git rev-parse`.
+    The env var is not a convenience: `nix/package.nix` filters `.git` out of
+    `src`, so a nix build has no repository to ask and may have no `git` on
+    `$PATH` either. `flake.nix` passes `self.shortRev or (self.dirtyShortRev
+    or null)` into both `packages.beckon` and `overlays.default` — **the
+    overlay is the one that matters**, since every Linux and macOS host here
+    installs through it.
+  - The `rerun-if-changed` lines in `git_rev` name paths git reports rather
+    than a hardcoded `.git/HEAD`, because in a worktree `.git` is a *file*,
+    HEAD lives under `.git/worktrees/<name>/` and the branch ref lives in the
+    common dir. Verified by measurement, not by reading: from a clean build,
+    one `git commit --allow-empty` and a plain `cargo build` — no `clean`, no
+    `touch` — moved the printed sha from `400b452` to `f65e6d3`.
+
+  Both CI assertions on this output match a **substring** (`-notmatch
+  "beckon"` on Windows; `*"$want"*` against `nix eval .#beckon.version`), so
+  the suffix is safe by construction. `nix eval .#beckon.version` is still the
+  bare `0.9.4` — `package.nix`'s `version` did not change, only the build
+  env. A future check that compares for EQUALITY would break.
+
+  **`-dirty` can appear, and only from nix.** `dirtyShortRev` answered
+  `400b452-dirty` on Nix 2.34.8 in a worktree with four modified files, and it
+  is passed through verbatim: nix evaluates the whole tree at one instant, so
+  it can honestly say the build did not come from a commit. `build.rs`'s git
+  fallback deliberately makes no such claim — the suffix is baked when the
+  build script runs and `rerun-if-changed` cannot name "any file in the tree",
+  so a dirty flag computed there would go stale in the one direction that
+  matters: claiming clean while it is not.
+
+  **This closes half a problem; do not read it as the whole one.** The other
+  half is that the RUNNING PROCESS may not be the image on disk — on a14 a
+  watchdog-started beckon ran the 0.8.0 image for three hours while
+  `--version`, a *fresh* process started from whatever is on disk today, said
+  0.9.0. No version string can fix that, which is why the settings window's
+  About page compares `current_exe()`'s mtime against this process's start
+  time instead.
+
+  **`beckon-windows` still prints its own `env!("CARGO_PKG_VERSION")`** in the
+  About page and `chrome.rs` — untouched, because that crate has no build
+  script and the About page already answers the identity question a better
+  way. If the sha is ever wanted there, it needs its own `build.rs`, not a
+  reach into beckon-cli's.
+
   **`nix build` was broken from v0.8.0 to v0.9.3 and nobody noticed for a
   month.** `c33fcf6` inserted `pub mod settings_window;` between
   `#[cfg(target_os = "windows")]` and `pub mod shell;` in

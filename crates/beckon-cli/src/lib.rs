@@ -48,7 +48,18 @@ const RESERVED: &[&str] = &[
 #[derive(Parser, Debug)]
 #[command(
     name = "beckon",
-    version,
+    // `env!`, not the bare `version` attribute, which is `CARGO_PKG_VERSION`
+    // alone. `build.rs` appends the short sha when it can find one, because
+    // the Cargo version cannot identify a build this project actually ships:
+    // a nix flake pins a *rev*, and every rev between two releases prints the
+    // identical `0.9.4`. See `emit_version` there for the two sources and for
+    // the half of the problem a version string cannot fix.
+    //
+    // Both CI assertions on this output match a SUBSTRING -- ci.yml checks
+    // `-notmatch "beckon"` on Windows and `*"$want"*` against
+    // `nix eval .#beckon.version` -- so the suffix is safe by construction,
+    // not by luck. A future check that compares for EQUALITY would break.
+    version = env!("BECKON_VERSION"),
     about = "Cross-platform focus-or-launch app switcher",
     // Fires only on a genuinely empty argv. `beckon -v` parses clean to
     // (None, None) and is caught in `parse_checked` instead.
@@ -636,8 +647,19 @@ fn cmd_resolve(id: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn cmd_resolve_linux(id: &str) -> Result<()> {
-    let backend = pick_backend()?;
-    let running = backend.list_running().unwrap_or_default();
+    // The backend is OPTIONAL, and that is the whole point of this command
+    // being usable where it is most needed. Resolution reads `.desktop` files
+    // off the disk; only the running-app line needs a compositor. Taking
+    // `pick_backend()?` here made `beckon resolve` fail outright over SSH, in
+    // a headless VM and in a container — with "no supported display server",
+    // an error about the half of the answer the caller did not ask for —
+    // while `check --resolve`, which deliberately takes no backend, answered
+    // the same question fine from the same shell. Measured on rog 2026-08-16.
+    //
+    // `None` is not "not running": it is "nobody asked the compositor", and
+    // the Status line below says so rather than guessing.
+    let backend = pick_backend().ok();
+    let running: Option<Vec<_>> = backend.map(|b| b.list_running().unwrap_or_default());
     let resolved = beckon_linux::desktop::resolve_detailed(id);
     let subs = beckon_linux::desktop::name_substring_matches(id);
 
@@ -650,20 +672,24 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
             }
             println!();
         }
-        let direct: Vec<&_> = running.iter().filter(|a| a.id == id).collect();
-        if !direct.is_empty() {
-            println!(
-                "Note: a running window has app_id=`{}` but no .desktop matches it.",
-                id
-            );
-            println!("      Focus will work; launch will not.");
+        if let Some(running) = &running {
+            let direct: Vec<&_> = running.iter().filter(|a| a.id == id).collect();
+            if !direct.is_empty() {
+                println!(
+                    "Note: a running window has app_id=`{}` but no .desktop matches it.",
+                    id
+                );
+                println!("      Focus will work; launch will not.");
+            }
         }
         println!("Hint: `beckon installed` lists installed, `beckon list` lists running.");
         return Ok(());
     };
 
     let runtime_id = &m.entry.id;
-    let running_match: Option<&_> = running.iter().find(|a| a.id == *runtime_id);
+    let running_match = running
+        .as_ref()
+        .map(|r| r.iter().find(|a| a.id == *runtime_id));
 
     println!("✅ resolved");
     println!("   Input:        {}", id);
@@ -676,11 +702,14 @@ fn cmd_resolve_linux(id: &str) -> Result<()> {
         }
     }
     match running_match {
-        Some(app) => println!(
+        Some(Some(app)) => println!(
             "   Status:       running ({} window: \"{}\")",
             app.window_count, app.name
         ),
-        None => println!("   Status:       not running"),
+        Some(None) => println!("   Status:       not running"),
+        // Three states, not two. "not running" is a claim about the
+        // compositor, and without one there is nothing to claim.
+        None => println!("   Status:       unknown (no display server in this shell)"),
     }
     println!("   Exec:         {}", m.entry.exec);
 

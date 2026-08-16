@@ -248,7 +248,7 @@ impl Backend for I3IpcBackend {
         //
         // After running the app once, `beckon list` is the source of truth:
         // copy the id from there into the dotfile.
-        let mut entries = crate::desktop::scan();
+        let mut entries = crate::desktop::visible(crate::desktop::scan());
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries
             .into_iter()

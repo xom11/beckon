@@ -499,7 +499,7 @@ impl Backend for X11Backend {
     }
 
     fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        let mut entries = crate::desktop::scan();
+        let mut entries = crate::desktop::visible(crate::desktop::scan());
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries
             .into_iter()

@@ -1,6 +1,18 @@
 {
   rustPlatform,
   lib,
+  # Short sha of the revision this is built from, or null when there is not
+  # one to name. `flake.nix` passes `self.shortRev` (or `dirtyShortRev`);
+  # a plain `callPackage` from nixpkgs, with no flake around it, gets null
+  # and ships the bare Cargo version.
+  #
+  # It has to arrive as an argument because there is no way to derive it
+  # here: `src` below deliberately filters `.git` out, so nothing in the
+  # sandbox can ask git anything. Without this a nix-installed beckon --
+  # which is how every Linux and macOS host in this setup installs it --
+  # reports the same `0.9.4` for every rev between two releases, and
+  # `nix flake update beckon` becomes unverifiable from the machine.
+  gitRev ? null,
 }:
 
 let
@@ -34,6 +46,17 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ../Cargo.lock;
+
+  # Read by `crates/beckon-cli/build.rs`, which appends it to what
+  # `beckon --version` prints. Set only when there is a revision to name --
+  # an unconditional `BECKON_GIT_REV = ""` would still be an env var, and the
+  # build script would have to distinguish empty-from-absent to avoid
+  # printing `0.9.4 ()`. Absent is the simpler contract.
+  #
+  # This does NOT change `version` above: that stays the Cargo version, so
+  # `nix eval .#beckon.version` and the CI check that compares it against
+  # `beckon --version` both keep working (the check matches a substring).
+  env = lib.optionalAttrs (gitRev != null) { BECKON_GIT_REV = gitRev; };
 
   # Build the CLI, and only the CLI. Two separate reasons, both measured:
   #

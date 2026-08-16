@@ -359,7 +359,7 @@ impl Backend for HyprlandBackend {
         // Same shape as i3ipc: .desktop filename is the runtime id, and on
         // Wayland clients (Hyprland exposes Wayland app_id as `class`) the
         // filename matches the runtime class for the apps we care about.
-        let mut entries = crate::desktop::scan();
+        let mut entries = crate::desktop::visible(crate::desktop::scan());
         entries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(entries
             .into_iter()
