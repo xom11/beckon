@@ -2219,6 +2219,53 @@ Reasonable next-session order:
   which is the one that demonstrably delivers hotkeys in production, and that
   is what said the injector was wrong rather than the thing under test.
 
+- **Phase B, measured before it was written** (`examples/caps_probe.rs`,
+  2026-08-16). The Windows Caps feature is an ALIAS: the hook swallows
+  `Caps+T` and injects `ctrl+win+alt+T`, because `RegisterHotKey` cannot bind
+  Caps. Four facts had to hold for that shape to port, and all four do:
+
+  | | |
+  |---|---|
+  | a `CGEventTap` sees Caps | yes -- as **`kCGEventFlagsChanged`**, never `keyDown`/`keyUp` |
+  | returning NULL suppresses it | yes |
+  | **suppression also stops the LOCK** | **yes** -- `caps_locked()` read `false` before and `false` after a swallowed press |
+  | the tap survived | no timeout in that run |
+
+  The third is the one the feature rests on: beckon can take the key without
+  the lock engaging, so `caps_tap` can offer `capslock` / `escape` / `none`
+  the way Windows does rather than being stuck with whatever the OS did.
+
+  **Caps arriving as `flagsChanged` is the one structural difference from
+  Windows** and it is why `beckon_core::caps` is not shared: that state
+  machine is written against `KeyEvent { vk, edge }` with a down and an up,
+  and this platform has neither. It also carries `time_ms` documented as
+  `KBDLLHOOKSTRUCT.time` (ms since boot) while `CGEventTimestamp` is
+  nanoseconds of mach absolute time -- a unit mismatch that would not fail to
+  compile.
+
+- **`CGEventTapCreate` returning a non-NULL port is NOT evidence the tap will
+  receive anything**, and the probe now prints `IOHIDCheckAccess` because of
+  it. Input Monitoring is a *separate* grant from Accessibility, with its own
+  System Settings pane; without it the create call still succeeds and then
+  delivers nothing, silently.
+
+- **A synthetic keycode no physical key carries does not survive the trip.**
+  The probe's control was `F19` (`kVK_F19`, 0x50), chosen because nothing
+  binds it. It produced **zero events of any type** while
+  `ctrl+opt+shift+f` through the same injector in the same session produced
+  eight -- so the tap was live the whole time and the CONTROL was the broken
+  part. That false negative cost a wrong suspicion of kanata, which was
+  stopped for nothing. Use a key the keyboard has, and chord it so it types
+  nothing.
+
+- **This machine runs kanata, and kanata already implements beckon's Caps
+  feature.** `~/.nix/configs/kanata/main.kbd:52` is
+  `caps (tap-hold 200 200 esc @cap_alias)` and `kanata_macos.kbd:19` is
+  `cap_alias (multi lmet lctl lalt)` -- Caps tapped sends Escape, Caps held
+  sends Cmd+Ctrl+Option, which is beckon's own hyper chord and its
+  `caps_tap = "escape"` option. Anyone testing beckon's Caps support here
+  must stop `org.nixos.kanata` first or they are measuring kanata.
+
 - **`RegisterEventHotKey` does NOT report a chord another application holds,
   so macOS has no availability probe and that is a finding rather than a
   gap.** Measured 2026-08-16 with `examples/hotkey_conflict_probe.rs`, in an
