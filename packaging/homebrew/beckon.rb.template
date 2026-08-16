@@ -56,7 +56,16 @@ class Beckon < Formula
       # log that exists. Keep the three paths identical.
       run [opt_bin/"beckon", "serve", "#{Dir.home}/.config/beckon/apps.toml",
            "--log", var/"log/beckon.log"]
-      keep_alive true
+      # `successful_exit: false`, NOT `true`. Plain `keep_alive true` restarts
+      # on ANY exit, including a clean one -- which silently undoes beckon's
+      # own tray Quit. `beckon_macos::tray::request_quit` ends with
+      # `std::process::exit(0)`, so launchd had the daemon back inside
+      # `ThrottleInterval`, forever, and the menu item a user reaches for to
+      # stop beckon did nothing they could see. Restart a crash; respect a
+      # deliberate exit. The config-failure path below is unaffected: an
+      # unreadable or missing file still exits non-zero, so launchd still
+      # retries it.
+      keep_alive successful_exit: false
       process_type :interactive
       log_path var/"log/beckon.log"
       error_log_path var/"log/beckon.log"

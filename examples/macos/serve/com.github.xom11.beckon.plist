@@ -18,11 +18,19 @@
     <key>RunAtLoad</key>
     <true/>
 
-    <!-- Restart if the process dies. Note this also retries a startup
-         failure (unreadable or invalid config) on launchd's ~10 s
-         throttle, so run `beckon check` before loading the agent. -->
+    <!-- Restart if the process dies, but ONLY when it exited non-zero.
+         A bare <true/> here restarts on any exit, including a clean one,
+         which silently undoes beckon's own tray Quit: the menu item exits
+         0 and launchd has the daemon back within the throttle window,
+         forever, with no way to stop it short of `launchctl unload`.
+         Note this still retries a startup failure (unreadable or missing
+         config) on launchd's ~10 s throttle, so run `beckon check` before
+         loading the agent. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
     <!-- `serve` logs registrations, reloads and per-hotkey errors to
          stderr. This is the only place you can see them once launchd
