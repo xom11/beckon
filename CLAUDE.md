@@ -902,6 +902,30 @@ fallback ladder.
 
 ## Reference implementations to port from (phase 2 / 3)
 
+**A measurement taken on one OS is data about that OS, not about the design.**
+Read that before porting anything in this section, because the same mistake
+has now been made three times in one day, always in the same shape: a
+correct, measured sentence in this file is carried across a platform boundary
+as a premise rather than re-run as a question.
+
+| carried across | what the port assumed | what measuring said |
+|---|---|---|
+| *"an injected `VK_CAPITAL` flips the toggle, so `caps_tap = "capslock"` is implementable"* | the macOS arm posts `kVK_CapsLock` the same way | `CGEventPost` does **not** move the lock on macOS, at either tap level, with `AXIsProcessTrusted = 1`. The option did nothing at all until it moved to `IOHIDSetModifierLockState`. |
+| `banner_shown` / `warn_dot_shown` partition `external_change` | taking `banner_shown` is taking the pair | `warn_dot_shown` had **zero callers** in `beckon-macos`, so three doors out of four carried the fact nowhere — while the core test asserting the partition passed the whole time. |
+| a tap cannot reach the brightness/volume keys | so `NX_SYSDEFINED` need not be considered | registering it **swallows** them for the length of a recording. The guess was backwards. |
+
+None of the three original sentences was wrong. Each was true of the platform
+it was measured on, and each stopped being a measurement the moment it crossed
+over — which is exactly what makes this file's strength into a hazard, because
+a well-recorded fact reads as settled and a reader has no reason to re-open it.
+
+**So the rule is about WHERE the sentence came from, not whether it is
+believable.** When porting, treat every "measured on a14" / "measured on
+airm3" claim as scoped to that machine's OS, and re-run the probe rather than
+the reasoning. All three above were caught by running something; none was
+caught by reading, and two had already survived adversarial review.
+
+
 When porting beckon to macOS and Windows, mirror the logic in the existing
 hand-rolled scripts. Both already handle the "is the app open?" → focus / launch
 flow; beckon's job is to add Name resolution against OS metadata, plus the
