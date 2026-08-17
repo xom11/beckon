@@ -97,6 +97,26 @@ pub(super) fn build(
 
     let note = w::wrapping(caps_note(), mtm);
 
+    // **A button, because the sentence names a pane four clicks deep.**
+    // Every one of those clicks is a chance to land in Accessibility instead
+    // -- the neighbouring row, the permission this is most often confused
+    // with, and the one that is usually already granted. The sentence stays:
+    // it is the half that says *why*, and a reader who has the pane open
+    // still has to know which switch and that it is not Accessibility.
+    //
+    // It is drawn unconditionally rather than only while the grant is
+    // missing. Revoking Input Monitoring does not notify this process, so a
+    // button that appears on a state we cannot observe would be absent
+    // exactly when it is needed; and a reader who wants to CHECK the switch
+    // has the same errand as one who needs to grant it.
+    let open_im = w::push(
+        "Open Input Monitoring",
+        sel!(beckonOpenInputMonitoring:),
+        target,
+        mtm,
+    );
+    let note_row = w::hstack(&[&*open_im as &NSView, &*w::spring(mtm)], mtm);
+
     // --- group 2: Hold chips and the Tap list, one line --------------------
     //
     // **Three chips and there must never be a fourth.** `Chord` has exactly
@@ -152,6 +172,7 @@ pub(super) fn build(
         &[
             &*caps_row as &NSView,
             &note,
+            &note_row,
             &w::divider(mtm),
             &hold_row,
             &w::divider(mtm),

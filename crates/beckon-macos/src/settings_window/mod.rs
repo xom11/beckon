@@ -943,6 +943,27 @@ define_class!(
             with_cb(|cb| (cb.on_edit_app)(t));
         }
 
+        /// Open System Settings at Privacy & Security > Input Monitoring.
+        ///
+        /// **Acts here and reports here, like the About page's copy buttons
+        /// and unlike everything else on this door.** It goes nowhere near
+        /// `Callbacks`: `examples/settings_probe.rs` builds that struct as a
+        /// complete literal with no `..`, so a new field is a hard E0063 on a
+        /// CI job with nothing to do with this button -- and there is nothing
+        /// for a caller to decide anyway. The address is a constant in
+        /// `shell`, not a `Target::url`, because it is not an https address
+        /// and `open_url` must keep refusing it.
+        #[unsafe(method(beckonOpenInputMonitoring:))]
+        fn on_open_input_monitoring(&self, _s: &AnyObject) {
+            if let Err(e) = crate::shell::open_input_monitoring() {
+                // The notes line is the window's own voice; a modal for a
+                // failed `open` would be louder than the thing it reports.
+                if let Some(c) = controls() {
+                    c.kbd.note.setStringValue(&NSString::from_str(&e));
+                }
+            }
+        }
+
         #[unsafe(method(beckonCaps:))]
         fn on_caps(&self, _s: &AnyObject) {
             if suppressed() {
@@ -1433,9 +1454,15 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             &mod_shift,
             &key,
             &record,
+            // Takes the slack at the END of the row, so the chord stays
+            // left-aligned as the card grows.
+            &*widgets::spring(mtm),
         ],
         mtm,
     );
+    // The combo takes the slack on this row -- it is the one control whose
+    // content is a name of unbounded length, and it is what a wider window
+    // should give more room to.
     let app_row = hstack(&[&label("App", mtm) as &NSView, &app], mtm);
 
     // --- notes ------------------------------------------------------------
@@ -1475,16 +1502,31 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         &widgets::vstack(&[&*head_row as &NSView, &*scroll], 8.0, mtm),
         mtm,
     );
-    let editor_card = widgets::card(
-        &widgets::vstack(&[&*editor_row as &NSView, &*app_row, &*notes], 8.0, mtm),
-        mtm,
-    );
-    let page_shortcuts: Retained<NSView> = widgets::vstack(
+    let editor_inner = widgets::vstack(&[&*editor_row as &NSView, &*app_row, &*notes], 8.0, mtm);
+    let editor_card = widgets::card(&editor_inner, mtm);
+    let page_shortcuts = widgets::vstack(
         &[&*banner_row as &NSView, &*list_card, &*editor_card],
         10.0,
         mtm,
-    )
-    .into_super();
+    );
+    // **Pin the editor card to the column's width, and note WHICH view that
+    // has to be.** Measured at 1000 pt on a widened window: the list card came
+    // out `x=652 w=976` and the editor card `x=1099 w=529` -- a card half the
+    // page, shoved against the right edge, which is what a user photographed.
+    //
+    // The list card needs no such pin because it CONTAINS something that
+    // grows: an `NSScrollView` has no intrinsic width, so the column's `Width`
+    // alignment stretches it. Every view in the editor card has an intrinsic
+    // width, so the column had a size to fall back on and used it.
+    //
+    // Four cheaper fixes were tried first and all four measured as EXACT
+    // no-ops -- a spring at the end of the row, `pin_width_to` on each row,
+    // `pin_leading_to` on each row, and `Leading` alignment on the inner
+    // column. Identical frames to the point, with no constraint conflict
+    // logged, because all four act INSIDE a card whose own width was already
+    // wrong. That is why this pin is on the card and not on its contents.
+    widgets::pin_width_to(&editor_card, &page_shortcuts, 0.0);
+    let page_shortcuts: Retained<NSView> = page_shortcuts.into_super();
 
     // --- door 2: Keyboard --------------------------------------------------
     let (page_keyboard, kbd) = keyboard::build(&target, mtm);
