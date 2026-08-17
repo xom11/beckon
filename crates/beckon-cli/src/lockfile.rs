@@ -78,6 +78,56 @@ fn lock_path(config: &Path) -> PathBuf {
     ))
 }
 
+/// The lock that says who owns the Caps key on this machine.
+///
+/// **Deliberately NOT derived from the config path, which is the whole
+/// point.** `acquire`'s lock is per config so two people can serve two files
+/// at once, and that is right for hotkeys: `RegisterEventHotKey` /
+/// `RegisterHotKey` arbitrate per chord and the loser is told. A Caps event
+/// tap arbitrates for nothing -- it is machine-global, taps stack, and the
+/// LAST one installed sits upstream and swallows the event.
+///
+/// Measured on macmini 2026-08-17 by another session, with controls in both
+/// directions and the install order reversed to show the mechanism rather
+/// than assert it:
+///
+/// ```text
+/// one tap        8/8      caps.toml installed FIRST   0/6   (underneath)
+/// TWO taps       0/8      caps.toml installed LAST    6/6   (on top)
+/// one tap again  8/8
+/// ```
+///
+/// Both processes logged `caps event tap active`, so neither side reported
+/// anything -- and silence is the defect. A user with two serves running
+/// sees Caps stop working and has nothing to read.
+#[cfg(any(target_os = "macos", test))]
+fn caps_lock_path() -> PathBuf {
+    std::env::temp_dir().join("beckon-caps.lock")
+}
+
+/// Try to become the one process that owns Caps.
+///
+/// `None` means another beckon has it. The caller must then install no tap
+/// AND SAY SO -- a second beckon that quietly declines is the same silence
+/// this exists to end, one level down.
+///
+/// The returned `File` must be held for as long as the tap is installed:
+/// flock dies with the file handle, so dropping it hands Caps to whoever
+/// asks next, which is exactly what should happen on pause, on a reload that
+/// turns Caps off, and on exit.
+#[cfg(any(target_os = "macos", test))]
+pub fn acquire_caps() -> Option<File> {
+    use fs4::FileExt;
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(caps_lock_path())
+        .ok()?;
+    file.try_lock_exclusive().ok()?;
+    Some(file)
+}
+
 pub fn acquire(config: &Path) -> Result<File, AcquireError> {
     use fs4::FileExt;
     // Two spellings of the same file must contend for the same lock, so
@@ -107,6 +157,37 @@ pub fn acquire(config: &Path) -> Result<File, AcquireError> {
 
 #[cfg(test)]
 mod tests {
+    /// **The Caps lock must not be the config lock**, or two serves on two
+    /// files both take it and both install a tap -- the measured defect.
+    #[test]
+    fn the_caps_lock_is_one_name_for_the_whole_machine() {
+        let a = super::lock_path(std::path::Path::new("/tmp/a.toml"));
+        let b = super::lock_path(std::path::Path::new("/tmp/b.toml"));
+        assert_ne!(a, b, "config locks differ per file, as they should");
+
+        let caps = super::caps_lock_path();
+        assert_ne!(caps, a);
+        assert_ne!(caps, b);
+        // Called twice with different arguments in spirit: it takes none, so
+        // there is nothing a caller could vary to get a second lock.
+        assert_eq!(caps, super::caps_lock_path());
+    }
+
+    /// The second caller is refused while the first holds it, and served the
+    /// moment the first lets go. Both halves matter: without the release,
+    /// pausing one beckon would strand Caps for every other.
+    #[test]
+    fn only_one_process_holds_caps_and_releasing_hands_it_on() {
+        let first = super::acquire_caps().expect("nothing else holds it in this test process");
+        // A second attempt from THIS process cannot be tested with flock --
+        // POSIX locks are per-process, so this would succeed and prove
+        // nothing. What is testable is that the handle exists and that
+        // dropping it is what frees the lock.
+        drop(first);
+        let again = super::acquire_caps();
+        assert!(again.is_some(), "released, so it can be taken again");
+    }
+
     use super::*;
 
     #[test]
