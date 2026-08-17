@@ -114,11 +114,40 @@ Rules that follow from that:
 
   **Two things about the removal, both learned the hard way 2026-08-16.**
 
-  A session **cannot remove its own worktree**: git refuses while the branch is
-  checked out there, and a Claude session is `cd`'d inside it. So the last
-  session on a branch does the merge, deletes the REMOTE branch, and leaves the
-  worktree and the local branch for someone standing in the primary checkout —
-  which means saying so out loud rather than reporting "cleaned up".
+  **REFUTED 2026-08-17. This read: "A session *cannot remove its own
+  worktree*: git refuses while the branch is checked out there, and a Claude
+  session is `cd`'d inside it. So the last session on a branch … leaves the
+  worktree and the local branch for someone standing in the primary
+  checkout."** Two sessions independently removed their own worktrees that day,
+  which prompted a probe, and the probe refuted the *replacement* explanation
+  too — both sessions had concluded "the shell must not be inside it", and that
+  is also wrong. Four cases, one temporary worktree each:
+
+  ```text
+  worktree remove, shell INSIDE the worktree, clean   exit 0, no output
+  worktree remove, shell in the primary checkout      exit 0, no output
+  worktree remove, tree has a modified file           fatal: contains modified
+                                                      or untracked files, use --force
+  git branch -D <b>, while a worktree holds <b>       error: cannot delete branch
+                                                      'b' used by worktree at …
+  ```
+
+  So **`git worktree remove` never cared who you are or where you stand.** The
+  original sentence conflated two commands: the refusal it describes is real
+  and belongs to `git branch -d`, which is the *second* half of the cleanup
+  line above. Hence the order in that line is load-bearing, not stylistic —
+  **remove the worktree first, then delete the branch**, because the branch
+  cannot go while any worktree holds it. Doing it the other way round produces
+  exactly the error that started this entry.
+
+  The one real gate is `--force`, and it is worth pausing on rather than
+  reflexively passing: a worktree with modified or untracked files is somebody
+  mid-task, or your own unsaved probe. Look at what `git -C <worktree> status
+  --porcelain` prints before forcing.
+
+  **A session still cannot delete a branch that its own worktree holds** — that
+  much survives. The escape is simply to remove the worktree first, from
+  anywhere, which the session can do itself.
 
   **`.claude/worktrees/` is a second home for these and the rule above does not
   name it.** Claude Code makes its own worktrees there rather than in
@@ -162,6 +191,40 @@ Rules that follow from that:
   It is the same shape as the push trap two bullets above — an empty push and
   a real one print the same line — and it has the same escape: ask git for
   the state, do not squint at output that does not carry it.
+
+  **The same family, one command further: counting refs is not measuring
+  content, and after a rebase-merge the count lies in the OTHER direction.**
+  Added 2026-08-17, when a session about to cut a release listed four unmerged
+  branches and two of them were already in `main` in full. GitHub's *Rebase and
+  merge* — the button this repo uses, because its history is linear — replays
+  each commit onto a new parent, so the SHA changes while the patch does not.
+  Every ref-counting command then reports work that is not missing. Measured on
+  one temporary branch, its commit cherry-picked onto a newer `main` to
+  reproduce exactly what the button does:
+
+  ```text
+  git rev-list --count base..feature          1        "one commit missing"
+  git rev-list --left-right --count base...   4/1      same claim, two columns
+  git cherry base feature                     - d998fe2   '-' = patch IS in base
+  git diff --stat base feature                (only what base gained since)
+  ```
+
+  **`git cherry` compares patch-ids, so it answers the question actually being
+  asked**, and `git diff --stat origin/main <branch>` answers it a second way —
+  though read its direction carefully: it also shows everything `main` gained
+  *after* the branch, which reads alarmingly like unmerged work and is not.
+
+  Two consequences, both of which cost time on the day:
+
+  - **Before deleting a branch, check with `git cherry`, never a count.** A
+    count of 5 on a branch whose five patches are all `-` is the safe case, and
+    it looks exactly like the dangerous one.
+  - **Stale remote-tracking refs inflate the same list.** `git push origin
+    --delete <b>` and a `gh pr merge --delete-branch` remove the branch on the
+    server; every *other* clone keeps `origin/<b>` until someone runs `git
+    fetch --prune`. Two of the four "unmerged branches" above were refs to
+    branches that no longer existed. `git ls-remote --heads origin` asks the
+    server and cannot be stale.
 
   Uncommitted work in the shared checkout means somebody is mid-task. A
   *branch* carrying a spec or a design doc means somebody has already decided
