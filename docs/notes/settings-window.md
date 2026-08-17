@@ -439,6 +439,96 @@ to report `Bad` — the precedence is for the cell, not a claim that the
 outranked problem stopped existing.
 `a_paused_row_whose_app_is_missing_is_still_bad` is the pin.
 
+### `missing` has now been wrong twice, both times about a tier the CLI passes
+
+The catalog arm of `row_condition` asks one question — *does this machine have
+this app?* — and `beckon check --resolve` asks the same one. Twice now they have
+answered differently, and both times the window was the pessimist:
+
+| measured | the window said | `check --resolve` said |
+|---|---|---|
+| airm3 2026-08-16 | `Settings` and `DeepSeek` `missing` | exit 0 for both |
+| macmini 2026-08-17 | all six `\|\|` rows `missing` | `ok: every app name resolves` |
+
+The first was the **substring tier**: the arm compared for equality while every
+beckon resolver ends in a case-insensitive substring match that
+`check --resolve` deliberately passes.
+
+The second was **candidate chains**. `beckon_core::candidates::split` is called
+in exactly three places, all in `beckon-cli` — the hot path, `check --resolve`
+and `resolve` — and `settings.rs` contained no mention of the word *chain*. So
+the arm compared the WHOLE value against installed names, and since no app is
+called `Gmail || https://mail.google.com/`, every chain row in the file was
+`missing`. `5a849c8` had fixed this same class for `resolve` a week earlier and
+could not reach the window.
+
+Two things the fix has to get right, both taken from `check_resolution`'s
+`winner` rather than re-decided:
+
+- **The row is graded by the candidate that WINS, i.e. the first that is not a
+  miss** — not the first (which calls a working binding dead) and not the best
+  (which hides a substring hazard a later exact candidate never gets the chance
+  to beat).
+- **A malformed chain (`"Gmail || "`) is a miss carrying the parser's own
+  sentence.** `candidates::split` refuses that identical string before it
+  reaches any backend, so the key really is dead — but `missing` alone points
+  the reader at the app catalog, which is not what is wrong. Note that
+  `Model::problems` does NOT flag it, so this note is the only thing that says
+  so in the window.
+
+The control that matters is `examples/catalog_probe.rs` against the author's
+real `apps.shared.toml`, run on both sides of the change: six rows
+`MISSING → present`, while the two rows that were already right (`Settings`,
+`Brave || Brave Browser` — both loose) were byte-identical before and after.
+Its own header records that this probe once over-claimed in the same direction
+as the bug it exists to catch, which is the one failure a control must not have.
+
+### macOS puts the word in a COLUMN, and that column cannot widen itself
+
+Windows draws the flag as a pill *inside* the App cell (`app_cell`, `FLAG_SEP`),
+which is why §3.1 shortened all four words. macOS added a fourth `NSTableColumn`
+instead — and that column clipped `other chord` to `other cho`.
+
+**Widening it does nothing, and this took three wrong guesses to establish.**
+`NSTableView` tiles to the sum of the column widths plus one
+`intercellSpacing.width` each, and when that exceeds the clip view the whole
+overflow lands on the LAST column, which no horizontal scroller can reach. What
+the status column gets is decided by the three columns before it and by the
+gutters; its own declared width is not in the subtraction. Measured with
+`examples/geom_probe.rs` on macmini 2026-08-17:
+
+```text
+spacing  widths          clip  table   status: x  drawn  VISIBLE
+  17     20/170/250/ 80   567    603         499     94       68   <- shipped, clipped
+  17     20/170/230/100   567    603         479    114       88   <- but truncates combo
+   6     20/170/254/100   567    594         475    109       92   <- ships now
+```
+
+`intercellSpacing` defaults to **17 x 0** here, so four columns spent 68 pt on
+gutters alone. Dropping it to 6 is what buys the room; the columns then get
+their declared widths instead of the last one paying for the other three.
+
+Three guesses this refuted, none of which a compiler or a test would have
+caught — the overlay scroller was covering the column (it is not: the scroller
+takes its own 17 pt lane, 584 frame vs 567 clip); the column was being shrunk by
+`lastColumnOnlyAutoresizing` (it is not: the table stays at its tiled width and
+simply overhangs); and `COL_COMBO` had spare room to donate (it does not).
+
+That last one was a **wrong claim already in the file**: the comment named
+`Ctrl + Cmd + Option + Shift + PgDn` as the longest string the column can hold.
+Measured over all 81 entries of `key_table()` through the window's own
+`combo_display_folded_with(.., MAC)`, the longest is
+`Ctrl + Cmd + Option + Shift + Backspace` at 246.05 pt against `PgDn`'s 213.04 —
+so at the old 250 less ~4 pt of cell inset, the longest binding in the table was
+truncating by 0.05 pt. It is 254 now.
+
+**`geom_probe` needs no Aqua session**, which is what makes any of this
+measurable from a Claude session: Auto Layout is arithmetic and runs in the
+Background namespace, while DRAWING is what does not. It must force the content
+size, though — an un-ordered-front window reports every frame as 0, which reads
+exactly like a broken window. It cannot say whether text is elided or hard-cut,
+and it cannot see the scroller; both need pixels.
+
 ## Starting on a config that does not parse
 
 **`beckon-serve.exe` starts anyway** (commit `4f82b94`). It installs the tray,

@@ -4,6 +4,7 @@
 //! same reason: it can be tested without a window, a message loop or a
 //! registry.
 
+use crate::candidates;
 use crate::config_write::{render, RowWrite};
 use crate::shortcuts::{parse_config, CapsTap, Chord, Combo, KeyboardConfig};
 use std::collections::HashMap;
@@ -2187,6 +2188,48 @@ fn combo_is_caps_chord(c: &Combo, hold: &Chord) -> bool {
     c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt && !c.shift
 }
 
+/// What one candidate's grade is worth SAYING, once this machine's catalog has
+/// answered for it.
+///
+/// A miss is `None` from [`catalog_hit`] rather than a third variant here, so
+/// the ladder in `row_condition` can stop at the first `Some` without carrying
+/// a "not this one" through the match that follows.
+enum CatalogHit<'a> {
+    /// An installed name matches exactly. Nothing to say.
+    Exact,
+    /// Only the substring tier matches. Carries EVERY match, in catalog order,
+    /// because one and several are different hazards -- see the notes below.
+    Loose(Vec<&'a str>),
+}
+
+/// How the installed-app catalog answers for ONE candidate: the same two tiers
+/// `check --resolve` grades a name by, projected onto the names alone.
+///
+/// `candidate` is never empty, because `candidates::split` refuses an empty
+/// segment and `row_condition` guards the whole-string case before calling it.
+/// That is load-bearing rather than incidental: an empty `want` is a substring
+/// of every name, which is the tier-4 hazard CLAUDE.md records for
+/// `beckon "$APP"` with `$APP` unset.
+fn catalog_hit<'a>(names: &'a [String], candidate: &str) -> Option<CatalogHit<'a>> {
+    let want = candidate.to_lowercase();
+    if names.iter().any(|n| n.to_lowercase() == want) {
+        return Some(CatalogHit::Exact);
+    }
+    // **Not a miss yet.** Every beckon resolver ends in a case-insensitive
+    // substring tier, and `check --resolve` passes it deliberately -- a
+    // `Certainty::Guess` prints and exits 0. Comparing for equality alone made
+    // the window say `missing` about bindings the resolver resolves, which is
+    // one program answering a question two ways. Measured on airm3 2026-08-16:
+    // `Settings` and `DeepSeek` came back `MISSING` from this catalog while
+    // `check --resolve` exited 0 for both.
+    let loose: Vec<&'a str> = names
+        .iter()
+        .filter(|n| n.to_lowercase().contains(&want))
+        .map(String::as_str)
+        .collect();
+    (!loose.is_empty()).then_some(CatalogHit::Loose(loose))
+}
+
 // ---------------------------------------------------------------------------
 // The availability probe
 // ---------------------------------------------------------------------------
@@ -2638,57 +2681,114 @@ fn row_condition(
             text: "Checking installed apps...".into(),
         }),
         Some(names) => {
-            let want = r.app.trim().to_lowercase();
+            let app = r.app.trim();
             // An empty app name is reported as a `Problem`, not as a
             // catalog miss -- "no installed app has this name" is a strange
-            // thing to say about no name at all.
-            if !want.is_empty() && !names.iter().any(|n| n.to_lowercase() == want) {
-                // **Not a miss yet.** Every beckon resolver ends in a
-                // case-insensitive substring tier, and `check --resolve`
-                // passes it deliberately -- a `Certainty::Guess` prints and
-                // exits 0. Comparing for equality here made the window say
-                // `missing` about bindings the resolver resolves, which is
-                // one program answering a question two ways. Measured on
-                // airm3 2026-08-16: `Settings` and `DeepSeek` came back
-                // `MISSING` from this catalog while `check --resolve` exited
-                // 0 for both.
-                let loose: Vec<&String> = names
-                    .iter()
-                    .filter(|n| n.to_lowercase().contains(&want))
-                    .collect();
-                match loose.as_slice() {
-                    // No note: `missing` is the sentence, in one word, on the
-                    // row the user is already looking at. `flag_mark` keeps
-                    // the `Mark::Bad` the deleted note used to carry -- and it
-                    // is PUSHED rather than inserted-if-absent, so a paused
-                    // row is still `Bad` for an app that is not installed even
-                    // though the cell can only say `paused`.
-                    [] => conditions.push("missing"),
-                    // The two hazards `check --resolve` distinguishes, in its
-                    // own words. One candidate is a name a later install can
-                    // take; several means the winner is already decided by
-                    // sort order rather than by anything the user wrote.
-                    //
-                    // A note rather than a fifth status word: design 3.1 fixes
-                    // the vocabulary at four and lists that under *what must
-                    // never be cut*. The severity still reaches the row,
-                    // because `mark` folds the notes.
-                    [one] => notes.push(Note {
-                        mark: Mark::Warn,
-                        text: format!(
-                            "Matches \"{one}\" by substring, so an app installed \
-                             later can quietly take this name."
-                        ),
-                    }),
-                    many => notes.push(Note {
-                        mark: Mark::Warn,
-                        text: format!(
-                            "Matches {} installed apps by substring; \"{}\" wins \
-                             only because it sorts first.",
-                            many.len(),
-                            many[0]
-                        ),
-                    }),
+            // thing to say about no name at all. It has to be caught BEFORE
+            // `candidates::split`, which refuses the empty string with a
+            // sentence about separators the user never typed.
+            if !app.is_empty() {
+                // The value may be a CANDIDATE CHAIN
+                // (`"Google Keep || https://keep.google.com/"`), so what the
+                // catalog is asked about is each candidate -- never the whole
+                // string. Comparing the whole string is the defect this arm was
+                // rewritten to remove: no installed app is called
+                // `Gmail || https://mail.google.com/`, so EVERY chain row in
+                // the file said `missing` while `check --resolve` on the same
+                // file on the same machine said every name resolves. Measured
+                // on macmini 2026-08-17; `5a849c8` fixed the same class in
+                // `resolve` and could not reach here.
+                match candidates::split(app) {
+                    // A stray `||` makes the key permanently dead:
+                    // `candidates::split` refuses this identical string before
+                    // it reaches any backend. `missing` is the honest word --
+                    // but alone it points the reader at the app catalog, which
+                    // is not what is wrong, so the parser's own sentence rides
+                    // along. Exactly how `check_resolution` grades a malformed
+                    // chain: a miss carrying that sentence as its consequence.
+                    Err(e) => {
+                        conditions.push("missing");
+                        notes.push(Note {
+                            mark: Mark::Bad,
+                            text: e,
+                        });
+                    }
+                    Ok(cands) => {
+                        // The candidate that will WIN at runtime, graded as the
+                        // row's grade. This mirrors `check_resolution`'s
+                        // `winner` in `beckon-cli`, and `beckon_ladder` under
+                        // it: the ladder stops at the first candidate that is
+                        // not a miss, so that is the one whose certainty the
+                        // user actually lives with. Grading by the FIRST
+                        // candidate calls a working binding dead; grading by
+                        // the BEST hides a substring hazard that a later exact
+                        // candidate never gets the chance to beat.
+                        let winner = cands
+                            .iter()
+                            .find_map(|c| catalog_hit(names, c).map(|hit| (*c, hit)));
+                        match winner {
+                            // Every rung missed. No note: `missing` is the
+                            // sentence, in one word, on the row the user is
+                            // already looking at. `flag_mark` keeps the
+                            // `Mark::Bad` the deleted note used to carry -- and
+                            // it is PUSHED rather than inserted-if-absent, so a
+                            // paused row is still `Bad` for an app that is not
+                            // installed even though the cell can only say
+                            // `paused`.
+                            None => conditions.push("missing"),
+                            // Exact. Nothing to say -- design 3.1 deletes
+                            // `Registered and working.` by name, and rule 2 is
+                            // that silence is the report. That holds for a
+                            // chain too: which candidate won is not a hazard,
+                            // so naming it here would put a note on healthy
+                            // rows.
+                            Some((_, CatalogHit::Exact)) => {}
+                            Some((cand, CatalogHit::Loose(loose))) => {
+                                // WHICH candidate matched has to be said when
+                                // the cell shows more than one. On a plain row
+                                // "this name" is unambiguous; on a chain the
+                                // reader cannot otherwise tell which half is
+                                // live. `is_chain` keeps the single-candidate
+                                // sentence byte-identical -- the same reason it
+                                // exists for `beckon -v <one-id>`.
+                                let subject = if candidates::is_chain(app) {
+                                    format!("\"{cand}\" matches")
+                                } else {
+                                    "Matches".to_string()
+                                };
+                                // The two hazards `check --resolve`
+                                // distinguishes, in its own words. One match is
+                                // a name a later install can take; several
+                                // means the winner is already decided by sort
+                                // order rather than by anything the user wrote.
+                                //
+                                // A note rather than a fifth status word:
+                                // design 3.1 fixes the vocabulary at four and
+                                // lists that under *what must never be cut*.
+                                // The severity still reaches the row, because
+                                // `mark` folds the notes.
+                                notes.push(Note {
+                                    mark: Mark::Warn,
+                                    text: match loose.as_slice() {
+                                        // `catalog_hit` never returns an empty
+                                        // `Loose`, so `[]` cannot arise; it is
+                                        // folded into the `many` arm rather
+                                        // than given an unreachable of its own.
+                                        [one] => format!(
+                                            "{subject} \"{one}\" by substring, so an app \
+                                             installed later can quietly take this name."
+                                        ),
+                                        many => format!(
+                                            "{subject} {} installed apps by substring; \
+                                             \"{}\" wins only because it sorts first.",
+                                            many.len(),
+                                            many[0]
+                                        ),
+                                    },
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4004,6 +4104,223 @@ mod tests {
         assert!(
             !notes.iter().any(|n| n.text.contains("No installed app")),
             "{notes:?}"
+        );
+    }
+
+    // ---------- candidate chains ----------
+
+    /// The window must not call a binding dead that the chain resolves.
+    ///
+    /// A value may be a CANDIDATE CHAIN (`beckon_core::candidates`), and the
+    /// catalog arm compared the WHOLE string against installed names -- so no
+    /// app is ever called `Gmail || https://mail.google.com/` and every chain
+    /// row in the file said `missing`.
+    ///
+    /// Measured on macmini 2026-08-17 against the author's real
+    /// `apps.shared.toml`: `beckon check --resolve` printed *"ok: every app
+    /// name resolves on this machine"* while the settings window flagged all
+    /// six chain rows `missing`. One program answering one question two ways
+    /// -- the same shape as
+    /// `an_app_that_resolves_by_substring_is_not_missing`, one tier further
+    /// out: `5a849c8` taught `resolve` the syntax and left this arm alone.
+    #[test]
+    fn a_chain_is_not_missing_when_a_candidate_resolves() {
+        let mut m = model();
+        m.set_app(0, "Gmail || https://mail.google.com/");
+        m.selected = Some(0);
+
+        let st = RuntimeStatus {
+            catalog: Some(vec!["Gmail".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &st);
+        assert_eq!(
+            cs.items[0].flag, None,
+            "the first candidate is installed, so the key works"
+        );
+        assert_eq!(cs.items[0].mark, Mark::Ok);
+        assert!(
+            cs.detail.unwrap().notes.is_empty(),
+            "a healthy row says nothing, chain or not"
+        );
+
+        // The machine the SECOND candidate exists for -- a Brave PWA whose
+        // `.desktop` carries the URL where its `Name` should be, which is the
+        // whole reason chains exist. Nothing about the row changes.
+        let st = RuntimeStatus {
+            catalog: Some(vec!["https://mail.google.com/".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &st);
+        assert_eq!(
+            cs.items[0].flag, None,
+            "a later candidate resolving is the feature, not a miss"
+        );
+        assert_eq!(cs.items[0].mark, Mark::Ok);
+    }
+
+    /// The control for the test above: the chain is not a blanket amnesty.
+    /// Every rung missing is still `missing`, and still says it in one word.
+    #[test]
+    fn a_chain_is_missing_only_when_every_candidate_is() {
+        let mut m = model();
+        m.set_app(0, "Gmail || https://mail.google.com/");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec!["Terminal".into()]),
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &st);
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+        assert!(
+            cs.detail.unwrap().notes.is_empty(),
+            "one word, no sentence repeating it"
+        );
+    }
+
+    /// Graded by the candidate that will WIN at runtime, which is the first
+    /// one that is not a miss -- `check_resolution`'s `winner` in
+    /// `beckon-cli`, and `beckon_ladder` under it, both stop there.
+    ///
+    /// Grading by the BEST candidate would hide a substring hazard that a
+    /// later exact candidate never gets the chance to beat; grading by the
+    /// FIRST would call a working binding dead. Neither is what the key does.
+    #[test]
+    fn a_chain_is_graded_by_the_candidate_that_wins_not_the_best_one() {
+        let mut m = model();
+        m.set_app(0, "Settings || Terminal");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec!["System Settings".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let cs = control_state(&m, &st);
+        assert_eq!(
+            cs.items[0].mark,
+            Mark::Warn,
+            "`Settings` wins loosely and the ladder stops there -- the exact \
+             `Terminal` behind it never runs"
+        );
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes.iter().any(|n| n.text.contains("System Settings")),
+            "the note names what the winning candidate matched: {notes:?}"
+        );
+    }
+
+    /// A loose note on a chain has to say WHICH candidate matched loosely.
+    /// On a plain row "this name" is unambiguous; on a chain the cell shows
+    /// several, and the reader cannot otherwise tell which half is live.
+    #[test]
+    fn a_loose_note_on_a_chain_names_the_candidate_that_matched() {
+        let mut m = model();
+        m.set_app(0, "Settings || Terminal");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec!["System Settings".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let notes = control_state(&m, &st).detail.unwrap().notes;
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.text.contains("\"Settings\"") && n.text.contains("\"System Settings\"")),
+            "both halves: the candidate that won, and what it matched: {notes:?}"
+        );
+    }
+
+    /// The clause above must NOT leak onto a plain name.
+    /// `candidates::is_chain` exists to keep single-id output byte-identical,
+    /// and this sentence is the one the row has always carried.
+    #[test]
+    fn a_plain_name_keeps_the_loose_sentence_it_always_had() {
+        let mut m = model();
+        m.set_app(0, "Settings");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec!["System Settings".into(), "Terminal".into()]),
+            ..status_all_ok()
+        };
+        let notes = control_state(&m, &st).detail.unwrap().notes;
+        assert!(
+            notes.iter().any(|n| n
+                .text
+                .starts_with("Matches \"System Settings\" by substring")),
+            "no candidate clause on a row that names one candidate: {notes:?}"
+        );
+    }
+
+    /// Several loose matches is the other hazard `check --resolve`
+    /// distinguishes, and a chain must still tell the two apart.
+    #[test]
+    fn several_loose_matches_on_a_chain_still_name_the_winner_and_the_count() {
+        let mut m = model();
+        m.set_app(0, "Brave || Brave Browser");
+        m.selected = Some(0);
+        let st = RuntimeStatus {
+            catalog: Some(vec![
+                "Brave Browser".into(),
+                "Brave Browser Beta".into(),
+                "Terminal".into(),
+            ]),
+            ..status_all_ok()
+        };
+        let notes = control_state(&m, &st).detail.unwrap().notes;
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.text.contains("2 installed apps") && n.text.contains("sorts first")),
+            "the winner is decided by sort order, and the note says so: {notes:?}"
+        );
+    }
+
+    /// A stray `||` makes the key permanently dead: `candidates::split`
+    /// refuses the identical string before it reaches any backend. `missing`
+    /// is the honest word -- but on its own it points the reader at the app
+    /// catalog, which has nothing to do with it, so the parser's own sentence
+    /// rides along. This mirrors `check_resolution`, which grades a malformed
+    /// chain as a miss carrying that sentence as its consequence.
+    #[test]
+    fn a_malformed_chain_carries_the_parsers_own_sentence() {
+        let mut m = model();
+        m.set_app(0, "Gmail || ");
+        m.selected = Some(0);
+        let cs = control_state(&m, &status_all_ok());
+        assert_eq!(cs.items[0].flag.as_deref(), Some("missing"));
+        assert_eq!(cs.items[0].mark, Mark::Bad);
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.mark == Mark::Bad && n.text.contains("||")),
+            "the reader must be pointed at the syntax, not at the catalog: \
+             {notes:?}"
+        );
+    }
+
+    /// An empty App box is a `Problem`, and adding chains must not turn it
+    /// into a lecture about separators: `candidates::split("")` refuses, and
+    /// the guard in front of it is what keeps that sentence off the row.
+    #[test]
+    fn an_empty_app_name_is_still_a_problem_and_not_a_chain_complaint() {
+        let mut m = model();
+        m.set_app(0, "");
+        m.selected = Some(0);
+        let cs = control_state(&m, &status_all_ok());
+        assert_ne!(
+            cs.items[0].flag.as_deref(),
+            Some("missing"),
+            "no name at all is not a catalog miss"
+        );
+        let notes = cs.detail.unwrap().notes;
+        assert!(
+            notes.iter().any(|n| n.text.contains("app name is empty")),
+            "{notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.text.contains("||")),
+            "an empty box has no chain to complain about: {notes:?}"
         );
     }
 

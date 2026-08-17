@@ -1388,12 +1388,52 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     for (id, title, width) in [
         (COL_TICK, "", 20.0),
         (COL_APP, "App", 170.0),
-        // Wide enough for the longest chord this window can show:
-        // `Ctrl + Cmd + Option + Shift + PgDn`. At 160 it truncated a plain
-        // four-modifier binding to `Ctrl + Cmd + Option + S...`, which hides
-        // exactly the character that says WHICH shortcut it is.
-        (COL_COMBO, "Shortcut", 250.0),
-        (COL_STATUS, "", 80.0),
+        // Wide enough for the longest chord this window can show. At 160 it
+        // truncated a plain four-modifier binding to
+        // `Ctrl + Cmd + Option + S...`, which hides exactly the character that
+        // says WHICH shortcut it is.
+        //
+        // **254, and the four points matter.** This comment used to name
+        // `Ctrl + Cmd + Option + Shift + PgDn` as the longest string the
+        // column can hold. It is not: measured over all 81 entries of
+        // `key_table()` through this window's own
+        // `combo_display_folded_with(.., MAC)` on macmini 2026-08-17, the
+        // longest is `Ctrl + Cmd + Option + Shift + Backspace` at 246.05 pt in
+        // the data cell's font (system UI 13) -- `PgDn` is only 213.04. At the
+        // old 250, less the cell's ~4 pt of inset, that left 246.00 for a
+        // string needing 246.05, so the longest binding in the table truncated
+        // by a hair. Re-measure through `key_table()` rather than by eye if a
+        // key is ever added.
+        (COL_COMBO, "Shortcut", 254.0),
+        // The status word, and it was clipping `other chord` to `other cho`.
+        //
+        // **Widening this column cannot fix that on its own, and that is the
+        // whole point of the `setIntercellSpacing` call below.** All four
+        // numbers here measured with `examples/geom_probe.rs` on macmini
+        // 2026-08-17, which reads the real window's own column rects:
+        //
+        // ```text
+        // spacing  widths          clip  table   status: x  drawn  VISIBLE
+        //   17     20/170/250/ 80   567    603         499     94       68
+        //   17     20/170/230/100   567    603         479    114       88
+        //    6     20/170/254/100   567    594         475    109       92
+        // ```
+        //
+        // Row 1 is what shipped, and 68 pt of visible column leaves ~64 for a
+        // word measuring 70.60 -- so it drew `other cho`. The table tiles 36 pt
+        // WIDER than its clip view there, and the overflow all lands on the
+        // last column because there is no horizontal scroller to reach it. What
+        // this column gets is whatever the clip view has left once the three
+        // before it have been placed, and its own declared width is not in that
+        // subtraction: row 2 only gains its 20 pt by taking them off `combo`,
+        // where the measurement above shows they were not spare.
+        //
+        // Row 3 is what ships now. The gutters pay instead, `combo` gets four
+        // points MORE than it had, and the word lands with ~18 pt of headroom.
+        // The vocabulary is closed at four words and `other chord` is the
+        // longest, so this is a bounded problem -- but if a fifth word ever
+        // lands, re-run the probe rather than assuming it fits.
+        (COL_STATUS, "", 100.0),
     ] {
         let col = {
             NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &NSString::from_str(id))
@@ -1416,6 +1456,19 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     }
     unsafe {
         table.setRowHeight(ROW_HEIGHT);
+        // **The gutters, and they were the reason the last column clipped.**
+        // AppKit's default `intercellSpacing` here is 17 x 0 (measured on
+        // macmini 2026-08-17), so four columns spent 68 pt on nothing but gaps
+        // and tiled the table 36 pt wider than its own clip view -- the excess
+        // all landing on the last column, which is the one no horizontal
+        // scroller can reach. 6 pt keeps a visible gutter and brings the table
+        // back inside the clip view, which is what gives every column its
+        // declared width instead of the last one paying for the other three.
+        //
+        // Height stays 0, the platform default: rows are separated by
+        // `usesAlternatingRowBackgroundColors`, and spacing there would show as
+        // stripes of window ground between the bands.
+        table.setIntercellSpacing(objc2_foundation::NSSize::new(6.0, 0.0));
         table.setDataSource(Some(ProtocolObject::from_ref(&*target)));
         table.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         table.setUsesAlternatingRowBackgroundColors(true);
