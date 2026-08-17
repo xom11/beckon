@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.9.9"
+version      = "0.9.10"
 edition      = "2021"
 license      = "MIT OR Apache-2.0"
 # The floor the COMMITTED LOCKFILE can actually build, not an aspiration.
