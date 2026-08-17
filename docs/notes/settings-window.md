@@ -586,6 +586,48 @@ on purpose. The stack detaches hidden views, so hiding it when empty would move
 the card's bottom border while the user typed in the card, and it buys nothing at
 the floor because `MIN_HEIGHT` must still fit the note-shown case.
 
+### A Save renamed onto the config path, which severs a symlinked config
+
+`apply_settings` writes temp-then-rename, deliberately: a crash or a full disk
+must not destroy a working config, and a rename is the shape `watch_config` was
+built for. What it renamed ONTO was the path as given.
+
+**`fs::rename` replaces its destination, and a destination that is a symlink is
+replaced by a regular file.** Measured 2026-08-17 with the same call shape:
+
+```text
+before  lrwxr-xr-x  link.toml -> real.toml
+after   -rw-r--r--  link.toml            (readlink empty)
+        real.toml still holds the OLD text; the new text is in link.toml
+```
+
+This stopped being hypothetical the same day. Both of the author's Macs now reach
+`~/.config/beckon/apps.toml` through a `mkOutOfStoreSymlink` into their dotfiles
+repo — and that indirection is forced by beckon itself, because a plain
+`home.file.".config/beckon/apps.toml".source = <path>` copies the file INTO the
+nix store and links to a **read-only** path the settings window cannot write back
+to. So the shared-config setup requires a symlink, and the naive rename would have
+severed it: repo file left on the old text, and home-manager moving the orphan
+aside under `backupFileExtension` on the next switch. A Save that disappears one
+rebuild later, on the file every other host copies from.
+
+The fix resolves the path first (`fs::canonicalize`) and renames onto the target,
+with the temp file beside the TARGET rather than beside the link — `rename` cannot
+cross filesystems and a link need not share one with its target. The function
+returns the path it wrote, because "cannot write ~/.config/beckon/apps.toml" for a
+permission problem three directories away in a dotfiles repo sends the reader to
+the wrong place.
+
+`saving_through_a_symlink_writes_the_target_and_keeps_the_link` is the guard, and
+it was checked the only way that means anything: reverted to renaming onto the
+path it FAILS, with the fix it passes. Its neighbour
+`saving_a_plain_file_still_replaces_it_in_place` is the control, so the pair says
+the change is about symlinks and not about the write in general.
+
+Two things deliberately unchanged, both checked: the 1 Hz reload tick still brings
+the new text back whichever directory the watcher sits on, and `event_touches`
+still cannot fire on the temp file, whose file name differs from the config's.
+
 ### The key list was showing config tokens, on BOTH platforms
 
 `key_label` exists to turn a config token into what the keyboard calls the key —

@@ -609,7 +609,13 @@ fs4       = "0.8"    # beckon-cli:  flock, one serve per config path
 ### What beckon reads and writes
 
 **The only *file* beckon reads is the `serve` shortcuts TOML** — and, since the
-settings window, the only file it writes. There is no config for
+settings window, the only file it writes. **That write resolves the path before it
+renames onto it**, because a rename onto a symlink replaces the LINK, and both of
+the author's Macs reach this file through one (`mkOutOfStoreSymlink`, itself forced
+by a plain `home.file.source` putting a read-only store path there). Do not
+"simplify" `write_config_text` back to renaming onto the path it was given —
+`saving_through_a_symlink_writes_the_target_and_keeps_the_link` is what fails, and
+only that one. There is no config for
 `beckon <id>` itself and no resolve cache; ids resolve against OS metadata on
 every call.
 

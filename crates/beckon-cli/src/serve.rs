@@ -751,6 +751,58 @@ fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) -> RegisterOutc
     }
 }
 
+/// Write the config text, atomically, ONTO THE FILE THE PATH RESOLVES TO.
+///
+/// Temp-then-rename: a crash or a full disk must not destroy a working config,
+/// and a rename is the write shape `watch_config` was built for -- it watches
+/// the parent directory by file name precisely because editors replace files
+/// that way.
+///
+/// **The rename must land on the RESOLVED target, not on the path as given, and
+/// that is the whole reason this is a function.** `fs::rename` replaces its
+/// destination, and a destination that is a symlink is replaced by a REGULAR
+/// FILE -- measured 2026-08-17:
+///
+/// ```text
+/// before  lrwxr-xr-x  link.toml -> real.toml
+/// after   -rw-r--r--  link.toml            (readlink empty)
+///         real.toml still holds the OLD text; the new text is in link.toml
+/// ```
+///
+/// On this setup that is not hypothetical. nix-darwin links
+/// `~/.config/beckon/apps.toml` to the shortcuts file inside the user's dotfiles
+/// repo (`config.lib.file.mkOutOfStoreSymlink`, so that beckon can write back to
+/// it at all -- a plain `home.file.source` would put a READ-ONLY store path
+/// there). Renaming onto the link would have severed it, left the repo file
+/// holding the old text, and had home-manager move the orphan aside on the next
+/// switch under `backupFileExtension` -- i.e. a Save that silently vanishes one
+/// rebuild later, on the machine whose config every other host copies.
+///
+/// The temp file has to sit beside the RESOLVED target too, not beside the link:
+/// `rename` cannot cross filesystems, and a link and its target need not be on
+/// the same one.
+///
+/// Returns the path actually written, which is what an error message should name
+/// -- "cannot write ~/.config/beckon/apps.toml" for a permission problem three
+/// directories away in a dotfiles repo is a message that sends the reader to the
+/// wrong place.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn write_config_text(path: &Path, text: &str) -> std::io::Result<PathBuf> {
+    // `canonicalize` resolves every link in the chain. It needs the file to
+    // exist, which it does on every Save path -- the model was loaded from it.
+    // If it does not, writing the path as given is the honest fallback and the
+    // only thing left to try.
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let tmp = target.with_extension("toml.beckon-tmp");
+    match std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &target)) {
+        Ok(()) => Ok(target),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Does any changed path refer to our config file (by file name)? We watch
 /// the PARENT directory, not the file: vim/sed replace the file by rename,
 /// which kills an inode-level watch silently.
@@ -1955,14 +2007,7 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
             return;
         }
     };
-    // Temp-then-rename: a crash or a full disk must not destroy a working
-    // config, and a rename is the write shape `watch_config` was built for
-    // -- it watches the parent directory by file name precisely because
-    // editors replace files that way.
-    let tmp = path.with_extension("toml.beckon-tmp");
-    let wrote = std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &path));
-    if let Err(e) = wrote {
-        let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = write_config_text(&path, &text) {
         swin::error(&format!("Cannot write {}:\n\n{e}", path.display()));
         return;
     }
@@ -2523,6 +2568,74 @@ mod tests {
     fn shortcuts_count_phrase_agrees_with_count() {
         assert_eq!(shortcuts_count_phrase(1), "1 shortcut");
         assert_eq!(shortcuts_count_phrase(5), "5 shortcuts");
+    }
+
+    /// **A Save must not sever a symlinked config**, and this is the test that
+    /// stops it. Measured 2026-08-17: `fs::rename` onto a symlink replaces the
+    /// LINK with a regular file, leaving the real file holding the old text.
+    ///
+    /// It is not a hypothetical shape. `~/.config/beckon/apps.toml` on this
+    /// author's Macs is a `mkOutOfStoreSymlink` into their dotfiles repo -- which
+    /// is itself the workaround for a plain `home.file.source` putting a
+    /// read-only store path there -- so the naive rename would break the one
+    /// setup the config is shared through, one rebuild after the Save.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn saving_through_a_symlink_writes_the_target_and_keeps_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("apps.shared.toml");
+        std::fs::write(&real, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
+        let link = dir.path().join("apps.toml");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&real, &link).unwrap();
+
+        let wrote = write_config_text(&link, "\"ctrl+alt+t\" = \"new\"\n").expect("write");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link itself must survive the write, or home-manager moves the \
+             orphan aside on the next switch and the Save disappears"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&real).unwrap(),
+            "\"ctrl+alt+t\" = \"new\"\n",
+            "the text has to land in the REAL file, not beside it"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&wrote).unwrap(),
+            std::fs::canonicalize(&real).unwrap(),
+            "the returned path is what an error message should name"
+        );
+        assert!(
+            !dir.path().join("apps.shared.toml.beckon-tmp").exists(),
+            "the temp file is consumed by the rename"
+        );
+    }
+
+    /// The control: with no link in the way the behaviour is unchanged, so the
+    /// test above is about SYMLINKS and not about the write in general.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn saving_a_plain_file_still_replaces_it_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
+
+        write_config_text(&config, "\"ctrl+alt+t\" = \"new\"\n").expect("write");
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "\"ctrl+alt+t\" = \"new\"\n"
+        );
+        assert!(!std::fs::symlink_metadata(&config)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     /// The load-bearing `?` in `acquire_lock`.
