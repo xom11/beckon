@@ -249,12 +249,73 @@ caps_hold = "ctrl+super+alt"
             // so nothing has forced it to its content size yet and every frame
             // reads 0. Auto Layout still works -- it just needs a size to
             // solve against, which is what `open` would have set on show.
-            w.setContentSize(objc2_foundation::NSSize::new(640.0, 500.0));
+            // `BECKON_PROBE_H` so the FLOOR can be measured too, not just the
+            // default size. `MIN_HEIGHT` is `setContentMinSize`, so the height
+            // the user can drag down to is a second layout case, and it is the
+            // one where a too-tall page clips the command bar and nothing else.
+            let h: f64 = std::env::var("BECKON_PROBE_H")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(500.0);
+            w.setContentSize(objc2_foundation::NSSize::new(640.0, h));
             let Some(root) = w.contentView() else {
                 continue;
             };
             root.layoutSubtreeIfNeeded();
             println!("window contentView width: {}", root.frame().size.width);
+            {
+                // The VERTICAL question, which is a different one: where does
+                // the window's height actually go, and how much of it lands
+                // nowhere? `fittingSize` is what the content asks for; the
+                // frame is what it got. Bands are printed top-down in screen
+                // order, so the gaps between them are readable by subtraction.
+                let f = root.frame();
+                let fit = root.fittingSize();
+                println!(
+                    "contentView height {} vs fittingSize {:.1}  -> {:.1} pt unclaimed",
+                    f.size.height,
+                    fit.height,
+                    f.size.height - fit.height
+                );
+                // Every band's ASK, hidden ones included. Three of the four
+                // doors are hidden at any moment and `fittingSize` still
+                // answers for them, which is the only way to see which door
+                // actually decides `WINDOW_HEIGHT` -- the visible one is not
+                // necessarily the tallest.
+                for (i, v) in root.subviews().iter().enumerate() {
+                    println!(
+                        "  ask[{i}] fitting h {:>6.1}  {}  {:?}",
+                        v.fittingSize().height,
+                        if v.isHidden() { "hidden " } else { "visible" },
+                        v.class()
+                    );
+                }
+                let mut bands: Vec<(f64, f64, String)> = root
+                    .subviews()
+                    .iter()
+                    .filter(|v| !v.isHidden())
+                    .map(|v| {
+                        let r = v.frame();
+                        (r.origin.y, r.size.height, format!("{:?}", v.class()))
+                    })
+                    .collect();
+                // AppKit's origin is bottom-left, so descending y is top-down.
+                bands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                let mut prev_bottom: Option<f64> = None;
+                for (y, h, cls) in &bands {
+                    if let Some(pb) = prev_bottom {
+                        let gap = pb - (y + h);
+                        if gap.abs() > 0.5 {
+                            println!("      gap {gap:>6.1}");
+                        }
+                    }
+                    println!("  band y {y:>6.1}  h {h:>6.1}  {cls}");
+                    prev_bottom = Some(*y);
+                }
+                if let Some(pb) = prev_bottom {
+                    println!("      gap {pb:>6.1}  (below the last band)");
+                }
+            }
             let mut stack: Vec<Retained<NSView>> = vec![root];
             while let Some(v) = stack.pop() {
                 // `downcast` consumes the receiver and hands it back in `Err`,

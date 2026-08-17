@@ -104,18 +104,46 @@ mod widgets;
 /// from the config, for the same reason the Win32 twin fixes it: a window
 /// that changes height when a binding is added is a window that moves under
 /// the pointer mid-edit.
+///
+/// **Ten, and the two extra rows are spent slack rather than a bigger
+/// window.** Measured with `examples/geom_probe.rs` on macmini 2026-08-17: at
+/// eight rows the tallest door asked for 452 pt inside a 500 pt content view,
+/// so 48 pt landed under the command bar as a dead band with nothing in it --
+/// which is what a user photographed. The list is the one band here that can
+/// use height, and a config of twenty bindings showing eight of them is the
+/// case that wants it.
+///
+/// The height constraint stays EXACT (`ROWS * ROW_HEIGHT + 24`). Making it a
+/// minimum, or letting the list stretch, is what the paragraph above forbids:
+/// then the content drives the window instead of the other way round.
 /// The design's window, in points.
 ///
-/// `MIN_HEIGHT` is the Win32 twin's derivation carried over unchanged, and
-/// its subject is the About door rather than the Shortcuts one: card 1's
-/// list gives room up before anything else moves, so the door that runs out
-/// first is one of the three whose card is FIXED, and About is the only page
-/// whose height depends on a text measurement.
+/// **`MIN_HEIGHT` is what the TALLEST DOOR asks for, and that door is
+/// Shortcuts.** This used to be the Win32 twin's derivation carried over
+/// unchanged, and it named About as its subject on the reasoning that card 1's
+/// list gives room up before anything else moves. Measured with
+/// `examples/geom_probe.rs` on macmini 2026-08-17, asking every door including
+/// the three that are hidden:
+///
+/// ```text
+/// Shortcuts 360    About 306    Keyboard 190    System 144
+/// ```
+///
+/// Shortcuts is the tallest by 54 pt, so About was never the binding
+/// constraint. The carried-over 480 happened to be safe only because it sat
+/// 28 pt ABOVE what any door needed; spending that slack on rows makes it the
+/// real floor, so it has to be derived rather than inherited.
+///
+/// It is `setContentMinSize`, i.e. the height the user can drag DOWN to -- so
+/// content must fit at this number, not merely at `WINDOW_HEIGHT`. Growing the
+/// list without moving this is the trap: the window would clip its own command
+/// bar at the minimum and nowhere else, which is the hardest kind of layout bug
+/// to notice.
 const WINDOW_WIDTH: f64 = 640.0;
 const WINDOW_HEIGHT: f64 = 500.0;
-const MIN_HEIGHT: f64 = 480.0;
+const MIN_HEIGHT: f64 = 492.0;
 
-const ROWS: f64 = 8.0;
+const ROWS: f64 = 10.0;
 const ROW_HEIGHT: f64 = 20.0;
 
 // Column identifiers. Strings rather than integers because that is what
@@ -1480,9 +1508,15 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         scroll.setDocumentView(Some(&table));
         scroll.setTranslatesAutoresizingMaskIntoConstraints(false);
     }
-    // A fixed eight rows at every scale, measured rather than scaled from a
+    // A fixed `ROWS` rows at every scale, measured rather than scaled from a
     // token: a window that changes height when a binding is added is a
     // window that moves under the pointer mid-edit.
+    //
+    // **`Equal`, and it must stay `Equal`.** A `GreaterThanOrEqual` here, or
+    // no constraint at all, is what lets the list grow with its content -- and
+    // then the sentence above stops being true. `ROWS` is the knob; this
+    // relation is not. See `ROWS` for why it is ten rather than the eight this
+    // comment used to name, and for the 48 pt of dead band that bought.
     unsafe {
         NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
             &scroll,
@@ -1575,6 +1609,17 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // photographed. The Keyboard door's note has always been `wrapping` with
     // its width pinned to its column; this is the same note in the same
     // situation and had neither.
+    //
+    // **It keeps one empty line's height when it has nothing to say, and that
+    // is deliberate.** Measured 2026-08-17: the label is 14 pt, so an editor
+    // card with no note reserves 14 pt of blank -- part of what a user pointed
+    // at as wasted space. Hiding it when empty was considered and rejected on
+    // the measurement rather than on taste: this stack detaches hidden views,
+    // so the card would shrink 14 pt and grow back the moment a note appeared,
+    // i.e. the card's bottom border would move while the user typed in it. It
+    // also buys nothing at the floor, because `MIN_HEIGHT` still has to fit the
+    // note-SHOWN case. The 48 pt that was worth reclaiming was under the
+    // command bar, and `ROWS` spends it.
     let notes = widgets::wrapping("", mtm);
 
     // --- command bar ------------------------------------------------------

@@ -529,6 +529,63 @@ size, though — an un-ordered-front window reports every frame as 0, which read
 exactly like a broken window. It cannot say whether text is elided or hard-cut,
 and it cannot see the scroller; both need pixels.
 
+### The vertical twin: 48 pt of dead band, and About was never the tallest door
+
+Same probe, the other axis. Measured on macmini 2026-08-17 with
+`BECKON_PROBE_H` unset, i.e. at the shipped 500 pt content height:
+
+```text
+contentView 500 vs fittingSize 452  ->  48 pt unclaimed
+  tabs   h  24
+  page   h 360      (its own fittingSize is 360 -- NOT stretched)
+  bar    h  24
+  gap    60         = 12 pt bottom inset + the 48
+```
+
+`NSStackView` puts arranged subviews in the TOP gravity, so every point the
+window has and the content does not collects underneath the last band. That is
+the empty strip below `Serving · N of N` that a user photographed.
+
+**Ask every door, including the hidden three** — `fittingSize` answers for a
+hidden view, and that is the only way to see which one sets the floor:
+
+| door | fitting height |
+|---|---|
+| **Shortcuts** | **360** |
+| About | 306 |
+| Keyboard | 190 |
+| System | 144 |
+
+So the comment on `MIN_HEIGHT` was wrong about its own subject. It was the Win32
+twin's derivation carried across unchanged and it named **About**, reasoning that
+card 1's list gives room up before anything else moves. Shortcuts is taller by
+54 pt. The inherited 480 was safe only by accident — it sat 28 pt above what any
+door actually needed, so nothing ever tested the claim.
+
+The 48 pt went to the list (`ROWS` 8 → 10) rather than to a shorter window: the
+list is the only band here that can use height, and a config of twenty bindings
+showing eight of them is the case that wants it. After: `fittingSize` 492, 8 pt
+unclaimed, the strip under the bar down from 60 to 20.
+
+**Growing the list forces `MIN_HEIGHT` to be re-derived, and this is the trap.**
+It is `setContentMinSize` — the height the user can drag DOWN to — so content has
+to fit at *that* number, not at `WINDOW_HEIGHT`. Measured at the new floor:
+
+```text
+BECKON_PROBE_H=492  ->  fittingSize 492, 0 pt unclaimed        (exact)
+BECKON_PROBE_H=480  ->  tabs sit at y=480, i.e. flush with the top edge
+```
+
+The 480 case does **not** clip: AppKit pays the 12 pt shortfall out of the
+stack's top inset, so the failure mode is padding silently vanishing at one
+window size and nowhere else. That is why the floor is now derived from the
+tallest door instead of inherited.
+
+The editor card's own 14 pt of blank — an empty `notes` label — was left alone
+on purpose. The stack detaches hidden views, so hiding it when empty would move
+the card's bottom border while the user typed in the card, and it buys nothing at
+the floor because `MIN_HEIGHT` must still fit the note-shown case.
+
 ### `other chord` is a VIEW fact, and its old comment argued for it wrongly
 
 **A `+shift` row is `other chord` and is reachable through Caps. Both, on
