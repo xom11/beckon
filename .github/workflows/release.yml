@@ -65,6 +65,109 @@ jobs:
           echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
           echo "name=beckon-${ref#v}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
 
+      # Signed BEFORE packaging, so the tarball carries the signature and the
+      # published sha256 is the signed file's.
+      #
+      # **Why sign at all, and why a self-signed certificate is enough.**
+      # macOS pins an Accessibility grant to the binary's DESIGNATED REQUIREMENT.
+      # For an ad-hoc signature that requirement IS the code hash, so every
+      # release is a new identity and the user has to re-grant on every machine
+      # after every update. Measured on airm3 2026-08-17, with both controls:
+      #
+      #   adhoc                  DR = cdhash H"..."           (changes per build)
+      #   self-signed, 2 builds  DR = identifier + cert leaf  (identical)
+      #   grant 0.9.14 -> swap in 0.9.15, same cert, same path   -> STILL granted
+      #   same path, same identifier, DIFFERENT cert             -> NOT granted
+      #   fresh cert, never granted                              -> NOT granted
+      #
+      # The last two are what make the third mean anything: the grant follows the
+      # CERTIFICATE, not the path. A Developer ID would additionally allow
+      # notarisation (so a browser download is not quarantined); it is not needed
+      # for the grant to survive, which is what this step is for.
+      - name: Sign (macOS)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          P12: ${{ secrets.MACOS_CERT_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bin='target/${{ matrix.target }}/release/beckon'
+
+          # **Absent secret is a hard failure, not a silent unsigned release.**
+          # Shipping ad-hoc again is exactly the regression this step exists to
+          # prevent, and it would announce itself only weeks later as "I had to
+          # re-grant Accessibility again".
+          if [ -z "${P12:-}" ]; then
+            echo "::error::MACOS_CERT_P12 is not set. Releasing unsigned would" \
+                 "silently break every Accessibility grant; refusing." >&2
+            exit 1
+          fi
+
+          kc="$RUNNER_TEMP/sign.keychain"
+          pw="$(openssl rand -hex 16)"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/id.p12"
+          security create-keychain -p "$pw" "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          security import "$RUNNER_TEMP/id.p12" -k "$kc" -P "${P12_PASSWORD:-}" \
+            -T /usr/bin/codesign -A
+          # Without this, codesign blocks on a UI prompt that no runner can answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$pw" "$kc" >/dev/null
+
+          # **The keychain must be in the SEARCH LIST.** Measured twice:
+          # `codesign --keychain <path>` alone still answers "no identity found",
+          # so adding it to the user search domain is what makes the identity
+          # resolvable. There is no flag that avoids this.
+          #
+          # **And the trailing `-db` must be stripped before restoring.**
+          # `list-keychains` PRINTS `login.keychain-db` while `-s` APPENDS `-db`
+          # to whatever it is given, so feeding the printed value straight back
+          # produces `login.keychain-db-db` -- a path that does not exist, i.e. a
+          # broken search list for the whole user. Measured by doing it: it
+          # happened on the author's own machine during the dry run and had to be
+          # repaired by hand. Round-trip verified stable with the strip.
+          orig="$(security list-keychains -d user | tr -d ' "' | sed 's/-db$//' | tr '\n' ' ')"
+          security list-keychains -d user -s $orig "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+
+          id="$(security find-identity -p codesigning "$kc" | sed -n 's/.*) \([0-9A-F]\{40\}\).*/\1/p' | head -1)"
+          [ -n "$id" ] || { echo "::error::no codesigning identity in the imported p12" >&2; exit 1; }
+
+          # `-i` pins the identifier, which is HALF the designated requirement --
+          # left implicit it is derived from the file name and would move if the
+          # binary were ever renamed. `--timestamp=none`: a self-signed cert has
+          # no business contacting Apple's timestamp server, and the DR does not
+          # depend on one.
+          codesign --force --timestamp=none --keychain "$kc" -s "$id" \
+            -i com.xom11.beckon "$bin"
+
+          security list-keychains -d user -s $orig
+          security delete-keychain "$kc"
+
+          # **The guard, and it is the point of the step.** A signature that
+          # silently did not take leaves the DR as a cdhash, the release looks
+          # green, and the breakage surfaces on the user's machine weeks later.
+          # `#` is OPTIONAL in that line and the difference is exactly the case
+          # this guard exists for: an ad-hoc binary prints `# designated => ...`
+          # (a comment, because there is no explicit requirement) and a
+          # cert-signed one prints `designated => ...` with no `#`. Anchoring on
+          # the `#` made the guard read EMPTY for the signed case -- i.e. it would
+          # have failed every correctly signed release. Found by dry run.
+          dr="$(codesign -d -r- "$bin" 2>&1 | sed -n 's/^#* *designated => //p')"
+          echo "designated requirement: $dr"
+          # Matched on `certificate`, NOT on `certificate leaf`. Measured: the
+          # word is `leaf` or `root` depending on the SUBJECT of the signing cert
+          # -- adding an `/O=` field flips it, because codesign then reads the
+          # self-signed cert as a chain root. Both are cert-anchored and both
+          # carry a grant across builds; a guard that demanded `leaf` rejected a
+          # correctly signed binary on the first dry run.
+          case "$dr" in
+            *cdhash*) echo "::error::still an ad-hoc cdhash requirement -- signing did not take" >&2; exit 1 ;;
+            *certificate*) echo "signed: the requirement is identifier + certificate" ;;
+            *) echo "::error::unrecognised designated requirement: $dr" >&2; exit 1 ;;
+          esac
+          codesign --verify --verbose=2 "$bin"
+
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash

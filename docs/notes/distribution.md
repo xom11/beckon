@@ -114,6 +114,37 @@ The workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with
 Renewal procedure is documented in the tap repo's README. **Rotated
 2026-08-11; expires 2027-08-12.**
 
+## The macOS signing certificate, and why losing it costs a re-grant everywhere
+
+`release.yml` signs both `apple-darwin` binaries with a **self-signed** certificate,
+from two secrets: `MACOS_CERT_P12` (base64 of a legacy-PBE `.p12`) and
+`MACOS_CERT_PASSWORD`. Added 2026-08-17; the certificate's `notAfter` is 2046.
+
+**It is not about Gatekeeper.** It is the only thing that keeps an Accessibility
+grant alive across a release — the measurement is in
+[`macos-backend.md`](macos-backend.md): an ad-hoc binary's designated requirement IS
+its code hash, so every version was a new identity to macOS and every machine had to
+be re-granted by hand. Signed, the requirement is `identifier + certificate`, and
+the grant carries.
+
+**The certificate must never change.** Its hash sits inside the stored requirement
+on every machine that has granted beckon, so a NEW certificate silently means "one
+more manual re-grant on every Mac" — exactly the cost the signing exists to remove.
+Treat the `.p12` as a keepsake rather than a rotatable credential:
+
+- back it up somewhere the owner controls (this setup has `bws`);
+- rotate only deliberately, knowing the price;
+- **there is no recovery if the key is lost** — the next release cannot satisfy the
+  requirement the machines remember, so every Mac re-grants once, and then the NEW
+  certificate has to survive.
+
+The risk it carries is the mirror image of the benefit: anything signed with this
+key inherits whatever Accessibility grant the user gave beckon. Narrow but real, and
+a Developer ID key has the same property.
+
+`release.yml` **fails the build when the secret is absent**, deliberately. Shipping
+unsigned would look green and surface weeks later as "I had to re-grant again".
+
 **CORRECTED 2026-08-13: `Bump packagers` DOES fire on its own, and has since
 the `workflow_call` fix landed.** `release.yml` ends with a job that does
 `needs: release` and `uses: ./.github/workflows/bump-packagers.yml`, so the

@@ -682,9 +682,9 @@ Two things kill the claim, and either one alone is enough:
    `Signature=adhoc` and `TeamIdentifier=not set`. Every release is a new cdhash,
    so even a fixed path could not carry a grant across a bump.
 
-So Homebrew and the nix store are **equivalent** on this axis. The only thing that
-ends it is a **Developer ID signature**, after which the requirement anchors on
-identifier + team rather than on the hash.
+So Homebrew and the nix store are **equivalent** on this axis. What ends it is any
+signature that is not ad-hoc — **including a free self-signed certificate**, which
+was measured rather than assumed; see the next section.
 
 ### `auth_value = 0` is DENIED, and it burns the ability to ask
 
@@ -713,27 +713,90 @@ on one machine is data about that machine.
 `beckon doctor` cannot answer either — it reports the CALLER's TCC, never the
 launchd agent's.
 
-### The restart-on-grant tick has no cap and no memory
+### A free self-signed certificate is enough — measured, with both controls
 
-`serve.rs`'s grant-watch tick answers `GrantRecovery::RestartUnderLaunchd` by
-`exit(1)`, which the agent's `KeepAlive { SuccessfulExit: false }` turns into a
-restart. Nothing bounds that. Measured on macmini, the log holds **five** clean
-cycles:
+**Measured on airm3 2026-08-17.** Worth settling because the alternative costs
+99 USD a year, and it is not needed for the grant to survive.
+
+| # | configuration | result |
+|---|---|---|
+| 1 | ad-hoc, two releases | DR **is** the cdhash — different per build |
+| 2 | one self-signed cert, 0.9.14 and 0.9.15 | DR **identical**: `identifier "com.xom11.beckon" and certificate leaf = H"e6b273ea…"` |
+| 3 | fresh cert, never granted | `NOT granted` — **the probe can report negative** |
+| 4 | owner grants 0.9.14 (`cdhash ff7a4705…`) | TCC writes `auth=2` |
+| 5 | swap in 0.9.15 (`cdhash c29ae4bb…`), same path, same cert | **`granted`** |
+| 6 | same path, same identifier, DIFFERENT cert | `NOT granted` |
+
+Row 5 is the finding. Rows 3 and 6 are what make it mean anything: without 3 the
+probe could have been blind, and without 6 the result could have been "TCC keys on
+the path". **The grant follows the CERTIFICATE.**
+
+A self-signed cert does NOT buy notarisation, so a browser-downloaded release is
+still quarantined — the separate defect already recorded. Homebrew fetches with
+curl and is unaffected, which is how every Mac here installs.
+
+Three mechanical traps, all found by dry-running the signing sequence before
+shipping it, all now commented in `release.yml`:
+
+- **`security import` needs a legacy-PBE p12.** OpenSSL 3's default encryption
+  reports "1 identity imported" and then yields no usable identity.
+  `-certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1` fixes it.
+- **`list-keychains` prints `login.keychain-db` and `-s` APPENDS `-db`.** Feeding
+  the printed value back produces `login.keychain-db-db`, a path that does not
+  exist — a broken search list for the whole account. It happened on the author's
+  own machine mid-dry-run and had to be repaired by hand. Strip the trailing `-db`
+  before restoring; the round trip is then stable.
+- **`codesign --keychain <path>` alone is not sufficient** — still "no identity
+  found". The keychain has to join the user search list. Measured twice.
+
+And the reason the guard matches `certificate` rather than `certificate leaf`:
+**the DR says `leaf` or `root` depending on the signing cert's SUBJECT.** An `/O=`
+field flips it, because codesign then reads the self-signed cert as a chain root.
+
+```text
+/CN=beckon signtest2                              -> certificate leaf
+/CN=beckon release signing (self-signed)/O=xom11  -> certificate root
+/CN=beckon release signing (self-signed)          -> certificate leaf
+```
+
+Both are cert-anchored and either would carry a grant, but the shipping cert is
+generated **without `/O=`** so its requirement has the exact shape row 5 was
+proven with. A guard demanding `leaf` rejected a correctly signed binary on the
+first dry run.
+
+### ~~The restart-on-grant tick has no cap and no memory~~ — WITHDRAWN same day
+
+**This entry was wrong. It is kept so the reasoning is not repeated.** It read
+that `serve`'s grant-watch tick loops without bound, on the evidence of five
+cycles in macmini's log:
 
 ```text
 GRANTED->restart / registered / NOT-GRANTED / registered / GRANTED->restart / …
 ```
 
-ending on `NOT-GRANTED`. So `is_accessibility_trusted()` answered true in
-processes whose cdhash TCC records as denied, at least five times, and each
-restart re-registered twenty hotkeys. It settled on its own, which is luck rather
-than design: the loop's exit condition is "the next process happens to disagree".
+and concluded `is_accessibility_trusted()` was answering true in processes TCC
+records as denied.
 
-**Not fixed as of 0.9.15.** The shape of the fix is a fourth input to
-`beckon_core::settings::grant_recovery` — `already_restarted`, carried across the
-exec by an env var — so the second attempt degrades to `TellAndStay` instead of
-restarting again. `grant_recovery` is already in core precisely so that decision
-is unit-testable without a launchd agent.
+**The owner then said: those were their own clicks.** Five cycles is five
+RELEASES installed that day (0.9.11 → 0.9.15) — each a new cdhash, each prompting,
+each granted by a human sitting at that machine. The tick did exactly what it is
+for, once per upgrade. There was no loop and there is nothing to cap.
+
+The same correction dissolves two neighbouring claims made in the same hour:
+
+- *"`is_accessibility_trusted()` flips within one second, so TCC is
+  non-deterministic"* — no: `serve` raised the dialog, a human clicked Allow, and
+  the next poll saw it. Designed behaviour, misread as an anomaly.
+- *"the probe is blind, it reports granted for a cert nobody granted"* — no: the
+  grant was real, made at 23:40:40 by the same human. A later run with a fresh
+  cert reported `NOT granted`, which is the negative control that should have been
+  taken FIRST.
+
+**The shape of the error is worth more than the entry was.** Three wrong
+conclusions in one hour, all from one omission: reading a positive result with no
+negative control, on a machine where a human can change the answer between two
+samples. Ask who else is touching the machine before calling a coincidence a
+defect.
 
 ## Two capabilities live in different processes on this machine
 
