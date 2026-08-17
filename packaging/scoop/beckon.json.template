@@ -1,6 +1,6 @@
 {
   "version": "{{VERSION}}",
-  "description": "Cross-platform focus-or-launch app switcher",
+  "description": "One key per app: launch, focus or cycle windows on macOS, Windows and Linux",
   "homepage": "https://github.com/xom11/beckon",
   "license": "Apache-2.0 OR MIT",
   "architecture": {

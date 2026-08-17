@@ -1,5 +1,9 @@
 class Beckon < Formula
-  desc "Cross-platform focus-or-launch app switcher"
+  # 75 chars and no leading article: `brew audit` warns on both, and on a desc
+  # that repeats the formula name. "focus-or-launch app switcher" was none of
+  # those things and still failed the only test that matters — it reads as
+  # jargon to anyone who has not already used beckon.
+  desc "One key per app: launch, focus or cycle windows on macOS, Windows and Linux"
   homepage "https://github.com/xom11/beckon"
   version "{{VERSION}}"
   license any_of: ["Apache-2.0", "MIT"]
