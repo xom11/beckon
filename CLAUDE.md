@@ -2088,23 +2088,78 @@ than shipping a stale command.
 **README's animation is a PHOTOGRAPH of that page, and it goes stale in
 silence.** `assets/five-answers.gif` is `#how` — *One key, five answers* —
 recorded by `tools/record-five-answers.mjs` (headless Chrome over CDP, 316
-frames, 12.5 fps, 0.31 MB). Nothing in CI compares the two, so a change to the
-table, the desk or the tour's beats leaves the README showing last month's
-design: re-run the recorder in the same commit that changes `#how`.
+frames, 12.5 fps, **1800x654, 2.1 MB**). Nothing in CI compares the two, so a
+change to the table, the desk or the tour's beats leaves the README showing
+last month's design: re-run the recorder in the same commit that changes
+`#how`.
 
-Four things in that script are load-bearing and each is a defect that was
-measured rather than a precaution:
+**It ships at 1800px because a README image is displayed at ~900 CSS px and
+every HiDPI reader therefore needs ~1800 device pixels.** The first version
+shipped **900px** — 0.81x of the clip's own 1108px CSS width, so the text was
+shrunk below 1:1 and then stretched back up ~2x by the browser. It was reported
+as blurry and it was. **Colour depth is not a free knob either**: 64 colours
+saves 0.7 MB and turns the accent blue on `Launch`/`Focus` **purple**, visible
+at a glance. Dither is `bayer_scale=5`; at the default 3 a crosshatch is plain
+across the dark window bodies *and* the file is 0.9 MB bigger. Measured at
+1800px/128 colours — bayer3 2.7 MB, bayer4 2.0 MB, bayer5 1.8 MB, none 1.5 MB
+(faint contour bands in the gradient), sierra2_4a 5.1 MB.
 
-- **Virtual time, not a wall-clock capture loop.** `Page.captureScreenshot` of
-  a 2216px clip costs tens of milliseconds and the cost is not constant, so a
-  real-time loop cannot hold a frame interval while the GIF's constant frame
-  delay claims it did. `Emulation.setVirtualTimePolicy` freezes the page
-  between frames, so the shutter costs the page nothing.
+**CORRECTED 2026-08-17: the first version of this entry recommended virtual
+time, and virtual time is what made the clip a SLIDESHOW.** It read *"Virtual
+time, not a wall-clock capture loop — `Page.captureScreenshot` of a 2216px clip
+costs tens of milliseconds and the cost is not constant, so a real-time loop
+cannot hold a frame interval while the GIF's constant frame delay claims it
+did. `Emulation.setVirtualTimePolicy` freezes the page between frames, so the
+shutter costs the page nothing."* Every sentence of that is true and the
+conclusion is wrong. Counting DISTINCT frames on Chrome 151.0.7922.138:
+
+| capture mode | distinct frames |
+|---|---|
+| virtual time | **5 / 316** (a full 25s cycle) |
+| virtual time + `--enable-begin-frame-control` | **2 / 40** |
+| real time | **26 / 60**, and 100 / 316 over the cycle |
+
+Changing the DOM forces a layout and paint commit, so the five scene swaps come
+through. Every CSS transition in `#how` animates transform and opacity, which
+live on the **compositor** — and no compositor frame is produced while virtual
+time sits paused between budgets. `--enable-begin-frame-control` is the
+documented answer and makes it worse unless you also drive
+`HeadlessExperimental.beginFrame`, which is deprecated in new headless.
+
+**The reason this is written at this length is the detection, not the failure.**
+Sampling one frame per branch and looking at it — which is what "verified"
+meant the first time — CANNOT tell a smooth clip from the slideshow: the five
+sampled frames ARE the five states the broken run produces, and each one is
+perfectly correct. The blind detector and the clean result print the same
+picture. **Only counting distinct frames separates them**, so
+`assertMotion` runs on every recording and refuses rather than warns.
+
+**Scope it correctly, or the next session throws away a working probe.**
+Virtual time is still the right tool for photographing ONE settled state, which
+is how `site/`'s geometry gets measured on this machine. What it cannot do is
+record MOTION.
+
+Three more things in that script are load-bearing, each measured rather than
+assumed:
+
+- **Capture is JPEG q100, and that is a speed decision with a quality
+  measurement behind it.** `Page.captureScreenshot` of this clip costs 117 ms
+  median as png and 51 ms as jpeg; the png figure caps the recorder at 8.5 fps,
+  below the 12.5 fps the GIF asks for, so frames arrive late and motion goes
+  choppy. Against a png of the same settled frame, jpeg q100 measures PSNR
+  **y=62.0 dB** overall and **y=60.9 dB** over the text, where ~45 dB is the
+  visually-lossless line. Chrome writes `yuvj420p` even at q100, so chroma is
+  halved — which is fine here specifically: the text is near-white on
+  near-black, and the one broad chroma feature is the desk gradient, exactly
+  what subsampling costs nothing on. The 128-colour quantisation afterwards is
+  orders of magnitude more destructive.
 - **`prefers-reduced-motion` is forced to `no-preference`.** This machine has
   Reduce Motion ON and headless Chrome inherits it; beckon.css §8 then turns
   every beat that moves into a cut, and the recording is technically correct
   and shows none of the motion the section exists for. Same trap as the
-  `site-reduced-motion-kills-demos` note.
+  `site-reduced-motion-kills-demos` note, and the same silent shape as the
+  virtual-time defect above — which is why the override is now **asserted from
+  inside the page** (`matchMedia`) rather than assumed to have applied.
 - **The clip rectangle is in DOCUMENT coordinates and
   `getBoundingClientRect()` is in VIEWPORT ones.** They agree only at
   `scrollY = 0`, which is exactly the state a first probe is in — so the bug
