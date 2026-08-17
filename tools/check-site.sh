@@ -365,6 +365,73 @@ else
     && ok "every @os-parity token is overridden in all three skins ($(printf '%s\n' "$parity" | wc -l | tr -d ' ') tokens)"
 fi
 
+# --- 10. the share card is a real 1200x630 card, and it still says what the
+#         page says ----------------------------------------------------------
+# `og:image` used to be icon-512.png, so every paste of this URL into Facebook,
+# Zalo, X or Slack rendered as a small square of the letter `b`. The card that
+# replaced it is a PNG, which is the one artifact in site/ that no other check
+# can read — and CLAUDE.md already records what an unchecked generated image
+# does: assets/five-answers.gif is "a PHOTOGRAPH of that page, and it goes stale
+# in silence". This block is that missing comparison, for the card.
+#
+# Four things, and each catches a different way of getting it wrong: a card that
+# was never rendered; dimensions asserted in the markup that the file does not
+# have (Facebook lays the box out from the meta values BEFORE the fetch, so a
+# wrong pair is a visibly cropped or letterboxed preview); `summary_large_image`
+# reverted, which alone re-shrinks the card to a thumbnail with everything else
+# still correct; and a reworded <h1> the card does not carry.
+P=site/og.png
+if [ ! -f "$P" ]; then
+  bad "$P is missing — run: node tools/make-og-card.mjs"
+elif [ "$(od -An -tx1 -N8 "$P" | tr -d ' \n')" != "89504e470d0a1a0a" ]; then
+  bad "$P is not a PNG (bad signature) — re-run tools/make-og-card.mjs"
+else
+  # IHDR is fixed-offset in every PNG: width at byte 16, height at 20, each a
+  # big-endian uint32. Read as bytes rather than as a word, because `od -tu4`
+  # would apply the HOST's endianness and pass on a little-endian machine only.
+  # shellcheck disable=SC2046
+  set -- $(od -An -tu1 -j16 -N8 "$P")
+  real_w=$(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 ))
+  real_h=$(( $5 * 16777216 + $6 * 65536 + $7 * 256 + $8 ))
+
+  meta_img=$(grep -m1 'property="og:image"' "$H" | sed -n 's/.*content="\([^"]*\)".*/\1/p')
+  meta_w=$(grep -m1 'property="og:image:width"'  "$H" | sed -n 's/.*content="\([^"]*\)".*/\1/p')
+  meta_h=$(grep -m1 'property="og:image:height"' "$H" | sed -n 's/.*content="\([^"]*\)".*/\1/p')
+  card=0
+
+  case "$meta_img" in
+    https://*/og.png) ;;
+    '') bad "index.html has no og:image"; card=1 ;;
+    *)  bad "og:image is '$meta_img' — must be the absolute URL of og.png (a scraper has no document to resolve a relative path against)"; card=1 ;;
+  esac
+
+  [ "$meta_w" = "$real_w" ] && [ "$meta_h" = "$real_h" ] \
+    || { bad "og:image:width/height say ${meta_w:-?}x${meta_h:-?} but $P is ${real_w}x${real_h}"; card=1; }
+
+  # 1.91:1 is what both Facebook and Zalo lay out edge to edge. A square image
+  # is rendered as a small thumbnail no matter what twitter:card says.
+  [ "$real_w" -eq 1200 ] && [ "$real_h" -eq 630 ] \
+    || { bad "$P is ${real_w}x${real_h}, not 1200x630 — a feed will not show it edge to edge"; card=1; }
+
+  grep -q 'name="twitter:card" content="summary_large_image"' "$H" \
+    || { bad "twitter:card is not summary_large_image — the card renders as a small square even with a correct og:image"; card=1; }
+
+  # The card repeats the page's own headline. Nothing else compares the two, so
+  # a reworded <h1> would leave the card advertising the previous design.
+  h1=$(sed -n 's/.*<h1[^>]*>\(.*\)<\/h1>.*/\1/p' "$H" | head -1 | sed 's/<br>//g')
+  card_h1=$(grep -m1 '^const HEADLINE' tools/make-og-card.mjs \
+            | grep -oE "'[^']*'" | tr -d "'" | tr -d '\n')
+  if [ -z "$h1" ] || [ -z "$card_h1" ]; then
+    bad "cannot read the <h1> or the card's HEADLINE — one of the two greps stopped matching"
+    card=1
+  elif [ "$h1" != "$card_h1" ]; then
+    bad "the card says '$card_h1' but the page's <h1> says '$h1' — re-run: node tools/make-og-card.mjs"
+    card=1
+  fi
+
+  [ "$card" -eq 0 ] && ok "share card is ${real_w}x${real_h}, declared, large-image, and carries the page's own headline"
+fi
+
 printf '\n'
 if [ "$fail" -eq 0 ]; then printf 'all checks passed\n'; else printf 'checks FAILED\n'; fi
 exit "$fail"
