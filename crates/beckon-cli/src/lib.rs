@@ -829,7 +829,42 @@ fn cmd_search(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `resolve` speaks the same `||` chain the shortcuts TOML is written in.
+///
+/// It was the one caller that did not. The hot path splits (see the call in
+/// `cmd_beckon`) and so does `check --resolve`, so a chain worked everywhere
+/// except in the command a person runs to find out *why* a line does not
+/// work: it looked for an app literally named `"A || B"`, which nothing can
+/// be, and answered `no match` about the whole line while the real answer was
+/// about one candidate inside it.
+///
+/// Every candidate is reported, not just the first that resolves. `resolve`
+/// is a discovery command — "which of these does this machine have?" is the
+/// question, and stopping at the first hit answers a different one. That also
+/// keeps this function out of the business of predicting the hot path: the
+/// winner there is the first candidate that *acts*, which a report cannot
+/// know, so it is not claimed.
+///
+/// A single id — the overwhelmingly common case — prints exactly what it
+/// always did, with no heading. `split` yields one element for a string with
+/// no separator, so that falls out of the loop rather than needing an arm.
 fn cmd_resolve(id: &str) -> Result<()> {
+    let candidates = beckon_core::candidates::split(id).map_err(|e| anyhow!("{e}"))?;
+    let total = candidates.len();
+
+    for (i, candidate) in candidates.iter().enumerate() {
+        if total > 1 {
+            if i > 0 {
+                println!();
+            }
+            println!("── candidate {} of {}: `{}`", i + 1, total, candidate);
+        }
+        resolve_one(candidate)?;
+    }
+    Ok(())
+}
+
+fn resolve_one(id: &str) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         cmd_resolve_linux(id)
