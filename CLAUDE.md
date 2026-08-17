@@ -2838,6 +2838,73 @@ Reasonable next-session order:
   stopped for nothing. Use a key the keyboard has, and chord it so it types
   nothing.
 
+  **It recurred on 2026-08-17, on macmini, and cost most of a session.**
+  `examples/chord_timing_probe.rs` registered `ctrl+super+alt+f19` — picked
+  for this entry's own stated reason, *nothing binds it* — and reported that
+  a synthetic chord fires `RegisterEventHotKey` at **no** delay and through
+  **no** `CGEventPost` tap. Every cell was an artifact of the key. Bisected
+  one variable at a time, cross-process `hid_key` in the same run:
+
+  ```text
+  ctrl+opt+shift+f     BAN, both taps, gaps 0 / 3 / 20 ms
+  ctrl+opt+shift+f19   im lang, every cell
+  ctrl+cmd+opt+f       BAN everywhere
+  ctrl+cmd+opt+q       BAN everywhere      <- the user's own binding
+  ```
+
+  So the modifier set, the tap layer and the clock were never variables. **Do
+  not use `f19` in a probe on this platform** — not as the subject and not as
+  the control. `hotkey_conflict_probe` may keep it, because *registration* is
+  a different question from *delivery* and that probe never presses anything.
+
+  Two rules that would have caught it in the first run, and one of them is
+  new:
+
+  - **A probe that registers a hotkey must prove the hotkey can fire at all**,
+    with a positive control it did not produce itself — `hid_key` from a
+    separate process. The reachability control that was there
+    (`CGEventSourceKeyState`, "does my injection reach the window server")
+    passed the whole time and is about a different layer.
+  - Reach for the control **before** reading the result, not after it looks
+    interesting. The first table was quoted as a finding for three exchanges.
+
+- **The macOS Caps alias is measured working end to end on macmini**
+  (2026-08-17, `examples/caps_synth_probe.rs`, against the real
+  `beckon serve`). This closes the "an injected chord does fire our own
+  hotkey" row that Windows has had since 2026-08-11 and macOS did not.
+
+  Injecting Caps the way `caps_live` does cannot reach the tap —
+  `CGEventPost` of `kVK_CapsLock` is an ordinary `keyDown` and the Caps arm
+  fires on `kCGEventFlagsChanged` — so the probe builds the right event:
+  same keycode, `CGEventSetType(.., kCGEventFlagsChanged)`, carrying
+  `alphaShift`. **Its detector is `caps_tap = "capslock"` itself**: a bare
+  synthetic Caps must move the LOCK, and the lock is the `alphaShift` bit of
+  `CGEventSourceFlagsState` — *not* `CGEventSourceKeyState`, which answers
+  "is that key held", reads `false` either way for a momentary key, and is
+  the instrument error that withdrew the suppression measurement above. Lock
+  did not move ⇒ the tap never saw it ⇒ step 2 says nothing, and the probe
+  exits rather than reporting a verdict.
+
+  ```text
+  lock false -> true                       the tap sees a synthetic Caps
+  Caps+Q, hold 40 / 250 / 600 / 1200 ms    Finder, every time
+  Caps lock LIT at injection time          Finder
+  chord injected from a separate process   Finder
+  ```
+
+  The last row is the load-bearing one: **the chord beckon injects from
+  INSIDE its own tap callback does fire `RegisterEventHotKey` here.** That
+  was the last surviving hypothesis for a live failure and it is refuted.
+
+  **What is still unexplained, and it is a real observation rather than a
+  probe artifact:** a live run where kitty received `^[[113;15u` — `q` with
+  ctrl+alt+super, byte-correct, so the tap swallowed and injected correctly —
+  while Finder never came up. None of the layers above reproduces it. The one
+  input that cannot be synthesised is a **physical** Caps press;
+  `~/beckon-test/press-caps-q.sh` brings the measured-good `serve` up and
+  scores it, and asks for kitty's literal output on failure, because
+  *nothing*, `^[[113;15u` and `q` point at three different layers.
+
 - **This machine runs kanata, and kanata already implements beckon's Caps
   feature.** `~/.nix/configs/kanata/main.kbd:52` is
   `caps (tap-hold 200 200 esc @cap_alias)` and `kanata_macos.kbd:19` is
