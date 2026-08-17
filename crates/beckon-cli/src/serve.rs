@@ -244,6 +244,20 @@ struct ServeState {
     /// no Windows host here -- but the Windows arm is the one with the extra
     /// reads (`install_tray_menu`, below), so it cannot be the arm that
     /// warns.
+    /// The flock that says this process owns Caps on this machine, held for
+    /// exactly as long as the tap is installed.
+    ///
+    /// **A tap is machine-global and taps stack**, so two serves on two
+    /// configs both installed one and the LAST one in swallowed every Caps
+    /// event -- measured, with the install order reversed to show it. Both
+    /// logged `caps event tap active`, so neither said anything, and a user
+    /// with two serves running just saw Caps stop working.
+    ///
+    /// `None` means either "Caps is off here" or "another beckon owns it";
+    /// `sync_caps_hook` distinguishes them on the line it prints, which is
+    /// the half that actually fixes the defect.
+    #[cfg(target_os = "macos")]
+    caps_owner: Option<std::fs::File>,
     log: Option<PathBuf>,
     /// The most recent `registration_phrase`, so the menu can show it
     /// without re-running a registration pass.
@@ -454,6 +468,8 @@ pub fn cmd_serve_app(
     let backend: Rc<Box<dyn Backend>> = Rc::new(crate::pick_backend()?);
 
     let state = Rc::new(RefCell::new(ServeState {
+        #[cfg(target_os = "macos")]
+        caps_owner: None,
         shortcuts: plan.shortcuts,
         keyboard: plan.keyboard,
         config: config.clone(),
@@ -1272,6 +1288,21 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
 /// `RegisterHotKey`; the burst does not open the Start menu (verified
 /// against a control that proved a bare Win tap does); and the injection
 /// costs 5-13 ms against a 300 ms `LowLevelHooksTimeout`.
+/// **Windows deliberately does NOT take the Caps lock, and that is a scope
+/// decision rather than an oversight.**
+///
+/// The macOS arm takes it because a `CGEventTap` was MEASURED to be
+/// machine-global and stacking: two serves, two configs, the last tap in
+/// swallows every Caps event while both processes log success. A
+/// `WH_KEYBOARD_LL` hook chains too and the same failure looks likely here --
+/// but likely is not measured, and today's lesson in this repo is exactly
+/// that a result on one OS is data about that OS, not about the design.
+/// `caps_tap = "capslock"` shipped broken on macOS for precisely this reason:
+/// the port inherited a true Windows sentence as a premise.
+///
+/// To close it, measure it: two `beckon.exe serve` on two configs, one Caps
+/// binding each, and press both. If the second one's chord is dead, lift the
+/// three lines from the macOS arm.
 #[cfg(target_os = "windows")]
 fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     use beckon_windows::caps_hook;
@@ -1377,6 +1408,10 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
         // what makes `clear_bindings` above the thing that actually keeps a
         // paused tap from eating a keystroke rather than the teardown.
         caps_tap::uninstall_for(beckon_core::capture::HookReason::Caps);
+        // Hand Caps back. Held any longer, a paused beckon would keep every
+        // other beckon on the machine from ever installing a tap -- the same
+        // silence this lock exists to end, with the roles swapped.
+        state.borrow_mut().caps_owner = None;
         if was && !caps_tap::is_installed() {
             eprintln!("beckon serve: caps event tap removed");
         }
@@ -1384,6 +1419,32 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     }
 
     let keys = bound.len();
+
+    // **One tap per machine, and say so when it is not ours.** Taps stack and
+    // the last one in sits upstream, so a second beckon installing one takes
+    // Caps away from the first while both log success. The refusal below is
+    // the fix; the lock is only how it is detected.
+    //
+    // Re-taken on every `sync_caps_hook`, so a beckon that lost the race gets
+    // Caps the moment the owner pauses, reloads with `caps = false`, or exits
+    // -- no timer, because every one of those already calls this function.
+    if state.borrow().caps_owner.is_none() {
+        match crate::lockfile::acquire_caps() {
+            Some(f) => state.borrow_mut().caps_owner = Some(f),
+            None => {
+                if caps_tap::is_installed() {
+                    caps_tap::clear_bindings();
+                    caps_tap::uninstall_for(beckon_core::capture::HookReason::Caps);
+                }
+                eprintln!(
+                    "beckon serve: another beckon owns Caps on this machine; \
+                     Caps shortcuts are off here (the typed chord still works)"
+                );
+                return;
+            }
+        }
+    }
+
     caps_tap::set_bindings(bound, hold, tap);
     let was = caps_tap::is_installed();
     match caps_tap::install_for(beckon_core::capture::HookReason::Caps) {
