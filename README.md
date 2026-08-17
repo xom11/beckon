@@ -9,6 +9,12 @@ Cross-platform focus-or-launch app switcher. A thin CLI invoked by your existing
 hotkey dotfile (sway, i3, Hammerspoon, AHK) — or, on macOS and Windows,
 hosting the hotkeys itself via [resident mode](#resident-mode-macos--windows).
 
+![One key, five answers: the same keypress launches the app, focuses it, cycles to its next window, toggles back to the app you came from, or hides it.](assets/five-answers.gif)
+
+One key, five answers — beckon reads down the list and the first match wins.
+The clip is a recording of the [landing page](https://xom11.github.io/beckon/),
+where the same demo is interactive.
+
 ```
 press hotkey
   └── if app not running   → launch it

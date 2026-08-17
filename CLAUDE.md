@@ -2020,6 +2020,43 @@ test suite and runs in CI; it asserts the install commands still byte-match
 matches `Cargo.toml`, so a release bump that forgets the page fails CI rather
 than shipping a stale command.
 
+**README's animation is a PHOTOGRAPH of that page, and it goes stale in
+silence.** `assets/five-answers.gif` is `#how` — *One key, five answers* —
+recorded by `tools/record-five-answers.mjs` (headless Chrome over CDP, 316
+frames, 12.5 fps, 0.31 MB). Nothing in CI compares the two, so a change to the
+table, the desk or the tour's beats leaves the README showing last month's
+design: re-run the recorder in the same commit that changes `#how`.
+
+Four things in that script are load-bearing and each is a defect that was
+measured rather than a precaution:
+
+- **Virtual time, not a wall-clock capture loop.** `Page.captureScreenshot` of
+  a 2216px clip costs tens of milliseconds and the cost is not constant, so a
+  real-time loop cannot hold a frame interval while the GIF's constant frame
+  delay claims it did. `Emulation.setVirtualTimePolicy` freezes the page
+  between frames, so the shutter costs the page nothing.
+- **`prefers-reduced-motion` is forced to `no-preference`.** This machine has
+  Reduce Motion ON and headless Chrome inherits it; beckon.css §8 then turns
+  every beat that moves into a cut, and the recording is technically correct
+  and shows none of the motion the section exists for. Same trap as the
+  `site-reduced-motion-kills-demos` note.
+- **The clip rectangle is in DOCUMENT coordinates and
+  `getBoundingClientRect()` is in VIEWPORT ones.** They agree only at
+  `scrollY = 0`, which is exactly the state a first probe is in — so the bug
+  hides until something scrolls, and then the recorder photographs the HERO
+  section perfectly and reports success. Add `window.scrollX/scrollY`.
+- **Measure the rectangle AFTER phase-locking, never before.** The readout
+  under the desk is empty until the tour writes its first line, so a box
+  measured on arrival is short by that strip and crops the last table row —
+  which reads as a layout bug in the page rather than a mistake in the
+  recorder.
+
+The loop is phase-locked to the rising edge of `#how-table tr.is-on` reading
+`data-step="4"`, which is the top of the 25,250 ms cycle, so the GIF opens on
+Launch rather than mid-sentence. That edge also skips the tour's first pass for
+free, which is wanted: it opens at `at=0, phase='press'` on a pre-built scene,
+so no `cue()` runs and `is-on` is never `4` on that pass.
+
 The auto-bump workflow needs a fine-grained PAT in repo secret `PACKAGER_TOKEN` with `Contents: write` on `xom11/homebrew-tap` and `xom11/scoop-bucket` only. Renewal procedure is documented in the tap repo's README. **Rotated 2026-08-11; expires 2027-08-12.**
 
 **CORRECTED 2026-08-13: `Bump packagers` DOES fire on its own, and has since
