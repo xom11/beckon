@@ -586,6 +586,60 @@ on purpose. The stack detaches hidden views, so hiding it when empty would move
 the card's bottom border while the user typed in the card, and it buys nothing at
 the floor because `MIN_HEIGHT` must still fit the note-shown case.
 
+### The key list was showing config tokens, on BOTH platforms
+
+`key_label` exists to turn a config token into what the keyboard calls the key —
+`j` → `J`, `pagedown` → `PgDn`, `bracketleft` → `[`, `return` → `Enter`. The list
+column has always gone through it, via `combo_display_folded_with`. **The key
+list — the control where you PICK a key — never did.** It was filled from
+`k.name`, so the same window named the same key two ways, and the internal
+spelling was the one shown at the moment of choosing.
+
+Both platforms, and neither was a port of the other's mistake: macOS
+`addItemWithTitle(&k.name)`, Windows `CB_ADDSTRING` of `wide(&k.name)` **and**
+`paint::combo_item` pulling `k.name` for the owner-drawn row. Three sites, one
+missing call.
+
+Only the TITLE changes. `ComboView::key` is an index into `key_table()` and the
+control's selection index is handed straight back, so the order stays
+`key_table()`'s — that rule is untouched and is why this was safe to fix in three
+places at once.
+
+It also paid for itself in width: the popup's widest item stopped being
+`bracketright` and became `Backspace`, so the control went 121.5 → 113.5 pt on
+macOS and the 8 pt went to the app field beside it (239 → 247).
+
+**Windows' half is compiled and lint-clean here but was not run** — it is a
+display string from a function the same window already calls, with no index
+touched, but it has not been seen on screen.
+
+### What would be better, and what it costs
+
+Two things about that control are still weak, and they want the **same** enabling
+change, so they are recorded together rather than fixed piecemeal:
+
+- **81 keys in one flat menu.** Letters, digits, F1–F20, navigation and
+  punctuation with nothing between them. Separators would help a lot.
+- **Nothing chosen shows an empty control.** `selectItemAtIndex(-1)` is honest —
+  `ComboView::key = None` means the row has no key — but a blank popup beside the
+  modifier chips reads as broken rather than as empty, and `NSPopUpButton` has no
+  placeholder.
+
+Both are blocked by the same thing: **the key's identity is carried by its
+POSITION in the menu.** A separator or a disabled "pick a key" item occupies a
+position, so either one silently shifts every index.
+
+The fix is not an index-translation layer — that is the "second place the index
+can be got wrong" the code already warns about. It is to make the index
+**explicit**: put the `key_table()` index in each menu item's `tag`, and read the
+selection's tag instead of `indexOfSelectedItem`. That is one changed read per
+platform, it removes the positional coupling rather than adding a second mapping,
+and only then do separators and a placeholder cost nothing.
+
+It needs one new thing in `beckon-core`: a group per key, i.e. 81 entries
+classified. Not built — recorded so that whoever wants grouping does not start by
+translating indices.
+
 ### The editor is one row, and that took removing three things rather than one
 
 The two-row split was measured, not taste, and the measurement stood: with a

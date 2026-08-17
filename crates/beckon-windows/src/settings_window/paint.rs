@@ -2359,7 +2359,9 @@ pub(super) unsafe fn draw_combo_item(di: &DRAWITEMSTRUCT, cache: &mut ThemeCache
         return;
     }
     let text = if id == IDC_COMBO {
-        key_table().get(di.itemID as usize).map(|k| k.name.clone())
+        key_table()
+            .get(di.itemID as usize)
+            .map(|k| beckon_core::shortcuts::key_label(&k.name))
     } else {
         cap::TAP_ITEMS
             .get(di.itemID as usize)

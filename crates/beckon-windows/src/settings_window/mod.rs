@@ -158,7 +158,7 @@ use beckon_core::settings::{
     SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{
-    combo_display_folded, combo_view, key_table, CapsTap, Chord, ComboView,
+    combo_display_folded, combo_view, key_label, key_table, CapsTap, Chord, ComboView,
 };
 use std::cell::RefCell;
 use windows::core::{w, PCWSTR, PWSTR};
@@ -4478,8 +4478,13 @@ unsafe fn build_children(hwnd: HWND) {
     // Filled once, here, from `key_table()` IN ORDER, and never
     // repopulated: the key list is a constant, not data. Each buffer is
     // bound to a local so it outlives its send.
+    // `key_label`, not `k.name` -- see the macOS twin's note at the same
+    // control. `k.name` is the config token (`j`, `pagedown`, `bracketleft`) and
+    // the list column in this same window already spells these keys the way the
+    // keyboard does. Owner-drawn, so `paint::combo_item` had the identical bug
+    // and takes the identical fix; the index into `key_table()` is untouched.
     for k in key_table() {
-        let t = wide(&k.name);
+        let t = wide(&key_label(&k.name));
         SendMessageW(
             combo,
             CB_ADDSTRING,

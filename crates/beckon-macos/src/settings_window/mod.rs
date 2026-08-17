@@ -1548,8 +1548,21 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // Filled from key_table() IN ORDER and never sorted: `ComboView::key`
     // is an index into that slice and this control's selection index is
     // handed straight back to it.
+    //
+    // **`key_label`, not `k.name`.** `k.name` is the CONFIG token, and this list
+    // was showing it: `j`, `space`, `pagedown`, `bracketleft`, `return`. The list
+    // two bands above spells the same keys the way the keyboard does -- `J`,
+    // `Space`, `PgDn`, `[`, `Enter` -- through `combo_display_folded_with`, which
+    // ends in `key_label`. So one window was naming one key two ways, and the
+    // spelling it showed in the place you PICK a key was the internal one.
+    //
+    // Only the TITLE changes. The order is still `key_table()`'s and the
+    // selection index is still handed straight back, which is the rule the
+    // paragraph above is about.
     for k in key_table() {
-        key.addItemWithTitle(&NSString::from_str(&k.name));
+        key.addItemWithTitle(&NSString::from_str(&beckon_core::shortcuts::key_label(
+            &k.name,
+        )));
     }
     let record = push("Record", sel!(beckonRecord:), &target, mtm);
     let app = NSComboBox::new(mtm);
@@ -1604,11 +1617,17 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     //    The chord side needs no label: `Record` names it, and the card only
     //    ever describes the row selected in the list above.
     //
-    // The combo is LAST and has no spring beside it, which is what makes it the
-    // view that takes the slack -- it is the one thing a wider window should
-    // give more room to. The spring the old chord row ended with is gone for the
-    // same reason: a spring here would eat the width the combo is meant to get.
-    let editor_row = hstack(&[&*mods as &NSView, &key, &record, &app], mtm);
+    // **App FIRST, so the row reads in the list's own column order.** The table
+    // above is App then Shortcut; the editor describing the selected row had
+    // them the other way round, so the eye had to cross the card to match a row
+    // to the field editing it.
+    //
+    // The combo still has no spring beside it, which is what makes it the view
+    // that takes the slack -- it is the one thing a wider window should give more
+    // room to, and being first does not change that: it is the only view in the
+    // row with no intrinsic width. A spring anywhere here would eat exactly the
+    // width the combo is meant to get.
+    let editor_row = hstack(&[&*app as &NSView, &mods, &key, &record], mtm);
 
     // --- notes ------------------------------------------------------------
     // **`wrapping`, not `label`.** A plain label asks for the width of its
