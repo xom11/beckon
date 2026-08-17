@@ -220,7 +220,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "beckon-cli"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "anyhow",
  "beckon-core",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "beckon-core"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "thiserror",
  "toml",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "beckon-linux"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "beckon-core",
  "serde",
@@ -258,7 +258,7 @@ dependencies = [
 
 [[package]]
 name = "beckon-macos"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "beckon-core",
  "core-foundation",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "beckon-windows"
-version = "0.9.15"
+version = "0.9.16"
 dependencies = [
  "anyhow",
  "beckon-core",
