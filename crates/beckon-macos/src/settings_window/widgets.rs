@@ -364,22 +364,6 @@ pub(super) fn pin_height(v: &NSView, h: f64) {
 /// affected, so the property is specific to that stack rather than general,
 /// and a constraint says what was meant without depending on which reading of
 /// `alignment` this AppKit takes.
-/// Pin a view's LEFT EDGE to another's.
-///
-/// **`pin_width_to` is not enough on its own, measured.** A `vstack` aligned
-/// on `NSLayoutAttribute::Width` constrains how WIDE each child is and says
-/// nothing about where it sits, so a row can be exactly as wide as its column
-/// and still be placed against the column's right edge. At 1000 pt the editor
-/// rows came out right-aligned with 450 pt of empty card to their left, both
-/// with and without the width pin -- identical frames to the point, which is
-/// what said the width was never the variable.
-pub(super) fn pin_leading_to(v: &NSView, other: &NSView) {
-    v.setTranslatesAutoresizingMaskIntoConstraints(false);
-    v.leadingAnchor()
-        .constraintEqualToAnchor(&other.leadingAnchor())
-        .setActive(true);
-}
-
 pub(super) fn pin_width_to(v: &NSView, other: &NSView, inset: f64) {
     v.setTranslatesAutoresizingMaskIntoConstraints(false);
     v.widthAnchor()
