@@ -63,6 +63,19 @@ fn build_table() -> Vec<KeyDef> {
         });
     }
     // f1..f20 (VK_F1 = 0x70 contiguous; Carbon scattered).
+    //
+    // **Never pick `f19` for a macOS probe** -- not as the subject and not as
+    // the control. A SYNTHETIC chord on it never fires `RegisterEventHotKey`
+    // and never reaches a `CGEventTap`, because no physical key on this
+    // hardware carries the keycode. It is the obvious choice, for the obvious
+    // reason (nothing binds it), and it has produced a confident wrong answer
+    // twice: once blamed on kanata, once on a whole "synthetic chords do not
+    // work" theory that survived three rounds of investigation. Bisected
+    // 2026-08-17 on macmini, cross-process injection, one variable at a time:
+    // `ctrl+opt+shift+f` fires, `ctrl+opt+shift+f19` is silent, `ctrl+cmd+opt+f`
+    // and `ctrl+cmd+opt+q` fire. Use a key the keyboard has and chord it so it
+    // types nothing. Registering f19 is fine -- `hotkey_conflict_probe` does,
+    // and never presses anything; delivery is the half that fails.
     const MAC_F: [u16; 20] = [
         0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, // f1..f10
         0x67, 0x6F, 0x69, 0x6B, 0x71, 0x6A, 0x40, 0x4F, 0x50, 0x5A, // f11..f20
