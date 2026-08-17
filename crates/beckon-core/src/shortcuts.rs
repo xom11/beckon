@@ -420,11 +420,40 @@ pub fn combo_caps_folded_with(s: &str, hold: Option<Chord>, l: ModifierLabels) -
         return Vec::new();
     };
     match hold {
-        Some(h) if !c.shift && c.ctrl == h.ctrl && c.super_ == h.super_ && c.alt == h.alt => {
+        Some(h) if combo_folds_to_caps(&c, h) => {
             vec![CAPS_CAP.to_string(), key_label(&c.key.name)]
         }
         _ => combo_caps_with(s, l),
     }
+}
+
+/// Is this the COMMON chord — the one the list collapses to a single `Caps`
+/// cap, and therefore the one a row says nothing about?
+///
+/// Extracted so the fold above and the settings list's `other chord` word are
+/// one predicate rather than two spellings of it. They were two, and the
+/// duplicate carried the wrong reason for the `shift` term (below), which is
+/// how a correct line becomes a line somebody deletes.
+///
+/// # `!c.shift` is a VIEW rule, not a claim about what Caps can reach
+///
+/// **`Caps+Shift+T` reaches a `<chord>+shift+t` binding perfectly well.** The
+/// user's physical Shift is still down while the hook injects the chord, so the
+/// system sees the shift; [`crate::caps::bound_keys`] deliberately omits shift
+/// from its filter for exactly that reason and
+/// `a_shift_binding_on_the_chord_is_still_reachable` pins it. Anyone reading
+/// this term as "the hook cannot send that" has the mechanism backwards.
+///
+/// The term is here because folding a SUPERSET would destroy the whole value of
+/// the preference: once the common chord is one cap wide, a binding on any other
+/// chord is the one that still looks long, and spotting it costs no reading. The
+/// spec draws it that way — its `Telegram Web` row is `Ctrl Win Alt Shift T`,
+/// uncollapsed — and the README ships
+/// `"ctrl+super+alt+shift+t" = "Telegram Web"` as the justifying example for the
+/// status word itself. So a shift row is `other chord` on purpose, and it is
+/// reachable on purpose, and those are two different questions.
+pub fn combo_folds_to_caps(c: &Combo, hold: Chord) -> bool {
+    !c.shift && c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt
 }
 
 /// `combo_caps_folded` joined the way `combo_display` joins.

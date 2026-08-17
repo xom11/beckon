@@ -529,6 +529,45 @@ size, though — an un-ordered-front window reports every frame as 0, which read
 exactly like a broken window. It cannot say whether text is elided or hard-cut,
 and it cannot see the scroller; both need pixels.
 
+### `other chord` is a VIEW fact, and its old comment argued for it wrongly
+
+**A `+shift` row is `other chord` and is reachable through Caps. Both, on
+purpose.** Recorded 2026-08-17 because the two nearly got merged, and the merge
+would have looked like a bug fix.
+
+The word used to ask a private predicate in `settings.rs`, documented as
+*"whether holding Caps Lock can reach this combo … and no `shift` on top (the
+hook injects the chord and nothing else)"*. The parenthesis is **false**:
+`caps::bound_keys` and `bound_keys_mac` both filter on `ctrl`/`super`/`alt` only,
+and their own doc says why — the user's physical Shift is still down when the
+hook injects the chord, so `Caps+Shift+T` arrives as `<chord>+shift+t` and lands
+on a shift binding by itself. `a_shift_binding_on_the_chord_is_still_reachable`
+has pinned that since the tap was written.
+
+So the conclusion was right, the stated reason was wrong, and the obvious next
+move was to delete the `shift` term. Two independent design sources say not to:
+
+- `shortcuts::combo_caps_folded_with` carries the identical term, and its reason
+  is visual: once the common chord is one `Caps` cap wide, a binding on any other
+  chord is the one that still *looks* long, and spotting it costs no reading.
+  Folding a superset destroys exactly that.
+- The README ships `"ctrl+super+alt+shift+t" = "Telegram Web"` and the spec cites
+  it as the reason this status word exists at all. Unflagging it would unflag the
+  motivating example.
+
+The fix was therefore to **share the predicate, not to change it**:
+`shortcuts::combo_folds_to_caps` is now the one copy, called by the fold and by
+`row_condition`. That makes the word and the cell beside it agree by
+construction — a row says `other chord` exactly when its chord is not the one
+the list would collapse — and it puts the corrected reasoning in one place
+instead of two. `a_shift_row_is_other_chord_and_still_reachable_through_caps`
+asserts both halves in one test so neither can be dropped as redundant.
+
+Worth naming the shape, because it is this file's recurring one: the hazard was
+not an unmeasured claim, it was a **correct line with a false justification**
+sitting next to a measured test that contradicted the justification. Reading
+either one alone gives you a wrong next action.
+
 ## Starting on a config that does not parse
 
 **`beckon-serve.exe` starts anyway** (commit `4f82b94`). It installs the tray,

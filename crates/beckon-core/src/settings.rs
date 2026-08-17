@@ -6,7 +6,7 @@
 
 use crate::candidates;
 use crate::config_write::{render, RowWrite};
-use crate::shortcuts::{parse_config, CapsTap, Chord, Combo, KeyboardConfig};
+use crate::shortcuts::{combo_folds_to_caps, parse_config, CapsTap, Chord, Combo, KeyboardConfig};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2181,12 +2181,16 @@ fn is_unfinished_new_row(r: &Row) -> bool {
     r.orig_key.is_none() && (r.combo.trim().is_empty() || r.app.trim().is_empty())
 }
 
-/// Whether holding Caps Lock can reach this combo: same modifiers as
-/// `keyboard.caps_hold`, and no `shift` on top (the hook injects the chord
-/// and nothing else).
-fn combo_is_caps_chord(c: &Combo, hold: &Chord) -> bool {
-    c.ctrl == hold.ctrl && c.super_ == hold.super_ && c.alt == hold.alt && !c.shift
-}
+// `other chord` asks `shortcuts::combo_folds_to_caps`, which is the SAME
+// predicate the list's own Caps fold uses -- so the word and the cell beside it
+// cannot disagree about which chord is the common one.
+//
+// It used to be a private copy here whose doc said "and no `shift` on top (the
+// hook injects the chord and nothing else)". The conclusion was right and the
+// reason was wrong: `caps::bound_keys` omits shift from its filter on purpose,
+// because the user's physical Shift is still down when the chord is injected, so
+// `Caps+Shift+T` DOES reach a shift binding. The shift term is a view rule about
+// which rows should still look long. See `combo_folds_to_caps` for both halves.
 
 /// What one candidate's grade is worth SAYING, once this machine's catalog has
 /// answered for it.
@@ -2805,7 +2809,7 @@ fn row_condition(
     //    keyboard setting three sections away that was deliberately removed
     //    elsewhere (the keycap-dimming rule).
     if let Ok(c) = &combo {
-        if !combo_is_caps_chord(c, &m.keyboard.caps_hold) {
+        if !combo_folds_to_caps(c, m.keyboard.caps_hold) {
             // No note, for the same reason as `missing`: `other chord` is the
             // sentence. The word was `custom`, which named a property of the
             // binding; `other chord` names what the reader can see about it.
@@ -4610,6 +4614,64 @@ mod tests {
             control_state(&m, &rt).items[0].flag,
             None,
             "the chord is configurable, so `other chord` must follow it"
+        );
+    }
+
+    /// **A shift row is `other chord` AND reachable through Caps. Both, on
+    /// purpose, and they are not the same question.**
+    ///
+    /// This test exists because the two nearly got merged. `combo_is_caps_chord`
+    /// -- the private predicate this word used to ask -- was documented as
+    /// *"whether holding Caps Lock can reach this combo ... and no `shift` on
+    /// top (the hook injects the chord and nothing else)"*. The conclusion was
+    /// right and the stated reason was false, so the obvious next step was to
+    /// delete the `shift` term as a bug. It is not one:
+    ///
+    /// - `caps::bound_keys` omits shift from its filter deliberately, because
+    ///   the user's physical Shift is still down when the chord is injected --
+    ///   so `Caps+Shift+T` really does land on a `<chord>+shift+t` binding.
+    ///   `a_shift_binding_on_the_chord_is_still_reachable` is that pin.
+    /// - The word is a VIEW fact, and it is the same predicate the list's Caps
+    ///   fold uses (`shortcuts::combo_folds_to_caps`): a shift row does not
+    ///   collapse to one `Caps` cap, so it is the row that still looks long,
+    ///   which is the whole value of the preference. The README ships
+    ///   `"ctrl+super+alt+shift+t" = "Telegram Web"` as the justifying example
+    ///   for this word.
+    ///
+    /// So the flag and the cell beside it agree by construction, and neither
+    /// says anything about reachability. Deleting either half of this test
+    /// re-opens the merge.
+    #[test]
+    fn a_shift_row_is_other_chord_and_still_reachable_through_caps() {
+        use crate::caps::bound_keys;
+
+        let mut m = model();
+        m.set_combo(0, "ctrl+super+alt+shift+t");
+        let mut rt = status_all_ok();
+        rt.registered
+            .insert("ctrl+super+alt+shift+t".into(), Ok(()));
+        assert_eq!(
+            control_state(&m, &rt).items[0].flag.as_deref(),
+            Some("other chord"),
+            "shift on top of the hold chord is a different chord to LOOK at"
+        );
+
+        // The same row, asked the reachability question instead. `bound_keys`
+        // is what the Caps hook actually consults.
+        assert!(
+            bound_keys(&rt.registered, m.keyboard.caps_hold).contains(&0x54),
+            "and Caps+Shift+T must still reach it -- the two questions have \
+             opposite answers here, which is why one predicate cannot serve both"
+        );
+
+        // The control, so the assertion above is about SHIFT and not about the
+        // row simply always being flagged: drop the shift and both agree.
+        m.set_combo(0, "ctrl+super+alt+t");
+        rt.registered.insert("ctrl+super+alt+t".into(), Ok(()));
+        assert_eq!(
+            control_state(&m, &rt).items[0].flag,
+            None,
+            "the plain hold chord folds, so it says nothing"
         );
     }
 
