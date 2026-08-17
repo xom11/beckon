@@ -637,6 +637,104 @@ REFUSED, macOS gains an availability probe that works for the conflicts users
 actually hit — a strictly better outcome, and one nobody would have gone
 looking for while this entry read as settled.
 
+## The Accessibility grant is pinned to the BUILD, not to the path — REFUTES a claim this session made and shipped into two repos
+
+**Measured 2026-08-17 by reading TCC directly on both Macs.** Do not re-derive the
+refuted version; it is believable, it was written down twice, and it is wrong.
+
+### The claim that was wrong
+
+While moving the author's Macs from a nix-store beckon to Homebrew, this session
+told the peer session — and the peer wrote it into `xom11/nix` — that Homebrew ends
+the re-granting problem because `/opt/homebrew/opt/beckon/bin/beckon` is a stable
+path and the grant hangs off it. **The reasoning never touched TCC.** It was
+inferred from the correct half (nix store paths change every bump) plus an
+assumption about what TCC keys on.
+
+Ironically the ORIGINAL comment in that repo was already right — *"Homebrew khong
+sua duoc dieu do (Cellar cung mang so phien ban)"* — and this session talked past
+it. The peer reverted their own additions in `6d36ad41` and left the correct
+sentence alone.
+
+### What TCC actually stores
+
+Accessibility lives in the **system** database, `/Library/Application
+Support/com.apple.TCC/TCC.db`, not `~/Library/...`. A first attempt read the user
+DB, found no Accessibility rows at all, and could have been reported as "no grant
+exists".
+
+```text
+sudo sqlite3 "file:/Library/Application Support/com.apple.TCC/TCC.db?mode=ro" \
+  "select auth_value, datetime(last_modified,'unixepoch','localtime'), client
+   from access where service='kTCCServiceAccessibility' and client like '%beckon%'"
+
+  2  17:22:30  /opt/homebrew/Cellar/beckon/0.9.14/bin/beckon
+  0  23:17:32  /opt/homebrew/Cellar/beckon/0.9.15/bin/beckon
+```
+
+Two things kill the claim, and either one alone is enough:
+
+1. **The client is the versioned CELLAR path**, not the `opt` symlink the launch
+   agent invokes. TCC resolves the link and records the real file, so a stable
+   `opt` path has nothing to do with where the grant is stored.
+2. **The designated requirement is a content hash.** `codesign -d -r-` on the
+   shipped binary returns `designated => cdhash H"897ba27c…"`, with
+   `Signature=adhoc` and `TeamIdentifier=not set`. Every release is a new cdhash,
+   so even a fixed path could not carry a grant across a bump.
+
+So Homebrew and the nix store are **equivalent** on this axis. The only thing that
+ends it is a **Developer ID signature**, after which the requirement anchors on
+identifier + team rather than on the hash.
+
+### `auth_value = 0` is DENIED, and it burns the ability to ask
+
+The 0.9.15 row was written `0` at the exact second a `brew services restart`
+produced the new process. `0` is denied, not "not yet asked" — and CLAUDE.md
+already records that **macOS raises the panel only when no answer is recorded**.
+So `request_accessibility()` will never prompt again for that cdhash: the ask
+consumed its own future.
+
+That is worth stating as a rule, because the API reads as harmless: **calling the
+prompting variant from a launchd agent, on a machine with nobody in front of it,
+can record a denial.** The grant then has to be added by hand in System Settings.
+
+### The log CANNOT be used to diagnose this, in either direction
+
+`Accessibility is not granted` is printed at startup and the grant-watch tick may
+flip it to `granted; restarting` seconds later, so a snapshot of the tail says
+nothing durable. This session got it wrong **twice in opposite directions** in one
+hour: first reporting a persistent failure from a transient line, then accepting
+the peer's "it is always transient" generalisation — measured on airm3 — and
+applying it to macmini without re-measuring, where the last word really was
+`not granted`. The second mistake is this repository's oldest theme: a measurement
+on one machine is data about that machine.
+
+**Read TCC.db. The log is a startup snapshot and beckon does not re-log.**
+`beckon doctor` cannot answer either — it reports the CALLER's TCC, never the
+launchd agent's.
+
+### The restart-on-grant tick has no cap and no memory
+
+`serve.rs`'s grant-watch tick answers `GrantRecovery::RestartUnderLaunchd` by
+`exit(1)`, which the agent's `KeepAlive { SuccessfulExit: false }` turns into a
+restart. Nothing bounds that. Measured on macmini, the log holds **five** clean
+cycles:
+
+```text
+GRANTED->restart / registered / NOT-GRANTED / registered / GRANTED->restart / …
+```
+
+ending on `NOT-GRANTED`. So `is_accessibility_trusted()` answered true in
+processes whose cdhash TCC records as denied, at least five times, and each
+restart re-registered twenty hotkeys. It settled on its own, which is luck rather
+than design: the loop's exit condition is "the next process happens to disagree".
+
+**Not fixed as of 0.9.15.** The shape of the fix is a fourth input to
+`beckon_core::settings::grant_recovery` — `already_restarted`, carried across the
+exec by an env var — so the second attempt degrades to `TellAndStay` instead of
+restarting again. `grant_recovery` is already in core precisely so that decision
+is unit-testable without a launchd agent.
+
 ## Two capabilities live in different processes on this machine
 
 Measured 2026-08-16; this is why the macOS UI probes are awkward and it is not
