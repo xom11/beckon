@@ -2115,23 +2115,60 @@ schedule, so a `?v=2` on the shared link is the only lever. Neither cache is
 evidence the change failed.
 
 **README's animation is a PHOTOGRAPH of that page, and it goes stale in
-silence.** `assets/five-answers.gif` is `#how` — *One key, five answers* —
+silence.** `assets/five-answers.webp` is `#how` — *One key, five answers* —
 recorded by `tools/record-five-answers.mjs` (headless Chrome over CDP, 316
-frames, 12.5 fps, **1800x654, 2.1 MB**). Nothing in CI compares the two, so a
-change to the table, the desk or the tour's beats leaves the README showing
-last month's design: re-run the recorder in the same commit that changes
-`#how`.
+frames captured, 101 stored, 12.5 fps, **1800x654, 0.58 MB**). Nothing in CI
+compares the two, so a change to the table, the desk or the tour's beats leaves
+the README showing last month's design: re-run the recorder in the same commit
+that changes `#how`.
 
-**It ships at 1800px because a README image is displayed at ~900 CSS px and
-every HiDPI reader therefore needs ~1800 device pixels.** The first version
-shipped **900px** — 0.81x of the clip's own 1108px CSS width, so the text was
-shrunk below 1:1 and then stretched back up ~2x by the browser. It was reported
-as blurry and it was. **Colour depth is not a free knob either**: 64 colours
-saves 0.7 MB and turns the accent blue on `Launch`/`Focus` **purple**, visible
-at a glance. Dither is `bayer_scale=5`; at the default 3 a crosshatch is plain
-across the dark window bodies *and* the file is 0.9 MB bigger. Measured at
+**It ships at 1800px because a README image is displayed at ~838 CSS px
+(measured) and every HiDPI reader therefore needs ~1676 device pixels.** The
+first version shipped **900px** — 0.81x of the clip's own 1108px CSS width, so
+the text was shrunk below 1:1 and then stretched back up ~2x by the browser. It
+was reported as blurry and it was.
+
+**It is WEBP RATHER THAN GIF because of GitHub's renderer, not the codec.**
+Fixing the resolution fixed the playing state and left the *stopped* state
+blurry, which is a second defect with a different cause. GitHub wraps an
+animated GIF in its `<animated-image>` player for any reader whose browser
+reports `prefers-reduced-motion: reduce` — this machine has Reduce Motion on,
+so it is the author's own default view. Measured on the real README at
+devicePixelRatio 2:
+
+```text
+animated-image
+├─ img                                  css=0x0            <- hidden while paused
+└─ canvas.AnimatedImagePlayer-stillImage css=838x304  backing=838x304
+```
+
+The still's backing store is sized in **CSS pixels**, so 838 of them are
+stretched across 1676 device pixels. **No source resolution can fix that**,
+which is what turned this from a size question into a format question. The same
+probe against an animated webp returns a plain `img -> a -> p` — no
+`<animated-image>`, no canvas, intrinsic 1800x654 — and it still animates under
+`reduce` (9 distinct frames in 14 shots over 9.8s). It is also 0.58 MB against
+the GIF's 2.1 MB, and 24-bit, so the palette problems below simply do not
+arise.
+
+**The cost was accepted deliberately, not overlooked:** a webp bypasses the
+reduced-motion pause that GitHub's player exists to provide, so readers who
+asked for less motion get an autoplaying clip. `--format gif` still produces
+the old artifact if that trade is ever revisited.
+
+**Palette notes, still true and now only reachable via `--format gif`:** 64
+colours saves 0.7 MB and turns the accent blue on `Launch`/`Focus` **purple**,
+visible at a glance. Dither is `bayer_scale=5`; at the default 3 a crosshatch is
+plain across the dark window bodies *and* the file is 0.9 MB bigger. Measured at
 1800px/128 colours — bayer3 2.7 MB, bayer4 2.0 MB, bayer5 1.8 MB, none 1.5 MB
 (faint contour bands in the gradient), sierra2_4a 5.1 MB.
+
+**`ffprobe` cannot read an animated webp** — it answers `duration=N/A` and
+"image data not found", and ffmpeg cannot decode one either, so a browser is
+the only decoder to hand. `verifyAnimation` therefore parses the RIFF chunks
+itself (`ANIM` for the loop count, one `ANMF` per stored frame) and refuses on
+a still image, a finite loop, or a total duration that has drifted from the
+tour's 25,250 ms cycle.
 
 **CORRECTED 2026-08-17: the first version of this entry recommended virtual
 time, and virtual time is what made the clip a SLIDESHOW.** It read *"Virtual

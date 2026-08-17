@@ -107,7 +107,28 @@ const TURNS = { '4': 4500, '5': 4750, '5a': 5250, '5b': 5250, '5c': 5500 };
 const CYCLE_MS = Object.values(TURNS).reduce((a, b) => a + b, 0); /* 25250 */
 
 const args = parseArgs(process.argv.slice(2));
-const OUT = resolve(ROOT, args.out ?? 'assets/five-answers.gif');
+/* WEBP, NOT GIF, AND THE REASON IS GITHUB'S RENDERER RATHER THAN THE CODEC.
+   GitHub wraps an animated GIF in its `<animated-image>` player for any reader
+   whose browser reports `prefers-reduced-motion: reduce`. Measured on the real
+   README at devicePixelRatio 2: the player hides the real <img> (`css=0x0`) and
+   paints the paused still into
+       canvas.AnimatedImagePlayer-stillImage  css=838x304  backing=838x304
+   — a backing store sized in CSS pixels, so 838 pixels are stretched across
+   1676 device pixels. The still is blurry at ANY source resolution; shipping a
+   sharper GIF cannot fix it, which is why this stopped being a size question.
+   The same probe against an animated webp returns a plain `img -> a -> p`,
+   no <animated-image> and no canvas, intrinsic 1800x654 — and it still
+   animates under `reduce` (9 distinct frames in 14 shots over 9.8s).
+   The cost is real and was accepted deliberately: a webp ignores the reader's
+   reduced-motion preference, which is exactly what GitHub's player exists to
+   honour. `--format gif` still produces the old artifact. */
+const FORMAT = (args.format ?? 'webp').toString();
+if (FORMAT !== 'webp' && FORMAT !== 'gif') die(`--format must be webp or gif, got ${FORMAT}`);
+const OUT = resolve(ROOT, args.out ?? `assets/five-answers.${FORMAT}`);
+/* libwebp quality. 75 and 90 were photographed side by side through a real
+   browser at native size and are indistinguishable on this content; 90 is kept
+   for margin because it is still 3.5x smaller than the GIF it replaces. */
+const WEBP_Q = num(args.quality, 90);
 const VIEW_W = num(args.width, 1120);
 const VIEW_H = num(args.height, 1000);
 const DSF = num(args.scale, 2);
@@ -360,7 +381,6 @@ async function encode(frameDir, shot, out) {
   txt += `file '${frameFile(frameDir, stamps.length - 1)}'\n`;
   await writeFile(list, txt);
 
-  const palette = join(frameDir, 'palette.png');
   const fps = 100 / DELAY_CS;
   /* No scale filter at all unless asked: resampling is what softened the first
      version of this clip. */
@@ -368,23 +388,89 @@ async function encode(frameDir, shot, out) {
   if (OUT_W > 0) chain.push(`scale=${OUT_W}:-2:flags=lanczos`);
   const vf = chain.join(',');
 
-  /* palettegen over every frame with stats_mode=diff, which weights the pixels
-     that actually change — most of the desk, none of the table. paletteuse
-     with Bayer: an ordered dither costs far fewer bytes than error diffusion on
-     a flat UI, because it does not scatter fresh noise through regions that
-     were identical between frames and would otherwise compress to nothing. */
-  await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'concat', '-safe', '0', '-i', list,
-    '-vf', `${vf},palettegen=max_colors=${COLORS}:stats_mode=diff`, palette]);
+  if (FORMAT === 'webp') {
+    /* libwebp_anim drops frames identical to their predecessor and extends the
+       previous frame's duration instead, so a 316-frame capture becomes ~97
+       stored frames at the same 25.25s — which is where most of the size win
+       comes from, on top of not being a 128-colour palette at all. */
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'concat', '-safe', '0', '-i', list, '-vf', vf,
+      '-c:v', 'libwebp_anim', '-lossless', '0', '-q:v', String(WEBP_Q),
+      '-compression_level', '6', '-loop', '0', out]);
+  } else {
+    /* palettegen over every frame with stats_mode=diff, which weights the
+       pixels that actually change — most of the desk, none of the table.
+       paletteuse with Bayer: an ordered dither costs far fewer bytes than error
+       diffusion on a flat UI, because it does not scatter fresh noise through
+       regions that were identical between frames and would otherwise compress
+       to nothing. */
+    const palette = join(frameDir, 'palette.png');
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'concat', '-safe', '0', '-i', list,
+      '-vf', `${vf},palettegen=max_colors=${COLORS}:stats_mode=diff`, palette]);
 
-  await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
-    '-f', 'concat', '-safe', '0', '-i', list, '-i', palette,
-    '-lavfi', `${vf}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
-    '-loop', '0', out]);
+    await run('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y',
+      '-f', 'concat', '-safe', '0', '-i', list, '-i', palette,
+      '-lavfi', `${vf}[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
+      '-loop', '0', out]);
+  }
 
   const { size } = await import('node:fs').then(m => m.promises.stat(out));
-  console.log(`\n${out}\n${(size / 1048576).toFixed(2)} MB, ${fps}fps, ` +
-              `${COLORS} colors${OUT_W > 0 ? `, scaled to ${OUT_W}px` : ', native size'}`);
+  const how = FORMAT === 'webp' ? `webp q${WEBP_Q}` : `gif, ${COLORS} colors`;
+  console.log(`\n${out}\n${(size / 1048576).toFixed(2)} MB, ${fps}fps, ${how}` +
+              `${OUT_W > 0 ? `, ${OUT_W}px wide` : ', native size'}`);
+  await verifyAnimation(out);
+}
+
+/* Read the SHIPPED file back and check it is an animation, of the right
+   length, that loops forever. `assertMotion` above checks what was captured;
+   this checks what was written, which is a different question — an encoder
+   flag that silently produced a still image would pass the first and fail
+   here. ffprobe reports `duration=N/A` and "image data not found" for animated
+   webp, so the container is parsed by hand. */
+async function verifyAnimation(out) {
+  const buf = await readFile(out);
+  let frames = 0, totalMs = 0, loop = null;
+
+  if (FORMAT === 'webp') {
+    if (buf.subarray(0, 4).toString() !== 'RIFF' || buf.subarray(8, 12).toString() !== 'WEBP') {
+      die(`${out} is not a WEBP container`);
+    }
+    for (let off = 12; off + 8 <= buf.length;) {
+      const tag = buf.subarray(off, off + 4).toString();
+      const size = buf.readUInt32LE(off + 4);
+      const body = buf.subarray(off + 8, off + 8 + size);
+      if (tag === 'ANIM') loop = body.readUInt16LE(4);
+      else if (tag === 'ANMF') {
+        frames++;
+        totalMs += body.readUInt32LE(12) & 0x00ffffff;  /* 24-bit frame duration */
+      }
+      off += 8 + size + (size & 1);
+    }
+  } else {
+    /* GIF: one Graphic Control Extension per frame carries the delay in
+       centiseconds; the NETSCAPE application extension carries the loop count. */
+    for (let i = 0; i + 7 < buf.length; i++) {
+      if (buf[i] === 0x21 && buf[i + 1] === 0xf9 && buf[i + 2] === 0x04) {
+        frames++;
+        totalMs += buf.readUInt16LE(i + 4) * 10;
+      }
+    }
+    const n = buf.indexOf('NETSCAPE2.0');
+    if (n > 0) loop = buf.readUInt16LE(n + 13);
+  }
+
+  const secs = totalMs / 1000;
+  console.log(`written: ${frames} stored frames, ${secs.toFixed(2)}s, ` +
+              `loop=${loop === 0 ? 'forever' : loop}`);
+  if (frames < 2) die(`${out} holds ${frames} frame — it is a still image, not a clip.`);
+  if (loop !== 0) die(`${out} does not loop forever (loop=${loop}); it would stop on the Hide frame.`);
+  /* The cycle is 25,250ms and the encoder rounds each frame to whole
+     centiseconds, so a little slack is expected; a second of drift is not. */
+  if (Math.abs(totalMs - CYCLE_MS) > 1000) {
+    die(`${out} runs ${secs.toFixed(2)}s but the tour's cycle is ` +
+        `${(CYCLE_MS / 1000).toFixed(2)}s — the loop would not seam.`);
+  }
 }
 
 /* --------------------------------------------------------------- plumbing */
