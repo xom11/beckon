@@ -138,6 +138,23 @@ pub fn is_accessibility_trusted() -> bool {
     false
 }
 
+/// Ask macOS for Accessibility, raising the system dialog.
+///
+/// **The counterpart `is_accessibility_trusted` is not.** That one reads a
+/// recorded answer; this one asks the question, and it is the only way a
+/// process with no TCC row can acquire one. macOS raises the panel only when
+/// no answer is recorded and returns the stored verdict silently afterwards,
+/// so a caller must offer the settings pane as well rather than instead.
+#[cfg(target_os = "macos")]
+pub fn request_accessibility() -> bool {
+    ffi::ax_is_process_trusted_prompt()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_accessibility() -> bool {
+    false
+}
+
 /// One resolution report per name, for `beckon check --resolve`.
 ///
 /// A batch rather than a loop over `apps::resolve`, because the scans are the

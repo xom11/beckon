@@ -1462,6 +1462,23 @@ pub struct AboutInputs<'a> {
     pub licence: &'a str,
 }
 
+/// Should the About page offer a button that asks for Accessibility?
+///
+/// **Only when the grant is missing, and this is the whole rule.** A button
+/// that is always there invites a person with working permissions to press it
+/// and get nothing: macOS raises the dialog only for a process with no answer
+/// recorded, so for everyone else it is a control that visibly does nothing.
+///
+/// It exists because of what a user actually hit -- beckon said the grant was
+/// missing and gave no way to give it. `IOHIDCheckAccess` and
+/// `AXIsProcessTrusted` only ASK; neither raises a dialog, so a binary with no
+/// TCC row can never acquire one through them. Finding the pane by hand means
+/// typing a path that, on a nix or Homebrew install, carries a hash or a
+/// version and changes on every update.
+pub fn grant_button_shown(granted: bool) -> bool {
+    !granted
+}
+
 /// The About page, decided in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AboutState {
@@ -3597,6 +3614,13 @@ pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The offer appears exactly when it can do something.
+    #[test]
+    fn the_grant_button_is_offered_only_when_the_grant_is_missing() {
+        assert!(grant_button_shown(false));
+        assert!(!grant_button_shown(true));
+    }
     use crate::shortcuts::Chord;
 
     const FILE: &str =

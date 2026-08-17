@@ -111,6 +111,11 @@ unsafe extern "C" {
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOHIDCheckAccess(request: u32) -> u32;
+    /// **The only call that raises the dialog.** `IOHIDCheckAccess` asks and
+    /// never prompts, so a binary with no TCC row cannot acquire one through
+    /// it -- which is why beckon could report the grant as missing forever
+    /// while never giving the user a way to give it.
+    fn IOHIDRequestAccess(request: u32) -> bool;
 
     // The lock is set through IOKit, not through an event. See
     // `toggle_caps_lock` for the measurement that forced this.
@@ -321,6 +326,25 @@ pub fn input_monitoring_granted() -> bool {
     unsafe { IOHIDCheckAccess(REQUEST_LISTEN) == 0 }
 }
 
+/// Ask macOS for Input Monitoring, raising the system dialog.
+///
+/// **This is the call `input_monitoring_granted` is not.** That one only
+/// reads an answer; this one asks the question, and it is the only way a
+/// process with no TCC row can ever get one. Without it beckon could report
+/// the grant as missing forever while leaving the user to find a pane and
+/// type in a path that carries a nix hash or a Homebrew version.
+///
+/// Returns what macOS answered. **`true` does not mean the tap will work
+/// now**: the grant is handed to a process at launch, so the caller has to
+/// say "restart beckon" rather than "try again".
+///
+/// Silent when an answer is already recorded -- macOS shows the dialog once
+/// per binary and then returns the stored verdict -- which is why the caller
+/// offers the settings pane as well rather than instead.
+pub fn request_input_monitoring() -> bool {
+    unsafe { IOHIDRequestAccess(REQUEST_LISTEN) }
+}
+
 /// Install the tap on the CURRENT thread's run loop.
 ///
 /// Idempotent. Must be called on the thread that runs the loop — `serve`'s
@@ -440,11 +464,49 @@ fn take_handles() -> (usize, usize) {
 }
 
 /// Hold the tap for one reason, installing it if nobody held it yet.
+/// Should a missing grant raise the system dialog for this reason?
+///
+/// Only for `Capture`, which is a person pressing a button labelled Record in
+/// a window they opened. `Caps` reaches `install_for` from `sync_caps_hook`,
+/// which runs at startup and on every reload -- a login-time panel nobody is
+/// looking at, and one that would come back on every config save.
+///
+/// This is the narrow version of the decision recorded at
+/// `ffi::ax_is_process_trusted_prompt`, which has stayed unused because "a
+/// clear error message beats an unprompted system dialog from the hot path".
+/// That holds; what it does not cover is the case where the user has just
+/// asked for the exact capability the grant is for.
+fn should_prompt(reason: HookReason) -> bool {
+    matches!(reason, HookReason::Capture)
+}
+
 pub fn install_for(reason: HookReason) -> Result<(), String> {
     let need = match OWNERS.lock() {
         Ok(mut o) => o.add(reason),
         Err(_) => return Err("the tap's owner set is poisoned".into()),
     };
+    // Ask before reporting failure, so the answer to "how do I grant this?"
+    // is a dialog with an Allow button rather than a path the user has to
+    // find. The grant does not take effect in this process -- macOS hands
+    // Input Monitoring to a tap only from the next launch -- so the message
+    // below says so instead of pretending the button will now work.
+    if need && should_prompt(reason) && !input_monitoring_granted() {
+        let asked = unsafe { IOHIDRequestAccess(REQUEST_LISTEN) };
+        if let Ok(mut o) = OWNERS.lock() {
+            o.remove(reason);
+        }
+        return Err(if asked {
+            "Input Monitoring was just granted. Quit beckon from the menu bar \
+             and start it again -- macOS only hands the permission to a new \
+             process."
+                .into()
+        } else {
+            "beckon asked for Input Monitoring. Allow it in the dialog (or in \
+             System Settings > Privacy & Security > Input Monitoring), then \
+             quit beckon from the menu bar and start it again."
+                .into()
+        });
+    }
     if need {
         if let Err(e) = install() {
             // Give the reason back. Leaving it recorded would make the next
@@ -915,6 +977,31 @@ fn inject_chord(hold: Chord, code: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **beckon must ASK, not just check, and only where a person asked
+    /// it to.**
+    ///
+    /// `IOHIDCheckAccess` never raises the dialog, so a binary with no TCC
+    /// row can never acquire one through it -- the user is left to find
+    /// System Settings and type in a path themselves. On a nix or Homebrew
+    /// install that path contains a hash or a version, changes on every
+    /// update, and is not something anyone can be expected to know.
+    ///
+    /// It is NOT unconditional, and that is the older decision this respects:
+    /// `ffi::ax_is_process_trusted_prompt` has sat unused with the comment
+    /// "beckon prefers a clear error message over an unprompted system dialog
+    /// from the hot path", which is right -- nobody wants a panel every time a
+    /// hotkey fires, and `serve` starting at login would raise one before
+    /// anyone is looking.
+    ///
+    /// `Capture` is the one reason that comes from a person pressing a button
+    /// labelled Record, in a window they opened. That is where a dialog is an
+    /// answer rather than an interruption.
+    #[test]
+    fn only_a_person_pressing_record_raises_the_permission_dialog() {
+        assert!(should_prompt(HookReason::Capture));
+        assert!(!should_prompt(HookReason::Caps));
+    }
 
     /// An ordinary key projects to the vk `step_on` looks up, both edges.
     #[test]

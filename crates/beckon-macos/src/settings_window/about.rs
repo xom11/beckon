@@ -39,11 +39,11 @@
 //! anywhere. `beckon doctor` already reports it; About is where a person
 //! who has not thought to run `doctor` will be standing.
 
-use beckon_core::settings::{copy_text, AboutState, Field, ImageAge};
+use beckon_core::settings::{copy_text, grant_button_shown, AboutState, Field, ImageAge};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
-use objc2_app_kit::{NSBox, NSStackView, NSTextField, NSView};
+use objc2_app_kit::{NSBox, NSButton, NSStackView, NSTextField, NSView};
 use objc2_foundation::{MainThreadMarker, NSString};
 
 use super::widgets as w;
@@ -59,6 +59,14 @@ pub(super) struct AboutControls {
     /// never receives a sentence.
     pub(super) image: Retained<NSTextField>,
     pub(super) access: Retained<NSTextField>,
+    /// Offered only while the grant is missing (`grant_button_shown`).
+    ///
+    /// Without it this page could state the largest single cause of "beckon
+    /// does nothing" and give the reader nowhere to go: `AXIsProcessTrusted`
+    /// only reads an answer, so a binary with no TCC row cannot acquire one
+    /// through anything beckon calls, and the pane wants a path carrying a
+    /// nix hash or a Homebrew version.
+    pub(super) grant: Retained<NSButton>,
 }
 
 /// `Build` / `Location` / `Licence`: a dimmed name, the value, a copy button.
@@ -107,6 +115,13 @@ pub(super) fn build(
 
     let image = w::secondary("", mtm);
     let access = w::wrapping("", mtm);
+    let grant = w::push(
+        "Grant Accessibility…",
+        sel!(beckonGrantAccess:),
+        target,
+        mtm,
+    );
+    let grant_row = w::hstack(&[&*grant as &NSView, &*w::spring(mtm)], mtm);
 
     let github = w::push("GitHub", sel!(beckonGithub:), target, mtm);
     let releases = w::push("Releases", sel!(beckonReleases:), target, mtm);
@@ -133,6 +148,7 @@ pub(super) fn build(
             &lic_row,
             &w::divider(mtm),
             &access,
+            &grant_row,
             &links,
         ],
         10.0,
@@ -160,6 +176,7 @@ pub(super) fn build(
             licence,
             image,
             access,
+            grant,
         },
     )
 }
@@ -183,6 +200,9 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
     };
     c.image.setStringValue(&NSString::from_str(verdict));
     c.image.setHidden(verdict.is_empty());
+
+    // Offered only while it can do something -- see `grant_button_shown`.
+    c.grant.setHidden(!grant_button_shown(ax_trusted));
 
     c.access.setStringValue(&NSString::from_str(if ax_trusted {
         // **`or while you are recording a shortcut` is not padding.** Chord

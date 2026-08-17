@@ -493,6 +493,16 @@ pub fn cmd_serve_app(
             .map_err(|e| anyhow!(e))?
     };
     let mgr = Rc::new(RefCell::new(mgr));
+
+    // **After the hotkey manager exists, before anything is registered.**
+    // `HotkeyManager::install` is what puts the process in the Accessory
+    // activation policy and gives it a window-server identity; asking before
+    // that would raise the panel from a process macOS does not yet consider a
+    // foreground-capable app. Registering hotkeys does not need the grant --
+    // FIRING them does -- so the order costs nothing.
+    #[cfg(target_os = "macos")]
+    ask_for_accessibility_once();
+
     let outcome = register_all(&mut mgr.borrow_mut(), &state.borrow().shortcuts);
 
     let (tx, rx) = std::sync::mpsc::channel::<()>();
@@ -1373,6 +1383,39 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
             // the in-memory state from lying to the settings window.
             state.borrow_mut().keyboard.caps = false;
         }
+    }
+}
+
+/// Ask for Accessibility once, at startup, when it is missing.
+///
+/// **Without the grant beckon cannot focus anything** -- the single largest
+/// cause of "beckon does nothing" on this platform -- and until now nothing in
+/// beckon ever ASKED for it. `AXIsProcessTrusted` reads a recorded answer; it
+/// does not raise the dialog, so a binary with no TCC row could never acquire
+/// one through any path a user could find. Finding the pane by hand means
+/// typing a path that carries a nix hash or a Homebrew version and changes on
+/// every update.
+///
+/// **Once, and only when missing**, which is what keeps this from being the
+/// unprompted-dialog-from-the-hot-path that `ffi::ax_is_process_trusted_prompt`
+/// was written to avoid: macOS shows the panel only for a process with no
+/// answer recorded, so a user who has answered -- either way -- never sees it
+/// again, and `beckon <id>` never reaches this code at all.
+///
+/// At startup rather than on the first failed hotkey, because a hotkey that
+/// does nothing gives no hint that a dialog is what is owed, and because
+/// startup is when a person has just installed or updated something.
+#[cfg(target_os = "macos")]
+fn ask_for_accessibility_once() {
+    if beckon_macos::is_accessibility_trusted() {
+        return;
+    }
+    if !beckon_macos::request_accessibility() {
+        eprintln!(
+            "beckon serve: Accessibility is not granted, so hotkeys cannot focus \
+             anything. Allow beckon in the dialog, or in System Settings > Privacy \
+             & Security > Accessibility, then start beckon again."
+        );
     }
 }
 

@@ -953,8 +953,56 @@ define_class!(
         /// for a caller to decide anyway. The address is a constant in
         /// `shell`, not a `Target::url`, because it is not an https address
         /// and `open_url` must keep refusing it.
+        /// Ask macOS for Accessibility, raising the system dialog.
+        ///
+        /// **This is the narrow use of `ffi::ax_is_process_trusted_prompt`,
+        /// which has sat unused since it was written.** Its own comment says
+        /// beckon "prefers a clear error message over an unprompted system
+        /// dialog from the hot path", and that still holds: nobody wants a
+        /// panel every time a hotkey fires. Here the person is looking at a
+        /// page that says the grant is missing and has pressed a button that
+        /// says it will ask.
+        ///
+        /// The dialog appears only for a process with no answer recorded, so
+        /// the note also names the pane for anyone who has already declined.
+        #[unsafe(method(beckonGrantAccess:))]
+        fn on_grant_access(&self, _s: &AnyObject) {
+            let now = crate::ffi::ax_is_process_trusted_prompt();
+            if let Some(c) = controls() {
+                c.abt.access.setStringValue(&NSString::from_str(if now {
+                    "Accessibility is granted. Quit beckon from the menu bar and start \
+                     it again if hotkeys are still not focusing anything."
+                } else {
+                    "beckon asked for Accessibility. Allow it in the dialog, or add \
+                     beckon under System Settings > Privacy & Security > Accessibility, \
+                     then quit beckon from the menu bar and start it again."
+                }));
+            }
+        }
+
         #[unsafe(method(beckonOpenInputMonitoring:))]
         fn on_open_input_monitoring(&self, _s: &AnyObject) {
+            // **Ask first, open second, and both every time.**
+            //
+            // `IOHIDRequestAccess` raises the dialog only for a process with
+            // no answer recorded; after a first Deny it returns the stored
+            // verdict silently. So asking alone strands anyone who has ever
+            // declined, and opening the pane alone makes a first-time user
+            // hunt for a path with a nix hash in it. Doing both means the
+            // common case is one click in a dialog, and the awkward case
+            // still lands in the right pane.
+            if !crate::caps_tap::input_monitoring_granted() {
+                let asked = crate::caps_tap::request_input_monitoring();
+                if let Some(c) = controls() {
+                    c.kbd.note.setStringValue(&NSString::from_str(if asked {
+                        "Input Monitoring granted. Quit beckon from the menu bar and \
+                         start it again -- macOS hands the permission to a new process."
+                    } else {
+                        "Allow beckon in the list, then quit it from the menu bar and \
+                         start it again -- macOS hands the permission to a new process."
+                    }));
+                }
+            }
             if let Err(e) = crate::shell::open_input_monitoring() {
                 // The notes line is the window's own voice; a modal for a
                 // failed `open` would be louder than the thing it reports.
