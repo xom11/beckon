@@ -230,7 +230,9 @@ beckon/
 │           └── bin/
 │               └── beckon-serve.rs   # beckon-serve.exe: GUI-subsystem shim (Windows only)
 ├── assets/
-│   └── beckon.ico             # tray / Explorer / Alt-Tab icon for both Windows binaries
+│   ├── beckon.ico             # tray / Explorer / Alt-Tab icon for both Windows binaries
+│   └── beckon-menubar.png     # macOS menu bar TEMPLATE, generated from beckon.ico
+│                              #   by tools/make-menubar-mark.py — never hand-edited
 ├── extensions/
 │   └── beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
 │       ├── metadata.json
@@ -2526,12 +2528,66 @@ Reasonable next-session order:
   and was right; these are what it structurally cannot ask.
 
   - **A menu bar image must be a TEMPLATE.** The status item drew the word
-    `beckon` while every neighbour was a glyph. It is now the SF Symbol
-    `b.square.fill` with `setTemplate(true)`, without which it does not
-    invert for a light menu bar or survive increased contrast.
-    `assets/beckon.ico` is not usable here: a Windows container, and a
-    coloured bitmap cannot be a template. Clear the title explicitly —
+    `beckon` while every neighbour was a glyph. It is an embedded template
+    with `setTemplate(true)`, without which it does not invert for a light
+    menu bar or survive increased contrast. Clear the title explicitly —
     an `NSStatusBarButton` given both draws the icon AND the word.
+
+    **CORRECTED 2026-08-17: it was the SF Symbol `b.square.fill`, and that
+    symbol draws a capital `B`.** This entry used to end *"`assets/beckon.ico`
+    is not usable here: a Windows container, and a coloured bitmap cannot be a
+    template"*, and `tray.rs` carried the matching claim that the symbol "is
+    the same shape as the About door's mark". Both halves are wrong in the way
+    this file keeps recording: plausible, written down, never run. Rendered
+    through `NSImage(systemSymbolName:)` — the same call `tray.rs` made — and
+    looked at:
+
+    | | menu bar | every other `b` in beckon |
+    |---|---|---|
+    | letter | **`B`** upper case | **`b`** lower case |
+    | ratio | 184x166 = **1.11:1** | 1:1 |
+
+    The control that rules out a renderer artifact: `a.square.fill` draws `A`
+    at the same 1.113 ratio, and `b.square.fill.lowercase` is ABSENT — the SF
+    Symbols letter family is upper case by design, with no lower-case member.
+    The other four surfaces are `assets/beckon.ico`, `site/favicon.png` +
+    `icon-512.png`, `cap::MARK` (Windows About) and `heading("b")` (macOS
+    About), all lower case.
+
+    **What was salvageable is the ARTWORK, not the file.** `.ico` really is a
+    container nothing here reads, but `tools/make-menubar-mark.py` derives
+    `assets/beckon-menubar.png` from its 256px frame, so the menu bar and the
+    Windows tray cannot show two different letterforms. Two things that script
+    must keep doing:
+
+    - **Knock the letter out by WHITENESS, not by colour equality.** The tile
+      is a gradient (`#3B82F6` to `#2563EB`), so there is no one blue to
+      compare against; luminance separates the families and turns
+      anti-aliased letter edges into partial alpha instead of a stair-step.
+    - **Round the tile, at `8.0/34.0` — the About door's own
+      `cornerRadius`.** `beckon.ico` is FULL-BLEED: measured, its corner
+      pixels are opaque `#3B82F6`, not transparent. That is correct for a
+      Windows icon, where the shell applies its own shape, and wrong here,
+      where nothing does — a solid 14x14 black square in the menu bar is a
+      blob. Rounding at the About door's ratio is also what finally makes
+      *"the same shape as the About door's mark"* true on this platform.
+
+    **Sizing is matched, not chosen**: `b.square.fill` occupied 15x14 pt
+    (measured, with no symbol configuration — which is how `tray.rs` called
+    it), so the replacement is 14x14 and the item does not change width. The
+    source is 28x28, exactly @2x, which is pixel-perfect on a Retina display
+    rather than resampled.
+
+    **`setTemplate(true)` became load-bearing in the same commit.** An SF
+    Symbol already answers `isTemplate == true` before anything sets it
+    (measured), so that line was a no-op the whole time it was there; a PNG
+    answers `false`, and without the call the mark would not invert.
+
+    **What no assertion in this tree can catch is the letter.** A probe can
+    say the asset decodes, is 28x28 square, and carries tile + knockout +
+    anti-aliasing in its alpha — all checked — and every one of those passed
+    for the capital `B` too. The instrument is a person looking, which is the
+    same conclusion the three defects above reached.
   - **`makeKeyAndOrderFront` is not enough for an Accessory app.**
     `hotkey::install` puts `serve` in the Accessory activation policy, where
     an application is never frontmost on its own, so the settings window came

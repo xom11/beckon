@@ -36,12 +36,12 @@
 use beckon_core::menu::{MenuEntry, MENU_ID_DOUBLE_CLICK};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, sel, MainThreadOnly};
+use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
-use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSObjectProtocol, NSSize, NSString};
 use std::cell::RefCell;
 
 type MenuBuilder = Box<dyn Fn() -> Vec<MenuEntry>>;
@@ -210,30 +210,52 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
     // while every neighbour was a glyph, which is what a person notices
     // first and reported before anything else about the port.
     //
-    // `b.square.fill` is an SF Symbol and is the same shape as the About
-    // door's mark: a rounded square carrying the letter. Two reasons it is a
-    // symbol rather than the `.ico` in `assets/` or a bitmap of the mark:
-    // that file is a Windows format nothing here reads, and a menu bar image
-    // must be a TEMPLATE — monochrome plus alpha, tinted by the system — so
-    // it stays legible in a light menu bar, in a dark one, and under
-    // increased contrast, none of which a coloured bitmap survives.
-    // `setTemplate(true)` is what asks for that treatment.
+    // **The mark is beckon's own, embedded, and deliberately NOT an SF
+    // Symbol.** It was `b.square.fill` until 2026-08-17, on a belief written
+    // down right here: that the symbol "is the same shape as the About door's
+    // mark: a rounded square carrying the letter". Rendered and looked at, it
+    // is a capital **`B`** — the SF Symbols letter family is upper case by
+    // design and has no lower-case member (`a.square.fill` draws `A`, and
+    // both measure 1.11:1 rather than square). Every other `b` in this
+    // program is lower case: `assets/beckon.ico`, `site/favicon.png`,
+    // `cap::MARK` on Windows, and `heading("b")` on the About door two files
+    // away. So the menu bar was the one surface showing a different letter,
+    // in a glyph beckon does not own — and the comment asserting otherwise
+    // had never been run.
+    //
+    // `assets/beckon-menubar.png` is derived FROM `beckon.ico` by
+    // `tools/make-menubar-mark.py`, so the letterform cannot drift from the
+    // Windows tray icon. Two things that script does which this code depends
+    // on. A menu bar image must be a TEMPLATE — one colour plus alpha, tinted
+    // by the system — or it survives neither a light bar, nor a dark one, nor
+    // increased contrast; `setTemplate(true)` asks for that, and it is
+    // load-bearing now in a way it was not before, because an SF Symbol
+    // already answers `true` and a PNG does not. And it ROUNDS the tile,
+    // which `beckon.ico` does not: that file is full-bleed (measured — its
+    // corner pixels are opaque `#3B82F6`), which is right where the shell
+    // applies its own shape and a solid black block here.
+    //
+    // 14x14 pt is what `b.square.fill` occupied (15x14, measured), so the
+    // item does not change width across the upgrade; the source is 28x28,
+    // i.e. exactly @2x.
     //
     // The title is cleared explicitly. An `NSStatusBarButton` draws both if
     // both are set, and the result is the icon followed by the word.
-    let symbol = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-        &NSString::from_str("b.square.fill"),
-        Some(&NSString::from_str("beckon")),
-    );
-    match symbol {
+    const MARK: &[u8] = include_bytes!("../../../assets/beckon-menubar.png");
+    let mark = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(MARK));
+    match mark {
         Some(img) => {
+            img.setSize(NSSize::new(14.0, 14.0));
             img.setTemplate(true);
             button.setImage(Some(&img));
             button.setTitle(&NSString::from_str(""));
         }
-        // Older systems have no SF Symbols. The word is a poor menu bar
-        // citizen but it is visible, and an item with neither image nor
-        // title is a blank gap nobody can click on purpose.
+        // **Not the old SF Symbols version guard.** That arm was reachable —
+        // any macOS below 11 — and it is gone with the symbol. This one is
+        // unreachable in practice, since the bytes are compiled in and
+        // ImageIO decodes PNG; it stays only because an item with neither
+        // image nor title is a blank gap nobody can click on purpose, so the
+        // word remains the floor rather than nothing.
         None => button.setTitle(&NSString::from_str("beckon")),
     }
 
