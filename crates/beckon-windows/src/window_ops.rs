@@ -197,7 +197,6 @@ fn build_window_info(
             }
         }
 
-        // Get PID.
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
         if pid == 0 {
