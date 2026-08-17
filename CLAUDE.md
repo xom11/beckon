@@ -2944,11 +2944,47 @@ Reasonable next-session order:
     key — but two `beckon-serve.exe` on two configs is reachable the same way.
     Re-run this experiment there before assuming either outcome.
 
-  Not yet fixed. The shape that fits the growth rule is a lock with a **fixed**
-  name rather than a per-config one, taken where the tap is installed, so the
-  second beckon says *another beckon already owns Caps* in its log and installs
-  nothing — silence being the whole defect. `serve.rs` is the caller and is
-  shared with another session, so the change needs coordinating first.
+  **Fixed in `f91daeb`, and the fix is the LOG LINE — the lock is only how it
+  is detected.** `lockfile::acquire_caps` takes a **fixed**-name flock (never
+  the per-config one, which must keep its own single job), `sync_caps_hook`
+  takes it immediately before `caps_tap::install_for`, and a beckon that
+  cannot get it installs nothing and prints *another beckon owns Caps on this
+  machine; Caps shortcuts are off here (the typed chord still works)*. **A
+  beckon that declined quietly would be the same defect one level down**, so a
+  test that only counts taps passes against it — which is why
+  `testing/macos_caps_one_owner.sh` asserts the refusal line, and why each of
+  its arms declares the tap count *and* the refusal count it expects before it
+  measures anything. Measured after the fix, controls both sides:
+
+  ```text
+  one serve    (1 tap, 0 refusal)  8/8      <- was 8/8
+  TWO serves   (1 tap, 1 refusal)  8/8      <- was 0/8
+  one serve    (1 tap, 0 refusal)  8/8
+  ```
+
+  The flock is released by dropping the `File`, so pause, a reload that turns
+  Caps off, and exit all hand Caps back; `sync_caps_hook` re-takes it on every
+  call, which is why the loser recovers with **no timer** — every one of those
+  paths already calls it.
+
+  **Windows deliberately does NOT take this lock**, and the comment on that arm
+  says so with the recipe to close it: two `beckon.exe serve` on two configs,
+  one Caps binding each, press both. `WH_KEYBOARD_LL` chains rather than
+  shadows, so the failure *looks* likely and looking is not measuring — which
+  is precisely how `caps_tap = "capslock"` shipped dead on macOS.
+
+  **Both scripts stay.** `macos_two_caps_taps.sh` measures the DEFECT (and so
+  keeps it falsifiable — it must still print `0/8` against a beckon built
+  before `f91daeb`); `macos_caps_one_owner.sh` checks the FIX. Neither is the
+  other's replacement, and the middle arm means the opposite thing in each.
+
+  Two counting traps, both of which produced a whole round of wrong results
+  before being caught, and both now written into the scripts:
+
+  - `pkill -f 'bin/beckon serve'` does not match `~/beckon-test/beckon`.
+  - `pgrep -f` matches the two `sudo` wrappers as well, so one serve counts as
+    **three** and every premise check fails at exactly three times the truth.
+    Count by `comm`.
 
   This closes the "what is still unexplained" note that stood here: a live run
   where kitty received `^[[113;15u` — `q` with ctrl+alt+super, byte-correct —
