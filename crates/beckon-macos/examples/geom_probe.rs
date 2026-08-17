@@ -428,6 +428,41 @@ caps_hold = "ctrl+super+alt"
                     }
                 }
             }
+            if std::env::var("BECKON_PROBE_DUMP").is_ok() {
+                // Every view under the visible door, with what it ASKS for.
+                // `fittingSize` is the ask; `frame` is what the stack gave it,
+                // and the gap between them is where a row ran out of width.
+                fn walk(v: &NSView, d: usize) {
+                    if v.isHidden() {
+                        return;
+                    }
+                    let f = v.frame();
+                    let fit = v.fittingSize();
+                    let title = v
+                        .downcast_ref::<objc2_app_kit::NSButton>()
+                        .map(|b| b.title().to_string())
+                        .or_else(|| {
+                            v.downcast_ref::<objc2_app_kit::NSTextField>()
+                                .map(|t| t.stringValue().to_string())
+                        })
+                        .unwrap_or_default();
+                    println!(
+                        "{:indent$}{:?} frame {:.1}x{:.1} ask {:.1}x{:.1} {:?}",
+                        "",
+                        v.class(),
+                        f.size.width,
+                        f.size.height,
+                        fit.width,
+                        fit.height,
+                        title,
+                        indent = d * 2
+                    );
+                    for s in v.subviews().iter() {
+                        walk(&s, d + 1);
+                    }
+                }
+                walk(&root, 0);
+            }
             let mut stack: Vec<Retained<NSView>> = vec![root];
             while let Some(v) = stack.pop() {
                 // `downcast` consumes the receiver and hands it back in `Err`,

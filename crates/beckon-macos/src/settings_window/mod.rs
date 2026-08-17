@@ -105,13 +105,24 @@ mod widgets;
 /// that changes height when a binding is added is a window that moves under
 /// the pointer mid-edit.
 ///
-/// **Ten, and the two extra rows are spent slack rather than a bigger
-/// window.** Measured with `examples/geom_probe.rs` on macmini 2026-08-17: at
-/// eight rows the tallest door asked for 452 pt inside a 500 pt content view,
-/// so 48 pt landed under the command bar as a dead band with nothing in it --
-/// which is what a user photographed. The list is the one band here that can
-/// use height, and a config of twenty bindings showing eight of them is the
-/// case that wants it.
+/// **Twelve, and the extra rows are spent slack rather than a bigger window.**
+/// Measured with `examples/geom_probe.rs` on macmini 2026-08-17. At eight rows
+/// the tallest door asked for 452 pt inside a 500 pt content view, so 48 pt
+/// landed under the command bar as a dead band with nothing in it -- which is
+/// what a user photographed. Ten rows spent it; folding the editor's two rows
+/// into one handed back another 32 pt, and twelve spends that too. The tallest
+/// door now asks for exactly the content height, so the only gap under the
+/// command bar is the stack's own 12 pt inset.
+///
+/// The list is the one band here that can use height, and a config of twenty
+/// bindings showing eight of them is the case that wants it.
+///
+/// **The cost of spending the LAST point: there is no headroom left.** A door
+/// that later grows by even a point pushes the fitting height above the content
+/// height, and the measured way that fails is AppKit paying the shortfall out of
+/// the stack's TOP inset -- the tab strip goes flush with the window edge and
+/// nothing else moves. So a band added to any door has to come with a re-run of
+/// `geom_probe`, not with a guess.
 ///
 /// The height constraint stays EXACT (`ROWS * ROW_HEIGHT + 24`). Making it a
 /// minimum, or letting the list stretch, is what the paragraph above forbids:
@@ -136,14 +147,21 @@ mod widgets;
 ///
 /// It is `setContentMinSize`, i.e. the height the user can drag DOWN to -- so
 /// content must fit at this number, not merely at `WINDOW_HEIGHT`. Growing the
-/// list without moving this is the trap: the window would clip its own command
-/// bar at the minimum and nowhere else, which is the hardest kind of layout bug
-/// to notice.
+/// list without moving this is the trap: at the minimum the stack pays the
+/// shortfall out of its top inset and nowhere else, which is the hardest kind of
+/// layout bug to notice.
+///
+/// **It is now `WINDOW_HEIGHT` itself, spelled as that rather than repeated as a
+/// number.** Once `ROWS` spends the last of the slack the two ARE the same
+/// quantity -- the window is exactly as tall as its tallest door -- and writing
+/// `480` beside a 500 that had grown to meet it is how the pair silently drifts
+/// apart again. The window stays resizable UPWARDS; the slack simply goes under
+/// the bar as before.
 const WINDOW_WIDTH: f64 = 640.0;
 const WINDOW_HEIGHT: f64 = 500.0;
-const MIN_HEIGHT: f64 = 492.0;
+const MIN_HEIGHT: f64 = WINDOW_HEIGHT;
 
-const ROWS: f64 = 10.0;
+const ROWS: f64 = 12.0;
 const ROW_HEIGHT: f64 = 20.0;
 
 // Column identifiers. Strings rather than integers because that is what
@@ -201,10 +219,9 @@ struct Controls {
     filter: Retained<NSTextField>,
     app: Retained<NSComboBox>,
     key: Retained<NSPopUpButton>,
-    mod_ctrl: Retained<NSButton>,
-    mod_super: Retained<NSButton>,
-    mod_alt: Retained<NSButton>,
-    mod_shift: Retained<NSButton>,
+    /// The four modifiers as ONE control, `selectAny`, in
+    /// `Combo::canonical`'s own order -- see `MOD_CTRL`..`MOD_SHIFT`.
+    mods: Retained<objc2_app_kit::NSSegmentedControl>,
     /// `Record` / `Stop` -- one button wearing two captions, exactly as
     /// `IDC_RECORD` does on Windows. The caption IS the state, which is
     /// why `end_capture` has to restore it from every exit path.
@@ -1102,10 +1119,10 @@ fn combo_view_of() -> ComboView {
     };
     let i = c.key.indexOfSelectedItem();
     ComboView {
-        ctrl: c.mod_ctrl.state() == 1,
-        super_: c.mod_super.state() == 1,
-        alt: c.mod_alt.state() == 1,
-        shift: c.mod_shift.state() == 1,
+        ctrl: mod_on(&c.mods, MOD_CTRL),
+        super_: mod_on(&c.mods, MOD_SUPER),
+        alt: mod_on(&c.mods, MOD_ALT),
+        shift: mod_on(&c.mods, MOD_SHIFT),
         key: if i < 0 { None } else { Some(i as usize) },
     }
 }
@@ -1133,17 +1150,6 @@ fn commit_fields() {
 
 fn label(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     NSTextField::labelWithString(&NSString::from_str(text), mtm)
-}
-
-fn check(title: &str, action: Sel, target: &Target, mtm: MainThreadMarker) -> Retained<NSButton> {
-    unsafe {
-        NSButton::checkboxWithTitle_target_action(
-            &NSString::from_str(title),
-            Some(target as &AnyObject),
-            Some(action),
-            mtm,
-        )
-    }
 }
 
 fn push(title: &str, action: Sel, target: &Target, mtm: MainThreadMarker) -> Retained<NSButton> {
@@ -1533,10 +1539,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // --- editor strip -----------------------------------------------------
     // No `&` mnemonics anywhere in this window: `Hold` already claims t, w
     // and l among the chips, and AppKit has no mnemonic table to arbitrate.
-    let mod_ctrl = check("Ctrl", sel!(beckonShortcut:), &target, mtm);
-    let mod_super = check("Cmd", sel!(beckonShortcut:), &target, mtm);
-    let mod_alt = check("Option", sel!(beckonShortcut:), &target, mtm);
-    let mod_shift = check("Shift", sel!(beckonShortcut:), &target, mtm);
+    let mods = mod_segments(&target, mtm);
     let key = NSPopUpButton::new(mtm);
     unsafe {
         key.setTarget(Some(&*target));
@@ -1554,51 +1557,58 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         app.setTarget(Some(&*target));
         app.setAction(Some(sel!(beckonApp:)));
         app.setCompletes(true);
+        // **This is what replaced the `App` label, and it costs no width.** A
+        // placeholder lives inside the control's own slot, where a leading label
+        // spent 29 pt plus a gap on the one row that had none to spare.
+        let ph = NSString::from_str("App name");
+        let cell = app.cell().unwrap();
+        let _: () = msg_send![&*cell, setPlaceholderString: &*ph];
     }
-    // **Two rows, and the split is arithmetic rather than taste.** Measured
-    // on airm3 2026-08-17 at the window's own 640 pt, one row of these nine
-    // views wants about 700 pt, and `NSStackView` pays for the shortfall by
-    // compressing the view with the weakest hold on its width -- the App
-    // combo, which came out **2.0 pt wide**, with the `App` label clipped to
-    // `Ap` beside it. The frames, in screen coordinates inside a window at
-    // x=400 w=640:
+    // **One row, and it only fits because three things came out of it.**
+    // The two-row split that stood here was measured, not taste: with a
+    // `Shortcut` label, four WORDED check boxes, the key list and `Record`, one
+    // row asked 540 pt of a 584 pt card and left the App combo 44 pt -- and the
+    // combo is the one control whose content has no length limit, so it is the
+    // view `NSStackView` compresses first. An earlier attempt got it down to
+    // 2.0 pt with the `App` label clipped to `Ap`.
     //
-    //     Shortcut 54.5 | Ctrl 46 | Cmd 52.5 | Option 65 | Shift 52.5
-    //     | key 123.5 | Record 69 | App 26.5 | ComboBox 2.0
+    // Measured offscreen on macmini 2026-08-17, each candidate's fixed width
+    // against the same 584 pt card and 8 pt gaps:
     //
-    // macOS spends more width than Win32 on the same controls and cannot get
-    // it back: the modifier chips read `Cmd` and `Option` where Windows reads
-    // `Win` and `Alt` (`ModifierLabels::MAC`), and those words are the ones a
-    // Mac keyboard actually carries -- see the note on `ModifierLabels` about
-    // why they are words and not glyphs.
+    // ```text
+    //                                       modifiers  fixed  combo gets
+    // worded checks + both labels (was)         209.0  540.0        44.0
+    // worded checks, no labels                  209.0  438.0       146.0
+    // glyph check boxes, no labels              138.0  367.0       217.0
+    // one segmented control, worded             204.0  409.0       175.0
+    // one segmented control, glyphs (ships)     133.0  338.0       246.0
+    // ```
     //
-    // Widening the window was the alternative and is worse: `WINDOW_WIDTH` is
-    // design §2's derived figure, the other three doors fit inside it today,
-    // and a width chosen to rescue one row would have to be defended on every
-    // door forever. Splitting costs one row of height on ONE door.
+    // Three changes, and the row needs all three:
     //
-    // The split is also where the meaning already divides: the chord is one
-    // decision and the app is another, which is exactly the pair a row of the
-    // list shows in two columns.
-    let editor_row = hstack(
-        &[
-            &label("Shortcut", mtm),
-            &mod_ctrl,
-            &mod_super,
-            &mod_alt,
-            &mod_shift,
-            &key,
-            &record,
-            // Takes the slack at the END of the row, so the chord stays
-            // left-aligned as the card grows.
-            &*widgets::spring(mtm),
-        ],
-        mtm,
-    );
-    // The combo takes the slack on this row -- it is the one control whose
-    // content is a name of unbounded length, and it is what a wider window
-    // should give more room to.
-    let app_row = hstack(&[&label("App", mtm) as &NSView, &app], mtm);
+    // 1. **The four check boxes became one `NSSegmentedControl`.** `SelectAny`
+    //    is AppKit's control for exactly this -- a set of independent toggles --
+    //    and the tab strip in this same file already uses `NSSegmentedControl`
+    //    with `SelectOne`. One control also removes three inter-view gaps.
+    // 2. **The chips read the glyphs, not the words.** A macOS-native choice
+    //    rather than a width trick: the four are printed on the keys and appear
+    //    in every menu in the OS. The Windows font hazard that keeps `key_label`
+    //    ASCII does not apply here -- measured on macmini 2026-08-17,
+    //    `CTFontGetGlyphsForCharacters` finds all four in the system font
+    //    (U+2303 U+2318 U+2325 U+21E7). And the WORDS are not lost from the
+    //    window: the list's own Shortcut column spells the same chord as
+    //    `Ctrl + Cmd + Option + Y` two bands above, so the chips were repeating
+    //    it. Each segment still carries its full word as a tooltip.
+    // 3. **The `Shortcut` and `App` labels are gone**, 86 pt of the saving. What
+    //    replaced `App` costs no width at all -- the combo's own placeholder.
+    //    The chord side needs no label: `Record` names it, and the card only
+    //    ever describes the row selected in the list above.
+    //
+    // The combo is LAST and has no spring beside it, which is what makes it the
+    // view that takes the slack -- it is the one thing a wider window should
+    // give more room to. The spring the old chord row ended with is gone for the
+    // same reason: a spring here would eat the width the combo is meant to get.
+    let editor_row = hstack(&[&*mods as &NSView, &key, &record, &app], mtm);
 
     // --- notes ------------------------------------------------------------
     // **`wrapping`, not `label`.** A plain label asks for the width of its
@@ -1655,7 +1665,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         &widgets::vstack(&[&*head_row as &NSView, &*scroll], 8.0, mtm),
         mtm,
     );
-    let editor_inner = widgets::vstack(&[&*editor_row as &NSView, &*app_row, &*notes], 8.0, mtm);
+    let editor_inner = widgets::vstack(&[&*editor_row as &NSView, &*notes], 8.0, mtm);
     // A wrapping label is the child a `Width`-aligned column leaves at its own
     // width, so it needs the same pin the Keyboard door's note has -- without
     // it the wrap never happens and the label is as wide as its text.
@@ -1833,10 +1843,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 filter,
                 app,
                 key,
-                mod_ctrl,
-                mod_super,
-                mod_alt,
-                mod_shift,
+                mods,
                 record,
                 notes,
                 banner_row,
@@ -1914,20 +1921,17 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
 // Rendering
 // ---------------------------------------------------------------------------
 
-/// Write a chord into the four boxes and the key list.
+/// Write a chord into the modifier chips and the key list.
 ///
-/// **The same four `set_check` calls and the same `selectItemAtIndex`
-/// `apply_state` uses**, deliberately: `ComboView::key` is an INDEX into
+/// **The same `set_mods` and the same `selectItemAtIndex` `apply_state` uses**,
+/// deliberately: `ComboView::key` is an INDEX into
 /// `key_table()`, and a second way of writing it is a second place that
 /// index can be got wrong. `CBS_SORT`'s macOS equivalent does not exist
 /// here, but the index discipline is the same.
 fn apply_combo_text(spelled: &str) {
     let Some(c) = controls() else { return };
     let v = combo_view(spelled);
-    set_check(&c.mod_ctrl, v.ctrl);
-    set_check(&c.mod_super, v.super_);
-    set_check(&c.mod_alt, v.alt);
-    set_check(&c.mod_shift, v.shift);
+    set_mods(&c.mods, v);
     match v.key {
         Some(i) => c.key.selectItemAtIndex(i as isize),
         None => c.key.selectItemAtIndex(-1),
@@ -1936,6 +1940,69 @@ fn apply_combo_text(spelled: &str) {
 
 fn set_check(b: &NSButton, on: bool) {
     b.setState(if on { 1 } else { 0 });
+}
+
+/// Segment indices, in `Combo::canonical`'s order so the control reads left to
+/// right the way the config file spells the chord. Named because an index into a
+/// segmented control is exactly the kind of literal that gets transposed.
+const MOD_CTRL: isize = 0;
+const MOD_SUPER: isize = 1;
+const MOD_ALT: isize = 2;
+const MOD_SHIFT: isize = 3;
+
+/// The four chips: one `SelectAny` segmented control, glyph-labelled, each
+/// segment carrying its full word as a tooltip. See `editor_row` for the
+/// measurements that chose this shape over four check boxes.
+///
+/// **The Keyboard door's `Hold` chips are deliberately NOT changed.** They are
+/// three check boxes on a row with room to spare, and they name a chord the user
+/// is CONFIGURING rather than one they are reading back -- so the words earn
+/// their width there. `set_check` still exists for them.
+fn mod_segments(
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+) -> Retained<objc2_app_kit::NSSegmentedControl> {
+    let s = objc2_app_kit::NSSegmentedControl::new(mtm);
+    unsafe {
+        s.setSegmentCount(4);
+        // **`SelectAny`, not `SelectOne`.** The tab strip above uses `SelectOne`
+        // because a reader is on exactly one door; a chord is a SET, and
+        // `SelectOne` would make picking Cmd silently drop Ctrl.
+        s.setTrackingMode(objc2_app_kit::NSSegmentSwitchTracking::SelectAny);
+        s.setTarget(Some(target));
+        s.setAction(Some(sel!(beckonShortcut:)));
+        for (i, (glyph, word)) in [
+            ("\u{2303}", "Control"),
+            ("\u{2318}", "Command"),
+            ("\u{2325}", "Option"),
+            ("\u{21e7}", "Shift"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            s.setLabel_forSegment(&NSString::from_str(glyph), i as isize);
+            s.setToolTip_forSegment(Some(&NSString::from_str(word)), i as isize);
+        }
+        // The control's own name, because each segment is called by a glyph.
+        // The trait import is local rather than at the top of the file: this is
+        // the only view here that needs an accessibility name spelled by hand.
+        use objc2_app_kit::NSAccessibility;
+        s.setAccessibilityLabel(Some(&NSString::from_str("Modifiers")));
+    }
+    s
+}
+
+fn mod_on(s: &objc2_app_kit::NSSegmentedControl, i: isize) -> bool {
+    s.isSelectedForSegment(i)
+}
+
+/// Write all four at once. One function rather than four calls, because the four
+/// are now one control and a partial write is a chord nobody typed.
+fn set_mods(s: &objc2_app_kit::NSSegmentedControl, v: ComboView) {
+    s.setSelected_forSegment(v.ctrl, MOD_CTRL);
+    s.setSelected_forSegment(v.super_, MOD_SUPER);
+    s.setSelected_forSegment(v.alt, MOD_ALT);
+    s.setSelected_forSegment(v.shift, MOD_SHIFT);
 }
 
 const TARGET_TRIPLE: &str = env!("BECKON_TARGET");
@@ -2264,10 +2331,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         match &st.detail {
             Some(d) => {
                 let v = combo_view(&d.combo);
-                set_check(&x.mod_ctrl, v.ctrl);
-                set_check(&x.mod_super, v.super_);
-                set_check(&x.mod_alt, v.alt);
-                set_check(&x.mod_shift, v.shift);
+                set_mods(&x.mods, v);
                 match v.key {
                     Some(i) => x.key.selectItemAtIndex(i as isize),
                     None => x.key.selectItemAtIndex(-1),
@@ -2284,10 +2348,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 x.notes.setStringValue(&NSString::from_str(&text));
             }
             None => {
-                set_check(&x.mod_ctrl, false);
-                set_check(&x.mod_super, false);
-                set_check(&x.mod_alt, false);
-                set_check(&x.mod_shift, false);
+                set_mods(&x.mods, ComboView::default());
                 x.key.selectItemAtIndex(-1);
                 x.app.setStringValue(&NSString::from_str(""));
                 x.notes.setStringValue(&NSString::from_str(""));
@@ -2309,10 +2370,7 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.kbd.caps.setEnabled(edit);
         x.kbd.shorthand.setEnabled(edit);
         let has_row = st.detail.is_some() && edit;
-        x.mod_ctrl.setEnabled(has_row);
-        x.mod_super.setEnabled(has_row);
-        x.mod_alt.setEnabled(has_row);
-        x.mod_shift.setEnabled(has_row);
+        x.mods.setEnabled(has_row);
         x.key.setEnabled(has_row);
         x.app.setEnabled(has_row);
 

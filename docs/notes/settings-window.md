@@ -586,6 +586,77 @@ on purpose. The stack detaches hidden views, so hiding it when empty would move
 the card's bottom border while the user typed in the card, and it buys nothing at
 the floor because `MIN_HEIGHT` must still fit the note-shown case.
 
+### The editor is one row, and that took removing three things rather than one
+
+The two-row split was measured, not taste, and the measurement stood: with a
+`Shortcut` label, four WORDED check boxes, the key list and `Record`, one row
+asks 540 pt of a 584 pt card and leaves the App combo **44 pt**. The combo is the
+one control whose content has no length limit, so it is the view `NSStackView`
+compresses first — an earlier attempt got it to 2.0 pt with the `App` label
+clipped to `Ap`.
+
+So "make it one row" is not a layout change, it is a **budget** question. Every
+candidate measured offscreen on macmini 2026-08-17 against the same 584 pt card
+and 8 pt gaps:
+
+| modifiers | fixed | combo gets |
+|---|---|---|
+| worded check boxes + both labels (was) | 540.0 | 44.0 |
+| worded check boxes, no labels | 438.0 | 146.0 |
+| glyph check boxes, no labels | 367.0 | 217.0 |
+| one segmented control, worded | 409.0 | 175.0 |
+| **one segmented control, glyphs** | **338.0** | **246.0** |
+
+Three changes, and the row needs all three:
+
+1. **Four check boxes became one `NSSegmentedControl`** with
+   `NSSegmentSwitchTracking::SelectAny` — AppKit's control for a set of
+   independent toggles, and the same class the tab strip above already uses with
+   `SelectOne`. `SelectAny` is load-bearing: `SelectOne` would make picking Cmd
+   silently drop Ctrl, and a chord is a set.
+2. **The chips read `⌃⌘⌥⇧`, not the words.** This is macOS-native rather than a
+   width trick — the four are printed on the keys and appear in every menu in the
+   OS. **The Windows font hazard does not carry over**, and it was checked rather
+   than assumed: `CTFontGetGlyphsForCharacters` finds all four in the system font
+   (U+2303 U+2318 U+2325 U+21E7). The rule that keeps `key_label` ASCII is about
+   Segoe UI Variable, on the other platform.
+
+   The words are also not lost from the window: the list's Shortcut column spells
+   the same chord as `Ctrl + Cmd + Option + Y` two bands above, so the chips were
+   repeating it. Each segment still carries its word as a tooltip, and the control
+   carries `Modifiers` as its accessibility label because a glyph is what each
+   segment is now called.
+3. **The `Shortcut` and `App` labels are gone** — 86 pt of the saving. What
+   replaced `App` costs no width at all: the combo's own placeholder, inside its
+   slot. The chord side needs no label; `Record` names it, and the card only ever
+   describes the row selected in the list above.
+
+The combo is LAST with no spring beside it, which is what makes it the view that
+takes the slack. Measured on the real window afterwards:
+`seg 132.5 | key 121.5 | Record 67 | combo 239`, summing with three 8 pt gaps to
+exactly the 584 pt card.
+
+**The Keyboard door's `Hold` chips were deliberately left as worded check
+boxes.** They sit on a row with room to spare, and they name a chord the user is
+CONFIGURING rather than one they are reading back, so the words earn their width
+there. `set_check` still exists for them.
+
+**A row removed is 32 pt handed back, and it has to be spent or it becomes the
+complaint it started as.** The editor card lost a 24 pt row and an 8 pt gap, which
+took the tallest door's fitting height from 492 to 460 and put 40 pt back under
+the command bar. `ROWS` went 10 → 12, which spends it exactly: fitting 500
+against a 500 pt content view, 0 pt unclaimed, and the only gap below the bar is
+the stack's own 12 pt inset.
+
+`MIN_HEIGHT` is now spelled `WINDOW_HEIGHT` rather than repeated as a number.
+Once `ROWS` spends the last of the slack the two ARE one quantity — the window is
+exactly as tall as its tallest door — and writing `480` beside a 500 that had
+grown to meet it is how the pair drifts apart again. The cost is that there is no
+headroom left: a door that later grows by a point pushes fitting above content,
+and the measured way that fails is AppKit paying the shortfall out of the stack's
+TOP inset, so the tab strip goes flush with the window edge and nothing else
+moves. Adding a band to any door means re-running `geom_probe`.
+
 ### The About mark, and the discovery that a Background session CAN read pixels
 
 The letter in the About door's accent tile sat off centre. Four measured causes,
