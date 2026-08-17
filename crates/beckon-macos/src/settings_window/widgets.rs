@@ -46,6 +46,18 @@ pub(super) fn secondary(text: &str, mtm: MainThreadMarker) -> Retained<NSTextFie
     l
 }
 
+/// `heading`, at a size the caller picks.
+///
+/// One caller, and it is not a heading: the About door's mark, whose letter is
+/// sized as a fraction of its tile (0.5, the design's ratio) rather than from
+/// the type scale. Kept beside `heading` so the two cannot drift in weight --
+/// the mark is the same bold system face, only bigger.
+pub(super) fn heading_sized(text: &str, size: f64, mtm: MainThreadMarker) -> Retained<NSTextField> {
+    let l = label(text, mtm);
+    l.setFont(Some(&NSFont::boldSystemFontOfSize(size)));
+    l
+}
+
 /// A card's own heading — `Keyboard`, `Shortcuts`.
 pub(super) fn heading(text: &str, mtm: MainThreadMarker) -> Retained<NSTextField> {
     let l = label(text, mtm);
@@ -336,6 +348,39 @@ pub(super) fn divider(mtm: MainThreadMarker) -> Retained<NSBox> {
 /// Used for the hairline and for the list. Everything else is sized by
 /// AppKit from its own content, which is the whole reason this file is not
 /// the 2 044-line `layout.rs` its Win32 twin needs.
+/// Put `v` at its own intrinsic size in the MIDDLE of a fresh host view, both
+/// axes, and hand the host back.
+///
+/// **This exists because `NSTextField` does not centre its text vertically.**
+/// A single-line label in a frame taller than its line draws that line at the
+/// TOP; there is no `NSTextAlignment` for the other axis. So a glyph that has to
+/// sit in the middle of something cannot be that something's content view --
+/// it has to be a centred child of a host that is.
+///
+/// Measured offscreen 2026-08-17 (`cacheDisplay` into a bitmap needs no window
+/// server), a bold 17 pt `b` inside a 34 pt tile:
+///
+/// ```text
+/// content view IS the label   ink centre dy -7.25 pt   (7 pt high)
+/// content view is this host   ink centre dy -0.25 pt
+/// ```
+///
+/// The residual is the line box's own asymmetry -- `b` has an ascender and no
+/// descender -- and at a quarter of a point it is below anything a hand-tuned
+/// offset could improve.
+pub(super) fn centred_both(v: &NSView, mtm: MainThreadMarker) -> Retained<NSView> {
+    let host = NSView::new(mtm);
+    v.setTranslatesAutoresizingMaskIntoConstraints(false);
+    host.addSubview(v);
+    NSLayoutConstraint::activateConstraints(&objc2_foundation::NSArray::from_retained_slice(&[
+        v.centerXAnchor()
+            .constraintEqualToAnchor(&host.centerXAnchor()),
+        v.centerYAnchor()
+            .constraintEqualToAnchor(&host.centerYAnchor()),
+    ]));
+    host
+}
+
 pub(super) fn pin_height(v: &NSView, h: f64) {
     v.setTranslatesAutoresizingMaskIntoConstraints(false);
     unsafe {

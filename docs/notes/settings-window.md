@@ -586,6 +586,68 @@ on purpose. The stack detaches hidden views, so hiding it when empty would move
 the card's bottom border while the user typed in the card, and it buys nothing at
 the floor because `MIN_HEIGHT` must still fit the note-shown case.
 
+### The About mark, and the discovery that a Background session CAN read pixels
+
+The letter in the About door's accent tile sat off centre. Four measured causes,
+and the last one only appeared because the first three were fixed first.
+
+**`cacheDisplay(in:to:)` renders a view through CoreGraphics into an
+`NSBitmapImageRep` and needs no window server.** That is the important finding
+here and it narrows this file's own "layout yes, pixels no" rule: an agent shell
+in the `Background` namespace can measure *drawn* output for any view it can
+construct. What it cannot do is photograph a window that is already on screen.
+
+The four causes, measured on macmini 2026-08-17 (`dy` negative means the ink
+sits high):
+
+```text
+                                              dx      dy
+shipped   margins 5, natural, 13pt         -5.75   -3.75
+margins 0, center, 17pt, label is content  +0.25   -7.25   <- nearly shipped
+margins 0, center, 17pt, centred host      +0.75   -0.25   <- ships
+```
+
+1. **`contentViewMargins` was the `NSBox` default 5x5, never zeroed.**
+   `widgets::card` zeroes it by hand; this box did not, so the letter could only
+   occupy the middle 24 pt of a 34 pt tile.
+2. **`alignment` was `.natural`.** The box stretches its content view to fill, so
+   a single glyph in a field wider than itself sits at the leading edge — the
+   `-5.75` above, and the misalignment that was visible. The `beckon` label ten
+   lines below already set `Center` explicitly.
+3. **The letter was 13 pt in a 34 pt tile, a ratio of 0.382.** The design's ratio
+   is 0.5 and the Win32 twin carries it as `18/36`, with the reason written at
+   `paint.rs`: below it "the tile reads as a letter adrift in a box".
+4. **`NSTextField` does not centre text vertically.** A single line in a taller
+   frame draws at the TOP, and there is no alignment enum for that axis. The 5 pt
+   margin had been accidentally paying for part of it, so **fixing 1 and 3 made
+   the vertical worse — from -3.75 to -7.25.** The fix is `widgets::centred_both`:
+   the glyph goes at its intrinsic size into a host view, pinned centreX/centreY,
+   and the host is the box's content view.
+
+**The control on every bitmap run: 4412 opaque pixels of 4624.** The tile drew,
+and the 212 missing are its four 8 pt corners. A bitmap nothing drew into yields
+"no ink", which reads exactly like a perfectly centred glyph — so the count is
+printed beside the result, not assumed.
+
+Two false starts worth keeping, because both looked like answers:
+
+- `NSTextFieldCell::titleRect(forBounds:)` returns the whole bounds for a label
+  (no bezel). It reports the rect the string is laid into, not the ink inside it,
+  so it says `dx 0.00 dy 0.00` for a glyph that is visibly off centre.
+- The first ink detector compared HSB `brightnessComponent`, and white against a
+  saturated accent blue differs by less than the threshold — it reported NO INK
+  for a tile that had a letter on it. RGB distance is what works.
+
+The letter's **colour** is deliberately still unset, i.e. `labelColor`. Measured
+contrast against `controlAccentColor`: 5.23:1 in light and 4.02:1 in dark, against
+a fixed white's 4.02:1 in both. So the semantic colour is no worse anywhere and
+better in light mode; the mark simply flips ink with the appearance.
+
+`geom_probe` grew `BECKON_PROBE_PAGE` for this — the three hidden doors are
+DETACHED from the root stack, so their subviews never get frames. `fittingSize`
+answers for a hidden view and `frame` does not, and reading a zero frame as "the
+view is broken" is the trap.
+
 ### `other chord` is a VIEW fact, and its old comment argued for it wrongly
 
 **A `+shift` row is `other chord` and is reachable through Caps. Both, on

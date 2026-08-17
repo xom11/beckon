@@ -201,7 +201,21 @@ caps_hold = "ctrl+super+alt"
             config: "settings_probe (nothing is written)".into(),
             log: None,
         };
-        if let Err(e) = win::open(cb, &paths, beckon_core::settings::Page::Shortcuts) {
+        // `BECKON_PROBE_PAGE` so a hidden door can be measured too. The three
+        // that are not showing are DETACHED from the root stack, so their
+        // subviews never get frames -- `fittingSize` answers for them but
+        // `frame` does not, and reading a zero frame as "the view is broken" is
+        // the trap. Open ON the door you want to measure.
+        let page = match std::env::var("BECKON_PROBE_PAGE")
+            .unwrap_or_default()
+            .as_str()
+        {
+            "keyboard" => beckon_core::settings::Page::Keyboard,
+            "system" => beckon_core::settings::Page::System,
+            "about" => beckon_core::settings::Page::About,
+            _ => beckon_core::settings::Page::Shortcuts,
+        };
+        if let Err(e) = win::open(cb, &paths, page) {
             eprintln!("open failed: {e}");
             std::process::exit(1);
         }
@@ -238,6 +252,7 @@ caps_hold = "ctrl+super+alt"
     #[cfg(target_os = "macos")]
     fn dump_geometry() {
         use objc2::rc::Retained;
+        use objc2::Message;
         use objc2_app_kit::{NSScrollView, NSTableView, NSView};
         use objc2_foundation::MainThreadMarker;
         let mtm = MainThreadMarker::new().unwrap();
@@ -314,6 +329,103 @@ caps_hold = "ctrl+super+alt"
                 }
                 if let Some(pb) = prev_bottom {
                     println!("      gap {pb:>6.1}  (below the last band)");
+                }
+            }
+            {
+                // The About door's mark: an `NSBox` whose contentView is the
+                // letter. Both frames plus the font's own metrics, because
+                // "the glyph looks off centre" can mean the TEXT FIELD is off
+                // centre in the tile, or the INK is off centre in the field,
+                // and the two need different fixes.
+                let mut q: Vec<Retained<NSView>> = vec![root.clone()];
+                while let Some(v) = q.pop() {
+                    if let Some(b) = v.downcast_ref::<objc2_app_kit::NSBox>() {
+                        // The mark is a SQUARE tile, and the filter matters: the
+                        // walk below descends, so the About card's own box (616 x
+                        // 306) also contains the glyph and reported itself as a
+                        // mark with a tile/font ratio of 0.056.
+                        let sq = (b.frame().size.width - b.frame().size.height).abs() < 0.5;
+                        if let Some(cv) = b.contentView().filter(|_| sq) {
+                            // The single-glyph field is EITHER the content view
+                            // or a centred child of it -- `NSTextField` has no
+                            // vertical alignment, so the mark wraps it in a host.
+                            // Looking only at the content view found the mark
+                            // before that wrapper existed and silently found
+                            // nothing after, which is a probe that stops
+                            // answering without saying so.
+                            let mut cand: Vec<Retained<NSView>> = vec![cv.clone()];
+                            let mut found_tf = None;
+                            while let Some(c) = cand.pop() {
+                                if let Some(t) = c.downcast_ref::<objc2_app_kit::NSTextField>() {
+                                    if t.stringValue().to_string().chars().count() == 1 {
+                                        found_tf = Some(t.retain());
+                                        break;
+                                    }
+                                }
+                                for sub in c.subviews().iter() {
+                                    cand.push(sub);
+                                }
+                            }
+                            if let Some(tf) = found_tf.as_deref() {
+                                let t = tf.stringValue().to_string();
+                                {
+                                    let bf = b.frame();
+                                    let cf = tf.frame();
+                                    println!(
+                                        "MARK tile  {:.1} x {:.1}",
+                                        bf.size.width, bf.size.height
+                                    );
+                                    println!("     glyph field x {:.1} y {:.1} w {:.1} h {:.1}  text {t:?}",
+                                        cf.origin.x, cf.origin.y, cf.size.width, cf.size.height);
+                                    println!(
+                                        "     contentViewMargins {:?}",
+                                        b.contentViewMargins()
+                                    );
+                                    println!("     alignment {:?}", tf.alignment());
+                                    if let Some(f) = tf.font() {
+                                        println!("     font {:.1} pt  ascender {:.2} descender {:.2} capHeight {:.2} xHeight {:.2}",
+                                            f.pointSize(), f.ascender(), f.descender(), f.capHeight(), f.xHeight());
+                                        println!(
+                                            "     tile/font ratio {:.3}",
+                                            f.pointSize() / bf.size.height
+                                        );
+                                    }
+                                    // WHERE THE INK GOES, asked of the cell that
+                                    // draws it rather than derived from the
+                                    // alignment enum. `titleRect(forBounds:)` is
+                                    // the rect `NSTextFieldCell` lays the string
+                                    // into, so its offset from the tile's centre
+                                    // IS the visible misalignment -- no pixels
+                                    // needed, which matters because this session
+                                    // cannot see any.
+                                    if let Some(cell) = tf.cell() {
+                                        let tr = cell.titleRectForBounds(tf.bounds());
+                                        let ink_cx =
+                                            cf.origin.x + tr.origin.x + tr.size.width / 2.0;
+                                        let ink_cy =
+                                            cf.origin.y + tr.origin.y + tr.size.height / 2.0;
+                                        println!(
+                                            "     titleRect x {:.2} y {:.2} w {:.2} h {:.2}",
+                                            tr.origin.x, tr.origin.y, tr.size.width, tr.size.height
+                                        );
+                                        println!(
+                                            "     ink centre ({:.2}, {:.2})  tile centre ({:.2}, {:.2})  \
+                                             OFF BY dx {:+.2} dy {:+.2}",
+                                            ink_cx,
+                                            ink_cy,
+                                            bf.size.width / 2.0,
+                                            bf.size.height / 2.0,
+                                            ink_cx - bf.size.width / 2.0,
+                                            ink_cy - bf.size.height / 2.0
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    for s in v.subviews().iter() {
+                        q.push(s);
+                    }
                 }
             }
             let mut stack: Vec<Retained<NSView>> = vec![root];

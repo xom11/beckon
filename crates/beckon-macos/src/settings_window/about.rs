@@ -92,7 +92,78 @@ pub(super) fn build(
     // The mark. A tinted rounded square with the wordmark's letter, rather
     // than the app icon: `beckon` has no `.icns` and an `NSImage` that fails
     // to load draws nothing, which is a blank hole rather than a fallback.
-    let glyph = w::heading("b", mtm);
+    //
+    // **Three measured corrections, and two of them only work together.**
+    // Measured with `examples/geom_probe.rs -- BECKON_PROBE_PAGE=about` on
+    // macmini 2026-08-17, which reads this box and its content view out of the
+    // real window:
+    //
+    // ```text
+    // tile 34.0 x 34.0
+    // glyph field x 5.0 y 5.0 w 24.0 h 24.0
+    // contentViewMargins 5.0 x 5.0
+    // alignment NSTextAlignment(4)      <- .natural, i.e. LEFT for LTR
+    // font 13.0 pt                      <- tile/font ratio 0.382
+    // ```
+    //
+    // 1. `contentViewMargins` was the `NSBox` DEFAULT of 5x5, never zeroed --
+    //    `widgets::card` zeroes it by hand and this box did not. So the letter
+    //    could only ever occupy the middle 24 pt of a 34 pt tile.
+    // 2. `alignment` was `.natural`. The box stretches its content view to
+    //    fill, so a single glyph in a field wider than itself sits at the
+    //    field's LEADING edge, and how far off centre that looks is a function
+    //    of the field's width rather than of anything intended. The `beckon`
+    //    label ten lines down already sets `Center` explicitly; this one is the
+    //    same case and did not.
+    //
+    //    **Fixing 1 without 2 makes it worse**, which is why they are one
+    //    change: zeroing the margins takes the field from 24 pt to 34 pt, and a
+    //    leading-aligned glyph in a wider field is further from the middle, not
+    //    nearer.
+    // 3. The letter was 13 pt in a 34 pt tile, a ratio of 0.382. The design's
+    //    ratio is 0.5 and the Win32 twin carries it as `18/36`, with the reason
+    //    in `paint.rs`: below it "the tile reads as a letter adrift in a box".
+    //    17 pt is 0.5 of 34.
+    //
+    // 4. **`NSTextField` does not centre text vertically** -- a single line in a
+    //    taller frame draws at the TOP, and there is no alignment enum for the
+    //    other axis. The old 5 pt margin was accidentally paying for part of
+    //    that, so zeroing it made the vertical WORSE, which is the trap in this
+    //    change and the reason all four items ship together. The glyph is now a
+    //    centred child of a host view (`widgets::centred_both`) rather than the
+    //    box's content view itself.
+    //
+    // **All four measured in PIXELS, offscreen.** `cacheDisplay(in:to:)` renders
+    // through CoreGraphics and needs no window server, so the one thing layout
+    // could not answer -- where the ink actually lands -- was measurable from a
+    // Background-namespace session after all. `dy` negative means high:
+    //
+    // ```text
+    //                                              dx      dy
+    // shipped   margins 5, natural, 13pt        -5.75   -3.75
+    // margins 0, center, 17pt, label is content +0.25   -7.25   <- nearly shipped
+    // margins 0, center, 17pt, centred host     +0.75   -0.25   <- ships
+    // ```
+    //
+    // The control on every one of those runs: the opaque pixel count came out
+    // 4412 of 4624, i.e. the tile drew and the missing 212 are its four rounded
+    // corners. A bitmap nothing drew into yields "no ink", which reads exactly
+    // like a perfectly centred glyph.
+    //
+    // The residual +0.75 is `b`'s own side bearings being unequal, and the
+    // -0.25 is the line box's ascender-without-descender asymmetry. Both are
+    // under a point; neither is worth a hand-tuned offset.
+    //
+    // **The letter's COLOUR is left alone deliberately.** It has none set, so it
+    // takes `labelColor`, which means the mark is dark-on-accent in light mode
+    // and light-on-accent in dark. Measured contrast against
+    // `controlAccentColor`: 5.23:1 light and 4.02:1 dark, versus a fixed white's
+    // 4.02:1 in both -- so the semantic colour is no worse anywhere and better
+    // in light mode. The Win32 twin pins `accent_on` because it has no semantic
+    // colours to lean on, not because a pinned pair is the better answer.
+    let glyph = w::heading_sized("b", 17.0, mtm);
+    glyph.setAlignment(objc2_app_kit::NSTextAlignment::Center);
+    let glyph_host = w::centred_both(&glyph, mtm);
     let mark = NSBox::new(mtm);
     {
         mark.setBoxType(objc2_app_kit::NSBoxType::Custom);
@@ -100,7 +171,9 @@ pub(super) fn build(
         mark.setFillColor(&objc2_app_kit::NSColor::controlAccentColor());
         mark.setBorderWidth(0.0);
         mark.setCornerRadius(8.0);
-        mark.setContentView(Some(&glyph));
+        // Zero, like `widgets::card`. The default is 5x5 -- see the note above.
+        mark.setContentViewMargins(objc2_foundation::NSSize::new(0.0, 0.0));
+        mark.setContentView(Some(&glyph_host));
     }
     w::pin_height(&mark, 34.0);
     w::pin_exact_width(&mark, 34.0);
