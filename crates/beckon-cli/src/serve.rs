@@ -525,6 +525,63 @@ pub fn cmd_serve_app(
         );
     }
 
+    // **Watch for the grant appearing, so "allow it" is the last step.**
+    //
+    // macOS hands Accessibility to a NEW process, so beckon cannot start
+    // working when the switch is flipped. Without this, a new user allows
+    // beckon, nothing happens, and the reasonable conclusion is that beckon is
+    // broken -- the restart is a second instruction nobody was given.
+    //
+    // A second tick rather than a branch inside the reload tick: that one
+    // returns early unless the watcher fired, and this has to run whether or
+    // not the config changed.
+    #[cfg(target_os = "macos")]
+    if !beckon_macos::is_accessibility_trusted() {
+        hotkey::add_tick(
+            1.0,
+            Box::new(move || {
+                use beckon_core::settings::{grant_recovery, GrantRecovery};
+                use std::io::IsTerminal;
+                // `was_missing` is true by construction: this tick is only
+                // installed when the grant was absent at startup, and the
+                // first transition to granted ends the process or the tick.
+                match grant_recovery(
+                    true,
+                    beckon_macos::is_accessibility_trusted(),
+                    std::io::stderr().is_terminal(),
+                ) {
+                    GrantRecovery::Nothing => {}
+                    GrantRecovery::TellAndStay => {
+                        // ONCE. The condition stays true for every tick after
+                        // the grant appears, and this arm does not exit, so
+                        // without the latch it is one line per second forever
+                        // in the terminal the user is standing in.
+                        static TOLD: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            eprintln!(
+                                "beckon serve: Accessibility granted. Restart beckon so \
+                                 it can take effect -- macOS hands the permission to a \
+                                 new process."
+                            );
+                        }
+                    }
+                    GrantRecovery::RestartUnderLaunchd => {
+                        eprintln!(
+                            "beckon serve: Accessibility granted; restarting so it \
+                             takes effect."
+                        );
+                        // NON-ZERO on purpose. The launch agent is
+                        // `KeepAlive { SuccessfulExit: false }`, so zero would
+                        // NOT bring beckon back -- that is exactly what makes
+                        // the tray's Quit work, and must stay true.
+                        std::process::exit(1);
+                    }
+                }
+            }),
+        );
+    }
+
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     install_tray_menu(&state, &mgr);
 
