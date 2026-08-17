@@ -2896,14 +2896,66 @@ Reasonable next-session order:
   INSIDE its own tap callback does fire `RegisterEventHotKey` here.** That
   was the last surviving hypothesis for a live failure and it is refuted.
 
-  **What is still unexplained, and it is a real observation rather than a
-  probe artifact:** a live run where kitty received `^[[113;15u` — `q` with
-  ctrl+alt+super, byte-correct, so the tap swallowed and injected correctly —
-  while Finder never came up. None of the layers above reproduces it. The one
-  input that cannot be synthesised is a **physical** Caps press;
-  `~/beckon-test/press-caps-q.sh` brings the measured-good `serve` up and
-  scores it, and asks for kitty's literal output on failure, because
-  *nothing*, `^[[113;15u` and `q` point at three different layers.
+- **TWO `serve` processes silently kill each other's Caps feature, and the
+  lock file cannot stop it.** Measured on macmini 2026-08-17, controls on both
+  sides of the experiment:
+
+  ```text
+  one tap                 8/8  [++++++++]
+  TWO taps                0/8  [........]
+  one tap again           8/8  [++++++++]
+  ```
+
+  `lockfile::acquire` hashes the CONFIG PATH into the lock's name — deliberate,
+  so an old and a new binary cannot both serve one file. But a `CGEventTap` on
+  Caps is a **machine-global** resource, so `serve A.toml` and `serve B.toml`
+  are two lock holders and two taps. **Both log `caps event tap active`**, which
+  is why this is invisible from either side.
+
+  The mechanism was measured rather than reasoned, by reversing the order:
+
+  ```text
+  caps.toml installed FIRST   0/6   its tap is underneath
+  caps.toml installed LAST    6/6   its tap is on top
+  ```
+
+  Every tap goes in at the head of `kCGSessionEventTap`, so **the tap installed
+  LAST is upstream and swallows every Caps `flagsChanged`** (`hook_proc` returns
+  null on that arm unconditionally — "the lock must not move under a hold").
+  The other beckon therefore never sees Caps go down, `CAPS_DOWN` stays false,
+  and `Caps+<key>` falls straight through to the focused app. That is exactly
+  the reported symptom: kitty receiving a byte-correct chord while nothing
+  focused — **the chord in kitty came from the WINNING tap, and the loser's
+  hotkey was never involved.**
+
+  Two consequences worth keeping apart:
+
+  - **A second beckon is easy to have by accident.** Three of this session's
+    own `serve` processes were found running at once, because
+    `pkill -f 'bin/beckon serve'` does not match `~/beckon-test/beckon` — and a
+    peer Claude session had a fourth from the same shared directory. Any probe
+    that starts a `serve` must **assert the count**, not assume its own kill
+    worked.
+  - **The Windows arm has the same shape and is not measured.** `caps_hook`
+    refcounts its two REASONS inside one process (`capture::HookOwners`);
+    nothing there is about a second *process*. `WH_KEYBOARD_LL` hooks chain
+    rather than shadow, so the failure will look different — CLAUDE.md's own
+    capture entry predicts the second hook records the alias instead of the
+    key — but two `beckon-serve.exe` on two configs is reachable the same way.
+    Re-run this experiment there before assuming either outcome.
+
+  Not yet fixed. The shape that fits the growth rule is a lock with a **fixed**
+  name rather than a per-config one, taken where the tap is installed, so the
+  second beckon says *another beckon already owns Caps* in its log and installs
+  nothing — silence being the whole defect. `serve.rs` is the caller and is
+  shared with another session, so the change needs coordinating first.
+
+  This closes the "what is still unexplained" note that stood here: a live run
+  where kitty received `^[[113;15u` — `q` with ctrl+alt+super, byte-correct —
+  while Finder never came up. It reproduces on demand with two taps and never
+  with one (10/10 clean, with an external parity read that never showed an
+  inversion, so **parity was not the cause** and `toggle_caps_lock`'s missing
+  `INJECTING` guard is a separate, still-unmeasured question).
 
 - **This machine runs kanata, and kanata already implements beckon's Caps
   feature.** `~/.nix/configs/kanata/main.kbd:52` is
