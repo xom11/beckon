@@ -235,9 +235,23 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
     // corner pixels are opaque `#3B82F6`), which is right where the shell
     // applies its own shape and a solid black block here.
     //
-    // 14x14 pt is what `b.square.fill` occupied (15x14, measured), so the
-    // item does not change width across the upgrade; the source is 28x28,
-    // i.e. exactly @2x.
+    // **17x17 pt, and the number is measured rather than chosen.** It was
+    // 14x14 first — what `b.square.fill` had occupied (15x14) — and a user
+    // reported that as small beside their other menu bar tools. Measuring the
+    // SF Symbols Apple's own extras use, at default size on a 22 pt bar:
+    // `wifi` 17x13, `battery.100` 22x11, `speaker.wave.2.fill` 19x14,
+    // `display` 19x15, `bolt.fill` 13x17. **The complaint is about WIDTH, not
+    // height**: at 14 the mark was the narrowest thing in the bar, and a menu
+    // bar is a horizontal strip, so extent is what reads as size. 17 is the
+    // tallest neighbour and matches `wifi`'s width.
+    //
+    // 18 was rendered against those neighbours and rejected — visibly the
+    // largest object in the bar. The tile can carry 17 where an outline glyph
+    // could not, because it is 78% ink against `wifi`'s 26% (measured), which
+    // is the same reason it must not go further.
+    //
+    // The source is 34x34, exactly @2x of this; `tools/make-menubar-mark.py`
+    // holds the pair and its `PT` must move with this line.
     //
     // The title is cleared explicitly. An `NSStatusBarButton` draws both if
     // both are set, and the result is the icon followed by the word.
@@ -245,7 +259,7 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
     let mark = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(MARK));
     match mark {
         Some(img) => {
-            img.setSize(NSSize::new(14.0, 14.0));
+            img.setSize(NSSize::new(17.0, 17.0));
             img.setTemplate(true);
             button.setImage(Some(&img));
             button.setTitle(&NSString::from_str(""));

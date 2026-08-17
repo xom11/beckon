@@ -20,11 +20,29 @@ brand letterform, not a font glyph, and re-typesetting it would put a third `b`
 in the program. Whiteness drives the knockout, so anti-aliased letter edges
 become partial alpha instead of a stair-step.
 
-**Output is 28x28 for a 14 pt image, i.e. exactly @2x.** `tray.rs` calls
-`setSize(14,14)`, which is the height `b.square.fill` occupied before it (15x14,
-measured) -- so the item does not change width on upgrade. 28 is pixel-perfect
-on a Retina display and a clean 2:1 downsample anywhere else; a larger source
-would only add a resample on the display almost everyone has.
+**Output is 34x34 for a 17 pt image, i.e. exactly @2x.** 17 is not a taste
+call: it is the tallest thing measured in a real menu bar. Sizes of the SF
+Symbols Apple's own menu bar extras use, at their default point size, on a
+22 pt bar:
+
+    wifi 17x13   battery.100 22x11   speaker.wave.2.fill 19x14
+    airplayaudio 15x15   bolt.fill 13x17   moon.fill 15x15   display 19x15
+
+This started at 14x14 -- matching what `b.square.fill` had occupied (15x14) so
+the item would not change width across that change -- and a user reported it
+as small beside other tools. The measurement says why, and it is NOT about
+height: at 14 the mark was the NARROWEST thing in the bar, while neighbours
+run 13-22 pt wide. A menu bar is a horizontal strip, so extent reads as size.
+
+**Do not push it to 18.** Rendered against those neighbours at 14/15/16/17/18,
+18 is visibly the largest object in the bar. The tile also carries far more ink
+than a glyph -- 78% coverage of its box against wifi's 26% and battery's 45%,
+measured -- so it holds its own at a height where an outline symbol would not,
+and 17 is already the top of the justified range.
+
+34 is pixel-perfect on a Retina display and a clean 2:1 downsample anywhere
+else; a larger source would only add a resample on the display almost everyone
+has.
 """
 
 import struct
@@ -39,8 +57,11 @@ DST = ROOT / "assets" / "beckon-menubar.png"
 
 # `cornerRadius(8.0)` on the About door's 34 pt tile.
 RADIUS_RATIO = 8.0 / 34.0
-# @2x of the 14 pt size `tray.rs` sets.
-OUT = 28
+# The point size `tray.rs` sets, and the raster at exactly @2x of it. Keep the
+# two in step: `setSize` is what decides how big the mark draws, and this file
+# only decides how many pixels back it.
+PT = 17
+OUT = PT * 2
 # The corner mask is drawn here and downsampled, so the arc is anti-aliased.
 SUPER = 4
 

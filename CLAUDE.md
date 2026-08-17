@@ -2572,11 +2572,39 @@ Reasonable next-session order:
       blob. Rounding at the About door's ratio is also what finally makes
       *"the same shape as the About door's mark"* true on this platform.
 
-    **Sizing is matched, not chosen**: `b.square.fill` occupied 15x14 pt
-    (measured, with no symbol configuration — which is how `tray.rs` called
-    it), so the replacement is 14x14 and the item does not change width. The
-    source is 28x28, exactly @2x, which is pixel-perfect on a Retina display
-    rather than resampled.
+    **Sizing is 17x17, and matching the old symbol was the wrong target.**
+    The first cut was 14x14, on the reasoning that `b.square.fill` occupied
+    15x14 (measured, with no symbol configuration — which is how `tray.rs`
+    called it) so the item would not change width. A user reported the result
+    as small beside their other menu bar tools, and measuring the neighbours
+    says why. Apple's own extras, at default size on a 22 pt bar:
+
+    ```text
+    wifi 17x13   battery.100 22x11   speaker.wave.2.fill 19x14
+    airplayaudio 15x15   bolt.fill 13x17   moon.fill 15x15   display 19x15
+    ```
+
+    **The complaint is about WIDTH, not height.** At 14 the mark was the
+    *narrowest* object in the bar while neighbours run 13–22 pt wide, and a
+    menu bar is a horizontal strip, so extent is what reads as size. Height at
+    14 was already mid-range — which is exactly why "it looks small" and "it is
+    shorter than average" are different claims, and only the first one was
+    true. 17 is the tallest neighbour (`bolt.fill`) and `wifi`'s width.
+
+    **18 was rendered against those neighbours and rejected** as visibly the
+    largest object in the bar. What lets the tile hold 17 where an outline
+    glyph could not is ink: 78% coverage of its box against `wifi`'s 26% and
+    `battery.100`'s 45%, measured — and that is the same fact that caps it
+    there. The source is 34x34, exactly @2x, pixel-perfect on a Retina display
+    rather than resampled; `tools/make-menubar-mark.py`'s `PT` and `tray.rs`'s
+    `setSize` are the pair that must move together.
+
+    **The size-comparison probe had a bug worth not repeating**: it tinted the
+    template with `r.fill(using: .sourceAtop)` *in place* on the bar. Source-atop
+    respects the DESTINATION's alpha, the bar had just been filled opaque, so
+    every icon came out a solid black rectangle — neighbours and mark alike, at
+    every size, which reads as a plausible sheet rather than as a failure. Tint
+    on a transparent canvas first, then composite.
 
     **`setTemplate(true)` became load-bearing in the same commit.** An SF
     Symbol already answers `isTemplate == true` before anything sets it
