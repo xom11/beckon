@@ -92,6 +92,29 @@ scoop bucket add xom11 https://github.com/xom11/scoop-bucket
 scoop install xom11/beckon
 ```
 
+### Downloading a release archive directly
+
+The tarballs on the [Releases](https://github.com/xom11/beckon/releases) page
+work, but on macOS **a browser marks them, and the binary is killed on the
+first run with no message at all** — no dialog, no error, exit 137. Clear the
+mark once:
+
+```sh
+xattr -d com.apple.quarantine beckon
+```
+
+This is only for archives fetched with a **browser**. Homebrew, nix and cargo
+fetch without a browser, so nothing is marked and nothing needs clearing —
+measured on macOS 26: an installed Homebrew binary and a nix-store binary both
+carry no quarantine attribute, while the same beckon build carrying one is
+`SIGKILL`ed on every run, with a clean copy beside it running fine as the
+control.
+
+The underlying reason is that beckon is not signed with an Apple Developer ID.
+That also means macOS asks for **Accessibility** by binary path rather than by
+signing identity, so the grant has to be given again after an update moves the
+binary — see `beckon doctor`.
+
 ### Cargo (build from source)
 
 ```sh
