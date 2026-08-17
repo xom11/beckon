@@ -78,7 +78,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate, NSFont,
+    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate,
     NSLayoutAttribute, NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
     NSScrollView, NSSegmentedControl, NSStackView, NSStackViewDistribution, NSTableColumn,
     NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField,
@@ -1466,8 +1466,15 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let app_row = hstack(&[&label("App", mtm) as &NSView, &app], mtm);
 
     // --- notes ------------------------------------------------------------
-    let notes = label("", mtm);
-    notes.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    // **`wrapping`, not `label`.** A plain label asks for the width of its
+    // longest line, and this one carries whatever `row_condition` and
+    // `capture` have to say -- including the Input Monitoring refusal, which
+    // is 180 characters. Measured: the window came out roughly 1000 pt wide
+    // to fit it on one line, which is the "why did it get so long" a user
+    // photographed. The Keyboard door's note has always been `wrapping` with
+    // its width pinned to its column; this is the same note in the same
+    // situation and had neither.
+    let notes = widgets::wrapping("", mtm);
 
     // --- command bar ------------------------------------------------------
     let save = push("Save", sel!(beckonSave:), &target, mtm);
@@ -1503,6 +1510,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         mtm,
     );
     let editor_inner = widgets::vstack(&[&*editor_row as &NSView, &*app_row, &*notes], 8.0, mtm);
+    // A wrapping label is the child a `Width`-aligned column leaves at its own
+    // width, so it needs the same pin the Keyboard door's note has -- without
+    // it the wrap never happens and the label is as wide as its text.
+    widgets::pin_width_to(&notes, &editor_inner, 0.0);
     let editor_card = widgets::card(&editor_inner, mtm);
     let page_shortcuts = widgets::vstack(
         &[&*banner_row as &NSView, &*list_card, &*editor_card],
