@@ -30,8 +30,30 @@ class Beckon < Formula
     end
   end
 
+  # **macOS installs the .app; Linux installs the bare binary**, because the two
+  # tarballs differ and the reason is not packaging taste.
+  #
+  # macOS records an Accessibility grant against a bundle IDENTIFIER when the
+  # process has one and against its ABSOLUTE PATH when it does not. A path-keyed
+  # grant cannot survive an upgrade here, because this very formula puts the
+  # version in the path: v0.9.17 lost the grant v0.9.16 had, signed identically,
+  # with nobody touching System Settings. Installing the bundle is what moves
+  # beckon into the identifier column, beside every ordinary app.
+  #
+  # `bin/beckon` is a SYMLINK into the bundle rather than a second copy, so the
+  # CLI and the service are one file with one identity -- measured: running the
+  # executable inside a bundle directly, without `open`, still gets the bundle's
+  # identifier. Two copies would be two identities and two grants, and could
+  # drift to two versions.
+  #
+  # Linux has no bundles and no TCC; its tarball ships the binary alone.
   def install
-    bin.install "beckon"
+    if OS.mac?
+      prefix.install "beckon.app"
+      bin.install_symlink prefix/"beckon.app/Contents/MacOS/beckon" => "beckon"
+    else
+      bin.install "beckon"
+    end
   end
 
   # `serve` (the resident hotkey host) exists only on macOS and Windows; on
@@ -58,7 +80,13 @@ class Beckon < Formula
       # System page's log row can be drawn at all -- without it beckon has no
       # way to learn where launchd put the file, and both were omitted over a
       # log that exists. Keep the three paths identical.
-      run [opt_bin/"beckon", "serve", "#{Dir.home}/.config/beckon/apps.toml",
+      # **The executable INSIDE the bundle, not `opt_bin/"beckon"`.** Both
+      # resolve to the same file today, but only this spelling says why the
+      # bundle exists -- and it does not depend on the `bin` symlink surviving a
+      # future edit to `install`. The identity launchd hands TCC comes from the
+      # enclosing `.app`, so the path must go through it.
+      run [opt_prefix/"beckon.app/Contents/MacOS/beckon", "serve",
+           "#{Dir.home}/.config/beckon/apps.toml",
            "--log", var/"log/beckon.log"]
       # `successful_exit: false`, NOT `true`. Plain `keep_alive true` restarts
       # on ANY exit, including a clean one -- which silently undoes beckon's
