@@ -768,6 +768,36 @@ change. Free.
 is what lets one file serve as both the CLI on `PATH` (a symlink into the bundle)
 and the agent, under one identity and one grant.
 
+### PROVEN end to end, through `brew upgrade` rather than a path of my own making
+
+The bundle test above swapped a binary under a path this session controlled, which
+is exactly the shape that made the 0.9.17 prediction wrong: it proved something
+true of that setup and not of the one beckon ships through. So it was re-run on
+the real mechanism.
+
+macmini, 2026-08-18. 0.9.18 is the first release installed as a `.app`; the owner
+granted it once at 09:19:37. Then 0.9.19 -- version bump only, no code change --
+was released and installed with `brew upgrade`, with nobody opening System
+Settings:
+
+```text
+BEFORE  2 | 0 | 09:19:37 | com.xom11.beckon
+        running .../Cellar/beckon/0.9.18/beckon.app/Contents/MacOS/beckon
+AFTER   2 | 0 | 09:19:37 | com.xom11.beckon      <- identical, timestamp included
+        running .../Cellar/beckon/0.9.19/beckon.app/Contents/MacOS/beckon
+        lsappinfo: bundleID="com.xom11.beckon" type="UIElement" Version="0.9.19"
+        log: "Accessibility granted"
+```
+
+**macOS did not even touch the row.** The Cellar path changed and the binary
+changed; the grant did not care, because it is not keyed on either. That is the
+thing 0.9.17 could not do with an identical signature.
+
+Scope, stated so it is not over-read later: this is about the SERVICE, the process
+launchd starts. `beckon <id>` typed into a terminal is still attributed to the
+TERMINAL as the responsible process, so it uses the terminal's grant -- unchanged
+by any of this, and true before the bundle as well.
+
 ### `LSUIElement` and `TransformProcessType` collide, and the warning was the casualty
 
 Declaring `LSUIElement` puts the process in the accessory state at launch, so
