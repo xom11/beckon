@@ -305,6 +305,16 @@ struct Ui {
     /// consults it: AppKit raises the same actions for a programmatic write
     /// as for a human one, and a push that came back as an edit would make
     /// every open mark the file dirty.
+    ///
+    /// **That premise is per-CONTROL, and it is false for `NSSlider`.**
+    /// Measured 2026-08-18 with a positive control: `setDoubleValue:` fired
+    /// **0** actions where `performClick:` on the same wired slider fired 1.
+    /// So on the transparency row the gate protects against nothing and can
+    /// only ever drop a real drag. It is kept because the flag is one flag
+    /// for the whole window and the two notifying controls beside it
+    /// (`NSTextField`, `NSPopUpButton`) do need it — not because the sentence
+    /// above was ever checked here. Do not cite it for a new control without
+    /// re-running the probe.
     pushing: bool,
 
     /// Which door is open. The caller keeps its own mirror (it decides where
@@ -318,12 +328,14 @@ struct Ui {
     paths: Paths,
     /// This window's own transparency, 85..=100.
     ///
-    /// Held here rather than in a preferences store because there is no
-    /// macOS counterpart to the Win32 twin's `HKCU\Software\beckon` yet:
-    /// the value survives a page switch and dies with the window. Persisting
-    /// it is `NSUserDefaults` and one line, deliberately not taken in this
-    /// pass — a preference that outlives the window should be introduced with
-    /// the reload path that has to honour it, not before.
+    /// **It is persisted, and this comment used to say the opposite.** The
+    /// macOS counterpart of the Win32 twin's `HKCU\Software\beckon` is
+    /// `crate::prefs`, which owns the store and the domain it lives in; the
+    /// field is the window's live copy, seeded from `prefs::opacity()` in
+    /// `Ui::new` and written back by `on_opacity`. The stale sentence cost
+    /// real time: a reader tracing a number on screen concluded it had to
+    /// have been set in this session and never looked at the store, which is
+    /// where the defect actually was.
     opacity: u8,
 
     /// Group 3 of the Keyboard door: write a bound chord as `Caps` in the
@@ -895,7 +907,7 @@ define_class!(
             set_window_opacity(&c.window, pct);
             c.sys
                 .opacity_value
-                .setStringValue(&NSString::from_str(&format!("{pct}%")));
+                .setStringValue(&NSString::from_str(&beckon_core::settings::opacity_label(pct)));
             // Stored HERE, not by the caller. `SettingsCommand::SetOpacity`
             // is a notification -- `serve.rs`'s arm for it is empty on both
             // platforms and says why: answering it there would make the
@@ -1929,9 +1941,9 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         let pct = crate::prefs::opacity();
         set_window_opacity(&c.window, pct);
         c.sys.opacity.setDoubleValue(pct as f64);
-        c.sys
-            .opacity_value
-            .setStringValue(&NSString::from_str(&format!("{pct}%")));
+        c.sys.opacity_value.setStringValue(&NSString::from_str(
+            &beckon_core::settings::opacity_label(pct),
+        ));
     }
     Ok(())
 }

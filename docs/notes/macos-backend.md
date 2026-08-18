@@ -768,6 +768,46 @@ change. Free.
 is what lets one file serve as both the CLI on `PATH` (a symlink into the bundle)
 and the agent, under one identity and one grant.
 
+#### NARROWED 2026-08-18 — "one identity" is true of TCC and false of preferences
+
+The sentence above was measured against TCC and is correct there. It was then
+read as a general fact about the process, and it is not one. Measured with a
+hand-built ObjC probe, the same installed 0.9.19:
+
+| invoked as | `CFBundleGetIdentifier` | `standardUserDefaults` domain |
+|---|---|---|
+| `beckon.app/Contents/MacOS/beckon` (the LaunchAgent) | `com.xom11.beckon` | `com.xom11.beckon` |
+| `/opt/homebrew/bin/beckon` → symlink **into** that bundle | **NULL** | `beckon` |
+
+`CFBundleGetMainBundle` looks for `Contents/Info.plist` beside the path *as
+invoked* and does not follow the symlink. Proof, not inference: a value written
+through the bundle path read back `(absent)` through the symlink.
+
+Two consequences, both live until the fix:
+
+- 0.9.18 — the release that introduced the bundle — **orphaned every macOS
+  user's stored `Opacity` and `CapsView`**. They were in `beckon`; the agent
+  started reading `com.xom11.beckon`. Reported by the author as *"the
+  transparency default is 100% for me"*.
+- `beckon serve` typed in a terminal and the LaunchAgent disagreed about where
+  a preference lives.
+
+**`initWithSuiteName:` is the obvious fix and it does not work here.** With
+`CFBundleIdentifier` equal to the requested suite — i.e. the agent, the case
+that matters — Foundation logs *"Using your own bundle identifier as an
+NSUserDefaults suite name does not make sense and will not work"* and returns
+**nil**. Measured; the first version of the fix was validated on a probe whose
+bundle id differed from its suite, which is why it looked fine.
+
+`crates/beckon-macos/src/prefs.rs` therefore addresses `CFPreferences*` with a
+literal domain, which has no such rule and was measured working in both
+directions including bundle-id == domain. **Do not "simplify" it back to
+`NSUserDefaults`**: the domain would go back to being derived from how the
+process was launched, which is the whole defect.
+
+TCC is unaffected either way — it resolves the real path, which is what the
+paragraph above measured.
+
 ### PROVEN end to end, through `brew upgrade` rather than a path of my own making
 
 The bundle test above swapped a binary under a path this session controlled, which

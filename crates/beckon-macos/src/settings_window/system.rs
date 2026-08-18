@@ -83,7 +83,17 @@ pub(super) fn build(
     let reload_row = row(&w::label("", mtm), &[&reload], mtm);
 
     // --- this window ------------------------------------------------------
-    let opacity_value = w::value("100%", mtm);
+    // **Built from `OPACITY_DEFAULT`, never spelled.** The literal here was
+    // `"100%"`, and it is the string a row that never got a push keeps —
+    // which is how "beckon defaults to 100%" became a thing two readers
+    // believed and grep confirmed, while the actual default is 96 and an
+    // unpushed slider reads 85 (measured: `setMaxValue(100)` then
+    // `setMinValue(85)` leaves `doubleValue` at 85, knob hard left). A
+    // placeholder that cannot disagree with the default cannot tell that lie.
+    let opacity_value = w::value(
+        &beckon_core::settings::opacity_label(beckon_core::settings::OPACITY_DEFAULT),
+        mtm,
+    );
     w::pin_min_width(&opacity_value, 44.0);
     let opacity = w::slider(
         beckon_core::settings::OPACITY_MIN as f64,
@@ -186,8 +196,9 @@ pub(super) fn apply(c: &SystemControls, st: &SystemState) {
             c.opacity_row.setHidden(false);
             c.opacity.setEnabled(true);
             c.opacity.setDoubleValue(pct as f64);
-            c.opacity_value
-                .setStringValue(&NSString::from_str(&format!("{pct}%")));
+            c.opacity_value.setStringValue(&NSString::from_str(
+                &beckon_core::settings::opacity_label(pct),
+            ));
         }
         Transparency::Off(block) => {
             // The row stays on screen and says WHY. `reason()` names the
