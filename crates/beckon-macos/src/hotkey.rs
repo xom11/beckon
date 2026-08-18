@@ -136,6 +136,20 @@ extern "C" fn timer_trampoline(_timer: *mut c_void, info: *mut c_void) {
     cb();
 }
 
+/// Is this process already an accessory (UIElement) app?
+///
+/// **The one objc2 call in a file that is otherwise hand-rolled FFI**, and the
+/// deviation is deliberate: the alternative is hand-rolling
+/// `NSRunningApplication` for a single property read, which is more surface than
+/// the import saves. `apps.rs` already reads the same property, with the same
+/// `0 = regular, 1 = accessory` mapping.
+fn is_accessory() -> bool {
+    objc2_app_kit::NSRunningApplication::currentApplication()
+        .activationPolicy()
+        .0
+        == 1
+}
+
 pub struct HotkeyManager {
     hotkeys: Vec<*mut c_void>,
     _callback: *mut Box<dyn FnMut(u32)>, // leaked for daemon lifetime
@@ -152,13 +166,31 @@ impl HotkeyManager {
         // menu bar — and is a no-op harmless when already terminal-launched.
         // Failure is non-fatal on purpose: in contexts that reject the
         // transform we are no worse off than before, so warn and continue.
-        let psn = ProcessSerialNumber {
-            high: 0,
-            low: CURRENT_PROCESS,
-        };
-        let err = unsafe { TransformProcessType(&psn, TRANSFORM_TO_UIELEMENT) };
-        if err != 0 {
-            eprintln!("hotkey: TransformProcessType failed: OSStatus {err} (hotkeys may not fire under launchd)");
+        //
+        // **A BUNDLED beckon is already there before any of this runs**, and
+        // that is what the two `is_accessory` calls are for. `LSUIElement` in
+        // `Info.plist` puts the process in the target state at launch, so
+        // `TransformProcessType` is then asked for a state it already holds and
+        // answers paramErr (-50). Measured 2026-08-18 on macmini with a signed
+        // test bundle: the call failed -50 while `lsappinfo` reported
+        // `type="UIElement"` for the same pid, i.e. the goal was met and the
+        // warning was false.
+        //
+        // False is the part that matters. "hotkeys may not fire under launchd"
+        // is the exact sentence somebody greps for when hotkeys DO fail; printed
+        // on every start of a healthy bundled build, it trains the reader to
+        // scroll past the one time it is true. So the warning now fires only when
+        // the END STATE is missing, which is what it claims -- not merely when
+        // the transform returned non-zero.
+        if !is_accessory() {
+            let psn = ProcessSerialNumber {
+                high: 0,
+                low: CURRENT_PROCESS,
+            };
+            let err = unsafe { TransformProcessType(&psn, TRANSFORM_TO_UIELEMENT) };
+            if err != 0 && !is_accessory() {
+                eprintln!("hotkey: TransformProcessType failed: OSStatus {err} (hotkeys may not fire under launchd)");
+            }
         }
 
         let user = Box::into_raw(Box::new(cb));

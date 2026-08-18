@@ -84,7 +84,7 @@ jobs:
       # CERTIFICATE, not the path. A Developer ID would additionally allow
       # notarisation (so a browser download is not quarantined); it is not needed
       # for the grant to survive, which is what this step is for.
-      - name: Sign (macOS)
+      - name: Bundle and sign (macOS)
         if: contains(matrix.target, 'apple-darwin')
         shell: bash
         env:
@@ -93,6 +93,25 @@ jobs:
         run: |
           set -euo pipefail
           bin='target/${{ matrix.target }}/release/beckon'
+
+          # **Assemble the .app BEFORE signing**, because signing a bundle signs
+          # the bundle: `Info.plist` and the icon are inside the seal, so an
+          # edit to either after this point invalidates the signature.
+          #
+          # The bundle exists so macOS keys the Accessibility grant by
+          # IDENTIFIER rather than by absolute path -- see assets/macos/Info.plist
+          # for the measurement. Signing alone did not achieve it: v0.9.17 was
+          # signed identically to v0.9.16 and still lost the grant, because
+          # Homebrew's Cellar path carries the version.
+          app="$(dirname "$bin")/beckon.app"
+          rm -rf "$app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          sed "s/__VERSION__/${{ steps.ver.outputs.version }}/g" assets/macos/Info.plist \
+            > "$app/Contents/Info.plist"
+          cp assets/beckon.icns "$app/Contents/Resources/beckon.icns"
+          cp "$bin" "$app/Contents/MacOS/beckon"
+          # What gets signed and checked from here on is the BUNDLE.
+          bin="$app"
 
           # **Absent secret is a hard failure, not a silent unsigned release.**
           # Shipping ad-hoc again is exactly the regression this step exists to
@@ -176,7 +195,17 @@ jobs:
           name='${{ steps.ver.outputs.name }}'
           stage="$(mktemp -d)/${name}"
           mkdir -p "${stage}"
-          cp 'target/${{ matrix.target }}/release/beckon' "${stage}/"
+          app='target/${{ matrix.target }}/release/beckon.app'
+          if [ -d "$app" ]; then
+            # The bundle is the artefact; `beckon` beside it is a RELATIVE
+            # symlink into it, so the tarball has exactly one copy of the binary
+            # and someone who just extracts and runs `./beckon` still gets one
+            # that carries the bundle identity. `tar` preserves the link.
+            cp -R "$app" "${stage}/"
+            ln -s "beckon.app/Contents/MacOS/beckon" "${stage}/beckon"
+          else
+            cp 'target/${{ matrix.target }}/release/beckon' "${stage}/"
+          fi
           cp README.md "${stage}/" 2>/dev/null || true
           for f in LICENSE LICENSE-MIT LICENSE-APACHE; do
             [ -f "$f" ] && cp "$f" "${stage}/" || true

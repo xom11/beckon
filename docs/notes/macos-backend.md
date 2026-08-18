@@ -713,6 +713,82 @@ on one machine is data about that machine.
 `beckon doctor` cannot answer either — it reports the CALLER's TCC, never the
 launchd agent's.
 
+### The grant follows the BUNDLE IDENTIFIER, and that is the half signing could not buy
+
+**Signing was necessary and not sufficient, and v0.9.17 is the proof.** It was
+signed identically to v0.9.16, with the same certificate and the same designated
+requirement, and it lost the grant anyway:
+
+```text
+2 | 00:07:39 | /opt/homebrew/Cellar/beckon/0.9.16/bin/beckon   <- granted
+0 | 00:22:40 | /opt/homebrew/Cellar/beckon/0.9.17/bin/beckon   <- new row, denied
+```
+
+Nobody touched System Settings. **Homebrew's Cellar path carries the version**, so
+a path-keyed grant cannot survive an upgrade no matter who signed the binary. A
+Developer ID would have failed the same way; the 99 USD buys notarisation, not
+this.
+
+The mechanism is one column in the TCC database, and reading it settles the whole
+question:
+
+```text
+select auth_value, client_type, client from access
+where service='kTCCServiceAccessibility'
+
+  client_type = 0  (bundle identifier)   33 rows — every ordinary app
+      com.raycast.macos, com.knollsoft.Rectangle, org.hammerspoon.Hammerspoon,
+      net.kovidgoyal.kitty, com.microsoft.VSCode, org.pqrs.Karabiner-*, …
+  client_type = 1  (absolute path)        6 rows — every bare CLI binary
+      /opt/homebrew/Cellar/beckon/0.9.15/bin/beckon
+      /opt/homebrew/Cellar/kanata/1.12.0/bin/kanata
+      /usr/bin/env, /usr/libexec/sshd-keygen-wrapper, AEServer
+```
+
+Ordinary apps are keyed by identifier, which is why granting Raycast once is
+enough. beckon was a bare binary, so it was keyed by path. `kanata` is in the same
+trap, with `1.12.0` in its path.
+
+**A self-signed bundle is enough**, measured on macmini 2026-08-18 from a clean
+slate (no beckon rows existed):
+
+| step | result |
+|---|---|
+| run a signed `.app`, ad-hoc-free but NOT Developer ID | TCC writes `0 \| 0 \| com.xom11.beckon.bundletest` — **`client_type = 0`** |
+| owner grants it | `auth = 2` |
+| replace the binary INSIDE (0.9.15 → 0.9.17, cdhash `e557cb76…` → `50d1c3b8…`) | — |
+| **and move the whole bundle to another directory** | — |
+| read again | **`granted`** |
+
+So the bundle identity defeats both failure modes at once: content change and path
+change. Free.
+
+**Bundle identity does not need `open`.** The launchd job pointed straight at
+`beckon.app/Contents/MacOS/beckon` and TCC still recorded the identifier — which
+is what lets one file serve as both the CLI on `PATH` (a symlink into the bundle)
+and the agent, under one identity and one grant.
+
+### `LSUIElement` and `TransformProcessType` collide, and the warning was the casualty
+
+Declaring `LSUIElement` puts the process in the accessory state at launch, so
+`serve`'s `TransformProcessType` is then asked for a state it already holds and
+answers paramErr (-50). Measured: the call failed while `lsappinfo` reported
+`type="UIElement"` for the same pid — the goal was met and the failure was
+cosmetic.
+
+Cosmetic but not harmless. The line it printed —
+
+```text
+hotkey: TransformProcessType failed: OSStatus -50 (hotkeys may not fire under launchd)
+```
+
+— is the exact sentence somebody greps for when hotkeys really do fail, and it
+would have printed on every start of every bundled build. `hotkey.rs` now checks
+the END STATE instead of the return code: it skips the transform when already an
+accessory, and warns only if the process is still not one afterwards. Verified by
+running the same bundle before and after: the line appears, then does not, with
+`type="UIElement"` and the shortcut registered in both.
+
 ### A free self-signed certificate is enough — measured, with both controls
 
 **Measured on airm3 2026-08-17.** Worth settling because the alternative costs

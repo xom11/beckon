@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS app bundle's manifest. `release.yml` substitutes __VERSION__.
+
+  This file exists for ONE property: CFBundleIdentifier. macOS records an
+  Accessibility grant against a bundle IDENTIFIER when the process has one and
+  against its ABSOLUTE PATH when it does not - measured on macmini 2026-08-18,
+  33 of the 39 rows in the system TCC database are identifiers and every one of
+  the 6 paths is a bare CLI binary, beckon and kanata among them.
+
+  A path-keyed grant dies on every release, because Homebrew's Cellar path
+  carries the version. That is not theory: v0.9.17 lost the grant that v0.9.16
+  had, with the signature identical and nothing else changed.
+
+  LSUIElement is the second property and it is not cosmetic. `serve` calls
+  TransformProcessType to acquire the window-server identity RegisterEventHotKey
+  needs; declaring it here means the process is born with that identity instead,
+  and `hotkey.rs` skips the transform when it is already held.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.xom11.beckon</string>
+  <key>CFBundleName</key><string>beckon</string>
+  <key>CFBundleDisplayName</key><string>beckon</string>
+  <key>CFBundleExecutable</key><string>beckon</string>
+  <key>CFBundleIconFile</key><string>beckon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>__VERSION__</string>
+  <key>CFBundleVersion</key><string>__VERSION__</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHumanReadableCopyright</key><string>MIT OR Apache-2.0</string>
+</dict>
+</plist>
