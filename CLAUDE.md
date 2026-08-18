@@ -177,9 +177,12 @@ beckon/
 │           ├── stable_id.rs  # per-config lock hash
 │           └── bin/beckon-serve.rs   # GUI-subsystem shim (Windows only)
 ├── assets/
-│   ├── beckon.ico             # tray / Explorer / Alt-Tab icon, both Windows binaries
-│   └── beckon-menubar.png     # macOS menu bar TEMPLATE, generated from beckon.ico
-│                              #   by tools/make-menubar-mark.py — never hand-edited
+│   ├── beckon.ico             # the SOURCE of the mark. Windows tray / Explorer /
+│   │                          #   Alt-Tab icon, and what the two below derive from
+│   ├── beckon-menubar.png     # macOS menu bar TEMPLATE, generated from beckon.ico
+│   │                          #   by tools/make-menubar-mark.py — never hand-edited
+│   └── beckon.icns            # macOS APP icon, generated from beckon.ico by
+│                              #   tools/make-app-icon.py — never hand-edited
 ├── extensions/beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
 ├── testing/                   # linux_live_test.py, macos_*.sh/.lua, README
 ├── site/                      # landing page (GitHub Pages)
@@ -745,6 +748,19 @@ source must stay **GitHub Actions** in repo settings, or the workflow goes
 green and publishes nothing. Not `docs/`, which holds internal specs and these
 notes. `tools/check-site.sh` runs in CI and asserts the install commands, the
 letter→app table and the version still match `README.md` and `Cargo.toml`.
+
+**One mark, three files, and the two derived ones are generated.** `beckon.ico`
+is the source; `beckon-menubar.png` and `beckon.icns` are produced from it by
+`tools/make-menubar-mark.py` and `tools/make-app-icon.py`. Neither is hand-edited,
+and neither re-typesets the letter — the `b` in the `.ico` is the drawn brand
+letterform, not a font glyph, so both tools lift it as an alpha mask by
+luminance. Re-typesetting would put a third `b` in the program.
+
+The two macOS files share **one corner ratio, 0.2353** — `cornerRadius(8.0)` on
+the About door's 34 pt tile — so the app icon, the menu bar mark and the settings
+window all carry the same shape. The `.icns` additionally sits on Apple's grid
+(body 824 of a 1024 canvas): `beckon.ico` is full-bleed, which is right on
+Windows where the shell applies a shape and wrong here where nothing does.
 
 **The README animation goes stale in silence.** `assets/five-answers.webp` is a
 photograph of `site/#how`, and nothing in CI compares the two — re-run
