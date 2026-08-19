@@ -110,10 +110,24 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Which config dialect the fake compositor pretends to run.
+///
+/// Hyprland 0.55+ decides this by which config file it found, and it changes
+/// what `dispatch` accepts. The fake defaults to `Hyprlang` so every test
+/// written before the split keeps measuring what it always measured.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FakeDialect {
+    #[default]
+    Hyprlang,
+    Lua,
+}
+
 #[derive(Default, Debug)]
 struct State {
     clients: Vec<FakeClient>,
     active: Option<String>,
+    /// See [`FakeDialect`].
+    dialect: FakeDialect,
     /// What `j/activeworkspace` reports — the workspace an unparked window
     /// should be returned to. `Default` gives 0; tests that care set it.
     active_workspace: i64,
@@ -149,6 +163,33 @@ impl State {
                 );
             }
             _ => {}
+        }
+
+        // The dialect probe. Deliberately answered *before* the recording
+        // below: it is a question, not an action, and every existing test
+        // asserts on the exact contents of `dispatches`.
+        if cmd == "dispatch hl.dsp.no_op()" {
+            return match self.dialect {
+                FakeDialect::Lua => "ok".into(),
+                // What a hyprlang Hyprland says: it reads the whole string as
+                // a dispatcher name and finds nothing registered under it.
+                FakeDialect::Hyprlang => "Invalid dispatcher".into(),
+            };
+        }
+
+        if self.dialect == FakeDialect::Lua {
+            return self.handle_lua_dispatch(cmd);
+        }
+
+        // A hyprlang compositor cannot parse the Lua spelling at all. Saying
+        // so here is what makes a wrong-dialect test fail loudly instead of
+        // falling through to `unknown command`.
+        if cmd.starts_with("dispatch hl.") {
+            self.dispatches.push(cmd.to_string());
+            return format!(
+                "error: [string \"return hl.dispatch({})\"]:1: unexpected symbol",
+                cmd.trim_start_matches("dispatch ")
+            );
         }
 
         self.dispatches.push(cmd.to_string());
@@ -190,6 +231,63 @@ impl State {
         }
 
         format!("error: unknown command `{}`", cmd)
+    }
+
+    /// The Lua dialect. Deliberately a *separate* parser rather than a
+    /// rewrite into hyprlang shapes: the point of these tests is that beckon
+    /// puts the Lua spelling on the wire, so anything that normalised the two
+    /// before asserting would test nothing.
+    ///
+    /// The matching is exact, not a regex over "something containing an
+    /// address". A stray space or a `follow = true` is a real bug — parking a
+    /// window while dragging focus along is exactly what `movetoworkspace`
+    /// (not `...silent`) does — and must not quietly pass.
+    fn handle_lua_dispatch(&mut self, cmd: &str) -> String {
+        self.dispatches.push(cmd.to_string());
+
+        if cmd.starts_with(r#"dispatch hl.dsp.exec_cmd(""#) && cmd.ends_with(r#"")"#) {
+            return "ok".into();
+        }
+
+        if let Some(addr) = cmd
+            .strip_prefix(r#"dispatch hl.dsp.focus({ window = "address:"#)
+            .and_then(|r| r.strip_suffix(r#"" })"#))
+        {
+            for c in &mut self.clients {
+                if c.address == addr {
+                    c.fhid = 0;
+                } else {
+                    c.fhid += 1;
+                }
+            }
+            if self.clients.iter().any(|c| c.address == addr) {
+                self.active = Some(addr.to_string());
+                return "ok".into();
+            }
+            return format!("error: unknown address {}", addr);
+        }
+
+        if let Some(rest) = cmd
+            .strip_prefix(r#"dispatch hl.dsp.window.move({ workspace = ""#)
+            .and_then(|r| r.strip_suffix(r#"" })"#))
+        {
+            if let Some((ws, addr)) = rest.split_once(r#"", follow = false, window = "address:"#) {
+                for c in &mut self.clients {
+                    if c.address == addr {
+                        c.workspace = ws.to_string();
+                    }
+                }
+                return "ok".into();
+            }
+            return format!("error: malformed window.move `{}`", rest);
+        }
+
+        // Anything the real Lua parser would choke on, including the old
+        // hyprlang spelling.
+        format!(
+            "error: [string \"return hl.dispatch({})\"]:1: syntax error",
+            cmd.trim_start_matches("dispatch ")
+        )
     }
 }
 
@@ -736,5 +834,141 @@ fn socket_path_layout_matches_beckon_expectation() {
         Path::new(&expected).exists(),
         "socket missing at expected path {:?}",
         expected
+    );
+}
+
+// ============================================================================
+// The Lua dialect (Hyprland 0.55+ on hyprland.lua)
+//
+// Same three actions, same algorithm, different wire spelling. These exist
+// because the hyprlang spelling does not merely stop working against a Lua
+// config -- it stops being a *command* and becomes a Lua syntax error, so the
+// failure is one line of stderr per keypress and nothing else. Measured on
+// Hyprland 0.56.2, where it cost a user every shortcut they had.
+// ============================================================================
+
+fn lua_state() -> State {
+    let mut state = State::default();
+    state.dialect = FakeDialect::Lua;
+    state
+}
+
+#[test]
+fn lua_launch_dispatches_exec_cmd_with_a_quoted_argument() {
+    let mut state = lua_state();
+    state.active_workspace = 1;
+    let srv = FakeServer::start(state);
+    // A path with dots in it is the shape that first broke: read as Lua,
+    // `/nix/store/...-brave-1.93.129/bin/brave` is `malformed number near
+    // '1.93.129'` unless it is inside a string literal.
+    write_claude_desktop(&srv, "/bin/true --app-id=fmpn-1.93.129");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (lua launch)");
+
+    let snap = srv.snapshot();
+    assert_eq!(
+        snap.dispatches,
+        vec![r#"dispatch hl.dsp.exec_cmd("/bin/true --app-id=fmpn-1.93.129")"#.to_string()]
+    );
+}
+
+#[test]
+fn lua_focus_uses_the_lua_focus_form() {
+    let mut state = lua_state();
+    state.clients = vec![
+        FakeClient::new("0xA", "kitty", 0),
+        FakeClient::new("0xB", "claude", 1),
+    ];
+    state.active = Some("0xA".into());
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (lua focus)");
+
+    let snap = srv.snapshot();
+    assert_eq!(snap.active.as_deref(), Some("0xB"));
+    assert_eq!(
+        snap.dispatches,
+        vec![r#"dispatch hl.dsp.focus({ window = "address:0xB" })"#.to_string()]
+    );
+}
+
+#[test]
+fn lua_hide_parks_the_window_without_following_it() {
+    let mut state = lua_state();
+    state.clients = vec![FakeClient::new("0xA", "claude", 0)];
+    state.active = Some("0xA".into());
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (lua hide)");
+
+    let snap = srv.snapshot();
+    assert_eq!(snap.workspace_of("0xA"), Some("special:beckon"));
+    assert_eq!(
+        snap.dispatches,
+        vec![concat!(
+            r#"dispatch hl.dsp.window.move({ workspace = "special:beckon", "#,
+            r#"follow = false, window = "address:0xA" })"#
+        )
+        .to_string()]
+    );
+}
+
+#[test]
+fn lua_unparks_before_focusing_and_stays_in_dialect() {
+    // The two-command path: a parked window is returned to the live
+    // workspace, then raised. Both have to speak Lua -- a mixed pair would
+    // half-work, which is worse than failing.
+    let mut state = lua_state();
+    state.clients = vec![FakeClient::new("0xA", "claude", 1).parked()];
+    state.active_workspace = 3;
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    let out = srv.run_beckon(&["claude"]);
+    ok_output(&out, "beckon claude (lua unpark + focus)");
+
+    let snap = srv.snapshot();
+    assert_eq!(snap.workspace_of("0xA"), Some("3"));
+    assert_eq!(snap.active.as_deref(), Some("0xA"));
+    assert_eq!(
+        snap.dispatches,
+        vec![
+            concat!(
+                r#"dispatch hl.dsp.window.move({ workspace = "3", "#,
+                r#"follow = false, window = "address:0xA" })"#
+            )
+            .to_string(),
+            r#"dispatch hl.dsp.focus({ window = "address:0xA" })"#.to_string(),
+        ]
+    );
+}
+
+#[test]
+fn the_probe_is_never_recorded_as_an_action() {
+    // `dispatches` is what every assertion above reads. If the dialect probe
+    // leaked into it, each of those tests would have to know about a command
+    // that changes nothing -- and this file would stop describing what beckon
+    // does to the compositor.
+    let mut state = lua_state();
+    state.clients = vec![
+        FakeClient::new("0xA", "kitty", 0),
+        FakeClient::new("0xB", "claude", 1),
+    ];
+    state.active = Some("0xA".into());
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+
+    srv.run_beckon(&["claude"]);
+
+    let snap = srv.snapshot();
+    assert!(
+        !snap.dispatches.iter().any(|c| c.contains("no_op")),
+        "probe leaked into the action log: {:?}",
+        snap.dispatches
     );
 }

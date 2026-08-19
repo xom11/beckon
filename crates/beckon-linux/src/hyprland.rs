@@ -9,6 +9,11 @@
 //!   5b. focused, only one window    → toggle to the most-recent other app
 //!   5c. focused, nothing else       → hide via movetoworkspacesilent special:beckon
 //!
+//! Those three spellings are the *hyprlang* dialect, and since Hyprland 0.55
+//! they are not the only one — see [`Dialect`]. Nothing else beckon sends
+//! is affected: the `j/` queries and `version` are plain hyprctl commands,
+//! not dispatchers, and they read the same in both worlds.
+//!
 //! Window identity: Hyprland exposes `class` for both Wayland (= app_id) and
 //! XWayland (= WM_CLASS) clients, so a single field is enough — no fallback
 //! chain like sway/i3.
@@ -31,6 +36,7 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
@@ -53,6 +59,128 @@ use crate::algorithm::{decide, Decision, WindowSnapshot};
 /// hide is a one-way door, and the *second* hide is a silent no-op because
 /// the window is already on the destination workspace.
 const HIDE_WORKSPACE: &str = "special:beckon";
+
+/// Which dialect the running Hyprland's `dispatch` command speaks.
+///
+/// Hyprland 0.55 deprecated hyprlang in favour of a Lua config, and 0.56 still
+/// ships both parsers. **Which one is live is not a function of the version**:
+/// it is whichever config file was found, `hyprland.lua` winning over
+/// `hyprland.conf`. So there is nothing to compare a version number against.
+///
+/// It matters here because it silently changes what `dispatch` *means*.
+/// `HyprCtl.cpp::dispatchRequest` under a Lua config wraps everything after
+/// the keyword as `return hl.dispatch(<rest>)` and evaluates it as Lua, so the
+/// hyprlang spelling stops being a command and becomes a syntax error:
+///
+/// ```text
+/// $ hyprctl dispatch exec brave
+/// error: [string "return hl.dispatch(exec brave)"]:1: ')' expected near 'brave'
+/// ```
+///
+/// Measured on Hyprland 0.56.2, 2026-08-20, where this cost a user every
+/// single shortcut: launching, focusing and hiding are the only things beckon
+/// asks the compositor to *do*, and all three go through `dispatch`.
+///
+/// Detected once per process by [`dialect`] rather than assumed, because both
+/// dialects are current — a user on 0.54, or on 0.56 with a `hyprland.conf`,
+/// is still hyprlang and must keep working.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dialect {
+    /// `dispatch exec foo` — Hyprland ≤ 0.54, or 0.55+ still on `hyprland.conf`.
+    Hyprlang,
+    /// `dispatch hl.dsp.exec_cmd("foo")` — Hyprland 0.55+ on `hyprland.lua`.
+    Lua,
+}
+
+/// Ask the compositor which dialect it speaks, once per process.
+///
+/// The probe is `hl.dsp.no_op()`, a dispatcher that exists purely to do
+/// nothing, so an unlucky answer cannot move a window. Under Lua it comes back
+/// `ok`; under hyprlang the whole string is read as a dispatcher *name*, which
+/// is not registered, so the reply is `Invalid dispatcher`. Anything that is
+/// not a clean `ok` — including an older Hyprland that has never heard of
+/// `hl.` at all, or a socket error — resolves to hyprlang, which is the
+/// dialect that has always worked.
+///
+/// It goes through `dispatch` on purpose. Asking some *other* command (say,
+/// whether `eval` is supported) would be measuring a neighbour and inferring
+/// this one.
+fn probe_dialect() -> Dialect {
+    match send("dispatch hl.dsp.no_op()") {
+        Ok(reply) if reply.trim().eq_ignore_ascii_case("ok") => Dialect::Lua,
+        _ => Dialect::Hyprlang,
+    }
+}
+
+/// Cached [`probe_dialect`]. beckon is a short-lived process, so this is one
+/// extra socket round trip per invocation that actually dispatches — the `j/`
+/// query paths (`installed`, `running`) never pay it.
+fn dialect() -> Dialect {
+    static CACHE: OnceLock<Dialect> = OnceLock::new();
+    *CACHE.get_or_init(probe_dialect)
+}
+
+/// Render `s` as a Lua string literal, quotes included.
+///
+/// Long-bracket syntax (`[[...]]`) would read better but is not safe for
+/// arbitrary input: a `.desktop` `Exec=` line containing `]]` would end the
+/// literal early, and there is no escape for it inside one. A quoted literal
+/// can encode anything.
+fn lua_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Launch a command line.
+pub(crate) fn exec_command(dialect: Dialect, exec: &str) -> String {
+    match dialect {
+        Dialect::Hyprlang => format!("dispatch exec {}", exec),
+        Dialect::Lua => format!("dispatch hl.dsp.exec_cmd({})", lua_str(exec)),
+    }
+}
+
+/// Raise the window at `addr`.
+pub(crate) fn focus_command(dialect: Dialect, addr: &str) -> String {
+    match dialect {
+        Dialect::Hyprlang => format!("dispatch focuswindow address:{}", addr),
+        Dialect::Lua => format!(
+            "dispatch hl.dsp.focus({{ window = {} }})",
+            lua_str(&format!("address:{}", addr))
+        ),
+    }
+}
+
+/// Move the window at `addr` to `workspace` **without** following it there.
+///
+/// `follow = false` is what makes the Lua form silent; leaving it out moves
+/// focus too, which would break both callers — parking a window is supposed to
+/// leave the user where they are, and unparking is followed by an explicit
+/// focus.
+pub(crate) fn move_silent_command(dialect: Dialect, workspace: &str, addr: &str) -> String {
+    match dialect {
+        Dialect::Hyprlang => format!(
+            "dispatch movetoworkspacesilent {},address:{}",
+            workspace, addr
+        ),
+        Dialect::Lua => format!(
+            "dispatch hl.dsp.window.move({{ workspace = {}, follow = false, window = {} }})",
+            lua_str(workspace),
+            lua_str(&format!("address:{}", addr))
+        ),
+    }
+}
 
 pub struct HyprlandBackend;
 
@@ -226,17 +354,19 @@ pub(crate) fn parse_active_workspace(raw: &str) -> Result<i64> {
 /// (`special:magic`, a scratchpad they set up in their config) is where they
 /// deliberately put that window, so beckon shows it as an overlay the way
 /// Hyprland does and leaves it where it found it.
-pub(crate) fn unpark_command(clients: &[Client], addr: &str, active_ws: i64) -> Option<String> {
+pub(crate) fn unpark_command(
+    dialect: Dialect,
+    clients: &[Client],
+    addr: &str,
+    active_ws: i64,
+) -> Option<String> {
     let parked = clients
         .iter()
         .any(|c| c.address == addr && c.workspace.name == HIDE_WORKSPACE);
     if !parked {
         return None;
     }
-    Some(format!(
-        "dispatch movetoworkspacesilent {},address:{}",
-        active_ws, addr
-    ))
+    Some(move_silent_command(dialect, &active_ws.to_string(), addr))
 }
 
 /// Focus a window, first returning it to the user's workspace if beckon had
@@ -248,11 +378,11 @@ fn focus_window(clients: &[Client], addr: &str) -> Result<()> {
         .any(|c| c.address == addr && c.workspace.name == HIDE_WORKSPACE);
     if needs_unpark {
         let ws = active_workspace_id()?;
-        if let Some(cmd) = unpark_command(clients, addr, ws) {
+        if let Some(cmd) = unpark_command(dialect(), clients, addr, ws) {
             dispatch(&cmd)?;
         }
     }
-    dispatch(&format!("dispatch focuswindow address:{}", addr))
+    dispatch(&focus_command(dialect(), addr))
 }
 
 /// Send a dispatch command and treat any non-`ok` body as a failure.
@@ -304,7 +434,7 @@ impl Backend for HyprlandBackend {
                         id, id, id
                     ),
                 })?;
-                dispatch(&format!("dispatch exec {}", entry.exec)).map_err(|e| {
+                dispatch(&exec_command(dialect(), &entry.exec)).map_err(|e| {
                     BackendError::LaunchFailed {
                         id: id.to_string(),
                         reason: e.to_string(),
@@ -325,10 +455,7 @@ impl Backend for HyprlandBackend {
                 BeckonAction::ToggledBack
             }
             Decision::Hide(addr) => {
-                dispatch(&format!(
-                    "dispatch movetoworkspacesilent {},address:{}",
-                    HIDE_WORKSPACE, addr
-                ))?;
+                dispatch(&move_silent_command(dialect(), HIDE_WORKSPACE, &addr))?;
                 BeckonAction::Hidden
             }
         };
@@ -458,21 +585,130 @@ mod tests {
         assert!(is_beckonable(&parked("0xA", "kitty", 2)));
     }
 
+    // ----------------- dialect command builders -----------------
+
+    #[test]
+    fn hyprlang_spellings_are_unchanged() {
+        // These three strings are the whole hyprlang contract. They predate
+        // the Lua dialect and every Hyprland <= 0.54 still needs them byte
+        // for byte, so this test exists to fail if the refactor drifted.
+        assert_eq!(
+            exec_command(Dialect::Hyprlang, "/bin/true --launch"),
+            "dispatch exec /bin/true --launch"
+        );
+        assert_eq!(
+            focus_command(Dialect::Hyprlang, "0xB"),
+            "dispatch focuswindow address:0xB"
+        );
+        assert_eq!(
+            move_silent_command(Dialect::Hyprlang, "special:beckon", "0xA"),
+            "dispatch movetoworkspacesilent special:beckon,address:0xA"
+        );
+    }
+
+    #[test]
+    fn lua_spellings_are_lua_expressions() {
+        assert_eq!(
+            exec_command(Dialect::Lua, "/bin/true --launch"),
+            r#"dispatch hl.dsp.exec_cmd("/bin/true --launch")"#
+        );
+        assert_eq!(
+            focus_command(Dialect::Lua, "0xB"),
+            r#"dispatch hl.dsp.focus({ window = "address:0xB" })"#
+        );
+        assert_eq!(
+            move_silent_command(Dialect::Lua, "special:beckon", "0xA"),
+            r#"dispatch hl.dsp.window.move({ workspace = "special:beckon", follow = false, window = "address:0xA" })"#
+        );
+    }
+
+    #[test]
+    fn lua_exec_survives_a_desktop_entry_full_of_metacharacters() {
+        // The real breakage that started this: a Brave PWA `Exec=` carries a
+        // store path with dots in it, and `dispatch exec /nix/store/...-brave-1.93.129/bin/brave`
+        // came back as `malformed number near '1.93.129'` once the line was
+        // read as Lua. Quoting is what fixes it, so quoting has to hold for
+        // anything a .desktop file can contain.
+        let exec = r#"/nix/store/q57y-brave-1.93.129/bin/brave --app-id=fmpn "a b" \x"#;
+        let cmd = exec_command(Dialect::Lua, exec);
+        assert_eq!(
+            cmd,
+            r#"dispatch hl.dsp.exec_cmd("/nix/store/q57y-brave-1.93.129/bin/brave --app-id=fmpn \"a b\" \\x")"#
+        );
+        // The payload must still be exactly one balanced Lua string: an
+        // unescaped quote would end it early and turn the rest into syntax.
+        let body = cmd.strip_prefix("dispatch hl.dsp.exec_cmd(").unwrap();
+        let body = body.strip_suffix(")").unwrap();
+        assert!(body.starts_with('"') && body.ends_with('"'));
+        assert_eq!(unescape_lua(body), exec);
+    }
+
+    #[test]
+    fn lua_str_leaves_ordinary_text_alone() {
+        assert_eq!(lua_str("kitty"), r#""kitty""#);
+    }
+
+    /// Read a Lua string literal back, so the escaper is checked against a
+    /// round trip rather than against a hand-written expectation only.
+    fn unescape_lua(lit: &str) -> String {
+        let inner = &lit[1..lit.len() - 1];
+        let mut out = String::new();
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some(other) => out.push(other),
+                None => break,
+            }
+        }
+        out
+    }
+
     // ----------------- unpark_command() -----------------
 
     #[test]
     fn unpark_returns_none_for_an_ordinary_window() {
         let clients = vec![client("0xA", "kitty", 0)];
-        assert_eq!(unpark_command(&clients, "0xA", 3), None);
+        assert_eq!(unpark_command(Dialect::Hyprlang, &clients, "0xA", 3), None);
     }
 
     #[test]
     fn unpark_moves_a_parked_window_to_the_live_workspace() {
         let clients = vec![parked("0xA", "kitty", 1)];
         assert_eq!(
-            unpark_command(&clients, "0xA", 3).as_deref(),
+            unpark_command(Dialect::Hyprlang, &clients, "0xA", 3).as_deref(),
             Some("dispatch movetoworkspacesilent 3,address:0xA")
         );
+    }
+
+    #[test]
+    fn unpark_speaks_lua_when_the_compositor_does() {
+        let clients = vec![parked("0xA", "kitty", 1)];
+        assert_eq!(
+            unpark_command(Dialect::Lua, &clients, "0xA", 3).as_deref(),
+            Some(
+                "dispatch hl.dsp.window.move({ workspace = \"3\", follow = false, \
+                 window = \"address:0xA\" })"
+            )
+        );
+    }
+
+    #[test]
+    fn unpark_leaves_a_users_own_special_workspace_alone_lua_too() {
+        // The dialect only changes the spelling. Whether beckon acts at all
+        // is decided before it, and this pins that the two stay separate.
+        let mut c = client("0xA", "kitty", 1);
+        c.workspace = Workspace {
+            id: -7,
+            name: "special:magic".to_string(),
+        };
+        assert_eq!(unpark_command(Dialect::Lua, &[c], "0xA", 3), None);
     }
 
     #[test]
@@ -485,13 +721,13 @@ mod tests {
             id: -7,
             name: "special:magic".to_string(),
         };
-        assert_eq!(unpark_command(&[c], "0xA", 3), None);
+        assert_eq!(unpark_command(Dialect::Hyprlang, &[c], "0xA", 3), None);
     }
 
     #[test]
     fn unpark_ignores_an_address_that_is_not_in_the_list() {
         let clients = vec![parked("0xA", "kitty", 1)];
-        assert_eq!(unpark_command(&clients, "0xZ", 3), None);
+        assert_eq!(unpark_command(Dialect::Hyprlang, &clients, "0xZ", 3), None);
     }
 
     // ----------------- parse_active_workspace -----------------
