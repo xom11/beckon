@@ -34,7 +34,8 @@ beckon-macos = { path = "../beckon-macos" }
 beckon-windows = { path = "../beckon-windows" }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile   = "3"
+serde_json = { workspace = true }
 
 # Scoped to Windows only: an unconditional [build-dependencies] entry here
 # compiled embed-resource and its transitive deps on every platform to run
