@@ -162,6 +162,7 @@ beckon/
 │   │       ├── state.rs      # single-app MRU at $XDG_RUNTIME_DIR/beckon-mru
 │   │       ├── i3ipc.rs      # swayipc — handles BOTH sway and i3
 │   │       ├── hyprland.rs   # native Unix-socket IPC
+│   │       ├── niri.rs       # native socket IPC — NIRI_SOCKET, JSON lines
 │   │       ├── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
 │   │       ├── gnome.rs      # zbus client → bundled GNOME Shell extension
 │   │       └── kde.rs        # zbus → org.kde.kwin.Scripting
@@ -331,6 +332,7 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     if env::var("SWAYSOCK").is_ok()                       { return SwayBackend::new(); }
     if env::var("I3SOCK").is_ok()                         { return I3Backend::new(); }
     if env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()    { return HyprlandBackend::new(); }
+    if env::var("NIRI_SOCKET").is_ok()                    { return NiriBackend::new(); }
     if env::var("WAYLAND_DISPLAY").is_ok() {
         // Mutter and KWin both refuse external focus, so each needs a
         // collaborator running INSIDE the compositor. XDG_CURRENT_DESKTOP
@@ -352,6 +354,7 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 | `SWAYSOCK` | sway (Wayland) — `i3ipc::I3IpcBackend` | ✅ |
 | `I3SOCK` | i3 (X11) — same `I3IpcBackend` (shared protocol) | ✅ |
 | `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland — native socket IPC | ✅ |
+| `NIRI_SOCKET` | niri — native socket IPC (`niri.rs`) | ✅ |
 | `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ✅ covers GNOME-X11, KDE-X11, openbox, awesome, XFCE |
 | `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=GNOME` | zbus → bundled shell extension | ✅ |
 | `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=KDE` | zbus → `org.kde.kwin.Scripting` | ✅ |
@@ -432,6 +435,7 @@ disambiguation in a comment.
 | 1b.i3 | Linux / i3 (X11) | ✅ same `I3IpcBackend` |
 | 1b.x11 | Linux / X11 generic via x11rb | ✅ `x11::X11Backend`, EWMH ClientMessages |
 | 1c | Linux / Hyprland | ✅ `hyprland::HyprlandBackend` |
+| 1f | Linux / niri | ✅ `niri::NiriBackend`, native socket IPC |
 | 1d | Linux / GNOME Wayland | ✅ `gnome::GnomeBackend` + shell extension |
 | 1e | Linux / KDE Wayland | ✅ `kde::KdeBackend` via KWin scripting |
 | 2 | macOS | ✅ `objc2-app-kit` + AX + CGWindowList |

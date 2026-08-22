@@ -306,6 +306,38 @@ per invocation, parsed with `serde_json`. Window identity uses Hyprland's
   connection per query, and works in containers/Nix builds where `hyprctl` may
   not be on PATH.
 
+## niri (`niri.rs`)
+
+Talks to the compositor over `NIRI_SOCKET` (exported by niri to children; the
+env var is the only source of truth — nested instances are real, so the path
+is never derived from `$XDG_RUNTIME_DIR` globbing). One JSON line per request,
+one JSON line per reply, wrapper `{"Ok":…}` / `{"Err":"…"}`. Measured on niri
+26.04, 2026-08-22.
+
+- **No crate dep**: the official `niri-ipc` types exist and 26.4.0 matches
+  this protocol, but it is GPL-3.0-or-later while beckon is MIT OR Apache-2.0
+  and ships prebuilt binaries. The used surface is four requests, so framing
+  is hand-rolled on serde_json (already a dependency).
+- **Unit variants are sent as `null`** (`{"Windows":null}`); `{}` is rejected
+  with `{"Err":"error parsing request"}`.
+- **`FocusWindow` with an unknown id still answers `{"Ok":"Handled"}`** — a
+  silent no-op. The reply is never treated as proof of focus; tests assert
+  against server state (`is_focused`), not the reply.
+- **No minimize/scratchpad action exists**: all three plausible spellings are
+  parse errors. Hide (5c) is therefore
+  `MoveWindowToWorkspace { reference: {Index: 1_000_000}, focus: false }` —
+  the window leaves the view but stays alive, and a later `FocusWindow`
+  navigates to its workspace, so retrieval is self-unparking: unlike Hyprland's
+  `special:beckon`, no explicit move-back is needed before focusing.
+- **MRU is real**: every window carries `focus_timestamp`, so snapshots are
+  sorted newest-first before recency indices are assigned — step 4 and step 5b
+  see genuine focus order, which sway cannot offer (tree order). The
+  `$XDG_RUNTIME_DIR/beckon-mru` file is still written and read, as in i3ipc:
+  mostly redundant here, but it keeps one contract across backends that share
+  the file.
+- Windows without an `app_id` are skipped, exactly like i3ipc skips windows
+  with neither `app_id` nor `WM_CLASS`.
+
 ## Live backend tests
 
 `testing/linux_live_test.py` drives the real binary against a real compositor
