@@ -23,12 +23,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use beckon_core::{BackendError, Result};
+use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::algorithm::WindowSnapshot;
+use crate::algorithm::{decide, Decision, WindowSnapshot};
 
 /// Step 5c target: far enough that no real session reaches it. niri creates
 /// the workspace on demand and FocusWindow later navigates back to it.
@@ -41,7 +41,7 @@ impl NiriBackend {
         // Verify the socket answers at construction so a dead or foreign
         // NIRI_SOCKET errors before any user-facing action — same shape as
         // I3IpcBackend::new.
-        let _: VersionReply = call_env(req_version())?;
+        let _: String = call_env::<VersionReply>(req_version())?.version;
         Ok(Self)
     }
 }
@@ -50,12 +50,14 @@ impl NiriBackend {
 
 #[derive(Deserialize)]
 struct VersionReply {
-    Version: String,
+    #[serde(rename = "Version")]
+    version: String,
 }
 
 #[derive(Deserialize, Debug)]
 struct WindowsReply {
-    Windows: Vec<NiriWindow>,
+    #[serde(rename = "Windows")]
+    windows: Vec<NiriWindow>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -85,8 +87,14 @@ pub(crate) struct FocusTimestamp {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Reply<T> {
-    Ok { Ok: T },
-    Err { Err: String },
+    Ok {
+        #[serde(rename = "Ok")]
+        ok: T,
+    },
+    Err {
+        #[serde(rename = "Err")]
+        err: String,
+    },
 }
 
 // ---- requests (exact wire shapes; unit-tested as strings) ----
@@ -142,14 +150,11 @@ fn call<T: DeserializeOwned>(path: &Path, req: Value) -> Result<T> {
     reader
         .read_line(&mut buf)
         .map_err(|e| BackendError::Ipc(format!("read reply: {e}")))?;
-    let reply: Reply<T> =
-        serde_json::from_str(buf.trim()).map_err(|e| BackendError::Ipc(format!(
-            "bad reply `{}`: {e}",
-            buf.trim()
-        )))?;
+    let reply: Reply<T> = serde_json::from_str(buf.trim())
+        .map_err(|e| BackendError::Ipc(format!("bad reply `{}`: {e}", buf.trim())))?;
     match reply {
-        Reply::Ok { Ok: ok } => Ok(ok),
-        Reply::Err { Err: err } => Err(BackendError::Ipc(err)),
+        Reply::Ok { ok } => Ok(ok),
+        Reply::Err { err } => Err(BackendError::Ipc(err)),
     }
 }
 
@@ -170,8 +175,152 @@ fn snapshots_from(windows: &[NiriWindow]) -> Vec<WindowSnapshot> {
     });
     ws.iter()
         .enumerate()
-        .map(|(idx, w)| WindowSnapshot::new(w.id.to_string(), w.app_id.clone().unwrap(), idx as i32))
+        .map(|(idx, w)| {
+            WindowSnapshot::new(w.id.to_string(), w.app_id.clone().unwrap(), idx as i32)
+        })
         .collect()
+}
+
+/// Parse a snapshot address back into the niri window id it was minted
+/// from. Round-trip should never fail for addresses this backend produced;
+/// surface as IPC error rather than panicking, like `parse_con_id` in i3ipc.
+fn parse_window_id(addr: &str) -> Result<u64> {
+    addr.parse::<u64>()
+        .map_err(|e| BackendError::Ipc(format!("bad window id `{addr}`: {e}")))
+}
+
+/// Same recipe as gnome.rs / kde.rs / x11.rs: niri's IPC has no `exec`
+/// action (measured), so launch through `setsid -f` so the app survives
+/// beckon exiting.
+fn launch_exec(id: &str, exec: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("setsid -f {exec} >/dev/null 2>&1"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| BackendError::LaunchFailed {
+            id: id.to_string(),
+            reason: e.to_string(),
+        })?;
+    Ok(())
+}
+
+fn persist_previous(app: Option<&str>) {
+    if let Some(a) = app {
+        crate::state::write_previous(a);
+    }
+}
+
+impl Backend for NiriBackend {
+    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+        let reply: WindowsReply = call_env(req_windows())?;
+        let windows = reply.windows;
+
+        let snapshots = snapshots_from(&windows);
+        let active = windows
+            .iter()
+            .find(|w| w.is_focused)
+            .map(|w| w.id.to_string());
+
+        // What's focused right now (before any action) — becomes "previous"
+        // for the next call's step 5b, exactly as in i3ipc.rs.
+        let pre_focused_app = windows
+            .iter()
+            .find(|w| w.is_focused)
+            .and_then(|w| w.app_id.clone());
+
+        let previous_app = crate::state::read_previous();
+
+        let entry = crate::desktop::resolve(id);
+        let target = crate::desktop::target_classes(entry.as_ref(), id);
+
+        let decision = decide(
+            &snapshots,
+            active.as_deref(),
+            target,
+            previous_app.as_deref(),
+        );
+
+        let action = match decision {
+            Decision::Launch => {
+                let entry = entry.ok_or_else(|| BackendError::NoMatch {
+                    id: id.to_string(),
+                    hint: format!(
+                        "no .desktop entry matches `{}` and no running window has that app_id. \
+                         Run `beckon installed` to list installed apps, \
+                         or `beckon search {}` to search.",
+                        id, id
+                    ),
+                })?;
+                launch_exec(id, &entry.exec)?;
+                BeckonAction::Launched
+            }
+            // The Handled reply is NOT proof of focus for a stale id (measured:
+            // unknown ids answer Ok too). Snapshots were read in the same
+            // invocation, so the address is as fresh as IPC allows.
+            Decision::Focus(addr) => {
+                let _: Value = call_env(req_focus(parse_window_id(&addr)?))?;
+                BeckonAction::Focused
+            }
+            Decision::Cycle(addr) => {
+                let _: Value = call_env(req_focus(parse_window_id(&addr)?))?;
+                BeckonAction::Cycled
+            }
+            Decision::ToggleBack(addr) => {
+                let _: Value = call_env(req_focus(parse_window_id(&addr)?))?;
+                BeckonAction::ToggledBack
+            }
+            Decision::Hide(addr) => {
+                let _: Value = call_env(req_move_to_workspace(
+                    parse_window_id(&addr)?,
+                    HIDE_WORKSPACE_INDEX,
+                ))?;
+                BeckonAction::Hidden
+            }
+        };
+
+        persist_previous(pre_focused_app.as_deref());
+        Ok(action)
+    }
+
+    fn list_running(&self) -> Result<Vec<RunningApp>> {
+        let reply: WindowsReply = call_env(req_windows())?;
+
+        let mut by_id: std::collections::BTreeMap<String, (String, usize)> = Default::default();
+        for w in reply.windows.into_iter().filter(|w| w.app_id.is_some()) {
+            let entry = by_id
+                .entry(w.app_id.unwrap())
+                .or_insert_with(|| (w.title.unwrap_or_default(), 0));
+            entry.1 += 1;
+        }
+
+        Ok(by_id
+            .into_iter()
+            .map(|(id, (name, window_count))| RunningApp {
+                id,
+                name,
+                window_count,
+            })
+            .collect())
+    }
+
+    fn list_installed(&self) -> Result<Vec<InstalledApp>> {
+        // Same contract as every Linux backend: the .desktop filename is the
+        // id, which matches niri's runtime app_id for Wayland apps.
+        let mut entries = crate::desktop::visible(crate::desktop::scan());
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries
+            .into_iter()
+            .map(|e| InstalledApp {
+                id: e.id,
+                name: e.name,
+                exec: Some(e.exec),
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -220,7 +369,9 @@ mod tests {
                     }
                     match listener.accept() {
                         Ok((mut stream, _)) => {
-                            stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).ok();
+                            stream
+                                .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+                                .ok();
                             let mut buf = String::new();
                             use std::io::Read;
                             if stream.read_to_string(&mut buf).is_err() && buf.is_empty() {
@@ -238,7 +389,11 @@ mod tests {
                 }
             });
 
-            Self { path, _requests: requests, stop }
+            Self {
+                path,
+                _requests: requests,
+                stop,
+            }
         }
     }
 
@@ -308,7 +463,7 @@ mod tests {
     fn ok_reply_unwraps_the_inner_value() {
         let srv = TestSocket::start(vec![r#"{"Ok":{"Version":"26.04 (Nixpkgs)"}}"#.into()]);
         let v: VersionReply = call(srv.path.as_path(), req_version()).unwrap();
-        assert_eq!(v.Version, "26.04 (Nixpkgs)");
+        assert_eq!(v.version, "26.04 (Nixpkgs)");
     }
 
     #[test]
@@ -329,8 +484,15 @@ mod tests {
             mk(3, Some("claude"), 300),
         ];
         let snaps = snapshots_from(&windows);
-        assert_eq!(snaps.len(), 2, "window without app_id is skipped like i3ipc");
-        assert_eq!(snaps[0].address, "3", "newest focus_timestamp gets recency 0");
+        assert_eq!(
+            snaps.len(),
+            2,
+            "window without app_id is skipped like i3ipc"
+        );
+        assert_eq!(
+            snaps[0].address, "3",
+            "newest focus_timestamp gets recency 0"
+        );
         assert_eq!(snaps[0].recency, 0);
         assert_eq!(snaps[1].address, "1");
         assert_eq!(snaps[1].recency, 1);

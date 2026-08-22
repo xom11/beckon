@@ -75,6 +75,11 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         return Ok(Box::new(hyprland::HyprlandBackend::new()?));
     }
+    // niri exports NIRI_SOCKET to children; the env var is the only source
+    // of truth (nested instances are real, so never derive the path).
+    if std::env::var_os("NIRI_SOCKET").is_some() {
+        return Ok(Box::new(niri::NiriBackend::new()?));
+    }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         // Mutter (GNOME) and KWin (KDE) both refuse to let an outside
         // process focus a window, so each needs a collaborator running
@@ -97,9 +102,9 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
                             .map_err(|kde_err| {
                                 BackendError::UnsupportedEnvironment(format!(
                                     "unrecognised Wayland compositor (XDG_CURRENT_DESKTOP is \
-                                     unset or unknown, and it is not sway or Hyprland). \
-                                     GNOME probe: {gnome_err} \
-                                     KWin probe: {kde_err}"
+                                 unset or unknown, and it is not sway, Hyprland or niri). \
+                                 GNOME probe: {gnome_err} \
+                                 KWin probe: {kde_err}"
                                 ))
                             })
                     })
@@ -147,6 +152,8 @@ pub fn detect_compositor() -> Option<&'static str> {
         Some("i3")
     } else if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
         Some("Hyprland")
+    } else if std::env::var_os("NIRI_SOCKET").is_some() {
+        Some("niri")
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         match wayland_desktop() {
             WaylandDesktop::Gnome => Some("GNOME Wayland (via shell extension)"),

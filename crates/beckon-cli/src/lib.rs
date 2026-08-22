@@ -996,6 +996,10 @@ fn cmd_doctor() -> Result<()> {
         println!("  SWAYSOCK                    = {:?}", sway_sock);
         println!("  I3SOCK                      = {:?}", i3_sock);
         println!("  HYPRLAND_INSTANCE_SIGNATURE = {:?}", hypr);
+        println!(
+            "  NIRI_SOCKET                 = {:?}",
+            std::env::var("NIRI_SOCKET").ok()
+        );
         println!("  WAYLAND_DISPLAY             = {:?}", wayland);
         println!("  DISPLAY                     = {:?}", display);
         println!();
