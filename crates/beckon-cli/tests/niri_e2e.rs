@@ -34,11 +34,9 @@ use serde_json::{json, Value};
 
 const BECKON: &str = env!("CARGO_BIN_EXE_beckon");
 
-/// Must match `HIDE_WORKSPACE_INDEX` in `crates/beckon-linux/src/niri.rs`.
-/// The two cannot share a constant — that one is private to a crate this
-/// test does not link — so a rename there has to be mirrored here, and the
-/// hide test below is what will notice.
-const HIDE_WORKSPACE_INDEX: u64 = 1_000_000;
+/// The empty trailing workspace idx the fake `Workspaces` reply offers; the
+/// hide test asserts beckon picks exactly it.
+const HIDE_TARGET_IDX: u64 = 9;
 
 #[derive(Debug, Clone)]
 struct FakeWindow {
@@ -97,6 +95,14 @@ impl State {
         if req.get("Windows").is_some() {
             let wins: Vec<Value> = self.windows.iter().map(|w| w.to_wire()).collect();
             return json!({ "Ok": { "Windows": wins } }).to_string();
+        }
+
+        if req.get("Workspaces").is_some() {
+            // Focused workspace on "winit" plus the guaranteed-empty trailing
+            // one at idx 9 — the shape `hide_target_index` picks from. One
+            // line: the fake socket writes this verbatim and the client reads
+            // one line per reply.
+            return r#"{"Ok":{"Workspaces":[{"id":1,"idx":1,"name":null,"output":"winit","is_urgent":false,"is_active":true,"is_focused":true,"active_window_id":7},{"id":2,"idx":9,"name":null,"output":"winit","is_urgent":false,"is_active":false,"is_focused":false,"active_window_id":null}]}}"#.into();
         }
 
         if req.get("Version").is_some_and(|v| v.is_null()) {
@@ -424,10 +430,10 @@ fn mru_file_records_the_app_we_left() {
 }
 
 #[test]
-fn hide_moves_to_far_workspace_without_focus() {
+fn hide_moves_to_empty_trailing_workspace_without_focus() {
     // No minimize exists in niri (measured); step 5c moves the lone window
-    // to a far-index workspace with focus:false so the view does not chase
-    // it. A later FocusWindow navigates back — self-unparking.
+    // to the highest-index EMPTY workspace with focus:false so the view does
+    // not chase it. A later FocusWindow navigates back — self-unparking.
     let mut state = State::default();
     state.windows = vec![FakeWindow::new(7, "claude", 1)];
     state.windows[0].is_focused = true;
@@ -445,8 +451,8 @@ fn hide_moves_to_far_workspace_without_focus() {
         snap.actions[0]
     );
     assert!(
-        snap.actions[0].contains(&format!("\"Index\":{HIDE_WORKSPACE_INDEX}")),
-        "expected the far scratch index: {:?}",
+        snap.actions[0].contains(&format!("\"Index\":{HIDE_TARGET_IDX}")),
+        "expected the empty trailing index: {:?}",
         snap.actions[0]
     );
     assert!(

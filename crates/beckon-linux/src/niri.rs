@@ -30,10 +30,6 @@ use serde_json::{json, Value};
 
 use crate::algorithm::{decide, Decision, WindowSnapshot};
 
-/// Step 5c target: far enough that no real session reaches it. niri creates
-/// the workspace on demand and FocusWindow later navigates back to it.
-const HIDE_WORKSPACE_INDEX: u64 = 1_000_000;
-
 pub struct NiriBackend;
 
 impl NiriBackend {
@@ -82,6 +78,26 @@ pub(crate) struct FocusTimestamp {
     pub nanos: u32,
 }
 
+#[derive(Deserialize, Debug)]
+struct WorkspacesReply {
+    #[serde(rename = "Workspaces")]
+    workspaces: Vec<NiriWorkspace>,
+}
+
+#[derive(Deserialize, Debug)]
+struct NiriWorkspace {
+    #[serde(default)]
+    idx: u64,
+    #[serde(default)]
+    output: String,
+    #[serde(default)]
+    is_focused: bool,
+    /// `null` on an empty workspace — the emptiness test on 26.04, which has
+    /// no `is_empty` field (measured).
+    #[serde(default)]
+    active_window_id: Option<u64>,
+}
+
 /// Reply envelope. `#[serde(untagged)]` tries `Ok` first; an `Err` reply
 /// carries the compositor's message string.
 #[derive(Deserialize)]
@@ -117,6 +133,10 @@ fn req_move_to_workspace(window_id: u64, index: u64) -> Value {
         "reference": { "Index": index },
         "focus": false
     } } })
+}
+
+fn req_workspaces() -> Value {
+    json!({ "Workspaces": null })
 }
 
 // ---- framing ----
@@ -214,6 +234,43 @@ fn persist_previous(app: Option<&str>) {
     }
 }
 
+/// Step 5c target: the highest-index EMPTY workspace on the focused output.
+///
+/// niri guarantees at least one empty workspace at the end of every output,
+/// so this target always EXISTS — moving onto it never depends on niri
+/// creating a workspace on demand. The first draft used a constant far-away
+/// index (1_000_000); `WorkspaceReferenceArg::Index` is a `u8` in niri-ipc,
+/// so anything past 255 fails to deserialize and the server answers
+/// "error parsing request" (measured against real 26.04).
+fn hide_target_index() -> Result<u64> {
+    let reply: WorkspacesReply = call_env(req_workspaces())?;
+    let focused_output = reply
+        .workspaces
+        .iter()
+        .find(|w| w.is_focused)
+        .map(|w| w.output.clone());
+    let candidates: Vec<u64> = reply
+        .workspaces
+        .iter()
+        .filter(|w| Some(&w.output) == focused_output.as_ref() && w.active_window_id.is_none())
+        .map(|w| w.idx)
+        .collect();
+    match candidates.into_iter().max() {
+        Some(idx) => Ok(idx),
+        // No empty workspace on this output: fall through to its last index
+        // and let niri append a fresh trailing one (move-to-next-index
+        // measured Handled on 26.04).
+        None => reply
+            .workspaces
+            .iter()
+            .filter(|w| Some(&w.output) == focused_output.as_ref())
+            .map(|w| w.idx)
+            .max()
+            .map(|idx| idx + 1)
+            .ok_or_else(|| BackendError::Ipc("no workspaces on focused output".to_string())),
+    }
+}
+
 impl Backend for NiriBackend {
     fn beckon(&self, id: &str) -> Result<BeckonAction> {
         let reply: WindowsReply = call_env(req_windows())?;
@@ -274,10 +331,8 @@ impl Backend for NiriBackend {
                 BeckonAction::ToggledBack
             }
             Decision::Hide(addr) => {
-                let _: Value = call_env(req_move_to_workspace(
-                    parse_window_id(&addr)?,
-                    HIDE_WORKSPACE_INDEX,
-                ))?;
+                let idx = hide_target_index()?;
+                let _: Value = call_env(req_move_to_workspace(parse_window_id(&addr)?, idx))?;
                 BeckonAction::Hidden
             }
         };
@@ -424,12 +479,15 @@ mod tests {
         );
         assert_eq!(
             serde_json::from_str::<Value>(
-                &serde_json::to_string(&req_move_to_workspace(7, 1_000_000)).unwrap()
+                &serde_json::to_string(&req_move_to_workspace(7, 9)).unwrap()
             )
             .unwrap(),
             serde_json::json!({ "Action": { "MoveWindowToWorkspace": {
-                "window_id": 7, "reference": { "Index": 1_000_000 }, "focus": false } } })
+                "window_id": 7, "reference": { "Index": 9 }, "focus": false } } })
         );
+        // The hide target must fit niri's `WorkspaceReferenceArg::Index(u8)`:
+        // 1_000_000 deserializes as a parse error on real 26.04.
+        assert!(req_move_to_workspace(7, u8::MAX as u64).to_string().contains("255"));
     }
 
     #[test]
