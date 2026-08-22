@@ -31,6 +31,9 @@ pub mod gnome;
 #[cfg(target_os = "linux")]
 pub mod kde;
 
+#[cfg(target_os = "linux")]
+pub mod niri;
+
 /// Which in-compositor collaborator a Wayland session needs.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
