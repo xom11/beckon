@@ -10,6 +10,8 @@
 //! The deliverable of a check is the upgrade command for the channel that
 //! actually installed this binary -- see `upgrade_command`.
 
+use crate::settings::AboutValue;
+
 /// A release version. Field order IS the comparison order, which is what the
 /// derived `Ord` gives us for free: major, then minor, then patch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,6 +100,87 @@ pub fn compare(current: Version, latest: Version) -> Verdict {
     }
 }
 
+/// How this binary got onto the machine, as far as its own path can say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    Nix,
+    Scoop,
+    Homebrew,
+    Cargo,
+    /// A hand-placed binary, a build tree, or a packaging route beckon does
+    /// not know. The Releases link is the whole answer for these.
+    Unknown,
+}
+
+/// Which channel installed the binary at `exe`.
+///
+/// **The path is used UNRESOLVED**, and that is inherited rather than
+/// incidental: `AboutState` deliberately does not push `current_exe()`
+/// through `GetFinalPathNameByHandleW`, because resolving reports today's
+/// junction target -- the surface that lied during the a14 incident.
+/// `~/scoop/apps/beckon/current/beckon-serve.exe` says Scoop whether or not
+/// `current` points anywhere sensible today.
+///
+/// Matching is on the STRING form with `\` folded to `/` and the whole thing
+/// lowercased. Two reasons, and both are load-bearing: Windows paths are
+/// case-insensitive and use the other separator, and a `\`-spelled literal is
+/// a single `Path` component on the two CI jobs that are not Windows -- so a
+/// component-wise match would be untestable everywhere it matters most.
+pub fn detect_channel(exe: Option<&std::path::Path>) -> Channel {
+    let Some(exe) = exe else {
+        return Channel::Unknown;
+    };
+    let p = exe.to_string_lossy().replace('\\', "/").to_lowercase();
+    if p.contains("/nix/store/") {
+        Channel::Nix
+    } else if p.contains("/scoop/apps/") {
+        Channel::Scoop
+    } else if p.contains("/cellar/") || p.contains("/homebrew/") || p.contains("/linuxbrew/") {
+        // Three needles because the same formula presents as
+        // `/opt/homebrew/bin` (ARM), `/usr/local/…/Cellar/…` (Intel) and
+        // `/home/linuxbrew/…`. `/usr/local/bin` alone is NOT a needle: it
+        // would claim every hand-copied binary on a Mac.
+        Channel::Homebrew
+    } else if p.contains("/.cargo/bin/") {
+        Channel::Cargo
+    } else {
+        Channel::Unknown
+    }
+}
+
+/// What would upgrade this install, as a command plus the caveat that does
+/// not belong on the clipboard.
+///
+/// `shown` leads with the command and may add a caveat; `copy` is the command
+/// alone. `AboutValue`'s own doc says why they are two fields: a user pastes
+/// the copied half into a terminal, where ` - run in your flake repo` is a
+/// syntax error.
+///
+/// `brew services restart beckon` stays OUT of `copy` on purpose. The
+/// Homebrew formula ships a LaunchAgent, and the running agent holds the old
+/// binary until the service restarts -- but beckon cannot know whether this
+/// install is service-managed, and a command that errors for half the users
+/// is worse on the clipboard than in a sentence.
+pub fn upgrade_command(channel: Channel) -> Option<AboutValue> {
+    let (copy, caveat) = match channel {
+        Channel::Nix => ("nix flake update beckon", " - run in your flake repo"),
+        Channel::Scoop => ("scoop update beckon", ""),
+        Channel::Homebrew => (
+            "brew upgrade beckon",
+            " - then: brew services restart beckon",
+        ),
+        Channel::Cargo => (
+            "cargo install --git https://github.com/xom11/beckon beckon-cli --force",
+            "",
+        ),
+        Channel::Unknown => return None,
+    };
+    Some(AboutValue {
+        shown: format!("{copy}{caveat}"),
+        copy: copy.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +266,116 @@ mod tests {
     #[test]
     fn a_version_displays_as_a_bare_triple() {
         assert_eq!(v(0, 10, 0).to_string(), "0.10.0");
+    }
+
+    use std::path::Path;
+
+    /// The five outcomes, in both separator styles. A Windows path reaches
+    /// this function as ONE `Path` component on the two CI jobs that are not
+    /// Windows -- which is exactly why the function works on the string form
+    /// and normalises separators itself.
+    #[test]
+    fn the_channel_comes_out_of_the_path_the_binary_was_invoked_as() {
+        let cases: &[(&str, Channel)] = &[
+            ("/nix/store/abc123-beckon-0.10.0/bin/beckon", Channel::Nix),
+            (
+                r"C:\Users\me\scoop\apps\beckon\current\beckon-serve.exe",
+                Channel::Scoop,
+            ),
+            (
+                "/home/me/scoop/apps/beckon/current/beckon-serve.exe",
+                Channel::Scoop,
+            ),
+            ("/opt/homebrew/bin/beckon", Channel::Homebrew),
+            (
+                "/usr/local/Cellar/beckon/0.10.0/bin/beckon",
+                Channel::Homebrew,
+            ),
+            ("/home/linuxbrew/.linuxbrew/bin/beckon", Channel::Homebrew),
+            ("/Users/me/.cargo/bin/beckon", Channel::Cargo),
+        ];
+        for (path, want) in cases {
+            assert_eq!(detect_channel(Some(Path::new(path))), *want, "{path}");
+        }
+    }
+
+    /// Windows paths are case-insensitive, so the needles must be too.
+    #[test]
+    fn channel_detection_ignores_case() {
+        assert_eq!(
+            detect_channel(Some(Path::new(
+                r"C:\Users\Me\Scoop\Apps\Beckon\current\beckon-serve.exe"
+            ))),
+            Channel::Scoop
+        );
+    }
+
+    /// `/usr/local/bin` is deliberately NOT a Homebrew needle: it is far too
+    /// broad and would claim a hand-copied binary for a package manager that
+    /// never saw it.
+    #[test]
+    fn an_unrecognised_location_is_unknown_not_a_guess() {
+        assert_eq!(
+            detect_channel(Some(Path::new("/usr/local/bin/beckon"))),
+            Channel::Unknown
+        );
+        assert_eq!(
+            detect_channel(Some(Path::new("/home/me/Downloads/beckon"))),
+            Channel::Unknown
+        );
+        assert_eq!(detect_channel(None), Channel::Unknown);
+    }
+
+    /// `shown` may carry a caveat; `copy` is the bare payload, because what a
+    /// user does with it is paste it into a terminal. This is the whole
+    /// reason `AboutValue` has two fields.
+    #[test]
+    fn the_clipboard_half_is_a_command_and_nothing_else() {
+        for ch in [
+            Channel::Nix,
+            Channel::Scoop,
+            Channel::Homebrew,
+            Channel::Cargo,
+        ] {
+            let cmd = upgrade_command(ch).expect("every known channel has a command");
+            assert!(!cmd.copy.contains(" - "), "{ch:?}: copy carries a caveat");
+            assert!(
+                !cmd.copy.contains('('),
+                "{ch:?}: copy carries a parenthetical"
+            );
+            assert!(
+                cmd.shown.starts_with(cmd.copy.as_str()),
+                "{ch:?}: shown must lead with the command"
+            );
+            assert!(
+                cmd.copy.is_ascii(),
+                "{ch:?}: display strings are ASCII here"
+            );
+            assert!(
+                cmd.shown.is_ascii(),
+                "{ch:?}: display strings are ASCII here"
+            );
+        }
+    }
+
+    /// The two caveats that would otherwise be lost. nix updates the wrong
+    /// thing outside the flake repo; brew leaves the LaunchAgent holding the
+    /// old binary, which is the a14 incident on the other platform.
+    #[test]
+    fn the_two_channels_with_a_caveat_carry_it_in_shown() {
+        let nix = upgrade_command(Channel::Nix).unwrap();
+        assert_eq!(nix.copy, "nix flake update beckon");
+        assert!(nix.shown.contains("flake repo"));
+
+        let brew = upgrade_command(Channel::Homebrew).unwrap();
+        assert_eq!(brew.copy, "brew upgrade beckon");
+        assert!(brew.shown.contains("brew services restart beckon"));
+    }
+
+    /// No command at all rather than a guessed one. The Releases link is the
+    /// whole answer for a binary beckon cannot place.
+    #[test]
+    fn an_unknown_channel_gets_no_command() {
+        assert_eq!(upgrade_command(Channel::Unknown), None);
     }
 }
