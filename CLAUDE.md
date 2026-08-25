@@ -659,6 +659,17 @@ hashes the result into the lock file's NAME — renaming the lock would let an
 old and a new binary both serve. Long paths are unaffected: the manifest
 declares `longPathAware`.
 
+**Since 0.10.0, beckon also makes exactly one outbound NETWORK request** —
+never a file read or write — and only on a person pressing `Check for
+updates`, from `serve`'s settings window: the About page's own button, or the
+tray row, which opens the window (landing on About) and runs the SAME check
+rather than firing one of its own. There is no background poll, no request on
+startup, and nothing downloaded: `beckon_cli::update` spawns the system
+`curl` against `github.com/.../releases/latest`, reads the redirect's tag out
+of the `Location` header, and compares it to the running version. See
+`docs/notes/distribution.md` for the mechanism and the measurements behind
+it.
+
 ## Out of scope (explicitly)
 
 - **Config for the hot path / app aliases.** `beckon <id>` resolves against OS
@@ -672,6 +683,13 @@ declares `longPathAware`.
 - **Window tiling / layout management** — beckon only focuses and launches,
   never moves or resizes.
 - **PWA install helper** — the user installs PWAs manually via the browser.
+- **Self-update and background update polling.** The Check for updates button
+  (§ "What beckon reads and writes" above) only ever reports; it never
+  downloads or replaces anything, and there is no timer or CLI verb that
+  checks on its own. Reason: the running binary lives in a read-only nix
+  store or under a package manager's own junction (scoop's `current`,
+  Homebrew's Cellar symlink), and a process that overwrites itself there
+  breaks the install the same package manager is supposed to own.
 - **GUI / TUI — CLI only, with one exception**, which is `serve`'s control
   surface rather than a launcher: the tray context menu (reload, pause, open
   the log, toggle autostart, quit) and the settings window it opens. Four doors

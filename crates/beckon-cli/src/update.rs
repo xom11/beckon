@@ -29,6 +29,28 @@ const NULL_SINK: &str = "/dev/null";
 
 /// `CREATE_NO_WINDOW`. `beckon-serve.exe` is GUI-subsystem, so without this a
 /// console flashes on every check.
+///
+/// **Measured on a14 (Windows 11 Home, ARM64) 2026-08-25, with a control.**
+/// A probe that spawns this exact `curl.exe` invocation from a GUI-subsystem
+/// process, run through a Scheduled Task bound to session 1 (SSH itself
+/// lands in session 0, which has no interactive window station and cannot
+/// answer this question): without the flag, every run opened two new
+/// VISIBLE top-level windows -- a real **`Windows Terminal`** window
+/// (`CASCADIA_HOSTING_WINDOW_CLASS`) plus its `PseudoConsoleWindow`, not the
+/// small conhost box this comment used to picture. On Windows 11 the flash
+/// this flag exists to suppress is Windows' own terminal-handoff feature
+/// opening a full terminal window, not classic conhost. With the flag, 0/3
+/// runs opened any visible window; a hidden `conhost.exe` was still created
+/// each time (curl still runs, its console is just never shown, matching the
+/// flag's documented "no window" contract, not "no console"). The naive
+/// first attempt at this probe found NO new window in either arm and would
+/// have been reported as a false negative: the probe process, launched
+/// directly as the Scheduled Task's action, inherited a console from the
+/// Task Scheduler's own `svchost.exe` chain (`GetConsoleWindow()`
+/// non-null), unlike a real `beckon-serve.exe` launch from Explorer -- so
+/// the no-flag arm just shared that inherited console instead of exercising
+/// the console-less-parent path. Calling `FreeConsole()` before spawning
+/// anything is what made the control show a positive.
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -38,10 +60,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// `beckon_macos::shell`. `/usr/bin/curl` ships with the OS.
 ///
 /// Windows: the system copy first (predictable), then bare `curl` so a
-/// Git-for-Windows or scoop curl on `PATH` still works. **Whether the system
-/// copy exists on ARM64 Windows 11 is unmeasured** -- see the a14 probe. If
-/// it does not, `fetch` returns `NoClient` and the About page says so, which
-/// is designed for and tested.
+/// Git-for-Windows or scoop curl on `PATH` still works. **Measured on a14
+/// (Windows 11 Home, ARM64) 2026-08-25**: `C:\Windows\System32\curl.exe`
+/// exists (`Test-Path` -> `True`) and answers this crate's own request --
+/// `-w '%{redirect_url}'` against the real URL printed
+/// `https://github.com/xom11/beckon/releases/tag/v0.10.0`, exit 0, `curl`'s
+/// own `time_total` 292-326 ms across three runs. So on the one ARM64
+/// Windows machine this has been checked on, the first candidate always
+/// resolves and the bare `curl` fallback is never reached; it stays for a
+/// machine where the system copy is missing, in which case `fetch` returns
+/// `NoClient` and the About page says so, which is designed for and tested
+/// either way.
 fn candidates() -> Vec<std::ffi::OsString> {
     #[cfg(target_os = "windows")]
     {

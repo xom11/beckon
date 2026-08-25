@@ -80,7 +80,9 @@ pub(super) struct AboutControls {
     /// is `Some` -- there is one only once a check finds a newer release.
     pub(super) command_row: Retained<NSStackView>,
     /// `cmd.shown`, which may carry a caveat the bare `cmd.copy` on the
-    /// clipboard must not -- see `copy_update_command` in `mod.rs`.
+    /// clipboard must not -- see `copy_field(Field::UpdateCommand)` in
+    /// `mod.rs`, which reads `cmd.copy` through
+    /// `beckon_core::settings::copy_text`.
     pub(super) command_value: Retained<NSTextField>,
     /// Hidden until a check has produced ANY verdict, including a failure --
     /// what gives a user with no curl somewhere to go. Mirrors
@@ -215,9 +217,12 @@ pub(super) fn build(
     );
 
     // The upgrade command, shown only once a check finds one. `cmd.shown`
-    // is drawn here; the Copy button puts `cmd.copy` on the clipboard
-    // instead -- `apply` and `copy_update_command` (in `mod.rs`) are the
-    // only two places that read either half, and neither may swap them.
+    // is drawn here, by `apply` below; the Copy button puts `cmd.copy` on
+    // the clipboard instead, by way of `copy_field(Field::UpdateCommand)`
+    // in `mod.rs`, which does not choose the half itself -- it calls
+    // `beckon_core::settings::copy_text`, the one place in core that maps a
+    // `Field` to `.shown` or `.copy`. Neither this file's `apply` nor that
+    // core function may swap them.
     let command_value = w::label("", mtm);
     let command_copy = w::glyph(
         "Copy",

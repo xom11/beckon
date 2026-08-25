@@ -187,6 +187,120 @@ means the repo is missing from the token's list. `gh api rate_limit --include`
 also returns a `github-authentication-token-expiration` header, which is where
 the expiry above came from.
 
+## Check for updates: a 302, no HTTP crate, and the a14 probe
+
+`beckon`'s Check for updates button (`crates/beckon-cli/src/update.rs`) asks
+GitHub whether a newer release exists by spawning the system `curl`, once, on
+a press — no daemon, no CLI verb, no polling, and nothing downloaded or
+written to disk. This section is the measured evidence behind that design;
+the code's own doc comments carry the same facts closer to the lines they
+justify.
+
+**The 302 is the whole trick, and it is why `api.github.com` is not used.**
+`github.com/xom11/beckon/releases/latest` is a redirect page: it answers
+`302` with the target tag in the `Location` header and no body worth
+reading. `curl -I` (HEAD, no `-L`) plus `-w '%{redirect_url}'` gets the tag
+straight out of the header, so there is no JSON to parse and, more
+importantly, no `api.github.com/repos/.../releases/latest` call to make —
+that endpoint counts against GitHub's unauthenticated rate limit (60/hour,
+shared by IP), and a beckon user behind a NAT with several machines checking
+could plausibly share that budget with other tools. The `releases/latest`
+redirect page is not rate-limited the same way.
+
+**196 ms, measured on macOS 2026-08-25** (`update.rs`'s own file-level doc
+comment carries the same number) — the whole request, from spawn to `curl`
+exiting. **On a14 (Windows 11 Home, ARM64), the same date, `curl`'s own
+`-w '%{time_total}'` read 292-326 ms across three runs** — network latency
+to GitHub from that connection, not a Windows-specific cost; the system
+`curl.exe` itself resolves and answers immediately (see the a14 probe below).
+
+**No HTTP crate, deliberately.** `beckon-core` depends on `thiserror` and
+`toml`; `beckon-cli` adds `anyhow`, `clap`, `fs4` and `notify`. A TLS stack
+(`reqwest` or similar) would put on the order of sixty more crates into a
+build graph that was already broken for a month (v0.8.0 to v0.9.3, see
+above) by a single ungated `mod`, and a crypto backend needing its own cross
+C toolchain is exactly the kind of dependency that stops
+`cargo clippy --target aarch64-pc-windows-msvc` from resolving on a machine
+that is not Windows — a gate leg this repository's CI depends on. Shelling
+out is already the established pattern here: `beckon_macos::shell` invokes
+`/usr/bin/open` the same way.
+
+### Channel detection is a needle match on the UNRESOLVED path, and `/usr/local/bin` is deliberately not one of the needles
+
+`beckon_core::update::detect_channel` reads `current_exe()` -- unresolved,
+for the same reason the About page's `Location` row is (see "What beckon
+reads and writes" in `CLAUDE.md`): a resolved nix store path or a resolved
+scoop `current` junction reports today's target, not how the binary got
+there. Matching is on the lowercased string with `\` folded to `/`, so the
+same needles work on all three CI platforms.
+
+| Channel | needle(s) | why more than one, where it applies |
+|---|---|---|
+| Nix | `/nix/store/` | one needle is enough — the store path is canonical |
+| Scoop | `/scoop/apps/` | matches both `~\scoop\...` and a per-user install under a different home |
+| Homebrew | `/cellar/`, `/homebrew/`, `/linuxbrew/` | three needles because ONE formula presents three ways: `/opt/homebrew/bin` (macOS ARM), `/usr/local/.../Cellar/...` (macOS Intel), `/home/linuxbrew/...` (Linuxbrew) |
+| Cargo | `/.cargo/bin/` | `cargo install --git`, this project's own documented from-source route |
+| Unknown | (none match) | hand-placed binary, a build tree, or a packaging route beckon does not know; the Releases link is the whole answer for this tier |
+
+**`/usr/local/bin` alone is deliberately NOT a Homebrew needle.** It is a
+prefix of the Intel Cellar path (`/usr/local/Cellar/...`, which the `cellar`
+needle already catches), but it is also where anyone drops a hand-copied or
+hand-built binary on a Mac — that is the whole reason `/usr/local/bin`
+exists as a convention. Matching on it would tell a user who built beckon
+themselves and moved it there to run `brew upgrade beckon`, a command that
+cannot find what it is looking for. `beckon-core`'s `update.rs` test module
+pins exactly this — `an_unrecognised_location_is_unknown_not_a_guess`
+asserts `/usr/local/bin/beckon` resolves to `Channel::Unknown`, on purpose,
+not a gap.
+
+### The a14 probe: curl on ARM64 Windows, and the console flash
+
+**Step 1 — does the system `curl` exist and answer, measured on a14
+(zenbook-a14, Windows 11 Home, ARM64) 2026-08-25, over plain SSH** (session 0
+is enough for this half — no window or console is involved):
+
+```powershell
+Test-Path C:\Windows\System32\curl.exe
+C:\Windows\System32\curl.exe -sS -I --connect-timeout 2 -m 3 -o NUL `
+  -w '%{redirect_url}' https://github.com/xom11/beckon/releases/latest
+```
+
+Result: `True`, then `https://github.com/xom11/beckon/releases/tag/v0.10.0`,
+exit 0. The bare `curl` fallback in `candidates()` has never been exercised
+on the one ARM64 Windows machine this has been checked on.
+
+**Step 2 — does `CREATE_NO_WINDOW` actually suppress a visible flash.** SSH
+lands in session 0, which has no interactive window station, so this
+question cannot be answered there; it needs a Scheduled Task with
+`LogonType=InteractiveToken` bound to the logged-in user's SID, landing in
+session 1 (confirmed live via `explorer.exe`'s own `SessionId`). Measured
+with a small standalone probe (GUI-subsystem, spawning the exact `curl.exe`
+invocation `fetch()` uses, with an `EnumWindows` + `CreateToolhelp32Snapshot`
+detector rather than a human watching a screen) — full account and the raw
+output are in the Task 10 report; the load-bearing points:
+
+- **The naive version of this probe found nothing in EITHER arm**, which is
+  the false-negative shape this project's own testing note warns about
+  (`CLAUDE.md`, "Always run a control"). Root cause: the probe process,
+  launched directly as a Scheduled Task action, inherited a console from the
+  Task Scheduler's own `svchost.exe` chain (`GetConsoleWindow()` came back
+  non-null) — unlike a real `beckon-serve.exe`, which is always launched by
+  something already console-less (Explorer, a Startup shortcut, or itself).
+  Calling `FreeConsole()` before spawning anything fixed it.
+- **With that fix, three clean runs, one pattern every time**: with no flag,
+  two new VISIBLE windows appear — a real **`Windows Terminal`** window
+  (`CASCADIA_HOSTING_WINDOW_CLASS`) and its `PseudoConsoleWindow`, not the
+  small conhost box this feature is usually pictured stopping. Windows 11's
+  own terminal-handoff feature is what flashes on this machine, not classic
+  `conhost.exe`. With `CREATE_NO_WINDOW`, zero visible windows every time — a
+  hidden `conhost.exe` is still created (the flag suppresses the WINDOW, not
+  the console), which is consistent with the flag's documented contract
+  rather than a sign it did nothing.
+- Full raw command output, both the confounded first attempt and the fixed
+  runs, is in the Task 10 implementation report
+  (`.superpowers/sdd/2026-08-25-check-for-updates/task-10-report.md`) rather
+  than repeated here.
+
 ## The user's nix integration
 
 Flake-input pattern, no hand-rolled overlay.

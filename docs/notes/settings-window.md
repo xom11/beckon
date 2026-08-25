@@ -322,6 +322,99 @@ of interior" when the figure was 232, and no reading of the code produced 262.
 `layout.rs` now has its first five tests (Windows job only); the seven in core
 run everywhere.
 
+## The window grew again for the update check, and System pays for it — ACCEPTED, not fixed
+
+2026-08-25 (the check-for-updates branch, Task 9). Same shape as the section
+above, one level up: About needed two more real rows (the update status line
+and `Check now`, then the upgrade-command row) and had nowhere to put them
+inside the existing card, so `WINDOW_HEIGHT` moved **500 -> 592** and
+`MIN_HEIGHT` **480 -> 572** — both by exactly 92 px, one row pitch (46) times
+two. `beckon_core::page_plan::about_plan`'s `content_h` grew by the same 92;
+`system_plan`'s did not move at all, because the System card has no new
+content to grow into.
+
+**The System door was already the shallower of the two fixed cards** --
+`card_h` (`layout.rs`'s padded card height, not the bare `content_h`) is 326
+for System against About's 432 at the shipped size -- and the 60 px "ground"
+ceiling the section above derived — one row pitch plus a card gap, past which
+emptiness stops reading as margin — used to bound *both* doors. It now only
+binds About, on purpose:
+
+```text
+ground(page) = WINDOW_HEIGHT - 122 - card_h(page)   -- 122 = layout.rs's own
+                                                        `geometry()`: titlebar
+                                                        + tab strip + a gap
+                                                        above the card, plus
+                                                        pad + a control row +
+                                                        a gap below it. Both
+                                                        halves are fixed
+                                                        tokens, not functions
+                                                        of h, so the SUM is
+                                                        constant across every
+                                                        window height.
+
+System:  card_h = 326 (unchanged)
+  before (WINDOW_HEIGHT 500):  ground = 500 - 122 - 326 =  52   (inside the 60 px ceiling)
+  after  (WINDOW_HEIGHT 592):  ground = 592 - 122 - 326 = 144   (well past it)
+
+About:   card_h = 432 (was 340 before this branch -- 14 more than System's
+                        326, not equal to it; the two doors were already
+                        unequal, just both inside the same 60 px ceiling)
+  after: ground = 592 - 122 - 432 =  38   (still inside the ceiling; this is
+                                            the page WINDOW_HEIGHT is derived
+                                            from, so it has to stay inside it)
+```
+
+Keyboard has no new content either, so its own ground widens by the same flat
+92 px the window grew by — same mechanism, no separate derivation needed.
+
+**This is pinned as arithmetic, not left to be rediscovered**:
+`beckon_core::page_plan`'s
+`about_now_legitimately_outgrows_system_by_the_update_check` asserts the
+`about - sys` gap is 106 (14 px pre-existing, from the two doors never having
+been EXACTLY equal, plus the 92 the update check added) and says in its own
+failure message to re-derive `MIN_HEIGHT` / `WINDOW_HEIGHT` and this margin
+together if it ever moves; `layout.rs`'s
+`the_fixed_doors_leave_no_room_for_a_second_card` pins System's ground at
+`144` by name (not by the old 60 px bound, which it explicitly narrowed to
+About alone) and About's at the ceiling as before.
+
+**Accepted for this branch, on two grounds.** First, the update check itself
+is not what bloated this: Windows' own contribution to About is already the
+LEANER of the two platforms' -- `about_plan`'s two rows (`update`, `command`)
+against `AboutControls`' three on macOS (`update_row`, `command_row`,
+`open_releases_row`, each its own `NSStackView`). Windows still needed 92 px
+for the leaner version, which is evidence the growth is real content, not
+Windows-side excess -- there was no cheaper way to build this on this
+platform that was left on the table. Second, the change is a symptom of a
+**content** decision (About needed two more rows) forcing a **window**
+decision (grow to fit them), and no purely geometric fix on the System side
+removes that dependency — it only moves the cost somewhere else, and nothing
+clips or overlaps at the size this branch ships.
+
+**Two ways it could be reduced, both deferred rather than rejected:**
+
+1. **Give System a fourth content group**, so its card grows to use the room
+   the window now has instead of leaving it empty. Requires a real fourth
+   setting to put there; inventing one to fill space would be worse than the
+   empty ground it replaces.
+2. **Build real collapsing-row infrastructure for Windows**, so a page's card
+   can shrink to what it actually contains instead of the window being sized
+   for the tallest door. **`ShowWindow(SW_HIDE)` is not that infrastructure**
+   and must not be reached for here: hiding a control raises no focus
+   notification at all, which is the exact defect this codebase already paid
+   to fix once, on the banner's `Reload` button (see the `repair_hidden_button`
+   history in `mod.rs`, and the a14 measurement there — `DM_GETDEFID` kept
+   answering `IDC_RELOAD` after the banner was dismissed, because hiding a
+   window is invisible to `BN_SETFOCUS` / `BN_KILLFOCUS`). Collapsing rows
+   would multiply that hazard by every row that can collapse, not just one
+   banner; it needs its own focus-repair design before it is worth building,
+   not a `SW_HIDE` call at each call site.
+
+Neither is scheduled. If a future door adds System content, re-derive the
+table above rather than assume it still holds — the 122 px of fixed chrome is
+what stays constant, not the ground numbers themselves.
+
 ## The filter box is a view, and the mapping is the feature
 
 `IDC_FILTER` (1021, cue banner `Filter`, no label) matches case-insensitively
