@@ -1210,21 +1210,41 @@ git show --stat HEAD
 
 ---
 
-## Task 6: `flush_paint` on both window crates
+## Task 6: `flush_paint`, and the push that carries `UpdateState` to About
 
-`refresh_settings` sets control text, but the frame is painted by the message
-pump — which Task 7 is about to block for up to three seconds. Without an
-explicit flush the window shows the *old* frame for that whole time and reads
-as frozen.
+Two small cross-platform primitives, in the two files that already hold the
+window's public surface.
+
+**`flush_paint`** — `refresh_settings` sets control text, but the frame is
+painted by the message pump, which Task 7 is about to block for up to three
+seconds. Without an explicit flush the window shows the *old* frame for that
+whole time and reads as frozen.
+
+**`set_update_state`** — and this one is a plan correction found in
+pre-flight, not an original step. **`apply_about_state()` takes no arguments
+and builds `AboutInputs` entirely from local sources** (`current_exe()`,
+`fs::metadata`, `env!`), while `refresh_settings` pushes only `ControlState`
+plus the System page's own second push. **There is no existing path from
+`ServeState` to the About page**, so Tasks 8 and 9 as originally written
+assumed plumbing that does not exist. It is built here.
+
+The shape is the one `refresh_settings` already documents for the System
+page — *"A second push, and design §1's split by store is why"* — and it
+earns its place for the same reason: About must keep working in the
+`unreadable_state` case, where there is no `Model` to project a
+`ControlState` out of at all.
 
 **Files:**
 - Modify: `crates/beckon-macos/src/settings_window/mod.rs`
 - Modify: `crates/beckon-windows/src/settings_window/mod.rs`
 
 **Interfaces:**
-- Produces: `pub fn flush_paint()` in both crates' `settings_window`, callable
-  as `swin::flush_paint()` from `serve.rs`. **Same name, same signature, no
-  return value** — `serve.rs` calls it unconditionally on both platforms.
+- Consumes: `beckon_core::update::UpdateState` (Task 3),
+  `AboutInputs.update` (Task 4)
+- Produces, in **both** crates' `settings_window`, with identical names and
+  signatures because `serve.rs` calls them through the `swin` alias:
+  - `pub fn flush_paint()`
+  - `pub fn set_update_state(update: beckon_core::update::UpdateState)`
 
 - [ ] **Step 1: Add the Windows one**
 
@@ -1321,14 +1341,71 @@ shape.
 
 Remove the temporary sleep before committing.
 
-- [ ] **Step 4: Run the gate**
+- [ ] **Step 4: Store the update state in each window's `UI`**
 
-- [ ] **Step 5: Commit**
+Both crates keep their live widgets in a thread-local `UI` (`UI.with(|u| …)`,
+reached by `hwnd()` on Windows and `controls()` on macOS). Add one field to
+each crate's `Ui` struct:
+
+```rust
+    /// What About should say about the update check.
+    ///
+    /// Pushed in by `serve` through `set_update_state` and read by
+    /// `apply_about_state`, which builds every OTHER `AboutInputs` field
+    /// from local sources -- `current_exe()`, `fs::metadata`, `env!`. This
+    /// one cannot be local: the check runs in `serve`, not in the window.
+    update: beckon_core::update::UpdateState,
+```
+
+Initialise it to `beckon_core::update::UpdateState::Idle` wherever `Ui` is
+constructed.
+
+- [ ] **Step 5: Add `set_update_state` to both crates**
+
+```rust
+/// Take the update check's latest answer and redraw About with it.
+///
+/// **A second push, and for the reason `refresh_settings` already gives for
+/// the System page's:** About must keep working in the `unreadable_state`
+/// case, where there is no `Model` to project a `ControlState` out of, so
+/// riding on `apply_state` would make the update row hostage to a TOML
+/// error.
+///
+/// A no-op when the window is closed -- the caller does not check first, the
+/// way `refresh_settings` does not.
+pub fn set_update_state(update: beckon_core::update::UpdateState) {
+    // <Write the field through the same `UI.with(..)` accessor the file
+    //  already uses, RELEASING the borrow before the redraw below --
+    //  `apply_about_state` reaches `controls()` / `hwnd()` itself.>
+    apply_about_state();
+}
+```
+
+The borrow must be released before `apply_about_state()`. Mirror how a
+neighbouring setter in the same file writes `UI` and then redraws; do not
+hold the `RefCell` across the redraw.
+
+- [ ] **Step 6: Read it in `apply_about_state`**
+
+In both crates, `apply_about_state` currently passes Task 4's
+`UpdateState::Idle` placeholder into `AboutInputs`. Replace it with the
+stored field, read from `UI` in the same place the function already reads
+`controls()` / the `Ui`.
+
+Delete Task 4's `// Task 7 threads the real state through here.` comment — it
+named the wrong task, and the plumbing is here.
+
+- [ ] **Step 7: Run the gate**
+
+Both clippy legs. The cross-target leg is what proves the Windows twin
+compiles, and `cargo check --target …` would not — it runs no lints.
+
+- [ ] **Step 8: Commit**
 
 ```sh
 git commit --only crates/beckon-macos/src/settings_window/mod.rs \
   crates/beckon-windows/src/settings_window/mod.rs \
-  -m "settings: flush_paint, so a blocking call cannot look like a freeze"
+  -m "settings: flush_paint, and the second push that carries UpdateState to About"
 git show --stat HEAD
 ```
 
@@ -1553,6 +1630,27 @@ fn check_for_updates(state: &Rc<RefCell<ServeState>>) {
 }
 ```
 
+- [ ] **Step 7b: Push the state to the window from `refresh_settings`**
+
+`check_for_updates` calls `refresh_settings`, and that is what must reach
+About. In `refresh_settings`, read the field in the SAME borrow as
+`external`/`catalog`/`paused` above `drop(s)`:
+
+```rust
+    let update = s.update;
+```
+
+and push it after `drop(s)`, beside the System page's own second push:
+
+```rust
+    // The About page's second push, and the System page's reason exactly:
+    // About must keep working in the `unreadable_state` case, where there is
+    // no `Model` to project a `ControlState` out of.
+    swin::set_update_state(update);
+```
+
+`UpdateState` is `Copy`, so this is a read rather than a clone.
+
 - [ ] **Step 8: Fill the `on_command` arm**
 
 Replace Task 4's empty arm:
@@ -1655,13 +1753,15 @@ Read `crates/beckon-macos/src/settings_window/about.rs` in full and write down:
 3. Where the page's vertical layout constants live, so a new row shifts what
    follows it rather than overlapping.
 
-- [ ] **Step 2: Thread the real `UpdateState` into `AboutInputs`**
+- [ ] **Step 2: Nothing to plumb — Task 6 did it**
 
-Task 4 left `update: UpdateState::Idle` with a comment naming this task.
-Replace it with the state the caller actually holds. Follow how the window
-receives the rest of its `AboutInputs` — it is projected from `ServeState` the
-same way, so the state arrives through the same path `version`, `exe` and
-`started` already take.
+`AboutState.update` already arrives populated: Task 6 added the `Ui` field,
+`set_update_state`, and the read inside `apply_about_state`, and Task 7's
+`refresh_settings` pushes into it. This task is rendering only.
+
+Confirm it before drawing: `apply_about_state` must be passing the stored
+field into `AboutInputs`, not `UpdateState::Idle`. If it still passes `Idle`,
+that is a Task 6 defect — fix it here and say so in the report.
 
 - [ ] **Step 3: Draw the status line**
 
@@ -1736,9 +1836,11 @@ the layout arithmetic (`layout`), the painting (`paint`), and the `WM_COMMAND`
 routing in `mod.rs`. Identify the `location` row and its Copy button — the
 model to mirror, for the same reason as Task 8.
 
-- [ ] **Step 2: Thread the real `UpdateState` into `AboutInputs`**
+- [ ] **Step 2: Nothing to plumb — Task 6 did it**
 
-Replace Task 4's `UpdateState::Idle` placeholder.
+As in Task 8: `AboutState.update` arrives populated. Confirm
+`apply_about_state` passes the stored `Ui` field rather than
+`UpdateState::Idle`, then render.
 
 - [ ] **Step 3-6: The four controls**
 
