@@ -276,30 +276,47 @@ question cannot be answered there; it needs a Scheduled Task with
 session 1 (confirmed live via `explorer.exe`'s own `SessionId`). Measured
 with a small standalone probe (GUI-subsystem, spawning the exact `curl.exe`
 invocation `fetch()` uses, with an `EnumWindows` + `CreateToolhelp32Snapshot`
-detector rather than a human watching a screen) — full account and the raw
-output are in the Task 10 report; the load-bearing points:
+detector rather than a human watching a screen). A fuller session transcript
+existed during development but was not kept anywhere durable; the decisive
+lines are inlined below rather than pointed at.
 
-- **The naive version of this probe found nothing in EITHER arm**, which is
-  the false-negative shape this project's own testing note warns about
-  (`CLAUDE.md`, "Always run a control"). Root cause: the probe process,
-  launched directly as a Scheduled Task action, inherited a console from the
-  Task Scheduler's own `svchost.exe` chain (`GetConsoleWindow()` came back
-  non-null) — unlike a real `beckon-serve.exe`, which is always launched by
-  something already console-less (Explorer, a Startup shortcut, or itself).
-  Calling `FreeConsole()` before spawning anything fixed it.
-- **With that fix, three clean runs, one pattern every time**: with no flag,
-  two new VISIBLE windows appear — a real **`Windows Terminal`** window
-  (`CASCADIA_HOSTING_WINDOW_CLASS`) and its `PseudoConsoleWindow`, not the
-  small conhost box this feature is usually pictured stopping. Windows 11's
-  own terminal-handoff feature is what flashes on this machine, not classic
-  `conhost.exe`. With `CREATE_NO_WINDOW`, zero visible windows every time — a
-  hidden `conhost.exe` is still created (the flag suppresses the WINDOW, not
-  the console), which is consistent with the flag's documented contract
-  rather than a sign it did nothing.
-- Full raw command output, both the confounded first attempt and the fixed
-  runs, is in the Task 10 implementation report
-  (`.superpowers/sdd/2026-08-25-check-for-updates/task-10-report.md`) rather
-  than repeated here.
+**The naive version of this probe found nothing in EITHER arm**, which is
+the false-negative shape this project's own testing note warns about
+(`CLAUDE.md`, "Always run a control"):
+
+```text
+CONTROL(no-flag):              new_console_windows=0 details=[]
+TREATMENT(CREATE_NO_WINDOW):   new_console_windows=0 details=[]
+```
+
+Root cause, found by adding one diagnostic line: the probe process, launched
+directly as a Scheduled Task action, had already inherited a console from
+the Task Scheduler's own `svchost.exe` chain — unlike a real
+`beckon-serve.exe`, which is always launched by something already
+console-less (Explorer, a Startup shortcut, or itself).
+
+```text
+before FreeConsole: GetConsoleWindow() = 0x704fc (null means no inherited console)
+parent chain: 2688 -> 2688 (svchost.exe)
+grandparent: 1904 (services.exe)
+```
+
+Calling `FreeConsole()` before spawning anything fixed it. **With that fix,
+three clean runs, one pattern every time** — one representative run:
+
+```text
+CONTROL(no-flag): new_visible_windows=2 window_details=[(787682, true, "CASCADIA_HOSTING_WINDOW_CLASS", "Windows Terminal"), (656622, true, "PseudoConsoleWindow", "")]
+TREATMENT(CREATE_NO_WINDOW): new_visible_windows=0 window_details=[] new_console_hosts=1 host_details=[(13020, 15428, "conhost.exe")]
+```
+
+With no flag, a real, VISIBLE **`Windows Terminal`** window
+(`CASCADIA_HOSTING_WINDOW_CLASS`) opens every time — not the small conhost
+box this feature is usually pictured stopping. Windows 11's own
+terminal-handoff feature is what flashes on this machine, not classic
+`conhost.exe`. With `CREATE_NO_WINDOW`, zero visible windows every time; a
+hidden `conhost.exe` is still created (the flag suppresses the WINDOW, not
+the console), consistent with the flag's documented contract rather than a
+sign it did nothing.
 
 ## The user's nix integration
 

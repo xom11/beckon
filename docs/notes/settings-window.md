@@ -333,9 +333,9 @@ two. `beckon_core::page_plan::about_plan`'s `content_h` grew by the same 92;
 `system_plan`'s did not move at all, because the System card has no new
 content to grow into.
 
-**The System door was already the shallower of the two fixed cards** --
+**The System door was already the shallower of the two fixed cards** —
 `card_h` (`layout.rs`'s padded card height, not the bare `content_h`) is 326
-for System against About's 432 at the shipped size -- and the 60 px "ground"
+for System against About's 432 at the shipped size — and the 60 px "ground"
 ceiling the section above derived — one row pitch plus a card gap, past which
 emptiness stops reading as margin — used to bound *both* doors. It now only
 binds About, on purpose:
@@ -382,11 +382,15 @@ About alone) and About's at the ceiling as before.
 **Accepted for this branch, on two grounds.** First, the update check itself
 is not what bloated this: Windows' own contribution to About is already the
 LEANER of the two platforms' — `about_plan`'s two rows (`update`, `command`)
-against `AboutControls`' three on macOS (`update_row`, `command_row`,
-`open_releases_row`, each its own `NSStackView`). Windows still needed 92 px
-for the leaner version, which is evidence the growth is real content, not
-Windows-side excess — there was no cheaper way to build this on this
-platform that was left on the table. Second, the change is a symptom of a
+against macOS's three logical rows in `about.rs`'s `build()`: the update
+line (`update_status` + `check_now`, assembled into a local `update_row`
+hstack that is never stored on `AboutControls` — the struct holds the two
+fields separately), `command_row`, and `open_releases_row` (these last two
+ARE stored `Retained<NSStackView>` fields on the struct). Windows still
+needed 92 px for the leaner version, which is evidence the growth is real
+content, not Windows-side excess — there was no cheaper way to build this on
+this platform that was left on the table. Second, the change is a symptom of
+a
 **content** decision (About needed two more rows) forcing a **window**
 decision (grow to fit them), and no purely geometric fix on the System side
 removes that dependency — it only moves the cost somewhere else, and nothing
