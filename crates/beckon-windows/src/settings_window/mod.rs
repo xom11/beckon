@@ -6035,7 +6035,7 @@ fn about_now() -> AboutState {
     // forbids, because `…\current\` is the string the row must show.
     let running = running_image_path().and_then(|p| std::fs::canonicalize(p).ok());
     let target_now = exe.as_ref().and_then(|p| std::fs::canonicalize(p).ok());
-    // The one field above that is not local: `serve` runs the check, not
+    // The one field below that is not local: `serve` runs the check, not
     // this window, so `set_update_state` is the only writer and this is a
     // plain read of what it last stored.
     let update = UI.with(|u| {
