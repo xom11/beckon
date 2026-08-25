@@ -824,16 +824,21 @@ impl Target {
     }
 }
 
-/// A row on About whose value can be copied.
+/// A value on About that can be copied.
 ///
-/// The four rows are the four copy buttons; `copy_text` says what each one
-/// puts on the clipboard, and it is deliberately **not** the string the row
-/// shows -- see `AboutValue`.
+/// Three buttons, not four: the `Licence` row was removed when the page was
+/// compacted. `MIT OR Apache-2.0` is a fact nobody came to About to read, it
+/// is one click away in the repo, and the licence text ships beside the
+/// binary either way -- so it cost a label, a value, a copy button and three
+/// control ids to restate something no reader was looking for.
+///
+/// `copy_text` says what each button puts on the clipboard, and it is
+/// deliberately **not** the string the row shows -- see `AboutValue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
+    /// The identity block: name, target and build date, as one line.
     Build,
     Location,
-    Licence,
     /// The upgrade command on the update row.
     ///
     /// **`None` is unreachable by construction rather than by luck**: the
@@ -1474,8 +1479,6 @@ pub struct AboutInputs<'a> {
     /// a moved scoop junction. The caller resolves both paths; see
     /// `image_identity`.
     pub identity: ImageIdentity,
-    /// `env!("CARGO_PKG_LICENSE")`.
-    pub licence: &'a str,
     /// What the caller knows about the update check right now.
     ///
     /// `Copy`, like every other field here -- `AboutInputs` derives `Copy`
@@ -1547,16 +1550,55 @@ pub fn grant_button_shown(granted: bool) -> bool {
     !granted
 }
 
+/// The Accessibility sentence, and `None` when there is nothing wrong.
+///
+/// **A healthy grant says nothing at all** -- the rule the Shortcuts list
+/// already follows, where a row in good order shows no flag. Before this,
+/// About spent three of its four longest sentences describing a permission
+/// that was working: *"beckon has Accessibility permission, which is what
+/// lets it focus and cycle windows. It reads window lists and raises
+/// windows."* Both sentences are true and neither is news, and together they
+/// were most of the tallest block on the page.
+///
+/// **What is NOT folded in here is `HOOK_DISCLOSURE`.** That one is a claim
+/// about what beckon does with the keyboard, true whether or not
+/// Accessibility is granted, and it stays on screen in both states -- see its
+/// own doc for why it has to be words. Windows draws it alone, because
+/// Accessibility is not a permission that exists there; macOS draws this
+/// above it when there is something to say. That is the whole difference
+/// between the two doors on this page.
+///
+/// `Some` exactly when `grant_button_shown` is true, so the sentence and the
+/// button that fixes it can never appear without each other.
+pub fn accessibility_warning(granted: bool) -> Option<&'static str> {
+    if granted {
+        None
+    } else {
+        Some(
+            "beckon does NOT have Accessibility permission. Hotkeys will launch apps but \
+             cannot focus or cycle windows. Grant it in System Settings > Privacy & \
+             Security > Accessibility. The grant is bound to this exact binary, so a \
+             rebuilt or replaced beckon has to be granted again.",
+        )
+    }
+}
+
 /// The About page, decided in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AboutState {
     /// `beckon 0.9.3` -- the name row under the mark.
     pub name: String,
+    /// The secondary line under the name: target and build date. `shown` is
+    /// that line; `copy` prepends `name`, so the one button beside the block
+    /// hands over every identity fact a bug report wants.
     pub build: AboutValue,
     /// **The highest-value row on the page** (design §3.4): the running
     /// image's own path, plus a verdict when there is one worth printing.
+    ///
+    /// It is now the ONLY label-value-Copy row left. That is deliberate: when
+    /// the page was compacted this was the row that earned its place, because
+    /// it is the one that answers the question the a14 incident asked.
     pub location: AboutValue,
-    pub licence: AboutValue,
     /// Kept beside `location` so a caller can act on the verdict without
     /// parsing the string it produced.
     pub image: ImageAge,
@@ -1660,9 +1702,21 @@ pub fn about_state(i: AboutInputs) -> AboutState {
         // `SS_PATHELLIPSIS`, so its screen text is neither complete nor
         // pasteable. This row has no verdict and no ellipsis -- the triple and
         // the date are both payload, and a bug report wants both.
+        // **`copy` is NOT `shown` here, and that is the point of the block.**
+        // `shown` is the secondary line drawn under the name -- target and
+        // date -- because repeating the name there would be reading it twice.
+        // `copy` puts the name back, so one button hands over
+        // `beckon 0.11.0 · aarch64-apple-darwin · 2026-08-25`, which is what a
+        // bug report asks for and what the reader would otherwise assemble
+        // from two rows by hand.
+        //
+        // **This is not the `Copy diagnostics` button design §3.3 deleted.**
+        // That one was an EXTRA control gathering facts each of which already
+        // had a button beside it; this REPLACES the Build row's own button,
+        // and the name it adds never had one.
         build: AboutValue {
             shown: build_text.clone(),
-            copy: build_text,
+            copy: format!("beckon {} · {}", i.version, build_text),
         },
         location: AboutValue {
             shown: match age.note() {
@@ -1678,10 +1732,6 @@ pub fn about_state(i: AboutInputs) -> AboutState {
             // with a parenthesised verdict glued to the end of it.
             copy: path,
         },
-        licence: AboutValue {
-            shown: i.licence.to_string(),
-            copy: i.licence.to_string(),
-        },
         image: age,
         update: crate::update::update_row(i.update, crate::update::detect_channel(i.exe)),
     }
@@ -1689,17 +1739,18 @@ pub fn about_state(i: AboutInputs) -> AboutState {
 
 /// What each copy button puts on the clipboard.
 ///
-/// **One rule for three rows: the row's own payload, unshortened and
-/// unannotated.** The alternatives were weighed and both lose to it -- a
-/// `label: value` pair would break the only thing a copied path is for, and a
-/// one-button "copy everything" is the `Copy diagnostics` button design §3.3
-/// deleted, whose whole argument was that every fact it gathered is already
-/// on screen with a button beside it.
+/// **One rule: the value's own payload, unshortened and unannotated.** A
+/// `label: value` pair would break the only thing a copied path is for, and
+/// what is on screen is not always pasteable -- `Location` carries a verdict
+/// clause and is shortened by `SS_PATHELLIPSIS` on its way to the pixels.
+///
+/// `Build` is the one place `copy` says MORE than `shown`, and its own doc in
+/// `about_state` argues why that is not the `Copy diagnostics` button design
+/// §3.3 deleted.
 pub fn copy_text(st: &AboutState, f: Field) -> &str {
     match f {
         Field::Build => &st.build.copy,
         Field::Location => &st.location.copy,
-        Field::Licence => &st.licence.copy,
         Field::UpdateCommand => st
             .update
             .command
@@ -3025,7 +3076,6 @@ pub enum DefaultButton {
     /// clipboard, which is a loss they will not see until they paste.
     AboutBuildCopy,
     AboutLocationCopy,
-    AboutLicenceCopy,
     AboutGithub,
     AboutReleases,
     AboutBug,
@@ -3049,7 +3099,6 @@ pub enum DefaultButton {
     /// `Save`.
     AboutCheckNow,
     AboutUpdateCopy,
-    AboutOpenReleases,
 }
 
 impl DefaultButton {
@@ -3057,7 +3106,7 @@ impl DefaultButton {
     /// and forgotten here weakens those tests silently, so the array is
     /// length-annotated: adding a variant without extending it fails to
     /// compile.
-    pub const ALL: [DefaultButton; 23] = [
+    pub const ALL: [DefaultButton; 21] = [
         DefaultButton::Save,
         DefaultButton::Add,
         DefaultButton::Remove,
@@ -3074,13 +3123,11 @@ impl DefaultButton {
         DefaultButton::LogShow,
         DefaultButton::AboutBuildCopy,
         DefaultButton::AboutLocationCopy,
-        DefaultButton::AboutLicenceCopy,
         DefaultButton::AboutGithub,
         DefaultButton::AboutReleases,
         DefaultButton::AboutBug,
         DefaultButton::AboutCheckNow,
         DefaultButton::AboutUpdateCopy,
-        DefaultButton::AboutOpenReleases,
     ];
 
     /// Where the ring rests on `page`, and the button `default_button` falls
@@ -3189,13 +3236,11 @@ impl DefaultButton {
             // check at all.
             DefaultButton::AboutBuildCopy
             | DefaultButton::AboutLocationCopy
-            | DefaultButton::AboutLicenceCopy
             | DefaultButton::AboutGithub
             | DefaultButton::AboutReleases
             | DefaultButton::AboutBug
             | DefaultButton::AboutCheckNow
-            | DefaultButton::AboutUpdateCopy
-            | DefaultButton::AboutOpenReleases => page == Page::About,
+            | DefaultButton::AboutUpdateCopy => page == Page::About,
         }
     }
 
@@ -3273,13 +3318,11 @@ impl DefaultButton {
                 // control, the same fact `Save`'s own doc rests on.
                 DefaultButton::AboutBuildCopy
                 | DefaultButton::AboutLocationCopy
-                | DefaultButton::AboutLicenceCopy
                 | DefaultButton::AboutGithub
                 | DefaultButton::AboutReleases
                 | DefaultButton::AboutBug
                 | DefaultButton::AboutCheckNow
-                | DefaultButton::AboutUpdateCopy
-                | DefaultButton::AboutOpenReleases => true,
+                | DefaultButton::AboutUpdateCopy => true,
             }
     }
 }
@@ -5799,24 +5842,34 @@ mod tests {
         );
     }
 
-    /// The row is the triple ALONE when the image cannot be stat'd, and the
-    /// triple plus a date when it can. `copy` follows `shown` on this row --
-    /// see the comment at the construction site for why it differs from
-    /// `Location`.
+    /// The line is the triple ALONE when the image cannot be stat'd, and the
+    /// triple plus a date when it can.
+    ///
+    /// **`copy` always carries the name and `shown` never does**, in both
+    /// branches -- the name is drawn one line above, so repeating it there
+    /// would be reading it twice, while a clipboard payload that omits it
+    /// makes the reader assemble the identity by hand. See the construction
+    /// site for why this is not a `Copy diagnostics` button.
     #[test]
-    fn the_build_row_carries_the_running_images_date_or_nothing() {
+    fn the_build_line_carries_the_running_images_date_or_nothing() {
         let exe = exe_path();
         let dated = about(&exe, Some(t(1_000)), ImageOnDisk::Written(t(1_723_000_000)));
         assert_eq!(dated.build.shown, "aarch64-pc-windows-msvc · 2024-08-07");
-        assert_eq!(dated.build.copy, dated.build.shown);
+        assert_eq!(
+            dated.build.copy,
+            "beckon 0.9.3 · aarch64-pc-windows-msvc · 2024-08-07"
+        );
 
         for gone in [ImageOnDisk::Gone, ImageOnDisk::Unknown] {
             let s = about(&exe, Some(t(1_000)), gone);
             assert_eq!(
                 s.build.shown, "aarch64-pc-windows-msvc",
-                "a row that cannot date itself says less rather than guessing"
+                "a line that cannot date itself says less rather than guessing"
             );
-            assert_eq!(s.build.copy, s.build.shown);
+            assert_eq!(
+                s.build.copy, "beckon 0.9.3 · aarch64-pc-windows-msvc",
+                "the name survives even when the date does not"
+            );
         }
     }
 
@@ -7249,7 +7302,6 @@ mod tests {
             started,
             disk,
             identity,
-            licence: "MIT OR Apache-2.0",
             update: UpdateState::Idle,
         })
     }
@@ -7262,9 +7314,60 @@ mod tests {
             started: None,
             disk: ImageOnDisk::Unknown,
             identity: ImageIdentity::Same,
-            licence: "MIT OR Apache-2.0",
             update,
         })
+    }
+
+    /// **The identity block's Copy carries all three facts**, because that is
+    /// what a bug report asks for and what the reader would otherwise have to
+    /// assemble from two rows by hand. `shown` stays the secondary line under
+    /// the name -- target and date -- while `copy` prepends the name.
+    ///
+    /// **This is not the `Copy diagnostics` button design §3.3 deleted.** That
+    /// one was an EXTRA control gathering facts each of which already had a
+    /// button beside it. This one REPLACES the Build row's own button, and the
+    /// name it adds never had one.
+    ///
+    /// Asserted as a RELATION rather than against a literal date, so the test
+    /// pins the rule instead of the fixture.
+    #[test]
+    fn the_identity_copy_carries_the_name_the_target_and_the_date() {
+        let page = about_update(&exe_path(), UpdateState::Idle);
+        assert_eq!(
+            page.build.copy,
+            format!("{} · {}", page.name, page.build.shown)
+        );
+        assert!(page.build.copy.starts_with(&page.name));
+        assert_ne!(page.build.shown, page.build.copy);
+    }
+
+    /// **A healthy Accessibility grant says nothing at all.** The rule the
+    /// Shortcuts list already follows -- a row in good order is silent -- and
+    /// the reason this page's longest paragraph got shorter: most of it was
+    /// describing a state that is fine.
+    ///
+    /// What survives either way is `HOOK_DISCLOSURE`, which is a claim about
+    /// what beckon does rather than a report about a permission.
+    #[test]
+    fn a_granted_accessibility_says_nothing_and_a_missing_one_explains() {
+        assert_eq!(accessibility_warning(true), None);
+        let warn = accessibility_warning(false).expect("a missing grant must explain itself");
+        assert!(warn.contains("Accessibility"));
+        assert!(warn.is_ascii(), "display strings here are ASCII");
+    }
+
+    /// The warning and the button that fixes it are one decision, so they
+    /// cannot disagree: whenever the button is offered there is a sentence
+    /// saying why, and whenever it is not, there is none.
+    #[test]
+    fn the_accessibility_warning_and_its_grant_button_appear_together() {
+        for granted in [true, false] {
+            assert_eq!(
+                accessibility_warning(granted).is_some(),
+                grant_button_shown(granted),
+                "granted={granted}"
+            );
+        }
     }
 
     /// `Channel` is NOT a new input. `about_state` derives it from the
@@ -7496,16 +7599,17 @@ mod tests {
         assert!(!copy_text(&st, Field::Location).contains('('));
         assert_eq!(
             copy_text(&st, Field::Build),
-            "aarch64-pc-windows-msvc \u{b7} 1970-01-01",
-            "the Build row carries the running image's date since 2026-08-16"
+            "beckon 0.9.3 \u{b7} aarch64-pc-windows-msvc \u{b7} 1970-01-01",
+            "the Build value carries the running image's date since 2026-08-16, \
+             and the name since the page was compacted"
         );
-        assert_eq!(copy_text(&st, Field::Licence), "MIT OR Apache-2.0");
-        // Every row copies exactly what it shows, EXCEPT the one that has a
-        // verdict to carry -- so the exception is one row and is testable as
-        // one.
-        assert_eq!(copy_text(&st, Field::Build), st.build.shown);
-        assert_eq!(copy_text(&st, Field::Licence), st.licence.shown);
+        // **Both remaining values differ from what they show, in opposite
+        // directions**, and that is the whole rule: `Location` copies LESS
+        // (it drops the verdict clause a reader needs but a terminal does
+        // not), `Build` copies MORE (it prepends the name drawn one line
+        // above). Neither exception is incidental and both are pinned here.
         assert_ne!(copy_text(&st, Field::Location), st.location.shown);
+        assert_ne!(copy_text(&st, Field::Build), st.build.shown);
     }
 
     /// A path that could not be read is a word, not an empty row.
@@ -7518,7 +7622,6 @@ mod tests {
             started: None,
             disk: ImageOnDisk::Unknown,
             identity: ImageIdentity::Unknown,
-            licence: "MIT OR Apache-2.0",
             update: UpdateState::Idle,
         });
         assert_eq!(st.location.shown, "unknown");

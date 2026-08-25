@@ -1832,10 +1832,8 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // The copy button is `ctl` square, exactly like the System page's four
         // glyph buttons and for the same reason: it holds one character, and
         // `tok::BTN` of button around it would be a target the size of the row.
-        let lbl_w = tw(cap::ABOUT_BUILD)
-            .max(tw(cap::ABOUT_LOCATION))
-            .max(tw(cap::ABOUT_LICENCE))
-            + s(4);
+        // Two labels, not three: `Licence` went with the page's compaction.
+        let lbl_w = tw(cap::ABOUT_BUILD).max(tw(cap::ABOUT_LOCATION)) + s(4);
         let cw_btn = ctl;
         // The value takes everything between the label and the button. **No
         // `tok::SHORTCUT_COL` ceiling here**, unlike every other measured
@@ -1870,21 +1868,18 @@ pub(super) unsafe fn layout(hwnd: HWND) {
         // and the status line takes whatever is left, uncapped, on the value
         // column's own reasoning just above: a short-lived status word must
         // not be truncated for the same reason a path is not.
+        // **One button on this row, not two.** `Open releases page` went
+        // with the page's compaction: it sent the reader where the `Releases`
+        // link already sends them, and the links row is on screen in every
+        // state including a failed check -- which was the reason the second
+        // button existed. Its going also un-crowds this row at `MIN_WIDTH`,
+        // which was the open concern when it landed.
         let bw_check = btn(cap::CHECK_NOW);
-        let bw_open_releases = btn(cap::ABOUT_OPEN_RELEASES);
-        let buttons_w = bw_check + gap + bw_open_releases;
+        let buttons_w = bw_check;
         let status_w = clamp(aw - buttons_w - gap);
         place(IDC_ABOUT_UPDATE_STATUS, ax, ay + plan.update, status_w, ctl);
-        let mut ux = ax + clamp(aw - buttons_w);
+        let ux = ax + clamp(aw - buttons_w);
         place(IDC_ABOUT_CHECK_NOW, ux, ay + plan.update, bw_check, ctl);
-        ux += bw_check + gap;
-        place(
-            IDC_ABOUT_OPEN_RELEASES,
-            ux,
-            ay + plan.update,
-            bw_open_releases,
-            ctl,
-        );
 
         // Row two: the upgrade command's own value and copy button --
         // `value_row`'s value-and-copy half exactly, with no label column:
@@ -1910,12 +1905,6 @@ pub(super) unsafe fn layout(hwnd: HWND) {
             IDC_ABOUT_LOCATION_LABEL,
             IDC_ABOUT_LOCATION_VALUE,
             IDC_ABOUT_LOCATION_COPY,
-        );
-        value_row(
-            ay + plan.licence,
-            IDC_ABOUT_LICENCE_LABEL,
-            IDC_ABOUT_LICENCE_VALUE,
-            IDC_ABOUT_LICENCE_COPY,
         );
 
         // The disclosure takes the card's full interior; `paint::disclosure`
@@ -2083,7 +2072,7 @@ mod tests {
         let sys = card_h(beckon_core::page_plan::system_plan(M96, BOTH).content_h);
         let about = card_h(beckon_core::page_plan::about_plan(M96, 32).content_h);
         assert_eq!(sys, 326);
-        assert_eq!(about, 432);
+        assert_eq!(about, 386);
         let about_ground = bottom - (top + about);
         assert!(
             (0..=60).contains(&about_ground),
@@ -2097,9 +2086,16 @@ mod tests {
         // 2026-08-25 note above for why 60 no longer applies to it. A change
         // to this number is a change to how much emptier System reads than
         // About, and is worth a second look, not a silent pass.
+        //
+        // **144 -> 98 when About was compacted the same day.** The `Licence`
+        // row's 46 px came off About's card, `MIN_HEIGHT`/`WINDOW_HEIGHT`
+        // followed it down, and System -- whose card never moved -- got the
+        // whole difference back as ground. Still above the 60 both doors were
+        // once held under, and still above the 52 it sat at before the update
+        // check existed.
         let sys_ground = bottom - (top + sys);
         assert_eq!(
-            sys_ground, 144,
+            sys_ground, 98,
             "System's ground moved; re-read whether the gap it leaves below \
              its card is still acceptable before updating this number"
         );

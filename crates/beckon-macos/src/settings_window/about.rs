@@ -1,12 +1,18 @@
 //! Door 4 — **About**.
 //!
-//! Design §3.4. It writes nothing: four value rows with a copy button each
-//! (`Build`, `Location`, `Licence`, and the update command), three links,
-//! and one disclosure — plus the update check's own controls, which carry
-//! no copy button of their own: a status line, `Check now`, and `Open
-//! releases page`. `command_bar_shown` draws no `Save` here, and
-//! `home(Page::About)` is `None`, so Enter does nothing until the reader
+//! Design §3.4. It writes nothing. **Compacted 2026-08-25**: an identity
+//! block (the mark, the name, and a build line with one copy button), the
+//! update check's status line and `Check now`, the upgrade command's row
+//! when there is one, `Location` with its own copy button, a two-part
+//! disclosure, and three links. `command_bar_shown` draws no `Save` here,
+//! and `home(Page::About)` is `None`, so Enter does nothing until the reader
 //! tabs onto a button.
+//!
+//! **Three things went in that pass and each was earning nothing.** The
+//! `Licence` row restated `MIT OR Apache-2.0`, which ships beside the binary
+//! and is one click away in the repo. The `Build` label named nothing a
+//! target triple did not. And `Open releases page` sent the reader where the
+//! `Releases` link already sends them -- the same selector, two controls.
 //!
 //! ## `Location` is the row this page exists for
 //!
@@ -22,16 +28,20 @@
 //! ## Two divergences from the Windows twin, both deliberate
 //!
 //! **The disclosure is drawn, in this platform's words rather than core's.**
-//! `HOOK_DISCLOSURE` reads *"The keyboard hook is installed only while Caps
-//! Lock is on, or while you are recording a shortcut."* The first half is
-//! now true here — `beckon_macos::caps_tap` installs a `CGEventTap` exactly
-//! then — but the second is not: chord capture is not built on macOS, so
-//! that clause would name a thing this program cannot do. A true sentence
-//! with a false clause in it is worse on the one page whose job is
-//! disclosure, so the string is local until capture lands and the two
-//! converge. It keeps both halves core's version has, and the second is the
-//! one no icon or control could draw: a negative claim about what beckon
-//! does NOT keep.
+//! **CORRECTED 2026-08-25 — the old reason here had expired.** It read that
+//! `HOOK_DISCLOSURE`'s *"or while you are recording a shortcut"* named a
+//! thing macOS could not do, so the string had to stay local "until capture
+//! lands". Chord capture landed; that clause is true here now, and `apply`'s
+//! own comment had said so for some time while this paragraph went on giving
+//! the opposite reason.
+//!
+//! Two reasons survive, and both are about wording rather than capability.
+//! Core says *"the keyboard hook"* — Windows' word for Windows' mechanism,
+//! where this platform installs a `CGEventTap`. And core says *"while Caps
+//! Lock is on"*, which its own doc spends a paragraph explaining does not
+//! mean the lock's LED; `as a shortcut key` removes the ambiguity on the
+//! page instead of annotating it in a comment nobody reading the window can
+//! see.
 //!
 //! **An Accessibility row is drawn instead**, and it is not a substitute
 //! chosen for symmetry. It is this platform's version of the same question —
@@ -42,7 +52,9 @@
 //! anywhere. `beckon doctor` already reports it; About is where a person
 //! who has not thought to run `doctor` will be standing.
 
-use beckon_core::settings::{copy_text, grant_button_shown, AboutState, Field, FlagTone, ImageAge};
+use beckon_core::settings::{
+    accessibility_warning, copy_text, grant_button_shown, AboutState, Field, FlagTone, ImageAge,
+};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
@@ -54,14 +66,41 @@ use super::widgets as w;
 #[derive(Clone)]
 pub(super) struct AboutControls {
     pub(super) name: Retained<NSTextField>,
+    /// The secondary line directly under `name`, with no label of its own:
+    /// `aarch64-apple-darwin · 2026-08-25`. The word `Build` beside a target
+    /// triple named nothing the triple did not already say, so the identity
+    /// block is two lines and one button instead of a heading plus a
+    /// labelled row.
+    ///
+    /// Its Copy sends `Field::Build`, which `copy_text` answers with the name
+    /// PREPENDED -- the one place on this page where the clipboard carries
+    /// more than the screen. See `about_state`'s own comment for why that is
+    /// not the `Copy diagnostics` button design §3.3 deleted.
     pub(super) build: Retained<NSTextField>,
     pub(super) location: Retained<NSTextField>,
-    pub(super) licence: Retained<NSTextField>,
     /// The stale-image verdict, beside `Location` rather than inside it —
     /// `AboutValue` splits `shown` from `copy` precisely so the clipboard
     /// never receives a sentence.
     pub(super) image: Retained<NSTextField>,
+    /// The Accessibility warning, and **nothing at all when the grant is
+    /// present** -- `accessibility_warning` returns `None` there, on the rule
+    /// the Shortcuts list already follows: a row in good order says nothing.
+    ///
+    /// Before the page was compacted this field carried a four-sentence
+    /// paragraph in BOTH states, three of whose sentences described a
+    /// permission that was working. It was the tallest block on the page for
+    /// a reader with nothing wrong.
     pub(super) access: Retained<NSTextField>,
+    /// The keyboard-tap disclosure. Local rather than core's
+    /// `HOOK_DISCLOSURE` -- the module doc gives the two wording reasons.
+    ///
+    /// **Split out of `access` when the page was compacted, and the split is
+    /// the point.** This is a claim about what beckon does with the keyboard,
+    /// true whether or not Accessibility is granted, so it stays on screen in
+    /// both states; the sentence above it is a report about a permission and
+    /// disappears when there is nothing to report. Folding them back into one
+    /// field would tie a permanent claim to a conditional one again.
+    pub(super) hook: Retained<NSTextField>,
     /// Offered only while the grant is missing (`grant_button_shown`).
     ///
     /// Without it this page could state the largest single cause of "beckon
@@ -87,13 +126,16 @@ pub(super) struct AboutControls {
     /// `mod.rs`, which reads `cmd.copy` through
     /// `beckon_core::settings::copy_text`.
     pub(super) command_value: Retained<NSTextField>,
-    /// Hidden until a check has produced ANY verdict, including a failure --
-    /// what gives a user with no curl somewhere to go. Mirrors
-    /// `state.update.status.is_some()`, the same gate `update_status` uses.
-    pub(super) open_releases_row: Retained<NSStackView>,
 }
 
-/// `Build` / `Location` / `Licence`: a dimmed name, the value, a copy button.
+/// A dimmed name, the value, a copy button.
+///
+/// **One caller left.** `Build` was folded into the identity block above the
+/// divider (no label -- see `AboutControls::build`) and `Licence` was removed
+/// with the page's compaction, so this now serves `Location` alone. It stays a
+/// helper rather than being inlined because the row it builds is the shape any
+/// future labelled value would want, and because inlining it would bury the
+/// 68 pt label pin that keeps the value column aligned.
 fn value_row(
     name: &str,
     action: objc2::runtime::Sel,
@@ -206,9 +248,24 @@ pub(super) fn build(
     let name = w::heading("beckon", mtm);
     name.setAlignment(objc2_app_kit::NSTextAlignment::Center);
 
-    let (build_row, build) = value_row("Build", sel!(beckonCopyBuild:), target, mtm);
+    // **The identity block: the name, then this line, then one button.**
+    // No `Licence` row -- `MIT OR Apache-2.0` is one click away in the repo
+    // and the licence text ships beside the binary; restating it here cost a
+    // label, a value and a copy button that nobody came to About to press.
+    //
+    // No `Build` label either. `value_row`'s dimmed name earns its place
+    // beside a path, where `Location` says what the string IS; beside a
+    // target triple and a date it named nothing the triple did not.
+    let build = w::label("", mtm);
+    let build_copy = w::glyph(
+        "Copy",
+        "Copy the version, target and build date",
+        sel!(beckonCopyBuild:),
+        target,
+        mtm,
+    );
+    let build_row = w::hstack(&[&*build as &NSView, &*w::spring(mtm), &build_copy], mtm);
     let (loc_row, location) = value_row("Location", sel!(beckonCopyLocation:), target, mtm);
-    let (lic_row, licence) = value_row("Licence", sel!(beckonCopyLicence:), target, mtm);
 
     // The update check's own row, beside the `Build` row it is a verdict
     // about: the status line (tone-coloured in `apply`) and `Check now`.
@@ -239,15 +296,14 @@ pub(super) fn build(
         mtm,
     );
 
-    // A way to the releases page for every verdict a check can reach,
-    // including a failure -- the one case with no upgrade command at all.
-    // `grant_row` just below is the same shape: one left-aligned button,
-    // hidden as a whole row until it has something to say.
-    let open_releases = w::push("Open releases page", sel!(beckonReleases:), target, mtm);
-    let open_releases_row = w::hstack(&[&*open_releases as &NSView, &*w::spring(mtm)], mtm);
-
+    // **No `Open releases page` row.** It went to the same destination as the
+    // `Releases` button in the links row below -- `sel!(beckonReleases:)`,
+    // the same selector -- so a reader with a failed check had two controls
+    // for one place. The links row is always on screen, including for every
+    // failure state, which is the reason the extra row existed.
     let image = w::secondary("", mtm);
     let access = w::wrapping("", mtm);
+    let hook = w::wrapping("", mtm);
     let grant = w::push(
         "Grant Accessibility…",
         sel!(beckonGrantAccess:),
@@ -274,17 +330,20 @@ pub(super) fn build(
         &[
             &*mark_row as &NSView,
             &name,
-            &w::divider(mtm),
+            // The build line joins the identity block above the divider
+            // rather than sitting in the detail group below it: it is the
+            // rest of the answer to "which beckon is this", which the name
+            // starts and `Location` finishes.
             &build_row,
+            &w::divider(mtm),
             &update_row,
             &command_row,
-            &open_releases_row,
             &loc_row,
             &image,
-            &lic_row,
             &w::divider(mtm),
             &access,
             &grant_row,
+            &hook,
             &links,
         ],
         10.0,
@@ -295,6 +354,10 @@ pub(super) fn build(
     // stretch on its own -- it came out indented a third of the way across
     // the card. Pinned to the column instead of argued with.
     w::pin_width_to(&access, &inner, 0.0);
+    // Same reason for the hook line: a `Width`-aligned column does not
+    // stretch a wrapping label on its own, and an unpinned one came out
+    // indented a third of the way across the card.
+    w::pin_width_to(&hook, &inner, 0.0);
     // The name is centred by its own text alignment, which only means
     // anything once the label is as wide as the card — a label sized to its
     // text has no room to centre in, and the column put it hard right.
@@ -309,15 +372,14 @@ pub(super) fn build(
             name,
             build,
             location,
-            licence,
             image,
             access,
+            hook,
             grant,
             update_status,
             check_now,
             command_row,
             command_value,
-            open_releases_row,
         },
     )
 }
@@ -327,8 +389,6 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
     c.build.setStringValue(&NSString::from_str(&st.build.shown));
     c.location
         .setStringValue(&NSString::from_str(&st.location.shown));
-    c.licence
-        .setStringValue(&NSString::from_str(&st.licence.shown));
 
     // The update check's own line. `status` is `None` only in `Idle` --
     // `UpdateRow`'s own rule is to draw nothing at all then, not an empty
@@ -363,10 +423,6 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
         }
     }
 
-    // Whenever a check has reached ANY verdict, including a failure -- what
-    // gives a user with no curl somewhere to go.
-    c.open_releases_row.setHidden(st.update.status.is_none());
-
     // The verdict, only when there is one. `Current` says nothing: a healthy
     // row saying "healthy" is the noise the Shortcuts door's status
     // vocabulary already refuses to make.
@@ -382,24 +438,44 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
     // Offered only while it can do something -- see `grant_button_shown`.
     c.grant.setHidden(!grant_button_shown(ax_trusted));
 
-    c.access.setStringValue(&NSString::from_str(if ax_trusted {
-        // **`or while you are recording a shortcut` is not padding.** Chord
-        // capture arms the same tap on a machine where the reader
-        // deliberately left `keyboard.caps` off, so without this clause the
-        // sentence is a false claim about when beckon can see keystrokes --
-        // the one kind of wrong sentence this page exists to avoid. It is the
-        // same wording `HOOK_DISCLOSURE` carries on Windows, for the same
-        // widening.
-        "beckon has Accessibility permission, which is what lets it focus and cycle \
-         windows. It reads window lists and raises windows. The keyboard event tap is \
-         installed only while Caps Lock is on as a shortcut key, or while you are \
-         recording a shortcut; beckon keeps no record of what you type."
-    } else {
-        "beckon does NOT have Accessibility permission. Hotkeys will launch apps but \
-         cannot focus or cycle windows. Grant it in System Settings > Privacy & \
-         Security > Accessibility. The grant is bound to this exact binary, so a \
-         rebuilt or replaced beckon has to be granted again."
-    }));
+    // **Nothing at all when the grant is present.** `accessibility_warning`
+    // is `None` there, on the rule the Shortcuts door already follows: a row
+    // in good order says nothing. What this replaced was two sentences
+    // reporting that a permission was working -- true, never news, and the
+    // top two thirds of the tallest block on the page.
+    //
+    // `Some` exactly when `grant_button_shown` is true, so the sentence and
+    // the button that fixes it cannot appear without each other; core pins
+    // that with a test rather than leaving it to these two calls agreeing.
+    let warning = accessibility_warning(ax_trusted);
+    c.access
+        .setStringValue(&NSString::from_str(warning.unwrap_or("")));
+    c.access.setHidden(warning.is_none());
+
+    // **The disclosure, and it is drawn in both states** -- unlike the
+    // sentence above it, this is a claim about what beckon DOES with the
+    // keyboard rather than a report about a permission, so it is as true
+    // with the grant as without it.
+    //
+    // **`or while you are recording a shortcut` is not padding.** Chord
+    // capture arms the same tap on a machine where the reader deliberately
+    // left `keyboard.caps` off, so without this clause the sentence is a
+    // false claim about when beckon can see keystrokes -- the one kind of
+    // wrong sentence this page exists to avoid.
+    //
+    // **`as a shortcut key` is not padding either**, and it is why this
+    // string is still local rather than core's `HOOK_DISCLOSURE`: that one
+    // reads `while Caps Lock is on`, which its own doc has to spend a
+    // paragraph explaining does NOT mean the lock's LED. Said out loud on
+    // the page, the ambiguity is cheaper to remove than to annotate. The
+    // other half of the divergence is the noun: this platform installs a
+    // `CGEventTap`, and calling it a hook would be Windows' word for
+    // Windows' mechanism.
+    c.hook.setStringValue(&NSString::from_str(
+        "The keyboard event tap is installed only while Caps Lock is on as a shortcut \
+         key, or while you are recording a shortcut. beckon keeps no record of what \
+         you type.",
+    ));
 }
 
 /// What the clipboard gets for a row.

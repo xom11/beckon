@@ -1471,14 +1471,21 @@ mod win {
         println!("  -- About page (design 3.4) --");
         // Transcribed from `beckon_core::settings::CONTROL_IDS`' About block
         // (1100-1120). `ABOUT_PLACEHOLDER` (1115) is RETIRED and deliberately
-        // absent, exactly like `SYS_PLACEHOLDER` in `measure_system`. 1116-1120
-        // are the update check (Task 9, 2026-08-25): unlike every row above
-        // them, `visible` here can be true while the row still has nothing to
-        // show -- `CHECK_NOW`/`UPDATE_COPY`/`OPEN_RELEASES` are ENABLED, not
-        // hidden, so `IsWindowVisible` alone does not verify them; a human run
-        // still has to check `IsWindowEnabled` against the update state the
-        // window was showing at the time.
-        const ROWS: [(i32, &str); 20] = [
+        // absent, exactly like `SYS_PLACEHOLDER` in `measure_system`.
+        //
+        // **Four more went the same way when the page was compacted
+        // (2026-08-25):** `LICENCE_LABEL/VALUE/COPY` (1108-1110) with the
+        // `Licence` row, and `OPEN_RELEASES` (1118) with the duplicate button
+        // that sent the reader where `RELEASES` already did. Their ids are
+        // retired, not reused.
+        //
+        // 1116-1120 are the update check (Task 9, 2026-08-25): unlike every
+        // row above them, `visible` here can be true while the row still has
+        // nothing to show -- `CHECK_NOW` and `UPDATE_COPY` are ENABLED, not
+        // hidden, so `IsWindowVisible` alone does not verify them; a human
+        // run still has to check `IsWindowEnabled` against the update state
+        // the window was showing at the time.
+        const ROWS: [(i32, &str); 16] = [
             (1100, "MARK"),
             (1101, "NAME"),
             (1102, "BUILD_LABEL"),
@@ -1486,15 +1493,11 @@ mod win {
             (1104, "BUILD_COPY"),
             (1116, "UPDATE_STATUS"),
             (1117, "CHECK_NOW"),
-            (1118, "OPEN_RELEASES"),
             (1119, "UPDATE_VALUE"),
             (1120, "UPDATE_COPY"),
             (1105, "LOCATION_LABEL"),
             (1106, "LOCATION_VALUE"),
             (1107, "LOCATION_COPY"),
-            (1108, "LICENCE_LABEL"),
-            (1109, "LICENCE_VALUE"),
-            (1110, "LICENCE_COPY"),
             (1111, "DISCLOSURE"),
             (1112, "GITHUB"),
             (1113, "RELEASES"),

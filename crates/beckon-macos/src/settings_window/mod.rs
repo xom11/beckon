@@ -958,11 +958,6 @@ define_class!(
             copy_field(Field::Location);
         }
 
-        #[unsafe(method(beckonCopyLicence:))]
-        fn on_copy_licence(&self, _s: &AnyObject) {
-            copy_field(Field::Licence);
-        }
-
         #[unsafe(method(beckonCheckForUpdates:))]
         fn on_check_for_updates(&self, _s: &AnyObject) {
             cmd(SettingsCommand::CheckForUpdates);
@@ -2360,7 +2355,6 @@ pub fn apply_about_state() {
         // documented answer for "one of the two could not be resolved", and
         // it costs silence rather than a false alarm.
         identity: beckon_core::settings::ImageIdentity::Unknown,
-        licence: env!("CARGO_PKG_LICENSE"),
         update,
     });
 

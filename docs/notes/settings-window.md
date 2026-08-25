@@ -322,7 +322,34 @@ of interior" when the figure was 232, and no reading of the code produced 262.
 `layout.rs` now has its first five tests (Windows job only); the seven in core
 run everywhere.
 
-## The window grew again for the update check, and System pays for it — ACCEPTED, not fixed
+## The window grew again for the update check, and System pays for it — ACCEPTED, then HALVED
+
+**NARROWED the same day by the About-compaction branch.** Everything below
+describes the state Task 9 shipped and the reasoning that produced it; it is
+still the derivation to read, because the compaction only changed one term in
+it. What moved:
+
+| | before the update check | Task 9 shipped | after compacting About |
+|---|---|---|---|
+| `about_plan` `content_h` (2-line) | 318 | 410 | **364** |
+| About `card_h` | 340 | 432 | **386** |
+| `MIN_HEIGHT` / `WINDOW_HEIGHT` | 480 / 500 | 572 / 592 | **526 / 546** |
+| ground below System | 52 | 144 | **98** |
+| `about - sys` gap | 14 | 106 | **60** |
+| floor at 200 % scaling | 960 px | 1144 px | **1052 px** |
+
+The `Licence` row is the whole difference — one row pitch, 46 px — and it went
+because it restated `MIT OR Apache-2.0`, a string that ships beside the binary
+and is one click away in the repo. **Half of Task 9's 92 px comes back and no
+more**, because one row was removed against the two the update check added.
+So System's ground is better than the 144 that shipped, still past the 60 px
+ceiling this section derives, and still worse than the 52 it had before the
+feature existed. The two candidate fixes named at the end of this section are
+unchanged and both still open.
+
+The 200 % floor is the item that changed character rather than degree: 1144 px
+against a 1080p work area of ~1040 was unusable, 1052 is marginal, and 175 %
+(920) is comfortable again. Still **simulated, not seen**.
 
 2026-08-25 (the check-for-updates branch, Task 9). Same shape as the section
 above, one level up: About needed two more real rows (the update status line

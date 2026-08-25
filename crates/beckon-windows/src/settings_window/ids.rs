@@ -229,9 +229,6 @@ pub(super) const IDC_ABOUT_BUILD_COPY: i32 = 1104;
 pub(super) const IDC_ABOUT_LOCATION_LABEL: i32 = 1105;
 pub(super) const IDC_ABOUT_LOCATION_VALUE: i32 = 1106;
 pub(super) const IDC_ABOUT_LOCATION_COPY: i32 = 1107;
-pub(super) const IDC_ABOUT_LICENCE_LABEL: i32 = 1108;
-pub(super) const IDC_ABOUT_LICENCE_VALUE: i32 = 1109;
-pub(super) const IDC_ABOUT_LICENCE_COPY: i32 = 1110;
 pub(super) const IDC_ABOUT_DISCLOSURE: i32 = 1111;
 pub(super) const IDC_ABOUT_GITHUB: i32 = 1112;
 pub(super) const IDC_ABOUT_RELEASES: i32 = 1113;
@@ -277,7 +274,6 @@ pub(super) const IDC_ABOUT_BUG: i32 = 1114;
 /// `beckon-core` carries the same note; see it for why 1120 was free to take.
 pub(super) const IDC_ABOUT_UPDATE_STATUS: i32 = 1116;
 pub(super) const IDC_ABOUT_CHECK_NOW: i32 = 1117;
-pub(super) const IDC_ABOUT_OPEN_RELEASES: i32 = 1118;
 pub(super) const IDC_ABOUT_UPDATE_VALUE: i32 = 1119;
 pub(super) const IDC_ABOUT_UPDATE_COPY: i32 = 1120;
 
@@ -371,16 +367,12 @@ mod tests {
         ("ABOUT_LOCATION_LABEL", super::IDC_ABOUT_LOCATION_LABEL),
         ("ABOUT_LOCATION_VALUE", super::IDC_ABOUT_LOCATION_VALUE),
         ("ABOUT_LOCATION_COPY", super::IDC_ABOUT_LOCATION_COPY),
-        ("ABOUT_LICENCE_LABEL", super::IDC_ABOUT_LICENCE_LABEL),
-        ("ABOUT_LICENCE_VALUE", super::IDC_ABOUT_LICENCE_VALUE),
-        ("ABOUT_LICENCE_COPY", super::IDC_ABOUT_LICENCE_COPY),
         ("ABOUT_DISCLOSURE", super::IDC_ABOUT_DISCLOSURE),
         ("ABOUT_GITHUB", super::IDC_ABOUT_GITHUB),
         ("ABOUT_RELEASES", super::IDC_ABOUT_RELEASES),
         ("ABOUT_BUG", super::IDC_ABOUT_BUG),
         ("ABOUT_UPDATE_STATUS", super::IDC_ABOUT_UPDATE_STATUS),
         ("ABOUT_CHECK_NOW", super::IDC_ABOUT_CHECK_NOW),
-        ("ABOUT_OPEN_RELEASES", super::IDC_ABOUT_OPEN_RELEASES),
         ("ABOUT_UPDATE_VALUE", super::IDC_ABOUT_UPDATE_VALUE),
         ("ABOUT_UPDATE_COPY", super::IDC_ABOUT_UPDATE_COPY),
     ];

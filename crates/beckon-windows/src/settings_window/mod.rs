@@ -506,7 +506,7 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 /// silently replacing the clipboard is a loss the user will not see until
 /// they paste. `IDC_ABOUT_OPEN_RELEASES` opens a browser, `IDC_ABOUT_RELEASES`'s
 /// own reason for being here.
-const PUSH_BUTTONS: [i32; 23] = [
+const PUSH_BUTTONS: [i32; 21] = [
     IDC_ADD,
     IDC_REMOVE,
     IDC_APPLY,
@@ -523,13 +523,11 @@ const PUSH_BUTTONS: [i32; 23] = [
     IDC_LOG_SHOW,
     IDC_ABOUT_BUILD_COPY,
     IDC_ABOUT_LOCATION_COPY,
-    IDC_ABOUT_LICENCE_COPY,
     IDC_ABOUT_GITHUB,
     IDC_ABOUT_RELEASES,
     IDC_ABOUT_BUG,
     IDC_ABOUT_CHECK_NOW,
     IDC_ABOUT_UPDATE_COPY,
-    IDC_ABOUT_OPEN_RELEASES,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -656,7 +654,7 @@ fn tab_id_of(page: Page) -> i32 {
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 55] = [
+const PAGE_CONTROLS: [(i32, Page); 51] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
     // The head row's `Shortcuts` heading (`IDC_LBL_SECTION`, 1020) left this
     // table with the control on 2026-08-15; the row itself is unchanged.
@@ -706,15 +704,11 @@ const PAGE_CONTROLS: [(i32, Page); 55] = [
     (IDC_ABOUT_BUILD_COPY, Page::About),
     (IDC_ABOUT_UPDATE_STATUS, Page::About),
     (IDC_ABOUT_CHECK_NOW, Page::About),
-    (IDC_ABOUT_OPEN_RELEASES, Page::About),
     (IDC_ABOUT_UPDATE_VALUE, Page::About),
     (IDC_ABOUT_UPDATE_COPY, Page::About),
     (IDC_ABOUT_LOCATION_LABEL, Page::About),
     (IDC_ABOUT_LOCATION_VALUE, Page::About),
     (IDC_ABOUT_LOCATION_COPY, Page::About),
-    (IDC_ABOUT_LICENCE_LABEL, Page::About),
-    (IDC_ABOUT_LICENCE_VALUE, Page::About),
-    (IDC_ABOUT_LICENCE_COPY, Page::About),
     (IDC_ABOUT_DISCLOSURE, Page::About),
     (IDC_ABOUT_GITHUB, Page::About),
     (IDC_ABOUT_RELEASES, Page::About),
@@ -1129,7 +1123,6 @@ mod cap {
     /// window gets to spell.
     pub const ABOUT_BUILD: &str = "Build";
     pub const ABOUT_LOCATION: &str = "Location";
-    pub const ABOUT_LICENCE: &str = "Licence";
     /// The three copy buttons' one caption.
     ///
     /// **`U+29C9 TWO JOINED SQUARES`, the third non-ASCII string this window
@@ -1172,7 +1165,6 @@ mod cap {
     /// duplication for the same reason (`about.rs`'s own doc there). Longer
     /// than `Releases` on purpose: it names the destination rather than
     /// assuming the status line above it was read.
-    pub const ABOUT_OPEN_RELEASES: &str = "Open releases page";
     /// The upgrade command's own copy button, beside `Copy the build
     /// identifier` and its two siblings above -- same glyph (`COPY_GLYPH`),
     /// different tooltip, because what it copies is a different thing:
@@ -1454,13 +1446,20 @@ const WINDOW_WIDTH: i32 = 680;
 /// is the arithmetic, and `layout.rs`'s `the_fixed_doors_fit_above_the_command_bar`
 /// is what fails if this and the floor stop agreeing.
 ///
+/// **592 -> 546 the same day, when the About page was compacted.** The
+/// `Licence` row went -- one `pitch()` = 46 px of card -- so the floor this
+/// constant sits +20 above came down with it. `MIN_HEIGHT`'s own table
+/// carries the re-derivation. It gives back HALF of what the update check
+/// cost and no more, which is the honest arithmetic: one row removed against
+/// the two that were added.
+///
 /// **500 -> 592 on 2026-08-25 (Task 9)**, following its own instruction: the
 /// About card grew two rows, `MIN_HEIGHT`'s own "CORRECTED 2026-08-25" note
 /// carries the re-derivation, and this constant keeps the same +20 margin
 /// over the floor it always had (480 + 20 then, 572 + 20 now). The mock-up
 /// paragraph above is left as it was written -- about a page this door did
 /// not carry yet -- rather than restated for content the mock-up never drew.
-const WINDOW_HEIGHT: i32 = 592;
+const WINDOW_HEIGHT: i32 = 546;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
@@ -1640,7 +1639,7 @@ const WINDOW_HEIGHT: i32 = 592;
 ///   Fitting is still `h >= 122 + card_h`:
 ///
 ///     About, two-line disclosure  h >= 554
-///     About, three lines          h >= 570   <-- the new floor
+///     About, three lines          h >= 570   <-- the floor Task 9 set
 /// ```
 ///
 /// **572, from the three-line row, the same +2 margin the old 480 carried
@@ -1651,16 +1650,39 @@ const WINDOW_HEIGHT: i32 = 592;
 /// task and is superseded here, not corrected in place -- this file's own
 /// convention, followed rather than broken.
 ///
-/// **What this does NOT fix, and is not this constant's job to:** System's
-/// card did not grow, so at the new floor it now sits **106 px** shorter than
-/// About's (`beckon_core::page_plan`'s own
-/// `about_now_legitimately_outgrows_system_by_the_update_check`, which pins
-/// that number and explains it), and the ground below the System card grew
-/// by roughly that much too -- a real, visible cost on the System door that
-/// this task's report flags rather than hides. Shrinking it back would mean
-/// either compressing the update check's two rows below one page's ordinary
-/// row rhythm or inventing content for System to fill the gap with; both are
-/// design calls outside a floor constant's authority.
+/// **RE-DERIVED 2026-08-25, second pass the same day: the About page was
+/// compacted and this came back down.** The `Licence` row went -- see
+/// `Field`'s own doc for why it was earning nothing -- so `about_plan`'s
+/// `content_h` fell from 410 / 426 to **364 / 380**. The same arithmetic
+/// again, with no other term touched:
+///
+/// ```text
+///     about_card_h   2 lines (32) = 386    3 lines (48) = 402
+///
+///   Fitting is still `h >= 122 + card_h`:
+///
+///     About, two-line disclosure  h >= 508
+///     About, three lines          h >= 524   <-- the floor now
+/// ```
+///
+/// **526, three-line row plus the same +2 margin**, and `WINDOW_HEIGHT`
+/// keeps its +20: **546**. Half of Task 9's +92 comes back and no more,
+/// because one row was removed against the two it added.
+///
+/// **What this improves but does not fix.** System's card is still 326 and
+/// still did not grow, so ground below it goes from Task 9's **144 px** to
+/// **98** -- better than the 144 that shipped, still above the 60 px both
+/// doors were once held under, and still above the **52** it sat at before
+/// the update check existed. Shrinking the rest would mean compressing the
+/// update check's two rows below the page's ordinary row rhythm or inventing
+/// content for System to fill the gap with; both remain design calls outside
+/// a floor constant's authority.
+///
+/// **The high-DPI floor improves with it, and is still worth watching.**
+/// `ptMinTrackSize.y` is `scale(MIN_HEIGHT, dpi)`, so at 200 % the floor is
+/// now `526 * 2 = 1052` physical px against a 1080p work area of roughly
+/// 1040 -- marginal rather than the clear 1144 it was, and comfortable again
+/// at 175 % (920). Simulated, not seen: nothing here can display the window.
 ///
 /// **The Shortcuts list is now a consequence rather than the derivation**, and
 /// it lands well: at 572 with the banner down `avail` is `572 - 276 - 36` =
@@ -1770,7 +1792,7 @@ const WINDOW_HEIGHT: i32 = 592;
 /// Simulated, not seen: nothing on the machine this was written on can display
 /// the window.
 const MIN_WIDTH: i32 = 660;
-const MIN_HEIGHT: i32 = 572;
+const MIN_HEIGHT: i32 = 526;
 
 /// The default size has to be one the floor allows, or `WM_GETMINMAXINFO`
 /// resizes the window in the same breath it is created.
@@ -1894,7 +1916,6 @@ fn role_of(id: i32) -> Role {
         | IDC_OPACITY_VALUE
         | IDC_ABOUT_BUILD_LABEL
         | IDC_ABOUT_LOCATION_LABEL
-        | IDC_ABOUT_LICENCE_LABEL
         | IDC_ABOUT_DISCLOSURE => Role::Caption,
         // The three `Hold` chips (`Caps+<key>`'s modifier row), moved off
         // `Role::Body` in Task 8. `layout`'s `chip_kc` measures them in this
@@ -2841,13 +2862,11 @@ fn default_button_of(id: i32) -> Option<DefaultButton> {
         IDC_LOG_SHOW => DefaultButton::LogShow,
         IDC_ABOUT_BUILD_COPY => DefaultButton::AboutBuildCopy,
         IDC_ABOUT_LOCATION_COPY => DefaultButton::AboutLocationCopy,
-        IDC_ABOUT_LICENCE_COPY => DefaultButton::AboutLicenceCopy,
         IDC_ABOUT_GITHUB => DefaultButton::AboutGithub,
         IDC_ABOUT_RELEASES => DefaultButton::AboutReleases,
         IDC_ABOUT_BUG => DefaultButton::AboutBug,
         IDC_ABOUT_CHECK_NOW => DefaultButton::AboutCheckNow,
         IDC_ABOUT_UPDATE_COPY => DefaultButton::AboutUpdateCopy,
-        IDC_ABOUT_OPEN_RELEASES => DefaultButton::AboutOpenReleases,
         _ => return None,
     })
 }
@@ -2886,13 +2905,11 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::LogShow => IDC_LOG_SHOW,
         DefaultButton::AboutBuildCopy => IDC_ABOUT_BUILD_COPY,
         DefaultButton::AboutLocationCopy => IDC_ABOUT_LOCATION_COPY,
-        DefaultButton::AboutLicenceCopy => IDC_ABOUT_LICENCE_COPY,
         DefaultButton::AboutGithub => IDC_ABOUT_GITHUB,
         DefaultButton::AboutReleases => IDC_ABOUT_RELEASES,
         DefaultButton::AboutBug => IDC_ABOUT_BUG,
         DefaultButton::AboutCheckNow => IDC_ABOUT_CHECK_NOW,
         DefaultButton::AboutUpdateCopy => IDC_ABOUT_UPDATE_COPY,
-        DefaultButton::AboutOpenReleases => IDC_ABOUT_OPEN_RELEASES,
     }
 }
 
@@ -5057,12 +5074,6 @@ unsafe fn build_children(hwnd: HWND) {
             IDC_ABOUT_LOCATION_VALUE,
             SS_PATHELLIPSIS_STYLE,
         ),
-        (
-            IDC_ABOUT_LICENCE_LABEL,
-            cap::ABOUT_LICENCE,
-            IDC_ABOUT_LICENCE_VALUE,
-            WINDOW_STYLE(0),
-        ),
     ] {
         child(
             hwnd,
@@ -5081,11 +5092,7 @@ unsafe fn build_children(hwnd: HWND) {
             &fonts,
         );
     }
-    for id in [
-        IDC_ABOUT_BUILD_COPY,
-        IDC_ABOUT_LOCATION_COPY,
-        IDC_ABOUT_LICENCE_COPY,
-    ] {
+    for id in [IDC_ABOUT_BUILD_COPY, IDC_ABOUT_LOCATION_COPY] {
         child(
             hwnd,
             w!("BUTTON"),
@@ -5121,15 +5128,6 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_ABOUT_CHECK_NOW,
         &fonts,
     );
-    child(
-        hwnd,
-        w!("BUTTON"),
-        cap::ABOUT_OPEN_RELEASES,
-        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
-        IDC_ABOUT_OPEN_RELEASES,
-        &fonts,
-    );
-
     // Row two: the upgrade command's value and its own copy button --
     // `value_row`'s shape one page up, minus the label column: nothing here
     // needs a signpost that `Check now` and the status line above it have
@@ -5290,7 +5288,6 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_LOG_SHOW,
         IDC_ABOUT_BUILD_COPY,
         IDC_ABOUT_LOCATION_COPY,
-        IDC_ABOUT_LICENCE_COPY,
         IDC_ABOUT_UPDATE_COPY,
     ]
     .into_iter()
@@ -6227,7 +6224,6 @@ fn about_now() -> AboutState {
         started: process_start_time(),
         disk,
         identity: image_identity(running.as_deref(), target_now.as_deref()),
-        licence: env!("CARGO_PKG_LICENSE"),
         update,
     })
 }
@@ -6428,7 +6424,6 @@ unsafe fn render_about(hwnd: HWND, st: &AboutState) {
     set_text_if_changed(hwnd, IDC_ABOUT_NAME, &st.name);
     set_text_if_changed(hwnd, IDC_ABOUT_BUILD_VALUE, &st.build.shown);
     set_text_if_changed(hwnd, IDC_ABOUT_LOCATION_VALUE, &st.location.shown);
-    set_text_if_changed(hwnd, IDC_ABOUT_LICENCE_VALUE, &st.licence.shown);
 
     // The update check's own row. `status` is `None` only in `Idle` --
     // `UpdateRow`'s own rule is to draw nothing at all then, not an empty
@@ -6450,7 +6445,6 @@ unsafe fn render_about(hwnd: HWND, st: &AboutState) {
         }
     }
     enable(hwnd, IDC_ABOUT_CHECK_NOW, st.update.can_check);
-    enable(hwnd, IDC_ABOUT_OPEN_RELEASES, st.update.status.is_some());
 
     // The upgrade command's own row -- blank value, disabled Copy, when
     // there is nothing to show. `cmd.shown` is what is drawn; the Copy
@@ -8858,10 +8852,10 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // and its three VALUES deliberately did not** -- the inversion
                 // `role_of` carries in the type scale, carried again in the
                 // ink. On System the muted half is the machine's answer; on
-                // About the muted half is the signpost (`Build`, `Location`,
-                // `Licence`) and the value is what the reader opened the page
-                // for. Same two tokens, opposite halves of the row, because
-                // the rows ask opposite questions.
+                // About the muted half is the signpost (`Build`,
+                // `Location`) and the value is what the reader opened the
+                // page for. Same two tokens, opposite halves of the row,
+                // because the rows ask opposite questions.
                 if matches!(
                     id,
                     IDC_CONFIG_DIR
@@ -8869,7 +8863,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         | IDC_OPACITY_VALUE
                         | IDC_ABOUT_BUILD_LABEL
                         | IDC_ABOUT_LOCATION_LABEL
-                        | IDC_ABOUT_LICENCE_LABEL
                 ) {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
                     let card = theme_col(|p| p.card, COLOR_WINDOW);
@@ -8983,7 +8976,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         | IDC_ABOUT_NAME
                         | IDC_ABOUT_BUILD_VALUE
                         | IDC_ABOUT_LOCATION_VALUE
-                        | IDC_ABOUT_LICENCE_VALUE
                         | IDC_ABOUT_UPDATE_VALUE
                 );
                 if on_card {
@@ -10270,7 +10262,6 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         // payload, never the annotated string on screen.
         (IDC_ABOUT_BUILD_COPY, _) => copy_about_field(Field::Build),
         (IDC_ABOUT_LOCATION_COPY, _) => copy_about_field(Field::Location),
-        (IDC_ABOUT_LICENCE_COPY, _) => copy_about_field(Field::Licence),
         // The upgrade command's own copy button (Task 9). `copy_about_field`
         // generalises over `Field` already -- this is the SAME path the
         // three rows above use, routing `Field::UpdateCommand` rather than a
@@ -10305,16 +10296,6 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         }
         (IDC_ABOUT_BUG, _) => {
             with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::BugReport)))
-        }
-        // `Open releases page` (Task 9): the SAME target as `IDC_ABOUT_RELEASES`
-        // above, on purpose -- see `cap::ABOUT_OPEN_RELEASES`'s own doc for
-        // why a near-duplicate button earns its place beside a failed check's
-        // status line rather than folding into the one in the links row.
-        // Reachable only while enabled (`render_about` gates it on
-        // `st.update.status.is_some()`), for the same reason the copy arm
-        // above does not re-check its own gate.
-        (IDC_ABOUT_OPEN_RELEASES, _) => {
-            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Releases)))
         }
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),

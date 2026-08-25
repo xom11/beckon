@@ -238,7 +238,6 @@ pub struct AboutPlan {
     /// command to show.
     pub command: i32,
     pub location: i32,
-    pub licence: i32,
     pub div2: i32,
     pub disclosure: i32,
     pub links: i32,
@@ -280,7 +279,6 @@ pub fn about_plan(m: RowMetrics, disclosure_h: i32) -> AboutPlan {
     p.update = row(&mut y);
     p.command = row(&mut y);
     p.location = row(&mut y);
-    p.licence = row(&mut y);
     // The gap the last row left is taken back before the divider, exactly as
     // `system_plan` does and for the same reason.
     y -= m.row_gap;
@@ -334,7 +332,6 @@ mod tests {
         assert_eq!(a.update - a.build, 46);
         assert_eq!(a.command - a.update, 46);
         assert_eq!(a.location - a.command, 46);
-        assert_eq!(a.licence - a.location, 46);
     }
 
     /// A group boundary parts its groups by MORE than a row gap, and by only
@@ -385,12 +382,17 @@ mod tests {
     /// rows (`update`, `command`) cost `2 * M96.pitch()` = 92 px each, always
     /// -- see `AboutPlan`'s own doc for why they are fixed rows rather than
     /// an omittable one. 410 = 318 + 92.
+    ///
+    /// **410 became 364 the same day**, when the page was compacted: the
+    /// `Licence` row went, at one `pitch()` = 46. 364 = 410 - 46. It buys
+    /// back half of what the update check cost and no more, which is the
+    /// honest arithmetic -- one row removed against two added.
     #[test]
     fn the_about_card_interior_grows_only_with_the_disclosure() {
         let two = about_plan(M96, 32);
-        assert_eq!(two.content_h, 410);
+        assert_eq!(two.content_h, 364);
         let three = about_plan(M96, 48);
-        assert_eq!(three.content_h, 426);
+        assert_eq!(three.content_h, 380);
         assert_eq!(three.content_h - two.content_h, 16);
         // Everything above the disclosure is fixed, so only the links row
         // moves with it.
@@ -466,16 +468,17 @@ mod tests {
     fn about_now_legitimately_outgrows_system_by_the_update_check() {
         let sys = system_plan(M96, BOTH).content_h;
         let about = about_plan(M96, 32).content_h;
-        // 106 = the pre-Task-9 gap (14, System 304 vs About's old 318) plus
-        // the update check's two new rows (2 * pitch = 92). Pinned as a
-        // number, not as a formula referencing the old 318 or 14: those are
-        // history now, and a formula here would just restate `about_plan`'s
-        // own body and pass for any rhythm at all, the same reasoning
+        // 60 = the pre-Task-9 gap (14, System 304 vs About's old 318) plus
+        // the update check's two new rows (2 * pitch = 92) MINUS the `Licence`
+        // row the compaction removed (46). Pinned as a number, not as a
+        // formula referencing the old 318 or 14: those are history now, and a
+        // formula here would just restate `about_plan`'s own body and pass
+        // for any rhythm at all, the same reasoning
         // `the_system_card_interior_is_304_with_every_row` gives for pinning
         // its own number.
         assert_eq!(
             about - sys,
-            106,
+            60,
             "System is {sys} and About is {about}; if this number moves, \
              re-derive Windows' `MIN_HEIGHT` / `WINDOW_HEIGHT` and the System \
              door's now-larger empty-ground margin alongside it rather than \
@@ -514,7 +517,6 @@ mod tests {
             a.update,
             a.command,
             a.location,
-            a.licence,
             a.div2,
             a.disclosure,
             a.links,
