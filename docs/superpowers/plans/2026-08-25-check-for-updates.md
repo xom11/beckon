@@ -1028,7 +1028,7 @@ Three places stop compiling. Each gets the minimal correct change:
 1. `crates/beckon-macos/src/settings_window/mod.rs` — find the `AboutInputs {
    … }` construction and add `update: <the state the caller holds>`. The
    caller does not hold one yet, so pass `beckon_core::update::UpdateState::Idle`
-   with the comment `// Task 7 threads the real state through here.`
+   with the comment `// Task 6 threads the real state through here.`
 2. `crates/beckon-windows/src/settings_window/mod.rs` — the same.
 3. `crates/beckon-cli/src/serve.rs` — the `on_command` match is exhaustive by
    design (*"every variant added later is a compile error at this one site"*).
@@ -1428,8 +1428,8 @@ In both crates, `apply_about_state` currently passes Task 4's
 stored field, read from `UI` in the same place the function already reads
 `controls()` / the `Ui`.
 
-Delete Task 4's `// Task 7 threads the real state through here.` comment — it
-named the wrong task, and the plumbing is here.
+Delete Task 4's `// Task 6 threads the real state through here.` comment — it
+was a promise about this task, and this task keeps it.
 
 - [ ] **Step 7: Run the gate**
 
