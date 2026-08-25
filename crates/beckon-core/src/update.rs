@@ -55,13 +55,23 @@ pub fn parse_current(version_string: &str) -> Option<Version> {
 
 /// `".../releases/tag/v0.11.0"` -> `0.11.0`.
 ///
-/// Takes the last path segment and strips a leading `v` when there is one.
-/// Everything that is not a release tag -- an empty string (curl printed no
-/// redirect), a captive portal's login page, the releases index itself --
-/// falls out as `None`, which the caller must report as a failed check and
-/// never as success.
+/// **The `/releases/tag/` segment is required, not merely the shape of the
+/// last component.** Without it a redirect to `https://portal.example/1.2.3`
+/// -- a captive portal, a CDN error page -- parses as a release and beckon
+/// reports a version that does not exist. Spec §4.2 makes this the boundary
+/// between a verdict and `CheckError::Unreadable`.
+///
+/// A leading `v` is stripped when present, not required. Everything that is
+/// not a release tag -- an empty string (curl printed no redirect), a login
+/// page, the releases index itself -- falls out as `None`, which the caller
+/// must report as a failed check and never as success.
 pub fn parse_tag(redirect_url: &str) -> Option<Version> {
-    let tag = redirect_url.trim().rsplit('/').next()?;
+    let tag = redirect_url.trim().split_once("/releases/tag/")?.1;
+    // A further separator means the tag is not the final component -- treat
+    // it as unreadable rather than guessing which part is the version.
+    if tag.contains('/') {
+        return None;
+    }
     parse_triple(tag.strip_prefix('v').unwrap_or(tag))
 }
 
@@ -134,6 +144,15 @@ mod tests {
         assert_eq!(parse_tag("   "), None);
         assert_eq!(parse_tag("https://portal.example/login"), None);
         assert_eq!(parse_tag("https://github.com/xom11/beckon/releases"), None);
+        // The last segment is a valid triple, but the path is not a release
+        // tag. This is the case a captive portal or a CDN error page
+        // produces, and reading it as a release would report a version that
+        // does not exist.
+        assert_eq!(parse_tag("https://portal.example/1.2.3"), None);
+        assert_eq!(
+            parse_tag("https://github.com/xom11/beckon/releases/tag/v0.11.0/extra"),
+            None
+        );
     }
 
     #[test]
