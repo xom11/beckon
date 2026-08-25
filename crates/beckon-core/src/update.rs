@@ -10,7 +10,7 @@
 //! The deliverable of a check is the upgrade command for the channel that
 //! actually installed this binary -- see `upgrade_command`.
 
-use crate::settings::AboutValue;
+use crate::settings::{AboutValue, FlagTone};
 
 /// A release version. Field order IS the comparison order, which is what the
 /// derived `Ord` gives us for free: major, then minor, then patch.
@@ -181,9 +181,131 @@ pub fn upgrade_command(channel: Channel) -> Option<AboutValue> {
     })
 }
 
+/// Why a check produced no answer.
+///
+/// Three variants rather than one, because a reader acts differently on each:
+/// `NoClient` is a machine that cannot check at all, `Unreachable` is worth
+/// retrying, and `Unreadable` means something answered but it was not GitHub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckError {
+    /// No `curl` to spawn.
+    NoClient,
+    /// curl ran and failed -- DNS, connection refused, timeout.
+    Unreachable,
+    /// curl succeeded but what came back does not name a release. A captive
+    /// portal answering 200, or redirecting to its own login page, lands
+    /// here -- and must not be reported as success.
+    Unreadable,
+}
+
+/// What the caller knows about the check right now.
+///
+/// Session state, deliberately not persisted: the answer was a fact about a
+/// moment, and nothing refreshes it. Closing the window and reopening it
+/// shows `Idle` again, which is correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateState {
+    /// No check has run this session.
+    Idle,
+    Checking,
+    Done(Verdict),
+    Failed(CheckError),
+}
+
+/// What the spawn actually produced, as the three cases this crate can reason
+/// about. Keeping the process handling in `beckon-cli` and the meaning here
+/// is what puts the meaning under all three CI jobs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurlOutcome<'a> {
+    /// The binary could not be spawned at all.
+    NotSpawned,
+    /// It ran and exited non-zero.
+    Failed,
+    /// It exited zero; this is `%{redirect_url}` as printed.
+    Ok(&'a str),
+}
+
+pub fn interpret(outcome: CurlOutcome<'_>, current: Version) -> UpdateState {
+    match outcome {
+        CurlOutcome::NotSpawned => UpdateState::Failed(CheckError::NoClient),
+        CurlOutcome::Failed => UpdateState::Failed(CheckError::Unreachable),
+        CurlOutcome::Ok(url) => match parse_tag(url) {
+            Some(latest) => UpdateState::Done(compare(current, latest)),
+            None => UpdateState::Failed(CheckError::Unreadable),
+        },
+    }
+}
+
+/// The one string that means "checked, and there is nothing newer".
+///
+/// A constant rather than a literal so the invariant test cannot drift out of
+/// agreement with the code by a wording change.
+pub const UP_TO_DATE: &str = "Up to date";
+
+/// What the About page draws for the update row.
+///
+/// One function produces the status line AND the command, so the two cannot
+/// disagree by construction rather than by discipline -- the rule
+/// `row_condition` already follows for the Shortcuts list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRow {
+    /// `None` in `Idle`: there is no line yet. Not an empty `String`, because
+    /// "no line" and "a line that says nothing" are different instructions to
+    /// the drawing code and an empty string makes the page decide which it
+    /// got -- the same reason `ImageOnDisk` splits `Gone` from `Unknown`.
+    pub status: Option<String>,
+    /// `Warn` only for a failure. An available update is news, not a problem,
+    /// so it stays `Neutral` and draws no pill.
+    ///
+    /// Computed here rather than through `flag_tone`, which owns a CLOSED
+    /// four-word vocabulary for the Shortcuts list. These words are not in it
+    /// and must not be added to it.
+    pub tone: FlagTone,
+    pub command: Option<AboutValue>,
+    /// `false` only while a check is in flight -- the call blocks this
+    /// thread, so a second press could only queue behind the first.
+    pub can_check: bool,
+}
+
+pub fn update_row(state: UpdateState, channel: Channel) -> UpdateRow {
+    let plain = |status: Option<String>| UpdateRow {
+        status,
+        tone: FlagTone::Neutral,
+        command: None,
+        can_check: true,
+    };
+    match state {
+        UpdateState::Idle => plain(None),
+        UpdateState::Checking => UpdateRow {
+            can_check: false,
+            ..plain(Some("Checking...".into()))
+        },
+        UpdateState::Done(Verdict::UpToDate) => plain(Some(UP_TO_DATE.into())),
+        UpdateState::Done(Verdict::Available(v)) => UpdateRow {
+            command: upgrade_command(channel),
+            ..plain(Some(format!("{v} available")))
+        },
+        UpdateState::Done(Verdict::Ahead(v)) => {
+            plain(Some(format!("Newer than the latest release ({v})")))
+        }
+        UpdateState::Failed(e) => UpdateRow {
+            tone: FlagTone::Warn,
+            ..plain(Some(
+                match e {
+                    CheckError::NoClient => "Could not check - no HTTP client found",
+                    CheckError::Unreachable => "Could not reach github.com",
+                    CheckError::Unreadable => "Could not read the latest version",
+                }
+                .into(),
+            ))
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     fn v(major: u64, minor: u64, patch: u64) -> Version {
         Version {
@@ -267,8 +389,6 @@ mod tests {
     fn a_version_displays_as_a_bare_triple() {
         assert_eq!(v(0, 10, 0).to_string(), "0.10.0");
     }
-
-    use std::path::Path;
 
     /// The five outcomes, in both separator styles. A Windows path reaches
     /// this function as ONE `Path` component on the two CI jobs that are not
@@ -377,5 +497,164 @@ mod tests {
     #[test]
     fn an_unknown_channel_gets_no_command() {
         assert_eq!(upgrade_command(Channel::Unknown), None);
+    }
+
+    /// The three ways a spawn can end, mapped to the three failures a user
+    /// can act on differently.
+    #[test]
+    fn each_way_the_spawn_can_fail_gets_its_own_error() {
+        let cur = v(0, 10, 0);
+        assert_eq!(
+            interpret(CurlOutcome::NotSpawned, cur),
+            UpdateState::Failed(CheckError::NoClient)
+        );
+        assert_eq!(
+            interpret(CurlOutcome::Failed, cur),
+            UpdateState::Failed(CheckError::Unreachable)
+        );
+        // Exit zero, but nothing that names a release: a captive portal, or
+        // no redirect at all.
+        assert_eq!(
+            interpret(CurlOutcome::Ok("https://portal.example/login"), cur),
+            UpdateState::Failed(CheckError::Unreadable)
+        );
+        assert_eq!(
+            interpret(CurlOutcome::Ok(""), cur),
+            UpdateState::Failed(CheckError::Unreadable)
+        );
+    }
+
+    /// The measured redirect from the design doc, end to end.
+    #[test]
+    fn the_measured_redirect_produces_a_verdict() {
+        assert_eq!(
+            interpret(
+                CurlOutcome::Ok("https://github.com/xom11/beckon/releases/tag/v0.10.0"),
+                v(0, 10, 0)
+            ),
+            UpdateState::Done(Verdict::UpToDate)
+        );
+        assert_eq!(
+            interpret(
+                CurlOutcome::Ok("https://github.com/xom11/beckon/releases/tag/v0.11.0"),
+                v(0, 10, 0)
+            ),
+            UpdateState::Done(Verdict::Available(v(0, 11, 0)))
+        );
+    }
+
+    /// **The invariant.** A blind detector and a clean result print the same
+    /// thing, and a check that silently fails while saying `Up to date`
+    /// converts "I don't know" into a confident false assurance. This is the
+    /// single most important test in the module.
+    #[test]
+    fn a_failed_check_never_says_up_to_date_and_never_offers_a_command() {
+        for e in [
+            CheckError::NoClient,
+            CheckError::Unreachable,
+            CheckError::Unreadable,
+        ] {
+            let row = update_row(UpdateState::Failed(e), Channel::Scoop);
+            assert_ne!(row.status.as_deref(), Some(UP_TO_DATE), "{e:?}");
+            assert!(row.command.is_none(), "{e:?}");
+            assert_eq!(row.tone, FlagTone::Warn, "{e:?}");
+            assert!(row.can_check, "{e:?}: a failed check must be retryable");
+        }
+    }
+
+    /// `Idle` has no line at all, which is a different instruction to the
+    /// drawing code than "a line that says nothing" -- the reason `status` is
+    /// an `Option` rather than a possibly-empty `String`.
+    #[test]
+    fn before_any_check_there_is_no_line() {
+        let row = update_row(UpdateState::Idle, Channel::Scoop);
+        assert_eq!(row.status, None);
+        assert!(row.command.is_none());
+        assert!(row.can_check);
+    }
+
+    /// While a check is in flight the button must not be pressable again --
+    /// the call blocks this thread, so a second press could only queue behind
+    /// the first.
+    #[test]
+    fn a_check_in_flight_disables_its_own_button() {
+        let row = update_row(UpdateState::Checking, Channel::Scoop);
+        assert_eq!(row.status.as_deref(), Some("Checking..."));
+        assert!(!row.can_check);
+    }
+
+    /// The command appears for exactly one state, and carries the channel.
+    #[test]
+    fn only_an_available_update_carries_an_upgrade_command() {
+        let avail = update_row(
+            UpdateState::Done(Verdict::Available(v(0, 11, 0))),
+            Channel::Scoop,
+        );
+        assert_eq!(avail.status.as_deref(), Some("0.11.0 available"));
+        assert_eq!(
+            avail.command.map(|c| c.copy),
+            Some("scoop update beckon".into())
+        );
+
+        assert!(
+            update_row(UpdateState::Done(Verdict::UpToDate), Channel::Scoop)
+                .command
+                .is_none()
+        );
+        assert!(update_row(
+            UpdateState::Done(Verdict::Ahead(v(0, 9, 9))),
+            Channel::Scoop
+        )
+        .command
+        .is_none());
+    }
+
+    /// An unknown channel still gets the news, just not a command.
+    #[test]
+    fn an_available_update_on_an_unknown_channel_still_reports_the_version() {
+        let row = update_row(
+            UpdateState::Done(Verdict::Available(v(0, 11, 0))),
+            Channel::Unknown,
+        );
+        assert_eq!(row.status.as_deref(), Some("0.11.0 available"));
+        assert!(row.command.is_none());
+    }
+
+    /// `Ahead` says what is true and offers nothing -- an upgrade command
+    /// here would move the user backwards.
+    #[test]
+    fn a_build_ahead_of_the_release_says_so_plainly() {
+        let row = update_row(
+            UpdateState::Done(Verdict::Ahead(v(0, 9, 9))),
+            Channel::Homebrew,
+        );
+        assert_eq!(
+            row.status.as_deref(),
+            Some("Newer than the latest release (0.9.9)")
+        );
+        assert!(row.command.is_none());
+        assert_eq!(row.tone, FlagTone::Neutral);
+    }
+
+    /// Every string this module can put on screen is ASCII, like every other
+    /// display string in this window.
+    #[test]
+    fn every_status_line_is_ascii() {
+        let states = [
+            UpdateState::Idle,
+            UpdateState::Checking,
+            UpdateState::Done(Verdict::UpToDate),
+            UpdateState::Done(Verdict::Available(v(0, 11, 0))),
+            UpdateState::Done(Verdict::Ahead(v(0, 9, 9))),
+            UpdateState::Failed(CheckError::NoClient),
+            UpdateState::Failed(CheckError::Unreachable),
+            UpdateState::Failed(CheckError::Unreadable),
+        ];
+        for s in states {
+            let row = update_row(s, Channel::Homebrew);
+            if let Some(line) = &row.status {
+                assert!(line.is_ascii(), "{s:?}: {line}");
+            }
+        }
     }
 }
