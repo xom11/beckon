@@ -227,7 +227,7 @@ out is already the established pattern here: `beckon_macos::shell` invokes
 
 ### Channel detection is a needle match on the UNRESOLVED path, and `/usr/local/bin` is deliberately not one of the needles
 
-`beckon_core::update::detect_channel` reads `current_exe()` -- unresolved,
+`beckon_core::update::detect_channel` reads `current_exe()` — unresolved,
 for the same reason the About page's `Location` row is (see "What beckon
 reads and writes" in `CLAUDE.md`): a resolved nix store path or a resolved
 scoop `current` junction reports today's target, not how the binary got

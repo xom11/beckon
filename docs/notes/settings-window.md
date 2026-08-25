@@ -381,11 +381,11 @@ About alone) and About's at the ceiling as before.
 
 **Accepted for this branch, on two grounds.** First, the update check itself
 is not what bloated this: Windows' own contribution to About is already the
-LEANER of the two platforms' -- `about_plan`'s two rows (`update`, `command`)
+LEANER of the two platforms' — `about_plan`'s two rows (`update`, `command`)
 against `AboutControls`' three on macOS (`update_row`, `command_row`,
 `open_releases_row`, each its own `NSStackView`). Windows still needed 92 px
 for the leaner version, which is evidence the growth is real content, not
-Windows-side excess -- there was no cheaper way to build this on this
+Windows-side excess — there was no cheaper way to build this on this
 platform that was left on the table. Second, the change is a symptom of a
 **content** decision (About needed two more rows) forcing a **window**
 decision (grow to fit them), and no purely geometric fix on the System side
