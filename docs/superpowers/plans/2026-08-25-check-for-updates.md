@@ -1040,8 +1040,11 @@ Three places stop compiling. Each gets the minimal correct change:
                 SettingsCommand::CheckForUpdates => {}
 ```
 
-Also add `update: UpdateState::Idle` to the `about_with` helper in
-`settings.rs`'s test module, which constructs `AboutInputs` too.
+**And two more inside `settings.rs`'s own test module**, which also construct
+`AboutInputs`: the `about_with` helper, and the standalone
+`an_unreadable_exe_path_still_fills_the_row` test. **Five sites in total** —
+grep `AboutInputs {` across `crates/` and repair every hit; a site that still
+compiles untouched would mean the field does not actually bind there.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
