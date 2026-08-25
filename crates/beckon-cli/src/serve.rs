@@ -2441,6 +2441,9 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 SettingsCommand::SetCapsShorthand(_)
                 | SettingsCommand::Copy(_)
                 | SettingsCommand::Undo => {}
+                // Wired in Task 7. Kept as its own arm rather than folded
+                // into a `_` so the compiler goes on naming this site.
+                SettingsCommand::CheckForUpdates => {}
             }
         }),
     };

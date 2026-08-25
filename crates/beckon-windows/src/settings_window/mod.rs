@@ -6016,6 +6016,8 @@ fn about_now() -> AboutState {
         disk,
         identity: image_identity(running.as_deref(), target_now.as_deref()),
         licence: env!("CARGO_PKG_LICENSE"),
+        // Task 6 threads the real state through here.
+        update: beckon_core::update::UpdateState::Idle,
     })
 }
 

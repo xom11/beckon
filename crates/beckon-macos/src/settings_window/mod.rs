@@ -2238,6 +2238,8 @@ pub fn apply_about_state() {
         // it costs silence rather than a false alarm.
         identity: beckon_core::settings::ImageIdentity::Unknown,
         licence: env!("CARGO_PKG_LICENSE"),
+        // Task 6 threads the real state through here.
+        update: beckon_core::update::UpdateState::Idle,
     });
 
     about::apply(&c.abt, &st, crate::is_accessibility_trusted());

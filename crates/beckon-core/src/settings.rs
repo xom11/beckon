@@ -858,6 +858,12 @@ pub enum SettingsCommand {
     /// "reload from disk", which is `on_reload_from_disk` and answers a
     /// different question.
     ReloadNow,
+    /// About's `Check now`, and the tray row that opens this window on About.
+    ///
+    /// Carries nothing, which is what lets it stay in a `Copy + Eq` enum: the
+    /// ANSWER travels back through `ServeState` and `refresh_settings`, the
+    /// way pause and autostart already do.
+    CheckForUpdates,
     SetDarkMode(bool),
     /// 85..=100. The window clamps before sending; the caller may assume it.
     SetOpacity(u8),
@@ -1461,6 +1467,14 @@ pub struct AboutInputs<'a> {
     pub identity: ImageIdentity,
     /// `env!("CARGO_PKG_LICENSE")`.
     pub licence: &'a str,
+    /// What the caller knows about the update check right now.
+    ///
+    /// `Copy`, like every other field here -- `AboutInputs` derives `Copy`
+    /// and `UpdateState`'s payloads are all `Copy`, so keep it that way.
+    ///
+    /// The CHANNEL is not a field: `about_state` derives it from `exe` above,
+    /// so there is one source for "where is this binary" rather than two.
+    pub update: crate::update::UpdateState,
 }
 
 /// What to do the moment Accessibility appears, having been missing.
@@ -1537,6 +1551,9 @@ pub struct AboutState {
     /// Kept beside `location` so a caller can act on the verdict without
     /// parsing the string it produced.
     pub image: ImageAge,
+    /// The update check's line, its tone, and the upgrade command when there
+    /// is one. Decided entirely by `crate::update::update_row`.
+    pub update: crate::update::UpdateRow,
 }
 
 /// `SystemTime` as `YYYY-MM-DD`, UTC, or `None` when it is before the epoch.
@@ -1657,6 +1674,7 @@ pub fn about_state(i: AboutInputs) -> AboutState {
             copy: i.licence.to_string(),
         },
         image: age,
+        update: crate::update::update_row(i.update, crate::update::detect_channel(i.exe)),
     }
 }
 
@@ -3798,6 +3816,7 @@ mod tests {
         assert!(!grant_button_shown(true));
     }
     use crate::shortcuts::Chord;
+    use crate::update::{UpdateState, Verdict};
 
     const FILE: &str =
         "# mine\n\"ctrl+super+alt+t\" = \"Terminal\"\n\"ctrl+super+alt+e\" = \"File Explorer\"\n";
@@ -7144,7 +7163,49 @@ mod tests {
             disk,
             identity,
             licence: "MIT OR Apache-2.0",
+            update: UpdateState::Idle,
         })
+    }
+
+    fn about_update(exe: &std::path::Path, update: UpdateState) -> AboutState {
+        about_state(AboutInputs {
+            version: "0.9.3",
+            target: "aarch64-pc-windows-msvc",
+            exe: Some(exe),
+            started: None,
+            disk: ImageOnDisk::Unknown,
+            identity: ImageIdentity::Same,
+            licence: "MIT OR Apache-2.0",
+            update,
+        })
+    }
+
+    /// `Channel` is NOT a new input. `about_state` derives it from the
+    /// executable path `AboutInputs` already carries for the Location row, so
+    /// there is one source for "where is this binary" rather than two that
+    /// can drift.
+    #[test]
+    fn about_derives_the_channel_from_the_exe_path_it_already_has() {
+        let page = about_update(
+            &exe_path(),
+            UpdateState::Done(Verdict::Available(crate::update::Version {
+                major: 0,
+                minor: 11,
+                patch: 0,
+            })),
+        );
+        assert_eq!(page.update.status.as_deref(), Some("0.11.0 available"));
+        // exe_path() is the scoop shape.
+        assert_eq!(
+            page.update.command.map(|c| c.copy),
+            Some("scoop update beckon".into())
+        );
+    }
+
+    #[test]
+    fn about_shows_no_update_line_before_a_check() {
+        let page = about_update(&exe_path(), UpdateState::Idle);
+        assert_eq!(page.update.status, None);
     }
 
     use std::time::{Duration, SystemTime};
@@ -7352,6 +7413,7 @@ mod tests {
             disk: ImageOnDisk::Unknown,
             identity: ImageIdentity::Unknown,
             licence: "MIT OR Apache-2.0",
+            update: UpdateState::Idle,
         });
         assert_eq!(st.location.shown, "unknown");
         assert_eq!(st.name, "beckon 0.9.3");
