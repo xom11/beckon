@@ -39,7 +39,7 @@
 //! anywhere. `beckon doctor` already reports it; About is where a person
 //! who has not thought to run `doctor` will be standing.
 
-use beckon_core::settings::{copy_text, grant_button_shown, AboutState, Field, ImageAge};
+use beckon_core::settings::{copy_text, grant_button_shown, AboutState, Field, FlagTone, ImageAge};
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
@@ -67,6 +67,25 @@ pub(super) struct AboutControls {
     /// through anything beckon calls, and the pane wants a path carrying a
     /// nix hash or a Homebrew version.
     pub(super) grant: Retained<NSButton>,
+
+    /// The update check's own line. `None` in `UpdateRow::status` draws
+    /// nothing at all -- see `apply` -- so this is hidden, not blanked, in
+    /// that state.
+    pub(super) update_status: Retained<NSTextField>,
+    /// Enabled iff `state.update.can_check` -- disabled for the length of a
+    /// check, which blocks this thread (see `UpdateRow::can_check`'s own
+    /// doc).
+    pub(super) check_now: Retained<NSButton>,
+    /// The upgrade command's whole row, hidden unless `state.update.command`
+    /// is `Some` -- there is one only once a check finds a newer release.
+    pub(super) command_row: Retained<NSStackView>,
+    /// `cmd.shown`, which may carry a caveat the bare `cmd.copy` on the
+    /// clipboard must not -- see `copy_update_command` in `mod.rs`.
+    pub(super) command_value: Retained<NSTextField>,
+    /// Hidden until a check has produced ANY verdict, including a failure --
+    /// what gives a user with no curl somewhere to go. Mirrors
+    /// `state.update.status.is_some()`, the same gate `update_status` uses.
+    pub(super) open_releases_row: Retained<NSStackView>,
 }
 
 /// `Build` / `Location` / `Licence`: a dimmed name, the value, a copy button.
@@ -186,6 +205,39 @@ pub(super) fn build(
     let (loc_row, location) = value_row("Location", sel!(beckonCopyLocation:), target, mtm);
     let (lic_row, licence) = value_row("Licence", sel!(beckonCopyLicence:), target, mtm);
 
+    // The update check's own row, beside the `Build` row it is a verdict
+    // about: the status line (tone-coloured in `apply`) and `Check now`.
+    let update_status = w::label("", mtm);
+    let check_now = w::push("Check now", sel!(beckonCheckForUpdates:), target, mtm);
+    let update_row = w::hstack(
+        &[&*update_status as &NSView, &*w::spring(mtm), &check_now],
+        mtm,
+    );
+
+    // The upgrade command, shown only once a check finds one. `cmd.shown`
+    // is drawn here; the Copy button puts `cmd.copy` on the clipboard
+    // instead -- `apply` and `copy_update_command` (in `mod.rs`) are the
+    // only two places that read either half, and neither may swap them.
+    let command_value = w::label("", mtm);
+    let command_copy = w::glyph(
+        "Copy",
+        "Copy to clipboard",
+        sel!(beckonCopyUpdateCommand:),
+        target,
+        mtm,
+    );
+    let command_row = w::hstack(
+        &[&*command_value as &NSView, &*w::spring(mtm), &command_copy],
+        mtm,
+    );
+
+    // A way to the releases page for every verdict a check can reach,
+    // including a failure -- the one case with no upgrade command at all.
+    // `grant_row` just below is the same shape: one left-aligned button,
+    // hidden as a whole row until it has something to say.
+    let open_releases = w::push("Open releases page", sel!(beckonReleases:), target, mtm);
+    let open_releases_row = w::hstack(&[&*open_releases as &NSView, &*w::spring(mtm)], mtm);
+
     let image = w::secondary("", mtm);
     let access = w::wrapping("", mtm);
     let grant = w::push(
@@ -216,6 +268,9 @@ pub(super) fn build(
             &name,
             &w::divider(mtm),
             &build_row,
+            &update_row,
+            &command_row,
+            &open_releases_row,
             &loc_row,
             &image,
             &lic_row,
@@ -250,6 +305,11 @@ pub(super) fn build(
             image,
             access,
             grant,
+            update_status,
+            check_now,
+            command_row,
+            command_value,
+            open_releases_row,
         },
     )
 }
@@ -261,6 +321,43 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
         .setStringValue(&NSString::from_str(&st.location.shown));
     c.licence
         .setStringValue(&NSString::from_str(&st.licence.shown));
+
+    // The update check's own line. `status` is `None` only in `Idle` --
+    // `UpdateRow`'s own rule is to draw nothing at all then, not an empty
+    // line, so the field is hidden rather than blanked.
+    c.update_status.setStringValue(&NSString::from_str(
+        st.update.status.as_deref().unwrap_or(""),
+    ));
+    c.update_status.setHidden(st.update.status.is_none());
+    // Set on every push, not only for `Warn`: a line left orange from a
+    // failed check must not stay orange once a later check succeeds.
+    let tone = match st.update.tone {
+        FlagTone::Warn => objc2_app_kit::NSColor::systemOrangeColor(),
+        // `update_row` never produces `Bad` for this row -- see its own doc
+        // -- but the match stays exhaustive rather than folding into a
+        // wildcard, so a tone this page has no colour for is a compile
+        // error here, not a silent default.
+        FlagTone::Bad => objc2_app_kit::NSColor::systemRedColor(),
+        FlagTone::Neutral => objc2_app_kit::NSColor::labelColor(),
+    };
+    c.update_status.setTextColor(Some(&tone));
+    c.check_now.setEnabled(st.update.can_check);
+
+    match &st.update.command {
+        Some(cmd) => {
+            c.command_value
+                .setStringValue(&NSString::from_str(&cmd.shown));
+            c.command_row.setHidden(false);
+        }
+        None => {
+            c.command_value.setStringValue(&NSString::from_str(""));
+            c.command_row.setHidden(true);
+        }
+    }
+
+    // Whenever a check has reached ANY verdict, including a failure -- what
+    // gives a user with no curl somewhere to go.
+    c.open_releases_row.setHidden(st.update.status.is_none());
 
     // The verdict, only when there is one. `Current` says nothing: a healthy
     // row saying "healthy" is the noise the Shortcuts door's status

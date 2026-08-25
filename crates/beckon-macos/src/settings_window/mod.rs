@@ -472,6 +472,36 @@ fn copy_field(f: Field) {
     cmd(SettingsCommand::Copy(f));
 }
 
+/// Put the update command's bare payload on the clipboard.
+///
+/// **`cmd.copy`, never `cmd.shown`.** `shown` may carry a caveat (`brew
+/// upgrade beckon - then: brew services restart beckon`) meant for the
+/// reader, not for a shell; `copy` is the bare command, the same split
+/// `copy_field`/`AboutValue` already keep for the three Field rows.
+///
+/// **No `SettingsCommand` is raised here**, unlike `copy_field`. `Field` has
+/// three variants -- `Build`, `Location`, `Licence` -- and none of them names
+/// this row; giving it a fourth belongs to `beckon-core`'s `Field`, which is
+/// outside this file. `serve.rs`'s own arm for `SettingsCommand::Copy` is
+/// already an empty notification (see its doc there), so the only thing
+/// skipped is an echo nothing acts on.
+fn copy_update_command() {
+    let text = UI.with(|u| {
+        u.borrow().as_ref().and_then(|x| {
+            x.about_state
+                .as_ref()
+                .and_then(|st| st.update.command.as_ref())
+                .map(|cmd| cmd.copy.clone())
+        })
+    });
+    let Some(text) = text else { return };
+    let pb = { NSPasteboard::generalPasteboard() };
+    unsafe {
+        pb.clearContents();
+        pb.setString_forType(&NSString::from_str(&text), NSPasteboardTypeString);
+    }
+}
+
 /// The window's own transparency.
 ///
 /// `alphaValue` is the same mechanism the Win32 twin uses (a layered
@@ -961,6 +991,16 @@ define_class!(
         #[unsafe(method(beckonCopyLicence:))]
         fn on_copy_licence(&self, _s: &AnyObject) {
             copy_field(Field::Licence);
+        }
+
+        #[unsafe(method(beckonCheckForUpdates:))]
+        fn on_check_for_updates(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::CheckForUpdates);
+        }
+
+        #[unsafe(method(beckonCopyUpdateCommand:))]
+        fn on_copy_update_command(&self, _s: &AnyObject) {
+            copy_update_command();
         }
 
         #[unsafe(method(beckonGithub:))]
