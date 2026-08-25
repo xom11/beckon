@@ -55,20 +55,30 @@ pub fn parse_current(version_string: &str) -> Option<Version> {
     parse_triple(version_string.split_whitespace().next()?)
 }
 
+/// The only prefix `parse_tag` accepts. Anchoring on the full URL -- host and
+/// repo path both -- rather than just the `/releases/tag/` segment is what
+/// makes `Unreadable` actually cover "something answered but it was not
+/// GitHub" the way this function's own doc and spec §4.2 claim: a
+/// `/releases/tag/` segment alone matches on ANY host, so a MITM or a
+/// misconfigured redirect to `https://portal.example/releases/tag/v9.9.9`
+/// used to parse as a real release.
+const RELEASE_TAG_PREFIX: &str = "https://github.com/xom11/beckon/releases/tag/";
+
 /// `".../releases/tag/v0.11.0"` -> `0.11.0`.
 ///
-/// **The `/releases/tag/` segment is required, not merely the shape of the
+/// **The full `RELEASE_TAG_PREFIX` is required, not merely the shape of the
 /// last component.** Without it a redirect to `https://portal.example/1.2.3`
 /// -- a captive portal, a CDN error page -- parses as a release and beckon
 /// reports a version that does not exist. Spec §4.2 makes this the boundary
 /// between a verdict and `CheckError::Unreadable`.
 ///
 /// A leading `v` is stripped when present, not required. Everything that is
-/// not a release tag -- an empty string (curl printed no redirect), a login
-/// page, the releases index itself -- falls out as `None`, which the caller
-/// must report as a failed check and never as success.
+/// not a release tag on this exact repo -- an empty string (curl printed no
+/// redirect), a login page, the releases index itself, the right path shape
+/// on the wrong host -- falls out as `None`, which the caller must report as
+/// a failed check and never as success.
 pub fn parse_tag(redirect_url: &str) -> Option<Version> {
-    let tag = redirect_url.trim().split_once("/releases/tag/")?.1;
+    let tag = redirect_url.trim().strip_prefix(RELEASE_TAG_PREFIX)?;
     // A further separator means the tag is not the final component -- treat
     // it as unreadable rather than guessing which part is the version.
     if tag.contains('/') {
@@ -356,6 +366,13 @@ mod tests {
         assert_eq!(parse_tag("https://portal.example/1.2.3"), None);
         assert_eq!(
             parse_tag("https://github.com/xom11/beckon/releases/tag/v0.11.0/extra"),
+            None
+        );
+        // The right path shape on the wrong host. `parse_tag`'s doc claims
+        // `Unreadable` covers "something answered but it was not GitHub";
+        // before this case, nothing enforced it.
+        assert_eq!(
+            parse_tag("https://portal.example/releases/tag/v9.9.9"),
             None
         );
     }

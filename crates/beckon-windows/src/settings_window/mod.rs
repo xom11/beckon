@@ -2443,18 +2443,35 @@ pub fn hwnd() -> Option<HWND> {
 /// Paint the pending frame NOW, rather than on the next pump turn.
 ///
 /// Called immediately before `serve` blocks this thread on a network check.
-/// `apply_state` has already invalidated; `UpdateWindow` is what makes the
-/// `Checking...` line reach the screen before the block instead of after it.
+/// `apply_state` has already invalidated the controls that changed --
+/// `Checking...` on a STATIC and `Check now` disabled on a `PUSH_BUTTONS`
+/// custom-draw button -- and this forces that pending frame to the screen
+/// before the block instead of after it.
+///
+/// **Plain `UpdateWindow(h)` is not enough here**, and was the first
+/// attempt: `UpdateWindow` sends `WM_PAINT` only to the window whose OWN
+/// update region is non-empty; it does not descend into children.
+/// `set_text_if_changed` and `enable()` invalidate the CHILD controls
+/// (`SetWindowTextW` / `EnableWindow`), not `h` itself, so `h`'s own update
+/// region is typically empty and `UpdateWindow(h)` returns having painted
+/// nothing. `RedrawWindow` with `RDW_ALLCHILDREN` is what actually walks the
+/// child windows.
 ///
 /// A no-op when the window is closed, which is the right answer rather than
 /// an error: the caller does not check first.
+///
+/// 2026-08-25: the flush call itself and the `RDW_ALLCHILDREN` mechanism are
+/// verified against the Win32 docs, but the on-screen result -- whether
+/// `Check now` visibly greys out before the block -- is **not yet verified
+/// on a real Windows desktop**; this session has none. Confirm with
+/// `crates/beckon-windows/examples/settings_probe.rs`.
 pub fn flush_paint() {
     // `hwnd()` takes and releases the `UI` borrow before we return, so
     // nothing is held across the paint -- the rule `open_existing` follows
     // one function above.
     if let Some(h) = hwnd() {
         unsafe {
-            let _ = UpdateWindow(h);
+            let _ = RedrawWindow(Some(h), None, None, RDW_UPDATENOW | RDW_ALLCHILDREN);
         }
     }
 }
