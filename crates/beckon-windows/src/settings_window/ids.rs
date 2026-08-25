@@ -196,7 +196,9 @@ pub(super) const IDC_LOG_SHOW: i32 = 1083;
 ///
 /// **Not chosen here either.** Phase 0 fixed all fifteen, and the page is
 /// built from exactly that list -- no number was picked, skipped or reused
-/// while the rows were written. That is now true of both late pages.
+/// while the rows were written. That is now true of both late pages. Task 9
+/// (2026-08-25) added five more for the update check, past the tail of
+/// Phase 0's own range -- see the block below the retired 1115.
 ///
 /// Two of the fifteen are `SS_OWNERDRAW` STATICs (`IDC_ABOUT_MARK` and
 /// `IDC_ABOUT_DISCLOSURE`) and are therefore **deliberately absent from the
@@ -248,6 +250,37 @@ pub(super) const IDC_ABOUT_BUG: i32 = 1114;
 // day earlier, and the last time the question can arise, because there are no
 // placeholders left in this window.
 
+/// The update check (Task 9, 2026-08-25): two rows under `Build`, mirroring
+/// where the macOS twin's `update_row` / `command_row` sit.
+///
+/// **Five, not fifteen more.** `IDC_ABOUT_UPDATE_STATUS` and
+/// `IDC_ABOUT_CHECK_NOW` share the first row; `IDC_ABOUT_OPEN_RELEASES` rides
+/// with them rather than taking a row of its own, which is what keeps this
+/// page's growth to two rows instead of three. `IDC_ABOUT_UPDATE_VALUE` and
+/// `IDC_ABOUT_UPDATE_COPY` are the second row, the same label-less
+/// value-and-copy shape `about_dividers`' two-column value rows already have,
+/// minus the label: there is nothing here for a label to name that `Check
+/// now` and the status line beside it have not already said.
+///
+/// **All five are created unconditionally and never `ShowWindow`n away**,
+/// unlike a row this page could omit. `beckon_core::settings::DefaultButton`
+/// carries the reason in full on its own three new variants: the update check
+/// can finish or fail while this window is already open, so hiding a
+/// focusable control the default-button ring might be resting on would
+/// reopen the `ShowWindow(SW_HIDE)` / `BN_KILLFOCUS` defect `set_default_id`
+/// exists to prevent. `render_about` instead leaves the row's text empty and
+/// `EnableWindow(false)`s `IDC_ABOUT_UPDATE_COPY` / `IDC_ABOUT_OPEN_RELEASES`
+/// when there is nothing to copy or nowhere useful to send the reader --
+/// `IDC_ABOUT_CHECK_NOW` is disabled the same way while `can_check` is false.
+///
+/// **This is why the range table grew past 1119.** `CONTROL_IDS`' doc in
+/// `beckon-core` carries the same note; see it for why 1120 was free to take.
+pub(super) const IDC_ABOUT_UPDATE_STATUS: i32 = 1116;
+pub(super) const IDC_ABOUT_CHECK_NOW: i32 = 1117;
+pub(super) const IDC_ABOUT_OPEN_RELEASES: i32 = 1118;
+pub(super) const IDC_ABOUT_UPDATE_VALUE: i32 = 1119;
+pub(super) const IDC_ABOUT_UPDATE_COPY: i32 = 1120;
+
 /// `Ctrl+Tab` and `Ctrl+Shift+Tab`: "the next door" and "the one before it".
 ///
 /// **Commands, not controls.** `Ctrl+1`..`Ctrl+4` name a door outright and so
@@ -258,7 +291,7 @@ pub(super) const IDC_ABOUT_BUG: i32 = 1114;
 ///
 /// **2001 rather than 1044**, deliberately far from the control range. 1044-6
 /// are already spoken for in core's `CONTROL_IDS` (`SERVICE_LINE`, `SAVED`,
-/// `UNDO`) and the whole 1001-1119 span belongs to controls this window either
+/// `UNDO`) and the whole 1001-1129 span belongs to controls this window either
 /// has or is going to grow; a command id sitting inside it would be a number
 /// that has to be skipped by everyone allocating from a range, for ever. The
 /// two are contiguous and ascending for no reason beyond reading order --
@@ -345,6 +378,11 @@ mod tests {
         ("ABOUT_GITHUB", super::IDC_ABOUT_GITHUB),
         ("ABOUT_RELEASES", super::IDC_ABOUT_RELEASES),
         ("ABOUT_BUG", super::IDC_ABOUT_BUG),
+        ("ABOUT_UPDATE_STATUS", super::IDC_ABOUT_UPDATE_STATUS),
+        ("ABOUT_CHECK_NOW", super::IDC_ABOUT_CHECK_NOW),
+        ("ABOUT_OPEN_RELEASES", super::IDC_ABOUT_OPEN_RELEASES),
+        ("ABOUT_UPDATE_VALUE", super::IDC_ABOUT_UPDATE_VALUE),
+        ("ABOUT_UPDATE_COPY", super::IDC_ABOUT_UPDATE_COPY),
     ];
 
     /// The net under `MINE`. It reads this file's own source -- the same

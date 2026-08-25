@@ -1855,6 +1855,56 @@ pub(super) unsafe fn layout(hwnd: HWND) {
             IDC_ABOUT_BUILD_VALUE,
             IDC_ABOUT_BUILD_COPY,
         );
+
+        // The update check (Task 9): two rows under `Build`, mirroring the
+        // macOS twin's placement of `update_row` / `command_row` beneath its
+        // own `Build`. See `IDC_ABOUT_UPDATE_STATUS`'s own doc in `ids.rs`
+        // for why both are always on screen rather than shown/hidden with
+        // the row.
+        //
+        // Row one: the status line, `Check now` and `Open releases page`.
+        // The two buttons are right-aligned as a pair -- the links row below
+        // is the same "measure each caption, sum the run" shape, minus the
+        // centring, since this row answers a question above it (design
+        // §3.4's asymmetry between an answering row and a leaving row) --
+        // and the status line takes whatever is left, uncapped, on the value
+        // column's own reasoning just above: a short-lived status word must
+        // not be truncated for the same reason a path is not.
+        let bw_check = btn(cap::CHECK_NOW);
+        let bw_open_releases = btn(cap::ABOUT_OPEN_RELEASES);
+        let buttons_w = bw_check + gap + bw_open_releases;
+        let status_w = clamp(aw - buttons_w - gap);
+        place(IDC_ABOUT_UPDATE_STATUS, ax, ay + plan.update, status_w, ctl);
+        let mut ux = ax + clamp(aw - buttons_w);
+        place(IDC_ABOUT_CHECK_NOW, ux, ay + plan.update, bw_check, ctl);
+        ux += bw_check + gap;
+        place(
+            IDC_ABOUT_OPEN_RELEASES,
+            ux,
+            ay + plan.update,
+            bw_open_releases,
+            ctl,
+        );
+
+        // Row two: the upgrade command's own value and copy button --
+        // `value_row`'s value-and-copy half exactly, with no label column:
+        // there is nothing here for a label to name that `Check now` and the
+        // status line above it have not already said.
+        place(
+            IDC_ABOUT_UPDATE_VALUE,
+            ax,
+            ay + plan.command,
+            clamp(aw - cw_btn - gap),
+            ctl,
+        );
+        place(
+            IDC_ABOUT_UPDATE_COPY,
+            ax + clamp(aw - cw_btn),
+            ay + plan.command,
+            cw_btn,
+            ctl,
+        );
+
         value_row(
             ay + plan.location,
             IDC_ABOUT_LOCATION_LABEL,
@@ -2014,22 +2064,45 @@ mod tests {
     /// most a page can leave before the emptiness stops reading as margin.
     /// The mock-up, measured in Chrome, leaves 10 px on System and 14 on
     /// About.
+    ///
+    /// **NARROWED to About alone, 2026-08-25 (Task 9).** System's own ground
+    /// is no longer checked against the 60 px bound here: `WINDOW_HEIGHT`
+    /// grew to fit About's two new rows and System's card did not grow with
+    /// it, so System now leaves real ground behind by DESIGN, not by the
+    /// defect this test was written to catch -- `page_plan`'s own
+    /// `about_now_legitimately_outgrows_system_by_the_update_check` is where
+    /// that gap is pinned and explained. Pretending otherwise here would mean
+    /// either shrinking About back down or failing a healthy build. What this
+    /// test keeps catching, unweakened, is About's OWN ground -- the page
+    /// `WINDOW_HEIGHT` is actually derived from -- and it still fails the
+    /// instant that page regains the empty third of a window the original
+    /// defect looked like.
     #[test]
     fn the_fixed_doors_leave_no_room_for_a_second_card() {
         let (top, bottom) = geometry(WINDOW_HEIGHT);
         let sys = card_h(beckon_core::page_plan::system_plan(M96, BOTH).content_h);
         let about = card_h(beckon_core::page_plan::about_plan(M96, 32).content_h);
         assert_eq!(sys, 326);
-        assert_eq!(about, 340);
-        for (name, h) in [("System", sys), ("About", about)] {
-            let ground = bottom - (top + h);
-            assert!(
-                (0..=60).contains(&ground),
-                "the {name} door leaves {ground} px of ground at the shipped \
-                 size (card {h}, page {} px)",
-                bottom - top
-            );
-        }
+        assert_eq!(about, 432);
+        let about_ground = bottom - (top + about);
+        assert!(
+            (0..=60).contains(&about_ground),
+            "the About door leaves {about_ground} px of ground at the \
+             shipped size (card {about}, page {} px); WINDOW_HEIGHT is \
+             derived from this page, so this bound is what keeps that \
+             derivation honest",
+            bottom - top
+        );
+        // System's own ground, pinned rather than bounded -- see the
+        // 2026-08-25 note above for why 60 no longer applies to it. A change
+        // to this number is a change to how much emptier System reads than
+        // About, and is worth a second look, not a silent pass.
+        let sys_ground = bottom - (top + sys);
+        assert_eq!(
+            sys_ground, 144,
+            "System's ground moved; re-read whether the gap it leaves below \
+             its card is still acceptable before updating this number"
+        );
     }
 
     /// The floor has to fit the card it was derived from, or the window has a
@@ -2080,8 +2153,13 @@ mod tests {
             let avail = (bottom - list_top) - tok::GAP_CARD - tok::CARD_PAD - card2_h;
             avail / tok::ROW_H
         };
-        assert_eq!(rows(WINDOW_HEIGHT), 8);
-        assert_eq!(rows(MIN_HEIGHT), 7);
+        // 8 / 7 before 2026-08-25 (Task 9); `WINDOW_HEIGHT` / `MIN_HEIGHT`
+        // both grew for About's two new rows (see `MIN_HEIGHT`'s own
+        // "CORRECTED 2026-08-25" note), and the Shortcuts list -- which
+        // absorbs whatever the fixed cards leave -- grew right along with
+        // them.
+        assert_eq!(rows(WINDOW_HEIGHT), 12);
+        assert_eq!(rows(MIN_HEIGHT), 11);
         assert!(
             rows(MIN_HEIGHT) >= 2,
             "a window whose list shows one row is not a smaller version of \

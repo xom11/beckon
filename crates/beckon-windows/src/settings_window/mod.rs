@@ -493,7 +493,20 @@ const SHORTCUT_CONTROLS: [i32; 5] = [
 /// copy button silently replaces whatever the user had on the clipboard,
 /// which is a loss they do not see until they paste. The other three open a
 /// browser.
-const PUSH_BUTTONS: [i32; 20] = [
+///
+/// **The update check's three joined on 2026-08-25 (Task 9), for the same
+/// reason again.** `IDC_ABOUT_CHECK_NOW` is an ordinary push button; leaving
+/// it out would mean Enter on a focused `Check now` fell through to whatever
+/// `DM_GETDEFID` last said, which on this door is `home(Page::About)` --
+/// `None` -- so nothing would happen at all, silently, on the one button this
+/// page most wants a keyboard route to. `IDC_ABOUT_UPDATE_COPY` carries
+/// `AboutBuildCopy`'s own warning doubled: a stray Enter on it while disabled
+/// does nothing (the dialog manager will not dispatch to a disabled
+/// control), but while enabled it is a copy button like the other three, and
+/// silently replacing the clipboard is a loss the user will not see until
+/// they paste. `IDC_ABOUT_OPEN_RELEASES` opens a browser, `IDC_ABOUT_RELEASES`'s
+/// own reason for being here.
+const PUSH_BUTTONS: [i32; 23] = [
     IDC_ADD,
     IDC_REMOVE,
     IDC_APPLY,
@@ -514,6 +527,9 @@ const PUSH_BUTTONS: [i32; 20] = [
     IDC_ABOUT_GITHUB,
     IDC_ABOUT_RELEASES,
     IDC_ABOUT_BUG,
+    IDC_ABOUT_CHECK_NOW,
+    IDC_ABOUT_UPDATE_COPY,
+    IDC_ABOUT_OPEN_RELEASES,
 ];
 
 fn is_push_button(id: i32) -> bool {
@@ -614,6 +630,15 @@ fn tab_id_of(page: Page) -> i32 {
 /// two of whose rows depend on `SYS_ROWS`, there is nothing about this
 /// machine that can remove a row from the About page.
 ///
+/// **CORRECTED A FOURTH TIME 2026-08-25 (Task 9)**: About grew five more,
+/// for the update check, and every one of the twenty is STILL unconditional
+/// in the sense this paragraph means -- on screen or not is `page` alone,
+/// with no `SYS_ROWS`-style second table. Two of the five vary with LIVE
+/// state (an update check can finish or fail while the window is open) but
+/// answer that with `EnableWindow`, never `ShowWindow`, precisely so they
+/// need no second table here -- see `IDC_ABOUT_UPDATE_STATUS`'s own doc in
+/// `ids.rs`.
+///
 /// **CORRECTED AGAIN 2026-08-15**: System's waiting line is gone and its
 /// fourteen real controls are here. Two of the page's rows are CONDITIONAL --
 /// `Start with Windows` when this process cannot offer it, and the log row
@@ -631,7 +656,7 @@ fn tab_id_of(page: Page) -> i32 {
 /// neither or in two. Without it, a control added later and forgotten here is
 /// simply visible on all four pages -- which looks like a layout bug and is a
 /// table bug.
-const PAGE_CONTROLS: [(i32, Page); 50] = [
+const PAGE_CONTROLS: [(i32, Page); 55] = [
     // -- Shortcuts: the head row, the list, and the editor strip below it.
     // The head row's `Shortcuts` heading (`IDC_LBL_SECTION`, 1020) left this
     // table with the control on 2026-08-15; the row itself is unchanged.
@@ -679,6 +704,11 @@ const PAGE_CONTROLS: [(i32, Page); 50] = [
     (IDC_ABOUT_BUILD_LABEL, Page::About),
     (IDC_ABOUT_BUILD_VALUE, Page::About),
     (IDC_ABOUT_BUILD_COPY, Page::About),
+    (IDC_ABOUT_UPDATE_STATUS, Page::About),
+    (IDC_ABOUT_CHECK_NOW, Page::About),
+    (IDC_ABOUT_OPEN_RELEASES, Page::About),
+    (IDC_ABOUT_UPDATE_VALUE, Page::About),
+    (IDC_ABOUT_UPDATE_COPY, Page::About),
     (IDC_ABOUT_LOCATION_LABEL, Page::About),
     (IDC_ABOUT_LOCATION_VALUE, Page::About),
     (IDC_ABOUT_LOCATION_COPY, Page::About),
@@ -1127,6 +1157,28 @@ mod cap {
     pub const TIP_BUILD_COPY: &str = "Copy the build identifier";
     pub const TIP_LOCATION_COPY: &str = "Copy the full path";
     pub const TIP_LICENCE_COPY: &str = "Copy the licence";
+    /// The update check's own row (Task 9). No `&` on either: `Check now`'s
+    /// `c` is `IDC_CAPS`' on the Keyboard page, not this one, but design
+    /// §10's standing rule applies here exactly as it does to the three links
+    /// below -- no new `Alt` mnemonic without a uniqueness `#[test]`, and
+    /// there is no test.
+    pub const CHECK_NOW: &str = "Check now";
+    /// **A fourth "go to the releases page" caption, deliberately beside the
+    /// third (`ABOUT_RELEASES`) rather than replacing it.** The two answer
+    /// different questions: `ABOUT_RELEASES` in the links row is always
+    /// there, for a reader who came to this page to look something up; this
+    /// one is beside a FAILED check's own status line, for a reader who did
+    /// not and has no reason to scroll down -- the macOS twin ships the same
+    /// duplication for the same reason (`about.rs`'s own doc there). Longer
+    /// than `Releases` on purpose: it names the destination rather than
+    /// assuming the status line above it was read.
+    pub const ABOUT_OPEN_RELEASES: &str = "Open releases page";
+    /// The upgrade command's own copy button, beside `Copy the build
+    /// identifier` and its two siblings above -- same glyph (`COPY_GLYPH`),
+    /// different tooltip, because what it copies is a different thing:
+    /// `cmd.copy`, the bare upgrade command, never the annotated `cmd.shown`
+    /// a caveat may be glued to. See `beckon_core::settings::Field::UpdateCommand`.
+    pub const TIP_UPDATE_COPY: &str = "Copy the upgrade command";
     /// The three links, in drawing order. No `&` on any of them: `g` and `b`
     /// are genuinely free, and design §10's standing rule is the reason
     /// anyway -- no new `Alt` mnemonics until the collision table above has a
@@ -1401,7 +1453,14 @@ const WINDOW_WIDTH: i32 = 680;
 /// Re-derive BOTH ends before moving this again: the table under `MIN_HEIGHT`
 /// is the arithmetic, and `layout.rs`'s `the_fixed_doors_fit_above_the_command_bar`
 /// is what fails if this and the floor stop agreeing.
-const WINDOW_HEIGHT: i32 = 500;
+///
+/// **500 -> 592 on 2026-08-25 (Task 9)**, following its own instruction: the
+/// About card grew two rows, `MIN_HEIGHT`'s own "CORRECTED 2026-08-25" note
+/// carries the re-derivation, and this constant keeps the same +20 margin
+/// over the floor it always had (480 + 20 then, 572 + 20 now). The mock-up
+/// paragraph above is left as it was written -- about a page this door did
+/// not carry yet -- rather than restated for content the mock-up never drew.
+const WINDOW_HEIGHT: i32 = 592;
 
 /// Minimum resize size, at 96 DPI, enforced in `WM_GETMINMAXINFO` through
 /// `ptMinTrackSize` — so both are WINDOW dimensions, caption and frame
@@ -1568,12 +1627,48 @@ const WINDOW_HEIGHT: i32 = 500;
 /// control drawn over another. That is why the floor is set from the
 /// three-line row rather than the four.
 ///
+/// **CORRECTED 2026-08-25 (Task 9): both constants moved again, and this time
+/// About is what moved them.** The update check gave the About card two more
+/// fixed rows -- `beckon_core::page_plan::AboutPlan`'s `update` and `command`
+/// -- and `about_plan`'s own tests now pin its `content_h` at 410 (two-line
+/// disclosure) / 426 (three-line) where this table's `286 + disclosure_h` had
+/// it at 318 / 334. Redoing exactly the arithmetic above with the new number:
+///
+/// ```text
+///     about_card_h   2 lines (32) = 432    3 lines (48) = 448
+///
+///   Fitting is still `h >= 122 + card_h`:
+///
+///     About, two-line disclosure  h >= 554
+///     About, three lines          h >= 570   <-- the new floor
+/// ```
+///
+/// **572, from the three-line row, the same +2 margin the old 480 carried
+/// over its own 478.** `MIN_HEIGHT` moved from 480 to 572 and `WINDOW_HEIGHT`
+/// kept its old +20 margin over the floor, moving from 500 to 592. Every
+/// number in the two paragraphs above this one (`462`, `478`, `494`, `168`,
+/// `112`, seven rows, five rows) describes the window as it stood before this
+/// task and is superseded here, not corrected in place -- this file's own
+/// convention, followed rather than broken.
+///
+/// **What this does NOT fix, and is not this constant's job to:** System's
+/// card did not grow, so at the new floor it now sits **106 px** shorter than
+/// About's (`beckon_core::page_plan`'s own
+/// `about_now_legitimately_outgrows_system_by_the_update_check`, which pins
+/// that number and explains it), and the ground below the System card grew
+/// by roughly that much too -- a real, visible cost on the System door that
+/// this task's report flags rather than hides. Shrinking it back would mean
+/// either compressing the update check's two rows below one page's ordinary
+/// row rhythm or inventing content for System to fill the gap with; both are
+/// design calls outside a floor constant's authority.
+///
 /// **The Shortcuts list is now a consequence rather than the derivation**, and
-/// it lands well: at 480 with the banner down `avail` is `480 - 276 - 36` =
-/// 168, which snaps to **seven** whole rows, and with the banner up
-/// `480 - 332 - 36` = 112, or **five**. The withdrawn four-row guarantee above
-/// is cleared at the floor by a row, without the constant being answerable for
-/// it.
+/// it lands well: at 572 with the banner down `avail` is `572 - 276 - 36` =
+/// 260, which snaps to **eleven** whole rows (see the CORRECTED note above for
+/// why these numbers are not the ones two paragraphs up), and with the banner
+/// up `572 - 332 - 36` = 204, or **nine**. The withdrawn four-row guarantee
+/// above is cleared at the floor by five rows now, not one, without the
+/// constant being answerable for it.
 ///
 /// **"Nothing forces a move, so it does not move" is FALSIFIED, and it was the
 /// previous paragraph here.** It reasoned that the standard ("enough rows to
@@ -1675,7 +1770,7 @@ const WINDOW_HEIGHT: i32 = 500;
 /// Simulated, not seen: nothing on the machine this was written on can display
 /// the window.
 const MIN_WIDTH: i32 = 660;
-const MIN_HEIGHT: i32 = 480;
+const MIN_HEIGHT: i32 = 572;
 
 /// The default size has to be one the floor allows, or `WM_GETMINMAXINFO`
 /// resizes the window in the same breath it is created.
@@ -2733,6 +2828,9 @@ fn default_button_of(id: i32) -> Option<DefaultButton> {
         IDC_ABOUT_GITHUB => DefaultButton::AboutGithub,
         IDC_ABOUT_RELEASES => DefaultButton::AboutReleases,
         IDC_ABOUT_BUG => DefaultButton::AboutBug,
+        IDC_ABOUT_CHECK_NOW => DefaultButton::AboutCheckNow,
+        IDC_ABOUT_UPDATE_COPY => DefaultButton::AboutUpdateCopy,
+        IDC_ABOUT_OPEN_RELEASES => DefaultButton::AboutOpenReleases,
         _ => return None,
     })
 }
@@ -2775,6 +2873,9 @@ fn id_of_default_button(b: DefaultButton) -> i32 {
         DefaultButton::AboutGithub => IDC_ABOUT_GITHUB,
         DefaultButton::AboutReleases => IDC_ABOUT_RELEASES,
         DefaultButton::AboutBug => IDC_ABOUT_BUG,
+        DefaultButton::AboutCheckNow => IDC_ABOUT_CHECK_NOW,
+        DefaultButton::AboutUpdateCopy => IDC_ABOUT_UPDATE_COPY,
+        DefaultButton::AboutOpenReleases => IDC_ABOUT_OPEN_RELEASES,
     }
 }
 
@@ -4977,6 +5078,62 @@ unsafe fn build_children(hwnd: HWND) {
             &fonts,
         );
     }
+
+    // The update check (Task 9, 2026-08-25): two rows under `Build`. Both are
+    // created unconditionally, like every other row on this page -- see
+    // `IDC_ABOUT_UPDATE_STATUS`'s own doc in `ids.rs` for why the row is
+    // disabled rather than hidden when there is nothing for it to say.
+    //
+    // Row one: the status line, `Check now`, `Open releases page`.
+    // `SS_NOPREFIX` on the status line for the reason the value rows above
+    // carry it -- an update-check status string is server-supplied text
+    // (a version, a release note's first line) and could contain an `&`.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_ABOUT_UPDATE_STATUS,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        cap::CHECK_NOW,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+        IDC_ABOUT_CHECK_NOW,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        cap::ABOUT_OPEN_RELEASES,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+        IDC_ABOUT_OPEN_RELEASES,
+        &fonts,
+    );
+
+    // Row two: the upgrade command's value and its own copy button --
+    // `value_row`'s shape one page up, minus the label column: nothing here
+    // needs a signpost that `Check now` and the status line above it have
+    // not already given.
+    child(
+        hwnd,
+        w!("STATIC"),
+        "",
+        SS_CENTERIMAGE_STYLE | SS_NOPREFIX_STYLE,
+        IDC_ABOUT_UPDATE_VALUE,
+        &fonts,
+    );
+    child(
+        hwnd,
+        w!("BUTTON"),
+        cap::COPY_GLYPH,
+        WINDOW_STYLE((BS_PUSHBUTTON | BS_NOTIFY) as u32) | WS_TABSTOP,
+        IDC_ABOUT_UPDATE_COPY,
+        &fonts,
+    );
+
     // The hook disclosure (design §3.4, moved off Keyboard).
     //
     // **`SS_OWNERDRAW`, for two reasons that a plain STATIC gives up
@@ -5104,6 +5261,7 @@ unsafe fn build_children(hwnd: HWND) {
         cap::TIP_BUILD_COPY,
         cap::TIP_LOCATION_COPY,
         cap::TIP_LICENCE_COPY,
+        cap::TIP_UPDATE_COPY,
     ]
     .iter()
     .map(|t| wide(t))
@@ -5116,6 +5274,7 @@ unsafe fn build_children(hwnd: HWND) {
         IDC_ABOUT_BUILD_COPY,
         IDC_ABOUT_LOCATION_COPY,
         IDC_ABOUT_LICENCE_COPY,
+        IDC_ABOUT_UPDATE_COPY,
     ]
     .into_iter()
     .enumerate()
@@ -6212,6 +6371,30 @@ pub fn apply_about_state() {
     unsafe { render_about(hwnd, &st) };
 }
 
+// The update status line's ink, cached outside `UI` so `WM_CTLCOLORSTATIC`
+// never has to borrow it.
+//
+// **A `Cell`, for `PILL_BADGE`'s reason, stated in full at `SYS_ROWS`.**
+// `WM_CTLCOLORSTATIC` fires on every repaint of `IDC_ABOUT_UPDATE_STATUS`,
+// which can be far more often than `render_about` runs -- a resize, a theme
+// change, the window merely being uncovered -- and deriving the tone fresh
+// each time would mean calling `about_now()` from inside a paint message.
+// `about_now()` does a `stat` and two `canonicalize` calls; that cost
+// belongs on the refresh path, never the paint path. `render_about` writes
+// this once per real push and the paint arm only ever reads it.
+//
+// (Plain `//`, not `///`: a doc comment directly above a `thread_local!`
+// macro invocation is an `unused_doc_comments` lint under `-D warnings` --
+// the macro does not forward it to anything rustdoc can attach it to. Every
+// other thread-local in this file docs the PRECEDING item instead (`PAGE`
+// has none to dock to; `SYS_ROWS` docs its `use`; `PILL_BADGE` docs its
+// `struct`); this one has neither, so a plain comment is the correct
+// reading, not a workaround.)
+thread_local! {
+    static ABOUT_UPDATE_TONE: std::cell::Cell<FlagTone> =
+        const { std::cell::Cell::new(FlagTone::Neutral) };
+}
+
 /// Write `st` onto the controls.
 ///
 /// Split from `apply_about_state` for `render_system`'s reason: the gathering
@@ -6220,12 +6403,46 @@ pub fn apply_about_state() {
 /// **No `layout` call and nothing conditional**, unlike `render_system`: this
 /// page has no row that can appear or vanish, so a push can never change the
 /// card's height. That is what keeps the About page off the one path that
-/// reaches `SetWindowPos` on the populated App combo.
+/// reaches `SetWindowPos` on the populated App combo. **Still true after
+/// Task 9's two new rows**: both are always on screen, so what varies with
+/// `st.update` is text and `EnableWindow`, never `ShowWindow` -- see
+/// `IDC_ABOUT_UPDATE_STATUS`'s own doc in `ids.rs` for why.
 unsafe fn render_about(hwnd: HWND, st: &AboutState) {
     set_text_if_changed(hwnd, IDC_ABOUT_NAME, &st.name);
     set_text_if_changed(hwnd, IDC_ABOUT_BUILD_VALUE, &st.build.shown);
     set_text_if_changed(hwnd, IDC_ABOUT_LOCATION_VALUE, &st.location.shown);
     set_text_if_changed(hwnd, IDC_ABOUT_LICENCE_VALUE, &st.licence.shown);
+
+    // The update check's own row. `status` is `None` only in `Idle` --
+    // `UpdateRow`'s own rule is to draw nothing at all then, not an empty
+    // line -- so the field's text is blanked rather than the control hidden;
+    // see `render_about`'s own doc for why hiding it is the wrong move here.
+    set_text_if_changed(
+        hwnd,
+        IDC_ABOUT_UPDATE_STATUS,
+        st.update.status.as_deref().unwrap_or(""),
+    );
+    // Set on every push, not only when the tone is `Warn`: a line left
+    // coloured from a failed check must not stay that colour once a later
+    // check succeeds. Written before the possible repaint below so the two
+    // can never observe different values.
+    let prev_tone = ABOUT_UPDATE_TONE.with(|c| c.replace(st.update.tone));
+    if prev_tone != st.update.tone {
+        if let Ok(h) = GetDlgItem(Some(hwnd), IDC_ABOUT_UPDATE_STATUS) {
+            let _ = InvalidateRect(Some(h), None, true);
+        }
+    }
+    enable(hwnd, IDC_ABOUT_CHECK_NOW, st.update.can_check);
+    enable(hwnd, IDC_ABOUT_OPEN_RELEASES, st.update.status.is_some());
+
+    // The upgrade command's own row -- blank value, disabled Copy, when
+    // there is nothing to show. `cmd.shown` is what is drawn; the Copy
+    // button routes `Field::UpdateCommand` through `copy_about_field`, which
+    // reads `cmd.copy` instead -- see that field's own doc for why the two
+    // must never be swapped.
+    let command_shown = st.update.command.as_ref().map(|c| c.shown.as_str());
+    set_text_if_changed(hwnd, IDC_ABOUT_UPDATE_VALUE, command_shown.unwrap_or(""));
+    enable(hwnd, IDC_ABOUT_UPDATE_COPY, command_shown.is_some());
 }
 
 /// Push a snapshot into the controls. The only path that changes what is on
@@ -7279,7 +7496,7 @@ fn tier_of(id: i32, hwnd_item: HWND) -> BtnTier {
     }
 }
 
-/// Paint any of the nine `PUSH_BUTTONS`, `Save` included, by translating the
+/// Paint any of the twenty-three `PUSH_BUTTONS`, `Save` included, by translating the
 /// `NMCUSTOMDRAW` comctl32 hands this window into the `DRAWITEMSTRUCT`
 /// `paint::button` actually draws from.
 ///
@@ -7400,8 +7617,8 @@ unsafe fn toggle_custom_draw(hwnd: HWND, id: i32, p: *const NMCUSTOMDRAW) -> isi
 /// draws its channel and thumb from the *light* visual style whatever
 /// `SetWindowTheme` is told, which in a `#15171C` card is a pale slot with a
 /// pale lozenge in it. So the control is kept and only its pixels are
-/// replaced, exactly the trade `push_button_custom_draw` makes for the
-/// fourteen push buttons.
+/// replaced, exactly the trade `push_button_custom_draw` makes for every
+/// member of `PUSH_BUTTONS`.
 ///
 /// **Three stages, and the two that matter are the ITEM ones.** A trackbar's
 /// custom draw is a two-level notification: `CDDS_PREPAINT` must answer
@@ -8415,7 +8632,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // The four toggle switches (`TOGGLES`) -- `IDC_CAPS` on
                 // Keyboard since Task 11, and design §3.3's three on System
                 // since 2026-08-15. Reached the same way and for the same
-                // reason as the fourteen push buttons just above: pure
+                // reason as the `PUSH_BUTTONS` just above: pure
                 // painting, no callback, cannot recurse into `apply_state`,
                 // so it is answered before `suppressed()` too.
                 if is_a_toggle(nm.idFrom as i32) && nm.code == NM_CUSTOMDRAW {
@@ -8645,6 +8862,50 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     SetBkMode(hdc, OPAQUE);
                     return LRESULT(theme_brush(card).0 as isize);
                 }
+                // **The update check's status line (Task 9), on its own
+                // branch rather than folded into `on_card` below**: its ink
+                // is the one thing on this page that varies with STATE
+                // rather than with role, so it cannot share the plain
+                // `text`-on-`card` arm every other About VALUE uses.
+                //
+                // **Fill is `card` (`COLOR_WINDOW`) in every branch, exactly
+                // as `on_card` below uses** -- this row draws on the same
+                // card every other row on this page does, never on a tinted
+                // background of its own. Ink is `card`'s own `theme::pairs`
+                // partner: `text` (`COLOR_WINDOWTEXT`) at rest, and for
+                // `Warn`, `p.warn` -- the SAME token `flag_colours`' `Warn`
+                // arm uses for the flag pill, tested against `p.card` at the
+                // 4.5 floor as `"warn note dot"` in `beckon_core::theme`'s
+                // own `pairs()`, so this is not a new pair, only a new site
+                // for one already proven not to collide. `Bad` is exhaustive
+                // rather than folded into `Neutral` for `update_row`'s own
+                // reason: this row never actually produces it, and the match
+                // stays total so a future tone this page has no colour for is
+                // a compile error here, not a silent default -- `p.bad`
+                // against `p.card` is `"bad note dot"`, the same table, so it
+                // costs nothing to cover.
+                //
+                // **High contrast never invents a warning colour**, on
+                // `flag_colours`' own precedent: both `Warn` and `Bad` fall
+                // back to `COLOR_WINDOWTEXT`, the SAME sys index `Neutral`
+                // uses, so under a high-contrast theme this row reads in the
+                // theme's ordinary text colour rather than in an invented
+                // one -- a lost distinction, never a lost pairing, because
+                // the fill fallback stays `COLOR_WINDOW` throughout.
+                if id == IDC_ABOUT_UPDATE_STATUS {
+                    let hdc = HDC(wp.0 as *mut core::ffi::c_void);
+                    let card = theme_col(|p| p.card, COLOR_WINDOW);
+                    let tone = ABOUT_UPDATE_TONE.with(|c| c.get());
+                    let text = match tone {
+                        FlagTone::Warn => theme_col(|p| p.warn, COLOR_WINDOWTEXT),
+                        FlagTone::Bad => theme_col(|p| p.bad, COLOR_WINDOWTEXT),
+                        FlagTone::Neutral => theme_col(|p| p.text, COLOR_WINDOWTEXT),
+                    };
+                    SetTextColor(hdc, text);
+                    SetBkColor(hdc, card);
+                    SetBkMode(hdc, OPAQUE);
+                    return LRESULT(theme_brush(card).0 as isize);
+                }
                 // `IDC_NOTES` is deliberately ABSENT since Task 12: it is
                 // `SS_OWNERDRAW` now, and an owner-draw static never asks
                 // its parent for a background brush at all -- `draw_chip`'s
@@ -8681,11 +8942,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 // rather than through a page.
                 //
                 // **About's name row and its three VALUE slots joined on
-                // 2026-08-15.** Its mark and its disclosure did NOT and must
-                // not: both are `SS_OWNERDRAW`, so like `IDC_NOTES` they never
-                // send this message at all -- `paint::mark` and
-                // `paint::disclosure` fill their own rects with `card` first,
-                // which is the same job this arm does for the others.
+                // 2026-08-15; `IDC_ABOUT_UPDATE_VALUE` joined them on
+                // 2026-08-25 (Task 9), the same plain `text`-on-`card` ink
+                // every other About value gets.** Its mark and its disclosure
+                // did NOT and must not: both are `SS_OWNERDRAW`, so like
+                // `IDC_NOTES` they never send this message at all --
+                // `paint::mark` and `paint::disclosure` fill their own rects
+                // with `card` first, which is the same job this arm does for
+                // the others.
                 let on_card = matches!(
                     id,
                     IDC_BANNER
@@ -8703,6 +8967,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         | IDC_ABOUT_BUILD_VALUE
                         | IDC_ABOUT_LOCATION_VALUE
                         | IDC_ABOUT_LICENCE_VALUE
+                        | IDC_ABOUT_UPDATE_VALUE
                 );
                 if on_card {
                     let hdc = HDC(wp.0 as *mut core::ffi::c_void);
@@ -9989,6 +10254,24 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         (IDC_ABOUT_BUILD_COPY, _) => copy_about_field(Field::Build),
         (IDC_ABOUT_LOCATION_COPY, _) => copy_about_field(Field::Location),
         (IDC_ABOUT_LICENCE_COPY, _) => copy_about_field(Field::Licence),
+        // The upgrade command's own copy button (Task 9). `copy_about_field`
+        // generalises over `Field` already -- this is the SAME path the
+        // three rows above use, routing `Field::UpdateCommand` rather than a
+        // hand-rolled clipboard write, which is the whole point: Task 8
+        // first wrote a window-local pasteboard write on the macOS twin and
+        // that was corrected specifically so both doors consume one core
+        // decision (`copy_text`'s `Field::UpdateCommand` arm). Reachable only
+        // while `IDC_ABOUT_UPDATE_COPY` is enabled -- `render_about` disables
+        // it whenever `st.update.command` is `None` -- but the arm does not
+        // itself re-check that: a disabled button does not reach
+        // `handle_command` at all, on the same fact `Save`'s own doc rests
+        // on.
+        (IDC_ABOUT_UPDATE_COPY, _) => copy_about_field(Field::UpdateCommand),
+        // `Check now` (Task 9). Raised as a notification, not answered here:
+        // the check itself runs in `serve`, which owns the tray and the
+        // synchronous curl call -- this window has neither. `serve.rs`'s arm
+        // for `CheckForUpdates` is `check_for_updates(&st)`.
+        (IDC_ABOUT_CHECK_NOW, _) => with_cb(|cb| (cb.on_command)(SettingsCommand::CheckForUpdates)),
         // The three links, through the command channel for the file rows'
         // reason exactly: `ShellExecuteW` performs an out-of-process shell
         // activation and PUMPS this thread's message queue, so it must not run
@@ -10005,6 +10288,16 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
         }
         (IDC_ABOUT_BUG, _) => {
             with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::BugReport)))
+        }
+        // `Open releases page` (Task 9): the SAME target as `IDC_ABOUT_RELEASES`
+        // above, on purpose -- see `cap::ABOUT_OPEN_RELEASES`'s own doc for
+        // why a near-duplicate button earns its place beside a failed check's
+        // status line rather than folding into the one in the links row.
+        // Reachable only while enabled (`render_about` gates it on
+        // `st.update.status.is_some()`), for the same reason the copy arm
+        // above does not re-check its own gate.
+        (IDC_ABOUT_OPEN_RELEASES, _) => {
+            with_cb(|cb| (cb.on_command)(SettingsCommand::Open(Target::Releases)))
         }
         (IDC_OPENFILE, _) => with_cb(|cb| (cb.on_open_file)()),
         (IDC_RELOAD, _) => with_cb(|cb| (cb.on_reload_from_disk)()),
@@ -10176,7 +10469,7 @@ mod tests {
     /// `DefaultButton::visible`.
     ///
     /// Each of these can hold keyboard focus, each is behind the Shortcuts
-    /// door, and none is one of the nine `PUSH_BUTTONS` -- so a test on
+    /// door, and none is one of the `PUSH_BUTTONS` -- so a test on
     /// buttons alone cannot reach any of them, and a switch taken with focus
     /// on one would leave `GetFocus` on an off-screen control. On `IDC_APP`
     /// that is not merely invisible typing: no `CBN_KILLFOCUS` means no

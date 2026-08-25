@@ -3029,6 +3029,27 @@ pub enum DefaultButton {
     AboutGithub,
     AboutReleases,
     AboutBug,
+    /// The update check's three (Task 9, 2026-08-25), for the same reason as
+    /// the six above: each is a push button with `BS_NOTIFY`, so the ring
+    /// follows focus onto it, and an id missing from this enum is an id
+    /// `IsDialogMessageW` mis-dispatches Enter for.
+    ///
+    /// **All three stay in this set even while the row they belong to has
+    /// nothing to show**, and that is the point rather than a gap: this page
+    /// hides no control by `ShowWindow`, on `IDC_LOG_OPEN`'s own exception
+    /// -- "fixed for the window's lifetime" does not hold for the update
+    /// check, which can finish or fail while the window is open, so hiding a
+    /// button the ring might be resting on would reopen the exact `a14`
+    /// defect this module exists to prevent. `AboutUpdateCopy` and
+    /// `AboutOpenReleases` are instead DISABLED when there is nothing to
+    /// copy or nothing to report -- `AboutBuildCopy`'s own warning about a
+    /// copy button applies to `AboutUpdateCopy` doubly, since what it would
+    /// copy while disabled is nothing at all -- and a disabled control
+    /// absorbs Enter silently, the same argument `home`'s own doc gives for
+    /// `Save`.
+    AboutCheckNow,
+    AboutUpdateCopy,
+    AboutOpenReleases,
 }
 
 impl DefaultButton {
@@ -3036,7 +3057,7 @@ impl DefaultButton {
     /// and forgotten here weakens those tests silently, so the array is
     /// length-annotated: adding a variant without extending it fails to
     /// compile.
-    pub const ALL: [DefaultButton; 20] = [
+    pub const ALL: [DefaultButton; 23] = [
         DefaultButton::Save,
         DefaultButton::Add,
         DefaultButton::Remove,
@@ -3057,6 +3078,9 @@ impl DefaultButton {
         DefaultButton::AboutGithub,
         DefaultButton::AboutReleases,
         DefaultButton::AboutBug,
+        DefaultButton::AboutCheckNow,
+        DefaultButton::AboutUpdateCopy,
+        DefaultButton::AboutOpenReleases,
     ];
 
     /// Where the ring rests on `page`, and the button `default_button` falls
@@ -3153,16 +3177,25 @@ impl DefaultButton {
             | DefaultButton::LogOpen
             | DefaultButton::LogShow => page == Page::System,
             // About-page controls, and the page is the WHOLE condition with
-            // nothing like the log row's exception: every one of the six is
+            // nothing like the log row's exception: every one of the nine is
             // created once and shown whenever that door is open. The page has
-            // no conditional row at all -- the mark, the three values and the
-            // three links are true of every machine beckon runs on.
+            // no conditional row at all -- the mark, the three values, the
+            // update check's three and the three links are true of every
+            // machine beckon runs on. **`AboutUpdateCopy` and
+            // `AboutOpenReleases` stay in this unconditional group even
+            // though what THEY do depends on live state** -- see their own
+            // doc on the enum: the row is disabled, never hidden, so
+            // `visible` never has to answer a question about the update
+            // check at all.
             DefaultButton::AboutBuildCopy
             | DefaultButton::AboutLocationCopy
             | DefaultButton::AboutLicenceCopy
             | DefaultButton::AboutGithub
             | DefaultButton::AboutReleases
-            | DefaultButton::AboutBug => page == Page::About,
+            | DefaultButton::AboutBug
+            | DefaultButton::AboutCheckNow
+            | DefaultButton::AboutUpdateCopy
+            | DefaultButton::AboutOpenReleases => page == Page::About,
         }
     }
 
@@ -3223,16 +3256,30 @@ impl DefaultButton {
                 | DefaultButton::LogShow => true,
                 // The About page is not gated on `st.editable` either, and
                 // for a stronger version of the System page's reason: not one
-                // of these six reads `apps.toml` at all. `Report a bug` in
+                // of these nine reads `apps.toml` at all. `Report a bug` in
                 // particular is the button a user whose config will not parse
                 // is most likely to want, and greying it out because the
                 // config will not parse is a joke the window should not make.
+                //
+                // **`AboutUpdateCopy` and `AboutOpenReleases` answer `true`
+                // here even though the real control can be `EnableWindow`'d
+                // off**, and that is not the same gap `LogOpen`'s comment
+                // warns about leaving unmodelled: `pressable` feeding a
+                // `false` here would only change where `default_button`
+                // PARKS the ring, by falling back to `home(Page::About)` --
+                // which is `None` regardless, since About has no resting
+                // place at all. Dispatch safety comes from Win32 itself: the
+                // dialog manager does not send a command to a disabled
+                // control, the same fact `Save`'s own doc rests on.
                 DefaultButton::AboutBuildCopy
                 | DefaultButton::AboutLocationCopy
                 | DefaultButton::AboutLicenceCopy
                 | DefaultButton::AboutGithub
                 | DefaultButton::AboutReleases
-                | DefaultButton::AboutBug => true,
+                | DefaultButton::AboutBug
+                | DefaultButton::AboutCheckNow
+                | DefaultButton::AboutUpdateCopy
+                | DefaultButton::AboutOpenReleases => true,
             }
     }
 }
@@ -3507,7 +3554,14 @@ fn is_snippet(line: &str) -> bool {
 /// | 1050-1059 | Shortcuts (reserved; the page reuses its existing ids) |
 /// | 1060-1069 | Keyboard |
 /// | 1070-1099 | System |
-/// | 1100-1119 | About |
+/// | 1100-1129 | About |
+///
+/// **1100-1119 grew to 1100-1129 on 2026-08-25 (Task 9)**, for the update
+/// check's five new controls -- the status line, `Check now`, `Open releases
+/// page` and the upgrade command's value and copy button. Nothing else has
+/// ever claimed 1120 upward; the next range (`IDM_PAGE_NEXT`, 2001) is
+/// deliberately far away, so widening this one costs no renumbering
+/// elsewhere.
 pub const CONTROL_IDS: &[(&str, i32)] = &[
     // -- the pre-Four-Doors window -----------------------------------------
     ("LIST", 1001),
@@ -3601,6 +3655,24 @@ pub const CONTROL_IDS: &[(&str, i32)] = &[
     // `RETIRED_IDS`, and note that the tail it came out of (1115-1119) did the
     // same job `SYS_PLACEHOLDER`'s did: the fifteen numbers above have no hole
     // in them.
+    //
+    // -- About: the update check (Task 9, 2026-08-25) -----------------------
+    // Two rows under `Build`, mirroring the macOS twin's placement: the
+    // status line beside `Check now` and `Open releases page`, then the
+    // upgrade command's own value and copy button. Neither row can be
+    // omitted -- both are created unconditionally and stay on screen with an
+    // empty value / a disabled button when there is nothing to show, on the
+    // a14 banner-Reload defect's own reasoning: `ShowWindow(SW_HIDE)` raises
+    // no `BN_KILLFOCUS`, so hiding a focusable control the ring might be
+    // resting on is the defect `repair_default_button` exists to prevent,
+    // and the update check can finish or fail while the window is already
+    // open -- unlike the log row, whose presence is fixed for the window's
+    // lifetime.
+    ("ABOUT_UPDATE_STATUS", 1116),
+    ("ABOUT_CHECK_NOW", 1117),
+    ("ABOUT_OPEN_RELEASES", 1118),
+    ("ABOUT_UPDATE_VALUE", 1119),
+    ("ABOUT_UPDATE_COPY", 1120),
 ];
 
 /// Ids that were used, are not any more, and must never be reused.

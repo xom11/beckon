@@ -213,9 +213,15 @@ pub fn keyboard_plan(m: RowMetrics) -> KeyboardPlan {
 ///
 /// `system_plan`'s shape exactly, and for the same three readers.
 ///
-/// **Nothing here is conditional**, unlike System's two omittable rows: there
-/// is no fact about a machine that removes a row from this page, so the plan
-/// takes no `rows` argument and only the disclosure's height varies -- with the
+/// **No row is OMITTED here**, unlike System's two -- there is still no fact
+/// about a machine that removes a row from this page, so the plan takes no
+/// `rows` argument. `update` and `command` are nonetheless populated, never
+/// blank: since Task 9 the update check is drawn as two more fixed rows
+/// beneath `build`, on `IDC_LOG_OPEN`'s exception rather than
+/// `SystemRows`' rule -- see `beckon_core::settings::DefaultButton::AboutCheckNow`'s
+/// own doc for why a row that can only be EMPTY, never ABSENT, is the choice
+/// that keeps `ShowWindow(SW_HIDE)` off a control the default-button ring
+/// might be resting on. Only the disclosure's height still varies -- with the
 /// FONT and the card's width, not with any state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AboutPlan {
@@ -223,6 +229,14 @@ pub struct AboutPlan {
     pub name: i32,
     pub div1: i32,
     pub build: i32,
+    /// The update check's status line, `Check now` and `Open releases page`
+    /// -- one row, always drawn. `status` is blank and `Open releases page`
+    /// disabled in `Idle`; nothing about the ROW is conditional.
+    pub update: i32,
+    /// The upgrade command's value and its Copy button -- one row, always
+    /// drawn. Blank value and a disabled Copy button when there is no
+    /// command to show.
+    pub command: i32,
     pub location: i32,
     pub licence: i32,
     pub div2: i32,
@@ -259,6 +273,12 @@ pub fn about_plan(m: RowMetrics, disclosure_h: i32) -> AboutPlan {
         at
     };
     p.build = row(&mut y);
+    // The update check's two rows (Task 9), pitched exactly like every other
+    // setting row on this page -- between `build` and `location`, mirroring
+    // where the macOS twin's `update_row` / `command_row` sit beneath its
+    // own `Build` row.
+    p.update = row(&mut y);
+    p.command = row(&mut y);
     p.location = row(&mut y);
     p.licence = row(&mut y);
     // The gap the last row left is taken back before the divider, exactly as
@@ -311,7 +331,9 @@ mod tests {
         assert_eq!(p.log - p.config, 46);
 
         let a = about_plan(M96, 32);
-        assert_eq!(a.location - a.build, 46);
+        assert_eq!(a.update - a.build, 46);
+        assert_eq!(a.command - a.update, 46);
+        assert_eq!(a.location - a.command, 46);
         assert_eq!(a.licence - a.location, 46);
     }
 
@@ -358,12 +380,17 @@ mod tests {
     /// The About card's interior at the two-line disclosure the shipped
     /// string wraps to at 96 DPI, and the fact the window's floor is derived
     /// from: the card grows one line at a time and nothing else moves.
+    ///
+    /// **318 became 410 on 2026-08-25 (Task 9)**: the update check's two
+    /// rows (`update`, `command`) cost `2 * M96.pitch()` = 92 px each, always
+    /// -- see `AboutPlan`'s own doc for why they are fixed rows rather than
+    /// an omittable one. 410 = 318 + 92.
     #[test]
     fn the_about_card_interior_grows_only_with_the_disclosure() {
         let two = about_plan(M96, 32);
-        assert_eq!(two.content_h, 318);
+        assert_eq!(two.content_h, 410);
         let three = about_plan(M96, 48);
-        assert_eq!(three.content_h, 334);
+        assert_eq!(three.content_h, 426);
         assert_eq!(three.content_h - two.content_h, 16);
         // Everything above the disclosure is fixed, so only the links row
         // moves with it.
@@ -409,19 +436,50 @@ mod tests {
         );
     }
 
-    /// The two pages land within a row of each other, which is why one window
-    /// height can serve both without one of them carrying a hole. Not a
-    /// coincidence worth relying on -- an assertion, so that a row added to
-    /// either page has to be weighed against the other.
+    /// **NARROWED 2026-08-25 (Task 9).** This used to assert the two pages
+    /// land within one row of each other -- true from the day `page_plan`
+    /// was written until the update check gave About two more real rows than
+    /// System has any content for. The invariant it was protecting still
+    /// matters and is restated below rather than deleted: nobody should be
+    /// able to add a HOLE to one door without the other complaining. What
+    /// changed is that About is now legitimately taller by DESIGN, not by
+    /// accident, so the bound this test enforces has to say so rather than
+    /// pretend the two are still peers.
+    ///
+    /// **The consequence this test does NOT hide**: `WINDOW_HEIGHT` (Windows,
+    /// `mod.rs`) is derived from About's new height, and the System card does
+    /// not grow to match -- so at that size System now shows **144 px** of
+    /// ground below its card, at 96 DPI, against the ~60 px ceiling the OLD
+    /// version of this test enforced for both pages alike
+    /// (`layout.rs`'s `the_fixed_doors_leave_no_room_for_a_second_card` pins
+    /// that 144 and carries the same note). That is a real, visible
+    /// regression on the System door and is flagged in Task 9's report
+    /// rather than quietly absorbed here. Shrinking it back down would mean
+    /// either compressing the update check's two rows or growing System with
+    /// content it does not have -- both are design calls past a layout
+    /// test's authority.
+    ///
+    /// The bound below is what the arithmetic now actually is, asserted so
+    /// a FUTURE change to either page is still weighed against this one
+    /// rather than silently drifting further.
     #[test]
-    fn the_two_fixed_pages_are_the_same_height_within_one_row() {
+    fn about_now_legitimately_outgrows_system_by_the_update_check() {
         let sys = system_plan(M96, BOTH).content_h;
         let about = about_plan(M96, 32).content_h;
-        assert!(
-            (sys - about).abs() <= M96.pitch(),
-            "System is {sys} and About is {about}; one door now carries a \
-             hole the other does not, and `MIN_HEIGHT` is derived from the \
-             taller of the two"
+        // 106 = the pre-Task-9 gap (14, System 304 vs About's old 318) plus
+        // the update check's two new rows (2 * pitch = 92). Pinned as a
+        // number, not as a formula referencing the old 318 or 14: those are
+        // history now, and a formula here would just restate `about_plan`'s
+        // own body and pass for any rhythm at all, the same reasoning
+        // `the_system_card_interior_is_304_with_every_row` gives for pinning
+        // its own number.
+        assert_eq!(
+            about - sys,
+            106,
+            "System is {sys} and About is {about}; if this number moves, \
+             re-derive Windows' `MIN_HEIGHT` / `WINDOW_HEIGHT` and the System \
+             door's now-larger empty-ground margin alongside it rather than \
+             just updating this assertion"
         );
     }
 
@@ -453,6 +511,8 @@ mod tests {
             a.name,
             a.div1,
             a.build,
+            a.update,
+            a.command,
             a.location,
             a.licence,
             a.div2,

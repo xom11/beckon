@@ -328,7 +328,7 @@ mod win {
     /// hardware in the loop -- which is the exact drift the paragraph above
     /// says nobody would otherwise have seen until a person ran this probe.
     const WINDOW_WIDTH_96: i32 = 680;
-    const WINDOW_HEIGHT_96: i32 = 500;
+    const WINDOW_HEIGHT_96: i32 = 592;
     /// Printed for reference only. What has to be checked at this floor
     /// needs a human to drag the corner, and this probe does not drive a
     /// resize.
@@ -347,8 +347,15 @@ mod win {
     /// SHIPPED size against a 20-row config, not at the floor, and the tab
     /// strip's band takes 34 px out of the list either way. Eight rows is not
     /// a property of this window at both sizes and never was.
+    ///
+    /// **480 -> 572, 500 -> 592, 2026-08-25 (Task 9).** The About card grew
+    /// two rows for the update check; `MIN_HEIGHT`'s own "CORRECTED
+    /// 2026-08-25" note in `settings_window::mod` carries the re-derivation,
+    /// and the list's row count moved with it -- eleven at the floor, twelve
+    /// at the shipped size with the banner down, superseding "five... eight"
+    /// two paragraphs up.
     const MIN_WIDTH_96: i32 = 660;
-    const MIN_HEIGHT_96: i32 = 480;
+    const MIN_HEIGHT_96: i32 = 572;
 
     /// A 96-DPI value scaled to `dpi`, transcribed from
     /// `settings_window::mod::scale` -- truncating, not `MulDiv`'s
@@ -1463,14 +1470,25 @@ mod win {
     fn measure_about(parent: HWND) {
         println!("  -- About page (design 3.4) --");
         // Transcribed from `beckon_core::settings::CONTROL_IDS`' About block
-        // (1100-1114). `ABOUT_PLACEHOLDER` (1115) is RETIRED and deliberately
-        // absent, exactly like `SYS_PLACEHOLDER` in `measure_system`.
-        const ROWS: [(i32, &str); 15] = [
+        // (1100-1120). `ABOUT_PLACEHOLDER` (1115) is RETIRED and deliberately
+        // absent, exactly like `SYS_PLACEHOLDER` in `measure_system`. 1116-1120
+        // are the update check (Task 9, 2026-08-25): unlike every row above
+        // them, `visible` here can be true while the row still has nothing to
+        // show -- `CHECK_NOW`/`UPDATE_COPY`/`OPEN_RELEASES` are ENABLED, not
+        // hidden, so `IsWindowVisible` alone does not verify them; a human run
+        // still has to check `IsWindowEnabled` against the update state the
+        // window was showing at the time.
+        const ROWS: [(i32, &str); 20] = [
             (1100, "MARK"),
             (1101, "NAME"),
             (1102, "BUILD_LABEL"),
             (1103, "BUILD_VALUE"),
             (1104, "BUILD_COPY"),
+            (1116, "UPDATE_STATUS"),
+            (1117, "CHECK_NOW"),
+            (1118, "OPEN_RELEASES"),
+            (1119, "UPDATE_VALUE"),
+            (1120, "UPDATE_COPY"),
             (1105, "LOCATION_LABEL"),
             (1106, "LOCATION_VALUE"),
             (1107, "LOCATION_COPY"),
@@ -1505,11 +1523,15 @@ mod win {
             return;
         }
         let text = |id: i32| dlg_item(parent, id).map(ctl_text).unwrap_or_default();
-        // The three copy glyphs, as ONE verdict: they carry one caption, so
-        // three separate lines would be three readings of the same fact.
-        let glyphs: Vec<String> = [1104, 1107, 1110].iter().map(|id| text(*id)).collect();
+        // The four copy glyphs, as ONE verdict: they carry one caption, so
+        // four separate lines would be four readings of the same fact.
+        // `UPDATE_COPY` (1120) joined the other three on 2026-08-25 (Task 9).
+        let glyphs: Vec<String> = [1104, 1107, 1110, 1120]
+            .iter()
+            .map(|id| text(*id))
+            .collect();
         if glyphs.iter().all(|g| g == "\u{29C9}") {
-            println!("    copy glyph: all three carry U+29C9 (a box on screen is still possible)");
+            println!("    copy glyph: all four carry U+29C9 (a box on screen is still possible)");
         } else {
             println!("    copy glyph: <<< FAIL, captions came back {glyphs:?}");
         }
