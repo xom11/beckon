@@ -826,7 +826,7 @@ impl Target {
 
 /// A row on About whose value can be copied.
 ///
-/// The three rows are the three copy buttons; `copy_text` says what each one
+/// The four rows are the four copy buttons; `copy_text` says what each one
 /// puts on the clipboard, and it is deliberately **not** the string the row
 /// shows -- see `AboutValue`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -834,6 +834,15 @@ pub enum Field {
     Build,
     Location,
     Licence,
+    /// The upgrade command on the update row.
+    ///
+    /// **`None` is unreachable by construction rather than by luck**: the
+    /// copy button is drawn only when `UpdateRow::command` is `Some`, so an
+    /// empty answer here means the row is not on screen and no button
+    /// exists to press. `copy_text` still has to return something, and an
+    /// empty string is the one answer that cannot put a wrong command on a
+    /// clipboard.
+    UpdateCommand,
 }
 
 /// Everything the window can ask the caller to DO that is not an edit to a
@@ -1691,6 +1700,12 @@ pub fn copy_text(st: &AboutState, f: Field) -> &str {
         Field::Build => &st.build.copy,
         Field::Location => &st.location.copy,
         Field::Licence => &st.licence.copy,
+        Field::UpdateCommand => st
+            .update
+            .command
+            .as_ref()
+            .map(|c| c.copy.as_str())
+            .unwrap_or(""),
     }
 }
 
@@ -7206,6 +7221,25 @@ mod tests {
     fn about_shows_no_update_line_before_a_check() {
         let page = about_update(&exe_path(), UpdateState::Idle);
         assert_eq!(page.update.status, None);
+    }
+
+    /// The caveat-bearing channels are the reason `shown` and `copy` are two
+    /// fields, and Homebrew is the sharpest case: `shown` tells the user to
+    /// restart the service afterwards, and pasting that sentence into a
+    /// terminal is a syntax error.
+    #[test]
+    fn the_update_command_copies_the_bare_command_not_its_caveat() {
+        let cmd = crate::update::upgrade_command(crate::update::Channel::Homebrew).unwrap();
+        assert_eq!(cmd.copy, "brew upgrade beckon");
+        assert!(cmd.shown.contains("brew services restart beckon"));
+        assert_ne!(cmd.shown, cmd.copy);
+    }
+
+    /// No command, no clipboard payload -- and never a partial one.
+    #[test]
+    fn copying_the_update_command_with_no_command_yields_nothing() {
+        let page = about_update(&exe_path(), UpdateState::Idle);
+        assert_eq!(copy_text(&page, Field::UpdateCommand), "");
     }
 
     use std::time::{Duration, SystemTime};
