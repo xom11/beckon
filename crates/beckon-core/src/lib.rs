@@ -101,3 +101,4 @@ pub mod paths;
 pub mod settings;
 pub mod shortcuts;
 pub mod theme;
+pub mod update;
