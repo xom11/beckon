@@ -418,6 +418,36 @@ Neither is scheduled. If a future door adds System content, re-derive the
 table above rather than assume it still holds — the 122 px of fixed chrome is
 what stays constant, not the ground numbers themselves.
 
+**The accepted cost above is only the interior half. `MIN_HEIGHT` is also
+the window's OS-enforced floor, and that half was not checked before the 92
+px was accepted.** `WM_GETMINMAXINFO`'s handler in `mod.rs` sets
+`mm.ptMinTrackSize.y = scale(MIN_HEIGHT, dpi)`, and `scale(v, dpi) = v *
+dpi / 96` — so the floor the user cannot resize below scales WITH the
+monitor's DPI, not just with the window's initial paint at 96 dpi.
+
+```text
+scale(572, 96)  =  572   -- the 1:1 case, same number as the interior math above
+scale(572, 168) = 1001   -- 175% scaling
+scale(572, 192) = 1144   -- 200% scaling
+scale(480, 192) =  960   -- pre-branch MIN_HEIGHT, for comparison, at 200%
+```
+
+A 1080p display's work area (the screen height minus the taskbar) is roughly
+1040 px. At 200% scaling the new floor, 1144, is past that entirely — the
+window could not be resized down to fit the screen at all. Before this
+branch the floor was 960, which did fit. At 175% it is 1001 against the same
+~1040 px work area — close enough that a taller taskbar, or a second
+monitor's different scale, could tip it over.
+
+**This is simulated arithmetic, not a measurement — nobody has run this
+branch on a real high-DPI Windows display.** Everything this session could
+run stayed at 96 dpi. Check it on a14 at its real scaling before treating the
++92 px growth as fully accepted: if `ptMinTrackSize.y` genuinely exceeds the
+work area there, the window cannot be shrunk to fit the screen at all, which
+is a worse failure than the interior ground going past its 60 px ceiling.
+This was made an explicit condition of accepting the growth above, not a
+separate, lesser concern.
+
 ## The filter box is a view, and the mapping is the feature
 
 `IDC_FILTER` (1021, cue banner `Filter`, no label) matches case-insensitively

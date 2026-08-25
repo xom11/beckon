@@ -225,16 +225,16 @@ pub fn upgrade_command(channel: Channel) -> Option<AboutValue>;
 
 | Channel | `copy` (the clipboard payload) | `shown` adds |
 |---|---|---|
-| `Nix` | `nix flake update beckon` | ` — run in your flake repo` |
+| `Nix` | `nix flake update beckon` | ` - run in your flake repo` |
 | `Scoop` | `scoop update beckon` | — |
-| `Homebrew` | `brew upgrade beckon` | ` — then: brew services restart beckon` |
+| `Homebrew` | `brew upgrade beckon` | ` - then: brew services restart beckon` |
 | `Cargo` | `cargo install --git https://github.com/xom11/beckon beckon-cli --force` | — |
 | `Unknown` | `None` — the Releases link is the whole answer | — |
 
 `AboutValue { shown, copy }` already exists and exists **for exactly this**:
 its doc says a single `String` would have made two jobs one field and the
 clipboard would have got whichever won. A user pastes the `copy` half into a
-terminal, where `— run in your flake repo` is a syntax error.
+terminal, where `- run in your flake repo` is a syntax error.
 
 Two caveats are carried in `shown` rather than dropped:
 
@@ -323,9 +323,11 @@ updated with it — that sentence is load-bearing for the next reader deciding
 whether an omission is structural.
 
 **The two labels go in the platform-strings table, not inline.** macOS writes
-`Check for Updates…` (title case, real ellipsis, Apple's own wording);
-Windows writes `Check for updates...`. `docs/notes/settings-window.md` records
-that platform strings are tables here, not literals.
+`Check for Updates...` (title case, Apple's own wording); Windows writes
+`Check for updates...`. Both use the ASCII ellipsis, like every other status
+and menu string this window draws — see `every_status_line_is_ascii` and
+`both_update_labels_are_ascii`. `docs/notes/settings-window.md` records that
+platform strings are tables here, not literals.
 
 ### 6.2 The About row
 
@@ -351,7 +353,7 @@ Status line by state:
 | state | line |
 |---|---|
 | `Idle` | *(the line is absent; only `[Check now]` shows)* |
-| `Checking` | `Checking…` and `[Check now]` disabled |
+| `Checking` | `Checking...` and `[Check now]` disabled |
 | `Done(UpToDate)` | `Up to date` |
 | `Done(Available(v))` | `<v> available` + the command row |
 | `Done(Ahead(v))` | `Newer than the latest release (<v>)` |
@@ -389,7 +391,7 @@ would change if this is ever revisited.
 **`flush_paint()` is what makes the block acceptable.** `refresh_settings`
 sets control text, but the frame is painted by the message pump — which is
 about to be blocked. Without an explicit flush the window shows the *old*
-frame for up to three seconds and reads as frozen; with it, `Checking…` is on
+frame for up to three seconds and reads as frozen; with it, `Checking...` is on
 screen before the call starts. Roughly three lines per platform
 (`UpdateWindow` on Windows; the AppKit equivalent — §10 flags this as
 unverified).
@@ -403,7 +405,7 @@ converts *"I don't know"* into a confident false assurance.
 
 | `CheckError` | shown |
 |---|---|
-| `NoClient` | `Could not check — no HTTP client found` |
+| `NoClient` | `Could not check - no HTTP client found` |
 | `Unreachable` | `Could not reach github.com` |
 | `Unreadable` | `Could not read the latest version` |
 
@@ -448,7 +450,7 @@ If (1) fails, the feature degrades to `NoClient` — already designed, already
 tested, no code change. That is the point of §4's honest-degradation property.
 
 **macOS**: §3 is the measurement. The remaining live check is that
-`flush_paint` actually puts `Checking…` on screen before the block — verifiable
+`flush_paint` actually puts `Checking...` on screen before the block — verifiable
 with `testing/macos_settings_drive.lua`.
 
 ## 10. Unverified at design time

@@ -1,9 +1,12 @@
 //! Door 4 — **About**.
 //!
-//! Design §3.4. It writes nothing: three value rows with a copy button
-//! each, three links, and one disclosure. `command_bar_shown` draws no
-//! `Save` here, and `home(Page::About)` is `None`, so Enter does nothing
-//! until the reader tabs onto a button.
+//! Design §3.4. It writes nothing: four value rows with a copy button each
+//! (`Build`, `Location`, `Licence`, and the update command), three links,
+//! and one disclosure — plus the update check's own controls, which carry
+//! no copy button of their own: a status line, `Check now`, and `Open
+//! releases page`. `command_bar_shown` draws no `Save` here, and
+//! `home(Page::About)` is `None`, so Enter does nothing until the reader
+//! tabs onto a button.
 //!
 //! ## `Location` is the row this page exists for
 //!

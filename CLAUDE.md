@@ -659,14 +659,15 @@ hashes the result into the lock file's NAME — renaming the lock would let an
 old and a new binary both serve. Long paths are unaffected: the manifest
 declares `longPathAware`.
 
-**Since 0.10.0, beckon also makes exactly one outbound NETWORK request** —
-never a file read or write — and only on a person pressing `Check for
-updates`, from `serve`'s settings window: the About page's own button, or the
-tray row, which opens the window (landing on About) and runs the SAME check
-rather than firing one of its own. There is no background poll, no request on
-startup, and nothing downloaded: `beckon_cli::update` spawns the system
-`curl` against `github.com/.../releases/latest`, reads the redirect's tag out
-of the `Location` header, and compares it to the running version. See
+**As of the check-for-updates feature, beckon also makes exactly one outbound
+NETWORK request** — never a file read or write — and only on a person
+pressing `Check for updates`, from `serve`'s settings window: the About
+page's own button, or the tray row, which opens the window (landing on
+About) and runs the SAME check rather than firing one of its own. There is
+no background poll, no request on startup, and nothing downloaded:
+`beckon_cli::update` spawns the system `curl` against
+`github.com/.../releases/latest`, reads the redirect's tag out of the
+`Location` header, and compares it to the running version. See
 `docs/notes/distribution.md` for the mechanism and the measurements behind
 it.
 

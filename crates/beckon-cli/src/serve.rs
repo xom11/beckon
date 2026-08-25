@@ -2611,7 +2611,12 @@ fn check_for_updates(state: &Rc<RefCell<ServeState>>) {
     use beckon_core::update::{self, CheckError, UpdateState};
 
     // A version string this build cannot parse is a fact about beckon, not
-    // about the network -- so it never reaches curl.
+    // about the network -- so it never reaches curl. This arm borrows
+    // `CheckError::Unreadable` for that unrelated failure rather than adding
+    // a fourth variant: `env!("BECKON_VERSION")` is stamped by beckon-cli's
+    // own build script, so a compiled build reaching this branch is close to
+    // impossible, and a variant that ripples through core, its tests and
+    // both windows is not worth it for a case this near-unreachable.
     let Some(current) = update::parse_current(env!("BECKON_VERSION")) else {
         state.borrow_mut().update = UpdateState::Failed(CheckError::Unreadable);
         refresh_settings(state);
