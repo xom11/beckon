@@ -800,7 +800,10 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
     let rows = sys_rows();
     for (id, owner) in PAGE_CONTROLS {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
-            show(h, owner == page && sys_row_shown(id, rows));
+            show(
+                h,
+                owner == page && sys_row_shown(id, rows) && about_row_shown(id),
+            );
         }
     }
     // The banner's three, from the same function `layout`'s card 0 and
@@ -6408,13 +6411,50 @@ thread_local! {
         const { std::cell::Cell::new(FlagTone::Neutral) };
 }
 
+// Is there an upgrade command to show right now?
+//
+// Cached here for `show_page_controls`' sake, exactly as `ABOUT_UPDATE_TONE`
+// above is cached for `WM_CTLCOLORSTATIC`'s: that function runs on a page
+// switch, has no `AboutState` in hand, and must not build one -- `about_now`
+// costs a `current_exe`, a `stat` and two `canonicalize` calls.
+// `render_about` is the only writer.
+//
+// (A plain comment rather than a doc comment for the reason the block above
+// gives: `thread_local!` does not carry one through, and rustc says so.)
+thread_local! {
+    static ABOUT_HAS_COMMAND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Does this About control exist right now, independent of which page is up?
+///
+/// The About twin of `sys_row_shown`, and the same shape: `show_page_controls`
+/// ANDs it with the page test, so a control can be a candidate for its door
+/// and still be absent.
+///
+/// **One row uses it, and it is the row that had no state to be absent for
+/// until it did.** The upgrade command is `Some` only once a check finds a
+/// newer release, so for the whole of an ordinary session there is nothing
+/// for its value to say and nothing for its Copy to copy.
+fn about_row_shown(id: i32) -> bool {
+    match id {
+        IDC_ABOUT_UPDATE_VALUE | IDC_ABOUT_UPDATE_COPY => ABOUT_HAS_COMMAND.with(|c| c.get()),
+        _ => true,
+    }
+}
+
 /// Write `st` onto the controls.
 ///
 /// Split from `apply_about_state` for `render_system`'s reason: the gathering
 /// above has no `unsafe` in it and this has no policy in it.
 ///
-/// **No `layout` call and nothing conditional**, unlike `render_system`: this
-/// page has no row that can appear or vanish, so a push can never change the
+/// **CORRECTED: this page now has exactly one row that can vanish** -- the
+/// upgrade command's, hidden until a check finds one. It still needs no
+/// `layout` call, because the row keeps its slot in `about_plan` either way
+/// and nothing below it moves; what changes is only whether the two controls
+/// in that slot are drawn. The paragraph below describes the rest.
+///
+/// **No `layout` call**, unlike `render_system`: apart from that one row this
+/// page has nothing that can appear or vanish, so a push can never change the
 /// card's height. That is what keeps the About page off the one path that
 /// reaches `SetWindowPos` on the populated App combo. **Still true after
 /// Task 9's two new rows**: both are always on screen, so what varies with
@@ -6446,14 +6486,38 @@ unsafe fn render_about(hwnd: HWND, st: &AboutState) {
     }
     enable(hwnd, IDC_ABOUT_CHECK_NOW, st.update.can_check);
 
-    // The upgrade command's own row -- blank value, disabled Copy, when
-    // there is nothing to show. `cmd.shown` is what is drawn; the Copy
+    // The upgrade command's own row. `cmd.shown` is what is drawn; the Copy
     // button routes `Field::UpdateCommand` through `copy_about_field`, which
     // reads `cmd.copy` instead -- see that field's own doc for why the two
     // must never be swapped.
+    //
+    // **HIDDEN when there is no command, not merely disabled.** It shipped
+    // disabled-and-visible in 0.11.0 and was reported on sight once 0.11.1
+    // compacted the page around it: with the `Licence` row gone from below
+    // and `Open releases page` gone from the row above, what was left was a
+    // greyed copy button beside an empty field, with nothing near it to
+    // explain what it belonged to. A control that can do nothing and names
+    // nothing is not a disabled control, it is a loose one.
+    //
+    // **`enable(false)` BEFORE `show(false)`, and the order is the whole
+    // reason this is safe.** Task 9 declined to hide anything here because
+    // `ShowWindow(SW_HIDE)` does not raise `BN_KILLFOCUS`, so a focused
+    // button can be hidden with the dialog manager still pointing at it --
+    // the defect this window already paid for once on the banner's `Reload`.
+    // `EnableWindow(FALSE)` on a focused control moves focus off it first,
+    // which is user32's own behaviour and not something arranged here, so by
+    // the time the hide runs there is no focus left on it to strand. The
+    // page-switch path is covered separately by `about_row_shown` and by
+    // `show_page`'s own closing `repair_hidden_button`.
     let command_shown = st.update.command.as_ref().map(|c| c.shown.as_str());
     set_text_if_changed(hwnd, IDC_ABOUT_UPDATE_VALUE, command_shown.unwrap_or(""));
     enable(hwnd, IDC_ABOUT_UPDATE_COPY, command_shown.is_some());
+    ABOUT_HAS_COMMAND.with(|c| c.set(command_shown.is_some()));
+    for id in [IDC_ABOUT_UPDATE_VALUE, IDC_ABOUT_UPDATE_COPY] {
+        if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+            show(h, command_shown.is_some());
+        }
+    }
 }
 
 /// Push a snapshot into the controls. The only path that changes what is on
