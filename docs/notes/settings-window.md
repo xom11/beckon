@@ -389,9 +389,8 @@ fields separately), `command_row`, and `open_releases_row` (these last two
 ARE stored `Retained<NSStackView>` fields on the struct). Windows still
 needed 92 px for the leaner version, which is evidence the growth is real
 content, not Windows-side excess — there was no cheaper way to build this on
-this platform that was left on the table. Second, the change is a symptom of
-a
-**content** decision (About needed two more rows) forcing a **window**
+this platform that was left on the table. Second, the change is a symptom
+of a **content** decision (About needed two more rows) forcing a **window**
 decision (grow to fit them), and no purely geometric fix on the System side
 removes that dependency — it only moves the cost somewhere else, and nothing
 clips or overlaps at the size this branch ships.
