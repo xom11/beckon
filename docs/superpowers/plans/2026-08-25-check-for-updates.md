@@ -648,6 +648,20 @@ Add inside the existing `mod tests`:
         }
     }
 
+    /// The positive half of the guarantee the test above pins negatively.
+    ///
+    /// Without it, a regression in the one arm that is allowed to say
+    /// `Up to date` -- `plain(Some("Ok".into()))`, say -- passes every other
+    /// test in this module: nothing else compares that arm's status by value.
+    #[test]
+    fn a_successful_check_with_nothing_newer_says_up_to_date() {
+        let row = update_row(UpdateState::Done(Verdict::UpToDate), Channel::Scoop);
+        assert_eq!(row.status.as_deref(), Some(UP_TO_DATE));
+        assert_eq!(row.tone, FlagTone::Neutral);
+        assert!(row.command.is_none());
+        assert!(row.can_check);
+    }
+
     /// `Idle` has no line at all, which is a different instruction to the
     /// drawing code than "a line that says nothing" -- the reason `status` is
     /// an `Option` rather than a possibly-empty `String`.
@@ -868,7 +882,7 @@ pub fn update_row(state: UpdateState, channel: Channel) -> UpdateRow {
 cargo test -p beckon-core update::
 ```
 
-Expected: 21 tests pass.
+Expected: 22 tests pass.
 
 - [ ] **Step 5: Run the gate**
 
