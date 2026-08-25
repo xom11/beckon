@@ -2149,13 +2149,23 @@ mod tests {
             let avail = (bottom - list_top) - tok::GAP_CARD - tok::CARD_PAD - card2_h;
             avail / tok::ROW_H
         };
-        // 8 / 7 before 2026-08-25 (Task 9); `WINDOW_HEIGHT` / `MIN_HEIGHT`
-        // both grew for About's two new rows (see `MIN_HEIGHT`'s own
-        // "CORRECTED 2026-08-25" note), and the Shortcuts list -- which
-        // absorbs whatever the fixed cards leave -- grew right along with
-        // them.
-        assert_eq!(rows(WINDOW_HEIGHT), 12);
-        assert_eq!(rows(MIN_HEIGHT), 11);
+        // **8 / 7 -> 12 / 11 -> 10 / 9, and the middle number was an
+        // accident.** The list absorbs whatever the fixed cards leave, so it
+        // has never been derived -- it moves whenever `WINDOW_HEIGHT` does.
+        // Task 9 grew the window for About's two new update rows and the
+        // list grew with it; compacting About took one of those rows back
+        // out (`Field`'s own doc for why the `Licence` row went) and the list
+        // gave back the same 2 / 2.
+        //
+        // **Still ahead of where it started**, which is the number worth
+        // holding on to: 10 / 9 against the 8 / 7 this window shipped with
+        // before the update check existed. `avail(h) = h - 312` and
+        // `tok::ROW_H` is 22, so a future move of either constant lands here
+        // first -- as it just did, on CI, because these two tests are the
+        // Windows job's alone and cannot run on the machine that changed the
+        // constants.
+        assert_eq!(rows(WINDOW_HEIGHT), 10);
+        assert_eq!(rows(MIN_HEIGHT), 9);
         assert!(
             rows(MIN_HEIGHT) >= 2,
             "a window whose list shows one row is not a smaller version of \

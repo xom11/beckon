@@ -328,7 +328,7 @@ mod win {
     /// hardware in the loop -- which is the exact drift the paragraph above
     /// says nobody would otherwise have seen until a person ran this probe.
     const WINDOW_WIDTH_96: i32 = 680;
-    const WINDOW_HEIGHT_96: i32 = 592;
+    const WINDOW_HEIGHT_96: i32 = 546;
     /// Printed for reference only. What has to be checked at this floor
     /// needs a human to drag the corner, and this probe does not drive a
     /// resize.
@@ -355,7 +355,7 @@ mod win {
     /// at the shipped size with the banner down, superseding "five... eight"
     /// two paragraphs up.
     const MIN_WIDTH_96: i32 = 660;
-    const MIN_HEIGHT_96: i32 = 572;
+    const MIN_HEIGHT_96: i32 = 526;
 
     /// A 96-DPI value scaled to `dpi`, transcribed from
     /// `settings_window::mod::scale` -- truncating, not `MulDiv`'s
