@@ -357,6 +357,15 @@ struct ServeState {
     /// exactly that much. Anything that starts making decisions from this
     /// field has to ask the window instead.
     settings_page: beckon_core::settings::Page,
+    /// The update check's answer, for as long as this process runs. Session
+    /// state on purpose -- nothing persists it and nothing refreshes it, so a
+    /// reopened window starts at `Idle` again.
+    update: beckon_core::update::UpdateState,
+    /// Set by the tray's `Check for updates...` row and consumed by
+    /// `open_settings`, which is what makes that row land on About with a
+    /// check already running. Not set by the About page's own button, which
+    /// reaches `check_for_updates` directly.
+    pending_update_check: bool,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -484,6 +493,8 @@ pub fn cmd_serve_app(
         external_change: false,
         probe: None,
         settings_page: beckon_core::settings::Page::default(),
+        update: beckon_core::update::UpdateState::Idle,
+        pending_update_check: false,
     }));
 
     let mgr = {
@@ -1122,6 +1133,7 @@ const MENU_LOG: u32 = 4;
 const MENU_PAUSE: u32 = 5;
 const MENU_AUTOSTART: u32 = 6;
 const MENU_QUIT: u32 = 7;
+const MENU_UPDATE: u32 = 8;
 
 /// Everything the menu needs to draw itself, snapshotted out of `ServeState`
 /// so the drawing is a pure function and can be tested without a tray, a
@@ -1148,6 +1160,10 @@ struct MenuModel {
     /// Whether a settings window exists to open. False on macOS until that
     /// window is built; a row that opens nothing is worse than no row.
     settings: bool,
+    /// Which spelling the update row gets. Passed in rather than read from
+    /// `cfg!` here so `build_entries` can be tested for both -- the same
+    /// reason `log` arrives already decided by `menu_log_row`.
+    macos: bool,
 }
 
 /// Whether the tray draws `Open log`, and whether it is enabled.
@@ -1189,6 +1205,13 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
     ];
     if m.settings {
         entries.push(MenuEntry::item(MENU_EDIT, "Settings..."));
+        // Directly after Settings: both rows open the same window, while
+        // `Reload now` below is about the config file rather than about
+        // beckon itself.
+        entries.push(MenuEntry::item(
+            MENU_UPDATE,
+            beckon_core::menu::update_label(m.macos),
+        ));
     }
     entries.push(MenuEntry::item(MENU_RELOAD, "Reload now"));
     if let Some(enabled) = m.log {
@@ -1248,6 +1271,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // so the two platforms cannot drift apart silently.
             log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
             settings: true,
+            macos: cfg!(target_os = "macos"),
         })
     });
 
@@ -1259,6 +1283,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // out and every borrow is dropped BEFORE the call -- the same
             // rule the module doc states for backend.beckon().
             MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
+            // The row opens the window rather than answering here: the answer
+            // needs a Copy button beside it, which a menu row cannot carry.
+            MENU_UPDATE => {
+                st.borrow_mut().pending_update_check = true;
+                open_settings(&st, &mg);
+            }
             MENU_LOG => {
                 let path = st.borrow().log.clone();
                 if let Some(path) = path {
@@ -1319,7 +1349,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
 
 /// The macOS menu bar item.
 ///
-/// Four rows against Windows' seven, and each omission is structural rather
+/// Five rows against Windows' eight, and each omission is structural rather
 /// than a preference -- see `MenuModel`. Failure is logged and swallowed:
 /// hotkeys are the feature and this is the control surface, so losing the
 /// icon must not take the daemon with it. The same rule Windows applies to
@@ -1344,6 +1374,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
             // test carries the reasoning.
             log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
             settings: true,
+            macos: cfg!(target_os = "macos"),
         })
     });
 
@@ -1351,6 +1382,12 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let mg = Rc::clone(mgr);
     let on_click = Box::new(move |id: u32| match id {
         MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
+        // The row opens the window rather than answering here: the answer
+        // needs a Copy button beside it, which a menu row cannot carry.
+        MENU_UPDATE => {
+            st.borrow_mut().pending_update_check = true;
+            open_settings(&st, &mg);
+        }
         MENU_RELOAD => reload(&st, &mg),
         // The Windows arm's push, and it earns its place here for exactly the
         // Windows arm's reason since the four doors landed: this window HAS a
@@ -1759,6 +1796,7 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
         .as_ref()
         .map(|_| beckon_windows::autostart::is_enabled());
     let paused = s.paused;
+    let update = s.update;
     drop(s);
     swin::apply_state(&cs, external, catalog.as_deref());
     // **A second push, and design §1's split by store is why.** The System
@@ -1784,6 +1822,10 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
     #[cfg(not(target_os = "windows"))]
     let autostart: Option<bool> = None;
     swin::apply_system_state(paused, autostart);
+    // The About page's second push, and the System page's reason exactly:
+    // About must keep working in the `unreadable_state` case, where there is
+    // no `Model` to project a `ControlState` out of.
+    swin::set_update_state(update);
     // **A third push, and it takes no arguments at all.** Every string on the
     // About page is something only the settings window's own process can know
     // -- its compiled-in version, its target triple, its `current_exe()` and
@@ -2134,9 +2176,30 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
 fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     use beckon_core::settings::SettingsCommand;
 
+    // Hoisted out of the `if` on purpose. A `RefCell` borrow inside an `if`
+    // CONDITION lives until the end of the whole `if` statement, so
+    // `if std::mem::take(&mut state.borrow_mut().pending_update_check) { .. }`
+    // would hold the borrow across `check_for_updates` and panic on its first
+    // `borrow_mut`.
+    let wanted_check = std::mem::take(&mut state.borrow_mut().pending_update_check);
+    if wanted_check {
+        // Where the NEXT open lands -- which is this one.
+        state.borrow_mut().settings_page = beckon_core::settings::Page::About;
+    }
+
     // Already open: raise it, do not build a second model.
     if swin::is_open() {
         let _ = swin::open_existing();
+        // **Known limitation, and it is deliberate.** `settings_page` is
+        // "where the NEXT open lands", so a window that is ALREADY open is
+        // raised without moving to About. The check still runs and the
+        // About row still updates; the user may have to click About to see
+        // it. Adding a page-switch API to both window crates to close this
+        // is scope this row does not justify -- the row exists mostly for
+        // when the window is shut.
+        if wanted_check {
+            check_for_updates(state);
+        }
         return;
     }
 
@@ -2441,9 +2504,7 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 SettingsCommand::SetCapsShorthand(_)
                 | SettingsCommand::Copy(_)
                 | SettingsCommand::Undo => {}
-                // Wired in Task 7. Kept as its own arm rather than folded
-                // into a `_` so the compiler goes on naming this site.
-                SettingsCommand::CheckForUpdates => {}
+                SettingsCommand::CheckForUpdates => check_for_updates(&st),
             }
         }),
     };
@@ -2481,6 +2542,9 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
     }
     spawn_catalog_scan();
     refresh_settings(state);
+    if wanted_check {
+        check_for_updates(state);
+    }
 }
 
 /// Unregister or re-register every hotkey, and say so in the tooltip.
@@ -2525,6 +2589,44 @@ fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>,
         eprintln!("beckon serve: resumed - {phrase}");
         set_tray_status(&format!("beckon - {phrase}"));
     }
+}
+
+/// Ask GitHub, and put the answer on the About page.
+///
+/// **Synchronous, and that is a decision.** `ServeState` is `Rc<RefCell<..>>`
+/// and cannot cross a thread boundary, so a worker would mean `Arc`, a
+/// channel, and a per-OS wake. On Windows that wake lands in the hazard at
+/// `beckon-windows/src/settings_window/mod.rs`: the chain
+/// `apply_state -> on_select -> refresh_settings -> apply_state` recurses
+/// across an `extern "system"` boundary where a second `RefCell` borrow
+/// ABORTS the process instead of unwinding, and a `PostMessageW` arriving
+/// mid-`apply_state` is that exact shape. Three seconds of worst case on a
+/// button the user just pressed is the cheaper trade. Measured 196 ms.
+///
+/// Every borrow is dropped before the spawn -- the discipline
+/// `on_probe_shortcut` states in this file and `MENU_LOG` follows before
+/// `open_path`.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn check_for_updates(state: &Rc<RefCell<ServeState>>) {
+    use beckon_core::update::{self, CheckError, UpdateState};
+
+    // A version string this build cannot parse is a fact about beckon, not
+    // about the network -- so it never reaches curl.
+    let Some(current) = update::parse_current(env!("BECKON_VERSION")) else {
+        state.borrow_mut().update = UpdateState::Failed(CheckError::Unreadable);
+        refresh_settings(state);
+        return;
+    };
+
+    state.borrow_mut().update = UpdateState::Checking;
+    refresh_settings(state);
+    // The frame must reach the screen BEFORE the block, or the window shows
+    // the previous one for the whole call and reads as frozen.
+    swin::flush_paint();
+
+    let outcome = crate::update::fetch(current);
+    state.borrow_mut().update = outcome;
+    refresh_settings(state);
 }
 
 #[cfg(test)]
@@ -2907,6 +3009,7 @@ mod tests {
             autostart: Some(false),
             log: Some(true),
             settings: true,
+            macos: false,
         };
         let rows = build_entries(&m);
         assert_eq!(rows[0].label, "beckon - 5 shortcuts registered");
@@ -2972,6 +3075,7 @@ mod tests {
             autostart: None,
             log: None,
             settings: true,
+            macos: true,
         });
         let shape: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
         assert_eq!(
@@ -2980,6 +3084,7 @@ mod tests {
                 "beckon - 18 shortcuts registered",
                 "",
                 "Settings...",
+                "Check for Updates...",
                 "Reload now",
                 "",
                 "Pause hotkeys",
@@ -3001,6 +3106,7 @@ mod tests {
             autostart: None,
             log: None,
             settings: true,
+            macos: true,
         });
         assert_eq!(rows[0].label, "beckon - paused (18 shortcuts registered)");
         assert_eq!(
@@ -3025,6 +3131,7 @@ mod tests {
                         autostart,
                         log,
                         settings,
+                        macos: false,
                     });
                     let case = format!("settings={settings} log={log:?} autostart={autostart:?}");
                     assert!(
@@ -3060,6 +3167,7 @@ mod tests {
             autostart: None,
             log: Some(true),
             settings: true,
+            macos: false,
         };
         assert!(
             build_entries(&base).iter().all(|r| r.id != MENU_AUTOSTART),
@@ -3089,6 +3197,7 @@ mod tests {
             autostart: Some(false),
             log: Some(true),
             settings: true,
+            macos: false,
         };
         for row in build_entries(&m) {
             assert_ne!(
@@ -3137,6 +3246,7 @@ mod tests {
             autostart: Some(false),
             log: Some(true),
             settings: true,
+            macos: false,
         };
         let rows = build_entries(&m);
         let edit = rows.iter().find(|r| r.id == MENU_EDIT).unwrap();
@@ -3151,8 +3261,42 @@ mod tests {
             autostart: Some(false),
             log: Some(false),
             settings: true,
+            macos: false,
         };
         let rows = build_entries(&m);
         assert!(!rows.iter().find(|r| r.id == MENU_LOG).unwrap().enabled);
+    }
+
+    #[test]
+    fn the_update_row_appears_next_to_settings() {
+        let rows = build_entries(&MenuModel {
+            phrase: "19 shortcuts".into(),
+            paused: false,
+            autostart: None,
+            log: None,
+            settings: true,
+            macos: true,
+        });
+        let edit = rows.iter().position(|r| r.id == MENU_EDIT).unwrap();
+        let update = rows.iter().position(|r| r.id == MENU_UPDATE).unwrap();
+        assert_eq!(update, edit + 1, "the two window-opening rows sit together");
+        assert_eq!(rows[update].label, "Check for Updates...");
+        assert!(rows[update].enabled);
+        assert_eq!(rows[update].checked, None);
+    }
+
+    /// The row opens the settings window, so a build without one must not
+    /// draw it -- it would be a lie, and clicking it would do nothing.
+    #[test]
+    fn no_settings_window_means_no_update_row() {
+        let rows = build_entries(&MenuModel {
+            phrase: "19 shortcuts".into(),
+            paused: false,
+            autostart: None,
+            log: None,
+            settings: false,
+            macos: false,
+        });
+        assert!(rows.iter().all(|r| r.id != MENU_UPDATE));
     }
 }

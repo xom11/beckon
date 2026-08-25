@@ -50,3 +50,42 @@ impl MenuEntry {
 /// Delivered to `on_click` when the icon is double-clicked. Callers must
 /// number their real entries below this.
 pub const MENU_ID_DOUBLE_CLICK: u32 = u32::MAX;
+
+/// The `Check for updates` row's label, which differs by platform in case
+/// only.
+///
+/// macOS title-cases menu items and Windows does not. **ASCII dots, not an
+/// ellipsis**, like every other display string this program draws.
+///
+/// The platform arrives as a parameter rather than as a `cfg!` inside, for
+/// the reason `menu_log_row` takes one: both readings are then compiled and
+/// tested by all three CI jobs, not only by the one that ships them.
+pub fn update_label(macos: bool) -> &'static str {
+    if macos {
+        "Check for Updates..."
+    } else {
+        "Check for updates..."
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two spellings, one table. Platform strings are tables here, not
+    /// literals -- and this is the shape `menu_log_row` already uses: the
+    /// platform arrives as a parameter so both readings are testable on every
+    /// CI job, not just on the machine that ships them.
+    #[test]
+    fn the_update_row_is_title_case_on_macos_only() {
+        assert_eq!(update_label(true), "Check for Updates...");
+        assert_eq!(update_label(false), "Check for updates...");
+    }
+
+    /// ASCII dots, not an ellipsis -- like every other display string here.
+    #[test]
+    fn both_update_labels_are_ascii() {
+        assert!(update_label(true).is_ascii());
+        assert!(update_label(false).is_ascii());
+    }
+}

@@ -63,7 +63,6 @@ fn candidates() -> Vec<std::ffi::OsString> {
 /// Blocks the calling thread for at most three seconds. Every failure mode
 /// resolves to an `UpdateState::Failed`; none of them can produce
 /// `Up to date` -- see `beckon_core::update::update_row`'s invariant test.
-#[allow(dead_code)] // Task 7 calls this
 pub fn fetch(current: Version) -> UpdateState {
     for exe in candidates() {
         let mut cmd = Command::new(&exe);
