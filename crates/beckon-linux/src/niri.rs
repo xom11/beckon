@@ -487,7 +487,9 @@ mod tests {
         );
         // The hide target must fit niri's `WorkspaceReferenceArg::Index(u8)`:
         // 1_000_000 deserializes as a parse error on real 26.04.
-        assert!(req_move_to_workspace(7, u8::MAX as u64).to_string().contains("255"));
+        assert!(req_move_to_workspace(7, u8::MAX as u64)
+            .to_string()
+            .contains("255"));
     }
 
     #[test]
