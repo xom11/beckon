@@ -15,6 +15,8 @@ mod notify;
 mod serve;
 mod serve_app;
 mod stable_id;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod update;
 
 #[cfg(target_os = "windows")]
 pub use serve_app::serve_app_main;
