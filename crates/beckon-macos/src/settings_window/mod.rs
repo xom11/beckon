@@ -360,6 +360,14 @@ struct Ui {
     /// `String` on purpose, so a caller answering `Copy(Field)` would have to
     /// rebuild this page's state and become a second author for it.
     about_state: Option<beckon_core::settings::AboutState>,
+
+    /// What About should say about the update check.
+    ///
+    /// Pushed in by `serve` through `set_update_state` and read by
+    /// `apply_about_state`, which builds every OTHER `AboutInputs` field
+    /// from local sources -- `current_exe()`, `fs::metadata`, `env!`. This
+    /// one cannot be local: the check runs in `serve`, not in the window.
+    update: beckon_core::update::UpdateState,
 }
 
 thread_local! {
@@ -1233,6 +1241,68 @@ pub fn open_existing() -> bool {
     true
 }
 
+/// Paint the pending frame NOW, rather than on the next run-loop turn.
+///
+/// The macOS half of the Windows `UpdateWindow` call: `serve` is about to
+/// block this thread on a network check, and without this the window shows
+/// the frame from BEFORE `Checking...` for the whole call.
+///
+/// **Measured 2026-08-25 (macmini), with controls — and the result is
+/// PARTIAL, not a clean confirmation.** This session is an SSH shell in
+/// AppKit's "Background" bootstrap namespace (`launchctl managername` !=
+/// `Aqua`), with no visible display to photograph, so the measurement is
+/// necessarily split into what that namespace can and cannot show. A probe
+/// built into a private `CARGO_TARGET_DIR` (`examples/flush_paint_probe.rs`,
+/// on this crate's own precedent of `settings_probe.rs` / `geom_probe.rs` --
+/// a re-runnable record, not a throwaway) ran two independent checks, each
+/// with its own control:
+///
+/// - **The dirty-tracking half IS synchronous, and this part is solid.**
+///   Marking a view's `needsDisplay` true, then calling `displayIfNeeded` on
+///   its window, cleared the flag by the time the call returned — with
+///   nothing else run in between, so nothing else could have cleared it. The
+///   control (identical setup, `displayIfNeeded` never called) left the flag
+///   set. `displayIfNeeded` does not queue the request for a later turn; it
+///   resolves it inline.
+/// - **Whether that resolution is a REAL `drawRect:` could not be
+///   confirmed, and the honest reading of what the probe found leans NO in
+///   this namespace.** A custom `NSView` subclass counted its own
+///   `drawRect:` calls. Sent directly (`msg_send![view, drawRect: rect]`),
+///   the counter advanced — proving the instrumentation itself works. Routed
+///   through `displayIfNeeded` on an ordered-front, non-layer-backed,
+///   `canDraw() == true` window, the counter stayed at 0, for BOTH the call
+///   and its control, across repeated runs. So in the Background namespace,
+///   `displayIfNeeded` appears to satisfy the dirty flag WITHOUT ever
+///   invoking the view's paint code at all — a stronger and more specific
+///   claim than "Background draws nothing", and one this repository had not
+///   recorded before.
+///
+/// **What none of this establishes: what happens in a real Aqua session, or
+/// whether a frame reaches the display before the block.** The measurement
+/// above describes THIS namespace's behaviour, not necessarily an Aqua
+/// session's — the whole reason `CLAUDE.md` warns that a measurement on one
+/// environment is data about that environment, not about the design. The
+/// call kept below is Apple's documented, textbook API for "redraw this
+/// window now" and nothing measured here contradicts using it; what remains
+/// completely open is whether it does what the doc comment above needs on a
+/// machine with a real WindowServer connection. Confirm on one with a
+/// visible display before trusting this in production — Hammerspoon +
+/// `sudo launchctl asuser`, the way `testing/macos_settings_drive.lua`
+/// already drives this window, is the established way to do that here.
+pub fn flush_paint() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let _ = mtm;
+    // `controls()` releases the `UI` borrow before returning -- the rule
+    // `open_existing` states two functions above, and painting can re-enter
+    // this module through the delegate.
+    let Some(c) = controls() else {
+        return;
+    };
+    c.window.displayIfNeeded();
+}
+
 /// May the window close now?
 ///
 /// The unsaved-edits prompt lives behind `on_close_request`, and this is the
@@ -1905,6 +1975,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             caps_checked: false,
             caps_hold: Chord::default(),
             about_state: None,
+            update: beckon_core::update::UpdateState::Idle,
         });
     });
     CB.with(|c| *c.borrow_mut() = Some(cb));
@@ -2190,17 +2261,49 @@ fn transparency_block() -> Option<beckon_core::theme::TransparencyBlock> {
     None
 }
 
+/// Take the update check's latest answer and redraw About with it.
+///
+/// **A second push, and for the reason `refresh_settings` already gives for
+/// the System page's:** About must keep working in the `unreadable_state`
+/// case, where there is no `Model` to project a `ControlState` out of, so
+/// riding on `apply_state` would make the update row hostage to a TOML
+/// error.
+///
+/// A no-op when the window is closed -- the caller does not check first, the
+/// way `refresh_settings` does not.
+pub fn set_update_state(update: beckon_core::update::UpdateState) {
+    // Written and released here; `apply_about_state` below takes its own
+    // short borrow to read it back, and reaches `controls()` itself for the
+    // redraw. Two separate short borrows, never one held across the other --
+    // `controls()`'s own rule, restated at every caller in this file.
+    UI.with(|u| {
+        if let Some(x) = u.borrow_mut().as_mut() {
+            x.update = update;
+        }
+    });
+    apply_about_state();
+}
+
 /// Push the About door.
 ///
-/// **It takes no arguments at all.** Every string on this page is something
-/// only the settings window's own process can know — its compiled-in version,
-/// its target triple, its `current_exe()` and the two timestamps behind the
-/// stale-image verdict — so there is nothing for a caller to hand over, and
-/// anything passed would be a copy of a fact this crate reads directly.
+/// **Almost everything on this page is something only this process can
+/// know** — its compiled-in version, its target triple, its `current_exe()`
+/// and the two timestamps behind the stale-image verdict — so there is
+/// nothing for a caller to hand over for any of those, and anything passed
+/// would be a copy of a fact this crate reads directly.
 ///
-/// Called on every refresh rather than once at open, because one of those
-/// strings genuinely moves: the file at the launch path can be replaced while
-/// the window is up, which is the whole subject of the `Location` row.
+/// **One field is the exception.** The update check runs in `serve`, not in
+/// this window, so `update` cannot be read locally the way the rest of this
+/// page is. It arrives through `set_update_state`'s write into `UI`, and
+/// this function reads it back rather than taking it as an argument —
+/// staying nullary is what lets `set_update_state` call it without a
+/// `ControlState` to build one from, which is the point.
+///
+/// Called on every refresh rather than once at open, because two of the
+/// things it writes genuinely move: the file at the launch path can be
+/// replaced while the window is up (the `Location` row), and the update
+/// check can finish while the window is up (the row `set_update_state`
+/// drives).
 pub fn apply_about_state() {
     let Some(_mtm) = MainThreadMarker::new() else {
         return;
@@ -2218,6 +2321,16 @@ pub fn apply_about_state() {
         }
         _ => beckon_core::settings::ImageOnDisk::Unknown,
     };
+
+    // The one field below that is not local: `serve` runs the check, not
+    // this window, so `set_update_state` is the only writer and this is a
+    // plain read of what it last stored.
+    let update = UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .map(|x| x.update)
+            .unwrap_or(beckon_core::update::UpdateState::Idle)
+    });
 
     // **`exe` goes to the row UNRESOLVED.** Resolving it through
     // `canonicalize` would report where a symlink points TODAY, and on this
@@ -2238,8 +2351,7 @@ pub fn apply_about_state() {
         // it costs silence rather than a false alarm.
         identity: beckon_core::settings::ImageIdentity::Unknown,
         licence: env!("CARGO_PKG_LICENSE"),
-        // Task 6 threads the real state through here.
-        update: beckon_core::update::UpdateState::Idle,
+        update,
     });
 
     about::apply(&c.abt, &st, crate::is_accessibility_trusted());

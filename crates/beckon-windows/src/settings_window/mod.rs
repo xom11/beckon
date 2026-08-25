@@ -2261,6 +2261,13 @@ struct Ui {
     /// `WM_NCMOUSEMOVE` / `WM_NCMOUSELEAVE` arms write it and repaint only
     /// the bar; `chrome::paint` reads it by value, once per call.
     hot: Option<i32>,
+    /// What About should say about the update check.
+    ///
+    /// Pushed in by `serve` through `set_update_state` and read by
+    /// `apply_about_state`, which builds every OTHER `AboutInputs` field
+    /// from local sources -- `current_exe()`, `fs::metadata`, `env!`. This
+    /// one cannot be local: the check runs in `serve`, not in the window.
+    update: beckon_core::update::UpdateState,
 }
 
 /// What a live capture has to say, rebuilt on every `WM_CAPTURE`.
@@ -2336,6 +2343,25 @@ pub fn is_open() -> bool {
 
 pub fn hwnd() -> Option<HWND> {
     UI.with(|u| u.borrow().as_ref().map(|ui| ui.hwnd))
+}
+
+/// Paint the pending frame NOW, rather than on the next pump turn.
+///
+/// Called immediately before `serve` blocks this thread on a network check.
+/// `apply_state` has already invalidated; `UpdateWindow` is what makes the
+/// `Checking...` line reach the screen before the block instead of after it.
+///
+/// A no-op when the window is closed, which is the right answer rather than
+/// an error: the caller does not check first.
+pub fn flush_paint() {
+    // `hwnd()` takes and releases the `UI` borrow before we return, so
+    // nothing is held across the paint -- the rule `open_existing` follows
+    // one function above.
+    if let Some(h) = hwnd() {
+        unsafe {
+            let _ = UpdateWindow(h);
+        }
+    }
 }
 
 /// An `HWND` a worker thread may carry.
@@ -5153,6 +5179,7 @@ unsafe fn build_children(hwnd: HWND) {
             capture: None,
             theme: theme::ThemeCache::default(),
             hot: None,
+            update: beckon_core::update::UpdateState::Idle,
         })
     });
 }
@@ -6008,6 +6035,15 @@ fn about_now() -> AboutState {
     // forbids, because `…\current\` is the string the row must show.
     let running = running_image_path().and_then(|p| std::fs::canonicalize(p).ok());
     let target_now = exe.as_ref().and_then(|p| std::fs::canonicalize(p).ok());
+    // The one field above that is not local: `serve` runs the check, not
+    // this window, so `set_update_state` is the only writer and this is a
+    // plain read of what it last stored.
+    let update = UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .map(|x| x.update)
+            .unwrap_or(beckon_core::update::UpdateState::Idle)
+    });
     about_state(AboutInputs {
         version: env!("CARGO_PKG_VERSION"),
         target: TARGET_TRIPLE,
@@ -6016,8 +6052,7 @@ fn about_now() -> AboutState {
         disk,
         identity: image_identity(running.as_deref(), target_now.as_deref()),
         licence: env!("CARGO_PKG_LICENSE"),
-        // Task 6 threads the real state through here.
-        update: beckon_core::update::UpdateState::Idle,
+        update,
     })
 }
 
@@ -6122,22 +6157,53 @@ fn copy_about_field(field: Field) {
     with_cb(|cb| (cb.on_command)(SettingsCommand::Copy(field)));
 }
 
+/// Take the update check's latest answer and redraw About with it.
+///
+/// **A second push, and for the reason `refresh_settings` already gives for
+/// the System page's:** About must keep working in the `unreadable_state`
+/// case, where there is no `Model` to project a `ControlState` out of, so
+/// riding on `apply_state` would make the update row hostage to a TOML
+/// error.
+///
+/// A no-op when the window is closed -- the caller does not check first, the
+/// way `refresh_settings` does not.
+pub fn set_update_state(update: beckon_core::update::UpdateState) {
+    // Written and released here; `apply_about_state` below takes its own
+    // `UI` borrow to read it back, and to reach `hwnd` for the redraw. Two
+    // separate short borrows, never one held across the other.
+    UI.with(|u| {
+        if let Some(ui) = u.borrow_mut().as_mut() {
+            ui.update = update;
+        }
+    });
+    apply_about_state();
+}
+
 /// Push the About page. Third entry point beside `apply_state` and
 /// `apply_system_state`, and it takes no arguments at all.
 ///
-/// **Everything on this page is something only this process can know**, which
-/// is the System page's argument taken all the way: the version is compiled
-/// into this binary, the triple is stamped into it by `build.rs`, the launch
-/// path is `current_exe()`, and both halves of the stale-image verdict are
-/// Win32 calls about this process and this file. There is nothing for `serve`
-/// to pass in, and anything it did pass would be a copy of a fact this crate
-/// can read directly.
+/// **Almost everything on this page is something only this process can
+/// know**, which is the System page's argument taken all the way: the
+/// version is compiled into this binary, the triple is stamped into it by
+/// `build.rs`, the launch path is `current_exe()`, and both halves of the
+/// stale-image verdict are Win32 calls about this process and this file.
+/// There is nothing for `serve` to pass in for any of those, and anything it
+/// did pass would be a copy of a fact this crate can read directly.
 ///
-/// **It is called on every refresh rather than once at open**, because one of
-/// the four strings it writes genuinely moves: the file at the launch path
-/// can be replaced while the window is up, which is the whole subject of the
-/// `Location` row. The other three are fixed for the process's lifetime and
-/// cost a `set_text_if_changed` that finds nothing to change.
+/// **CORRECTED 2026-08-25 (macmini): one field is the exception.** The
+/// update check runs in `serve`, not in this window, so `update` genuinely
+/// cannot be read locally the way the rest of this page is. It arrives
+/// through `set_update_state`'s write into `UI` and this function reads it
+/// back rather than taking it as an argument -- `apply_about_state` staying
+/// nullary is what lets `serve` call it (via `set_update_state`) without a
+/// `ControlState` to build it from, which is the point in the first place.
+///
+/// **It is called on every refresh rather than once at open**, because two
+/// of the things it writes genuinely move: the file at the launch path can
+/// be replaced while the window is up (the `Location` row), and the update
+/// check can finish while the window is up (the row `set_update_state`
+/// drives). Everything else is fixed for the process's lifetime and costs a
+/// `set_text_if_changed` that finds nothing to change.
 pub fn apply_about_state() {
     let Some(hwnd) = UI.with(|u| u.borrow().as_ref().map(|x| x.hwnd)) else {
         return;
