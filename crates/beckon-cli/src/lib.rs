@@ -1002,6 +1002,10 @@ fn cmd_doctor() -> Result<()> {
             "  NIRI_SOCKET                 = {:?}",
             std::env::var("NIRI_SOCKET").ok()
         );
+        println!(
+            "  MANGO_INSTANCE_SIGNATURE   = {:?}",
+            std::env::var("MANGO_INSTANCE_SIGNATURE").ok()
+        );
         println!("  WAYLAND_DISPLAY             = {:?}", wayland);
         println!("  DISPLAY                     = {:?}", display);
         println!();

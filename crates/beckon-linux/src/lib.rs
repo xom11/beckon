@@ -34,6 +34,9 @@ pub mod kde;
 #[cfg(target_os = "linux")]
 pub mod niri;
 
+#[cfg(target_os = "linux")]
+pub mod mango;
+
 /// Which in-compositor collaborator a Wayland session needs.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +82,11 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
     // of truth (nested instances are real, so never derive the path).
     if std::env::var_os("NIRI_SOCKET").is_some() {
         return Ok(Box::new(niri::NiriBackend::new()?));
+    }
+    // mangowm sets MANGO_INSTANCE_SIGNATURE to its IPC socket path in child
+    // envs, the sway pattern; nested instances are real, so never glob.
+    if std::env::var_os("MANGO_INSTANCE_SIGNATURE").is_some() {
+        return Ok(Box::new(mango::MangoBackend::new()?));
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         // Mutter (GNOME) and KWin (KDE) both refuse to let an outside
@@ -154,6 +162,8 @@ pub fn detect_compositor() -> Option<&'static str> {
         Some("Hyprland")
     } else if std::env::var_os("NIRI_SOCKET").is_some() {
         Some("niri")
+    } else if std::env::var_os("MANGO_INSTANCE_SIGNATURE").is_some() {
+        Some("mangowm")
     } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         match wayland_desktop() {
             WaylandDesktop::Gnome => Some("GNOME Wayland (via shell extension)"),
