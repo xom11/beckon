@@ -121,10 +121,11 @@ bind = SUPER, C, exec, beckon "Google Chrome"
 GNOME, KDE, XFCE and friends: add a custom shortcut in Settings pointing at
 `beckon "Google Chrome"`.
 
-Works on sway, i3, Hyprland, niri, GNOME, KDE, XFCE, openbox and any EWMH
-desktop. GNOME on Wayland needs the small extension in
-[`extensions/`](./extensions/); KDE needs nothing. Ready-made configs for each
-are in [`examples/`](./examples/).
+Works on sway, i3, Hyprland, niri, mango, GNOME, KDE, XFCE, openbox and any
+EWMH desktop — plus labwc, river, wayfire and any other wlroots compositor,
+through the `wlr-foreign-toplevel` protocol they all implement. GNOME on
+Wayland needs the small extension in [`extensions/`](./extensions/); KDE needs
+nothing. Ready-made configs for each are in [`examples/`](./examples/).
 
 ## Pick your letters
 

@@ -338,6 +338,117 @@ one JSON line per reply, wrapper `{"Ok":…}` / `{"Err":"…"}`. Measured on nir
 - Windows without an `app_id` are skipped, exactly like i3ipc skips windows
   with neither `app_id` nor `WM_CLASS`.
 
+## wlroots generic (`wlroots.rs`)
+
+The one backend not named after a compositor. Every other module here speaks an
+IPC that exactly one project ships; **labwc ships none** — no socket, no
+`labwcmsg`, nothing to connect to. What it does have is
+`zwlr_foreign_toplevel_manager_v1`, and so do river, wayfire, japokwm, dwl and
+every other wlroots compositor that never grew a control channel of its own.
+One module covers all of them.
+
+Measured on labwc 0.20.2 / wlroots 0.20.2, NixOS, `rog`, 2026-09-07.
+
+- **Dispatch is a capability test, not a name test.** There is no env var to
+  read: labwc sets only `WAYLAND_DISPLAY`, and `XDG_CURRENT_DESKTOP` is
+  `labwc:wlroots`, which no amount of name-matching would have covered for
+  river or wayfire anyway. `WlrootsBackend::new` connects and asks the
+  compositor's registry whether it implements the protocol, so the list of
+  supported compositors is not something this repository has to maintain.
+- **The probe sits in the `Unknown` arm, behind the named GNOME and KDE
+  arms.** Those two have purpose-built collaborators inside their own
+  compositors, and a generic protocol that a full desktop may also happen to
+  implement must not take the session away from the backend built for it. The
+  wlroots probe then runs *before* the GNOME and KWin probes, because it is a
+  local socket roundtrip while those two are D-Bus name lookups that will
+  fail.
+- **`zwlr_…` rather than `ext_foreign_toplevel_list_v1`**, which labwc also
+  advertises (three symbols in the binary against one). The `ext_` protocol
+  only *lists*: it has no `activate`, no `set_minimized`, nothing that can act
+  on a window. It would have covered `beckon list` and no step of the
+  algorithm.
+- **No focus timestamp exists in this protocol.** niri has `focus_timestamp`
+  and Hyprland has `focusHistoryID`; here there is only the `activated` flag
+  on the currently focused window. `recency` is therefore *activated first,
+  then announcement order* — the shape `mango.rs` settles for. Step 5b
+  (toggle-back) leans on `$XDG_RUNTIME_DIR/beckon-mru` for its good answers.
+  Step 5a is unaffected: `algorithm::decide` orders the cycle ring by ADDRESS,
+  never by recency, precisely so a backend without focus history still reaches
+  every window once per lap — verified live below.
+- **Addresses are wayland object ids.** A foreign-toplevel handle is a
+  protocol object, not a number the compositor publishes, so the address is
+  the handle's own object id and the live handles are held for the length of
+  the invocation to map it back. The id is minted by the compositor, ascends
+  in announcement order, and is stable for the object's lifetime. It is **not**
+  stable across connections and does not need to be — beckon reads the list
+  and acts on it inside one connection. What must hold across invocations is
+  the ORDER, and it does: an unchanged set of toplevels is announced in the
+  same order every time. wlroots prepends to its handle list, so a lap runs
+  newest → oldest; the direction differs from sway's tree order, the property
+  `decide` depends on does not.
+- **No `WM_CLASS` instance half.** wlroots reports an XWayland window's
+  `WM_CLASS` *class* as its `app_id` and the pair's other half is not in the
+  protocol. `WindowSnapshot::instance` stays `None` — the value that means
+  "this backend cannot see it" and degrades to the behaviour from before that
+  field existed. Wayland-native PWAs are unaffected.
+- **One roundtrip is provably enough to enumerate**, and the code loops on
+  `done` anyway. The bind and the sync leave in the same write and wayland
+  processes a client's requests in order, so every `toplevel` event the
+  compositor queues in response to the bind is written before the sync
+  callback that answers it.
+- **The commit after acting is a roundtrip, not a flush.** beckon exits
+  immediately, and a client that disconnects is not owed processing of what it
+  left in flight. Same lesson as `x11.rs`'s `ensure_mapped` one layer down —
+  except there the window manager is a second client and the map/activate race
+  is real, while here the compositor is the server and a sync settles it, so
+  `unset_minimized` + `activate` need no sync between their halves.
+- **Step 5c is `set_minimized`, and the return trip is `unset_minimized` then
+  `activate`.** The unminimise is not defensive tidying: step 5c is what parks
+  the window, so the very next press on the same binding is the request that
+  has to bring it back. Measured working on labwc; `activate` alone was not
+  tried and must not be assumed equivalent.
+- **Pure Rust, no new native library.** `wayland-client` is taken *without*
+  its `system` / `dlopen` features, so nothing links `libwayland-client` and
+  `package.nix` needs no new buildInput — the same choice `x11rb` already
+  makes for X11.
+
+### The oracle for this backend is the trap
+
+There is no `swaymsg` or `hyprctl` here, which is the whole reason the backend
+exists — so the live probe borrows a *different* zwlr client as its oracle.
+Picking the wrong one is silent:
+
+**`lswt` 2.0.0 is blind.** It speaks `ext_foreign_toplevel_list_v1`, so its
+`-j` output carries `title`, `app-id` and `identifier` and reports
+`"activated": false, "minimized": false` under `supported-data` for every
+window in every state. Run against a *working* backend it fails five of seven
+checks and each failure reads exactly like beckon not focusing anything.
+
+**`wlrctl` 0.2.2 sees.** It speaks `zwlr_foreign_toplevel_manager_v1`, matches
+`state:active` / `state:minimized`, and can focus and minimize a window itself
+— so it is both the oracle and the thing that sets preconditions without going
+through beckon. Its sight was established by a control first: focus window A
+with `wlrctl`, ask, focus B, ask again, then minimize and ask. All four answers
+tracked.
+
+`testing/wlroots_live_probe.sh` runs the seven checks below inside a **nested
+headless labwc**, so a shared machine's real session is never touched:
+
+| step | check | labwc 0.20.2 |
+|---|---|---|
+| — | the nested session starts with no toplevels | ✅ |
+| 3 | `beckon foot` launches when nothing is running | ✅ |
+| 4 | an unfocused running app is focused | ✅ |
+| 5a | seven presses over three same-app windows visit all three | ✅ |
+| 5b | pressing a focused lone window leaves it for another app | ✅ |
+| 5c | the last window minimizes | ✅ |
+| 5c | the next press un-minimizes and focuses it | ✅ |
+
+**Give the nested compositor an empty `XDG_CONFIG_HOME`.** The first attempt
+did not, so labwc ran the real session's `autostart` and started a *second*
+copy of the user's bar and IME inside the nested instance — and tearing the
+nested session down took the outer session's IME with it.
+
 ## Live backend tests
 
 `testing/linux_live_test.py` drives the real binary against a real compositor

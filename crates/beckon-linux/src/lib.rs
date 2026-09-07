@@ -35,6 +35,9 @@ pub mod kde;
 pub mod niri;
 
 #[cfg(target_os = "linux")]
+pub mod wlroots;
+
+#[cfg(target_os = "linux")]
 pub mod mango;
 
 /// Which in-compositor collaborator a Wayland session needs.
@@ -66,6 +69,21 @@ fn wayland_desktop() -> WaylandDesktop {
         }
     }
     WaylandDesktop::Unknown
+}
+
+/// The raw `XDG_CURRENT_DESKTOP`, quoted, or the word `unset`.
+///
+/// The dispatch error used to say only "unset or unknown", which is two
+/// different situations spelled the same way — and the reader has to go run
+/// `systemctl --user show-environment` to find out which one they are in.
+/// Reported live from a labwc session on `rog` 2026-09-07: the value was
+/// `labwc:wlroots` the whole time, and the message named GNOME and KWin.
+#[cfg(target_os = "linux")]
+fn current_desktop_for_message() -> String {
+    match std::env::var("XDG_CURRENT_DESKTOP") {
+        Ok(v) if !v.trim().is_empty() => format!("`{v}`"),
+        _ => "unset".to_string(),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -100,20 +118,38 @@ pub fn pick_backend() -> Result<Box<dyn Backend>> {
                 gnome::GnomeBackend::new().map(|b| Box::new(b) as Box<dyn Backend>)
             }
             WaylandDesktop::Unknown => {
-                // No desktop hint. Probe both before giving up: the user may
-                // simply have an unset XDG_CURRENT_DESKTOP.
-                gnome::GnomeBackend::new()
+                // No desktop hint, so ask the compositor what it IMPLEMENTS
+                // instead of guessing at what it is called. A wlroots
+                // compositor answers the foreign-toplevel bind, and that one
+                // answer covers labwc, river, wayfire and every other
+                // wlroots session that ships no IPC of its own — none of
+                // which could ever be recognised from an env var, because
+                // none of them sets one.
+                //
+                // The GNOME and KDE arms above stay AHEAD of this probe
+                // deliberately. Each has a purpose-built collaborator inside
+                // its compositor, and a generic protocol that a full desktop
+                // may also happen to implement must not take the session
+                // away from the backend built for it.
+                wlroots::WlrootsBackend::new()
                     .map(|b| Box::new(b) as Box<dyn Backend>)
-                    .or_else(|gnome_err| {
-                        kde::KdeBackend::new()
+                    .or_else(|wlr_err| {
+                        gnome::GnomeBackend::new()
                             .map(|b| Box::new(b) as Box<dyn Backend>)
-                            .map_err(|kde_err| {
-                                BackendError::UnsupportedEnvironment(format!(
-                                    "unrecognised Wayland compositor (XDG_CURRENT_DESKTOP is \
-                                 unset or unknown, and it is not sway, Hyprland or niri). \
+                            .or_else(|gnome_err| {
+                                kde::KdeBackend::new()
+                                    .map(|b| Box::new(b) as Box<dyn Backend>)
+                                    .map_err(|kde_err| {
+                                        BackendError::UnsupportedEnvironment(format!(
+                                            "unrecognised Wayland compositor \
+                                 (XDG_CURRENT_DESKTOP is {}, and this is not sway, \
+                                 Hyprland, niri or mango). \
+                                 wlroots probe: {wlr_err} \
                                  GNOME probe: {gnome_err} \
-                                 KWin probe: {kde_err}"
-                                ))
+                                 KWin probe: {kde_err}",
+                                            current_desktop_for_message()
+                                        ))
+                                    })
                             })
                     })
             }
@@ -149,9 +185,16 @@ pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::Na
     ))
 }
 
-/// Distinguishes which compositor we resolved via env vars. Used by
-/// `beckon doctor` to give the user a precise message even though the IPC
-/// backend is shared.
+/// Distinguishes which compositor we resolved. Used by `beckon doctor` to
+/// give the user a precise message even though the IPC backend is shared.
+///
+/// Every arm but one reads an env var and nothing else. The exception is the
+/// unidentified-Wayland arm, which asks the compositor whether it implements
+/// `zwlr_foreign_toplevel_manager_v1`: **a wlroots session is invisible to
+/// env inspection**, because labwc, river and wayfire export no signature of
+/// their own, so there is no env answer to give. That probe opens a wayland
+/// connection — it is a diagnostic, off the hot path, and `pick_backend`
+/// still runs its own.
 #[cfg(target_os = "linux")]
 pub fn detect_compositor() -> Option<&'static str> {
     if std::env::var_os("SWAYSOCK").is_some() {
@@ -168,7 +211,13 @@ pub fn detect_compositor() -> Option<&'static str> {
         match wayland_desktop() {
             WaylandDesktop::Gnome => Some("GNOME Wayland (via shell extension)"),
             WaylandDesktop::Kde => Some("KDE Wayland (via KWin script)"),
-            WaylandDesktop::Unknown => Some("Wayland (desktop not identified)"),
+            WaylandDesktop::Unknown => {
+                if wlroots::WlrootsBackend::new().is_ok() {
+                    Some("wlroots (via zwlr_foreign_toplevel_manager_v1)")
+                } else {
+                    Some("Wayland (desktop not identified)")
+                }
+            }
         }
     } else if std::env::var_os("DISPLAY").is_some() {
         Some("X11")

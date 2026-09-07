@@ -163,6 +163,8 @@ beckon/
 │   │       ├── i3ipc.rs      # swayipc — handles BOTH sway and i3
 │   │       ├── hyprland.rs   # native Unix-socket IPC
 │   │       ├── niri.rs       # native socket IPC — NIRI_SOCKET, JSON lines
+│   │       ├── mango.rs      # mangowm text IPC — MANGO_INSTANCE_SIGNATURE
+│   │       ├── wlroots.rs    # zwlr_foreign_toplevel — labwc/river/wayfire
 │   │       ├── x11.rs        # x11rb / EWMH — non-i3 X11 DEs
 │   │       ├── gnome.rs      # zbus client → bundled GNOME Shell extension
 │   │       └── kde.rs        # zbus → org.kde.kwin.Scripting
@@ -333,6 +335,7 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
     if env::var("I3SOCK").is_ok()                         { return I3Backend::new(); }
     if env::var("HYPRLAND_INSTANCE_SIGNATURE").is_ok()    { return HyprlandBackend::new(); }
     if env::var("NIRI_SOCKET").is_ok()                    { return NiriBackend::new(); }
+    if env::var("MANGO_INSTANCE_SIGNATURE").is_ok()       { return MangoBackend::new(); }
     if env::var("WAYLAND_DISPLAY").is_ok() {
         // Mutter and KWin both refuse external focus, so each needs a
         // collaborator running INSIDE the compositor. XDG_CURRENT_DESKTOP
@@ -341,7 +344,13 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
         return match wayland_desktop() {
             Kde     => KdeBackend::new(),      // probes org.kde.kwin.Scripting
             Gnome   => GnomeBackend::new(),    // probes the shell extension
-            Unknown => GnomeBackend::new().or_else(|_| KdeBackend::new()),
+            // No name to go on, so ask the compositor what it IMPLEMENTS.
+            // A wlroots session sets no signature of its own -- labwc,
+            // river and wayfire are invisible to env inspection -- so the
+            // bind IS the detection, and it covers all of them at once.
+            Unknown => WlrootsBackend::new()   // binds zwlr_foreign_toplevel
+                .or_else(|_| GnomeBackend::new())
+                .or_else(|_| KdeBackend::new()),
         };
     }
     if env::var("DISPLAY").is_ok()                        { return X11Backend::new(); }
@@ -355,9 +364,21 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 | `I3SOCK` | i3 (X11) — same `I3IpcBackend` (shared protocol) | ✅ |
 | `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland — native socket IPC | ✅ |
 | `NIRI_SOCKET` | niri — native socket IPC (`niri.rs`) | ✅ |
+| `MANGO_INSTANCE_SIGNATURE` | mangowm — text IPC (`mango.rs`) | ✅ |
 | `DISPLAY` (no i3, no Wayland) | X11 generic via `x11rb` / EWMH | ✅ covers GNOME-X11, KDE-X11, openbox, awesome, XFCE |
 | `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=GNOME` | zbus → bundled shell extension | ✅ |
 | `WAYLAND_DISPLAY` + `XDG_CURRENT_DESKTOP=KDE` | zbus → `org.kde.kwin.Scripting` | ✅ |
+| `WAYLAND_DISPLAY`, no desktop named | **the bind is the test** — `zwlr_foreign_toplevel_manager_v1` (`wlroots.rs`) | ✅ covers labwc, river, wayfire, dwl, japokwm |
+
+**The last row is the only one that is not an env lookup, and it cannot
+become one.** labwc exports no signature of its own; neither do river or
+wayfire. There is nothing to read, so the dispatcher asks the compositor what
+it *implements* — which also means the supported-compositor list is not
+something this repository has to maintain. It sits inside the `Unknown` arm,
+**behind** the named GNOME and KDE rows: each of those has a purpose-built
+collaborator inside its own compositor, and a generic protocol that a full
+desktop may also happen to implement must not take the session away from the
+backend built for it.
 
 Per-backend detail: [`docs/notes/linux-backends.md`](docs/notes/linux-backends.md).
 
@@ -436,6 +457,8 @@ disambiguation in a comment.
 | 1b.x11 | Linux / X11 generic via x11rb | ✅ `x11::X11Backend`, EWMH ClientMessages |
 | 1c | Linux / Hyprland | ✅ `hyprland::HyprlandBackend` |
 | 1f | Linux / niri | ✅ `niri::NiriBackend`, native socket IPC |
+| 1g | Linux / mangowm | ✅ `mango::MangoBackend`, text IPC socket |
+| 1h | Linux / wlroots generic | ✅ `wlroots::WlrootsBackend` — labwc, river, wayfire; no IPC exists, so the protocol bind is the detection |
 | 1d | Linux / GNOME Wayland | ✅ `gnome::GnomeBackend` + shell extension |
 | 1e | Linux / KDE Wayland | ✅ `kde::KdeBackend` via KWin scripting |
 | 2 | macOS | ✅ `objc2-app-kit` + AX + CGWindowList |
@@ -483,6 +506,15 @@ the bundled shell extension (install once, then log out and back in — Wayland
 can't reload shell live); KDE via KWin's own scripting engine, with nothing for
 the user to install. Neither compositor exposes a usable Wayland protocol for
 window enumeration.
+
+**wlroots compositors are the opposite case**: labwc, river and wayfire expose
+no IPC at all — no socket, no `labwcmsg` — but they do implement
+`zwlr_foreign_toplevel_manager_v1`, which is enough for the whole algorithm.
+`ext_foreign_toplevel_list_v1`, which the same compositors also advertise, is
+**not**: it lists toplevels and cannot act on one. That distinction is also the
+live-testing trap, because the tool that speaks the `ext_` protocol reports no
+window state at all and makes a working backend look broken —
+[`docs/notes/linux-backends.md`](docs/notes/linux-backends.md).
 
 **Caps Lock as the beckon key** installs a `WH_KEYBOARD_LL` hook on Windows /
 `CGEventTap` on macOS, reversing the "no event tap, no LLHOOK" decision. The
@@ -604,6 +636,12 @@ serde      = "1"      # serde_json for Hyprland JSON IPC payloads
 serde_json = "1"
 x11rb      = "0.13"   # any EWMH-compliant X11 DE
 zbus       = "4"      # session bus client for GNOME extension + KWin scripting
+wayland-client        = "0.31"   # wlroots generic: labwc / river / wayfire.
+wayland-protocols-wlr = "0.3"    #   Default features ONLY -- `system` /
+                                 #   `dlopen` would swap the pure-Rust
+                                 #   protocol backend for a link against
+                                 #   libwayland-client, which package.nix does
+                                 #   not list as a buildInput.
 
 # resident mode (check / serve)
 toml      = "0.8"    # beckon-core: parse the shortcuts file
@@ -833,7 +871,11 @@ Two gate facts worth knowing before CI tells you:
 
 All three phases are done and deployed:
 
-- **Linux** — five backends, all passing the live suite; nix flake + overlay.
+- **Linux** — seven backends, nix flake + overlay. The original five pass
+  `testing/linux_live_test.py`; niri and mangowm ship without an Env there,
+  and wlroots has its own `testing/wlroots_live_probe.sh` (8/8 on labwc
+  0.20.2), which runs in a nested headless compositor and is safe on a
+  machine somebody is using.
 - **macOS** — full focus / launch / cycle / toggle / hide, `serve` with tray and
   four settings doors, Caps tap. Deployed on `airm3` via Hammerspoon.
 - **Windows** — same surface plus `beckon-serve.exe`, Caps hook, autostart.

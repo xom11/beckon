@@ -1003,11 +1003,27 @@ fn cmd_doctor() -> Result<()> {
             std::env::var("NIRI_SOCKET").ok()
         );
         println!(
-            "  MANGO_INSTANCE_SIGNATURE   = {:?}",
+            "  MANGO_INSTANCE_SIGNATURE    = {:?}",
             std::env::var("MANGO_INSTANCE_SIGNATURE").ok()
         );
         println!("  WAYLAND_DISPLAY             = {:?}", wayland);
+        // The dispatcher's Wayland fallback branches on this, and the error
+        // it prints when nothing matches used to say only "unset or
+        // unknown" — so a labwc user reading that error had to go find
+        // `labwc:wlroots` with `systemctl --user show-environment` before
+        // they could tell which half of the sentence applied to them.
+        println!(
+            "  XDG_CURRENT_DESKTOP         = {:?}",
+            std::env::var("XDG_CURRENT_DESKTOP").ok()
+        );
         println!("  DISPLAY                     = {:?}", display);
+        // A wlroots session (labwc, river, wayfire) sets none of the above
+        // beyond WAYLAND_DISPLAY, so the env block alone cannot name it.
+        // This line asks the compositor instead.
+        println!(
+            "  Compositor                  = {}",
+            beckon_linux::detect_compositor().unwrap_or("none detected")
+        );
         println!();
 
         match beckon_linux::pick_backend() {

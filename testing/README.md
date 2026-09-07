@@ -27,6 +27,44 @@ backend, so run it inside the session you want to test:
 knows how to start (`Suite.KILLABLE`, plus `Env.extra_kill`). Run it in a VM
 or a nested compositor, never in your daily desktop.
 
+## `wlroots_live_probe.sh` — the wlroots backend
+
+`linux_live_test.py` needs a compositor it can interrogate, and the whole
+reason `wlroots.rs` exists is that labwc, river and wayfire ship no such tool.
+So the wlroots backend has its own probe, and it is **not** destructive: it
+brings up a *nested headless labwc* and runs everything inside that, so it is
+safe on a machine somebody is using.
+
+```sh
+cargo build
+nix shell nixpkgs#wlrctl -c ./testing/wlroots_live_probe.sh ./target/debug/beckon
+```
+
+**The oracle is the trap, and the script checks it before anything else.**
+There is no `swaymsg` here, so the oracle is a second `wlr-foreign-toplevel`
+client — and the obvious one is blind:
+
+| tool | protocol | sees state? |
+|---|---|---|
+| `lswt` 2.0.0 | `ext_foreign_toplevel_list_v1` | **no** — every window reports `activated: false, minimized: false` in every state |
+| `wlrctl` 0.2.2 | `zwlr_foreign_toplevel_manager_v1` | yes, and it can focus/minimize too, so it sets the preconditions as well |
+
+Run against a *working* backend, `lswt` fails five of seven checks and each
+failure reads exactly like beckon not focusing anything. The script therefore
+opens with a control — focus A, ask, focus B, ask, minimize, ask — and refuses
+to report anything else if the oracle cannot see all three. `--control` runs
+just that part.
+
+Two more things the nested compositor needs, both learned the hard way:
+
+- **Give it an empty `XDG_CONFIG_HOME`.** Otherwise labwc runs the real
+  session's `autostart` inside the nested instance, starting a second copy of
+  the user's bar and IME — and tearing the nested session down took the outer
+  session's IME with it.
+- **Identify your own labwc by that config dir, never by `pgrep labwc`.** On a
+  shared machine that also matches the real session and anyone else's nested
+  instance.
+
 Useful flags: `--multi` / `--other` pick the two apps (one must be able to
 open several windows), `--only <substring>` runs a single test, `-v` echoes
 every `beckon` invocation and its action. Every failure prints the window

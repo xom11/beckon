@@ -15,3 +15,12 @@ serde      = { workspace = true }
 serde_json = { workspace = true }
 x11rb      = { workspace = true }
 zbus       = { workspace = true }
+
+# wlroots foreign-toplevel (src/wlroots.rs). Deliberately WITHOUT the
+# `system` / `dlopen` features: those swap the pure-Rust protocol backend for
+# a link against libwayland-client, which `package.nix` does not list as a
+# buildInput and `x11rb` (the only other display-server dependency) also
+# avoids. Default features keep the whole crate pure Rust, so nix and the
+# release cross-builds need no new native library.
+wayland-client        = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
