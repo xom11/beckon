@@ -242,10 +242,18 @@ wayland_client::delegate_noop!(Toplevels: ignore wl_seat::WlSeat);
 /// The `state` event's argument is a wayland array of `uint`: little-endian,
 /// four bytes each. A trailing partial word (which no compositor should
 /// send) is dropped rather than misread.
+/// `as_chunks` rather than `chunks_exact(4)`: clippy 1.98 rejects a constant
+/// chunk size on a slice (`chunks_exact_to_as_chunks`), and this form hands
+/// `from_ne_bytes` a `[u8; 4]` instead of indexing one out by hand. Stable
+/// since 1.88.0 — which is exactly this workspace's `rust-version` floor, so
+/// it costs nothing there either.
 pub(crate) fn decode_state(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .copied()
+        .map(u32::from_ne_bytes)
         .collect()
 }
 

@@ -866,6 +866,17 @@ Two gate facts worth knowing before CI tells you:
   runs no lints at all, so cross-*checking* the Windows crate from macOS is
   blind to every Windows-only clippy error CI will hit. Raising `rust-version`
   turns lints ON in files a branch never touched.
+- **Pin the gate to CI's toolchain, and check what yours actually is.** CI runs
+  `dtolnay/rust-toolchain@stable`, which is whatever stable is *today*; a
+  local `rustup` that has not been updated in a while is an OLDER compiler with
+  FEWER lints, and a lint it does not know cannot fail. Measured 2026-09-07:
+  the whole six-leg gate passed here on 1.97.1 while CI's 1.98.0 rejected
+  `chunks_exact(4)` under `clippy::chunks_exact_to_as_chunks` — a lint that did
+  not exist locally. `rustc --version` is the one-line check;
+  `rustup toolchain install <ci version>` and `cargo +<ci version> clippy …`
+  is the fix, and it needs `rustup target add … --toolchain <ci version>` for
+  each cross target. This is the same failure shape as the `rust-version`
+  bullet above: the lint set moved, not the code.
 
 ## Picking up next session
 
