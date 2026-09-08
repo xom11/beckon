@@ -146,18 +146,10 @@ impl Backend for WindowsBackend {
     }
 
     fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        let apps = apps::scan_installed_apps();
-        Ok(apps
-            .into_iter()
-            .map(|a| InstalledApp {
-                id: a.aumid.clone().unwrap_or_else(|| a.exe_name.clone()),
-                name: a.name,
-                exec: Some(
-                    a.aumid
-                        .map_or(a.exe_path, |id| format!("AppUserModelID:{}", id)),
-                ),
-            })
-            .collect())
+        // Delegated: the catalog is the Start Menu and AppsFolder, neither of
+        // which needs a window, so it has a backend-free entry point and
+        // `beckon installed` uses that one instead of taking a backend.
+        crate::list_installed()
     }
 }
 

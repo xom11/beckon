@@ -82,16 +82,10 @@ impl Backend for MacBackend {
     }
 
     fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        let mut apps = apps::installed_apps();
-        apps.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(apps
-            .into_iter()
-            .map(|a| InstalledApp {
-                id: a.bundle_id,
-                name: a.name,
-                exec: Some(a.bundle_path.display().to_string()),
-            })
-            .collect())
+        // Delegated: the catalog is bundles on disk and needs no window
+        // server, so it has a backend-free entry point and `beckon installed`
+        // uses that one instead of taking a backend to reach this.
+        crate::list_installed()
     }
 }
 

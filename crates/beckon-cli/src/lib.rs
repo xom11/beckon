@@ -814,11 +814,52 @@ fn name_reports(names: &[&str]) -> Result<Vec<NameReport>> {
     }
 }
 
+/// The installed-app catalog, from whichever backend crate this OS has, **and
+/// deliberately not through `pick_backend`** — the same call `name_reports`
+/// makes, for the same reason.
+///
+/// A catalog is `.desktop` files, `.app` bundles and Start Menu shortcuts:
+/// all on disk, none of them a window. Taking a backend made `beckon
+/// installed` exit 1 with *"no supported display server detected"* over SSH,
+/// in a headless VM and in a container — and `check --resolve`'s own miss
+/// block sends the reader to `beckon installed`, so the hint landed on an
+/// error in exactly the session where somebody is diagnosing a machine they
+/// are not sitting at. Measured on rog 2026-09-08.
+///
+/// This is the second half of a fix made once already: `cmd_resolve_linux`
+/// carries the identical reasoning, dated 2026-08-16, and `installed` and
+/// `search` were the two commands left behind by it.
+fn installed_apps() -> Result<Vec<beckon_core::InstalledApp>> {
+    #[cfg(target_os = "linux")]
+    {
+        beckon_linux::list_installed()
+            .map_err(|e| anyhow!("{e}"))
+            .context("listing installed apps failed")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        beckon_macos::list_installed()
+            .map_err(|e| anyhow!("{e}"))
+            .context("listing installed apps failed")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        beckon_windows::list_installed()
+            .map_err(|e| anyhow!("{e}"))
+            .context("listing installed apps failed")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        Err(anyhow!(
+            "`beckon installed` needs a backend, and this OS is not supported"
+        ))
+    }
+}
+
 fn cmd_list_installed() -> Result<()> {
-    let backend = pick_backend()?;
-    let apps = backend.list_installed().context("list_installed failed")?;
+    let apps = installed_apps()?;
     if apps.is_empty() {
-        println!("(no installed apps reported — backend may not implement list_installed yet)");
+        println!("(no installed apps found)");
         return Ok(());
     }
     println!("{:<40} NAME", "ID");
@@ -890,18 +931,33 @@ pub(crate) fn search_hits<'a>(
 }
 
 fn cmd_search(name: &str) -> Result<()> {
-    let backend = pick_backend()?;
-
-    let running = backend.list_running().unwrap_or_else(|e| {
-        eprintln!("warning: list_running failed: {e}");
-        Vec::new()
-    });
-    let installed = backend.list_installed().unwrap_or_else(|e| {
-        eprintln!("warning: list_installed failed: {e}");
+    // The backend is OPTIONAL, the same call `cmd_resolve_linux` makes: only
+    // the RUNNING half needs a compositor, and answering "no supported
+    // display server" to a question half of which is a disk read is refusing
+    // to do the part that works. Over SSH the installed half is the half a
+    // person is usually after.
+    let backend = pick_backend().ok();
+    let running = match &backend {
+        Some(b) => b.list_running().unwrap_or_else(|e| {
+            eprintln!("warning: list_running failed: {e}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
+    let installed = installed_apps().unwrap_or_else(|e| {
+        eprintln!("warning: {e:#}");
         Vec::new()
     });
 
     let hits = search_hits(&running, &installed, name);
+
+    // Said whether or not there were hits: without it, a search run over SSH
+    // reports "no matches" for an app that is running, and the sentence is
+    // indistinguishable from the app not existing. `None` is "nobody asked
+    // the compositor", never "nothing is running".
+    if backend.is_none() {
+        eprintln!("note: no display server here, so only installed apps were searched");
+    }
 
     if hits.is_empty() {
         println!("no matches for `{name}`");

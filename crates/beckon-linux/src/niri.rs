@@ -363,18 +363,11 @@ impl Backend for NiriBackend {
     }
 
     fn list_installed(&self) -> Result<Vec<InstalledApp>> {
-        // Same contract as every Linux backend: the .desktop filename is the
-        // id, which matches niri's runtime app_id for Wayland apps.
-        let mut entries = crate::desktop::visible(crate::desktop::scan());
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries
-            .into_iter()
-            .map(|e| InstalledApp {
-                id: e.id,
-                name: e.name,
-                exec: Some(e.exec),
-            })
-            .collect())
+        // Delegated: the catalog is `.desktop` files on disk and has nothing
+        // to do with which compositor is running. This was eight identical
+        // copies, one per backend, and `beckon installed` took a backend only
+        // to reach one of them -- which made it fail outright over SSH.
+        crate::list_installed()
     }
 }
 

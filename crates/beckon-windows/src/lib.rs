@@ -115,6 +115,32 @@ pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::Na
     ))
 }
 
+/// The installed-app catalog, **without a backend**, for the same reason
+/// `resolve_reports` takes none: the Start Menu and AppsFolder are read off
+/// the shell, not off a window. `WindowsBackend::list_installed` delegates
+/// here.
+#[cfg(target_os = "windows")]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    Ok(apps::scan_installed_apps()
+        .into_iter()
+        .map(|a| beckon_core::InstalledApp {
+            id: a.aumid.clone().unwrap_or_else(|| a.exe_name.clone()),
+            name: a.name,
+            exec: Some(
+                a.aumid
+                    .map_or(a.exe_path, |id| format!("AppUserModelID:{}", id)),
+            ),
+        })
+        .collect())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-windows only runs on Windows".to_string(),
+    ))
+}
+
 /// `beckon resolve <id>` report on Windows.
 #[cfg(target_os = "windows")]
 pub fn print_resolve_report(id: &str) -> Result<()> {

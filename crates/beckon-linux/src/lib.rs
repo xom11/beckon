@@ -185,6 +185,25 @@ pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::Na
     ))
 }
 
+/// The installed-app catalog, **without a backend**, for the same reason
+/// `resolve_reports` takes none: `.desktop` files are on disk whether or not
+/// a compositor is running, and this answer does not mention windows.
+///
+/// It is also the ONE implementation. Every `Backend::list_installed` in this
+/// crate was a byte-identical copy of it — eight of them, one per compositor,
+/// none of which consulted the compositor. They now delegate here.
+#[cfg(target_os = "linux")]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    Ok(desktop::list_installed())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-linux only compiles on Linux".to_string(),
+    ))
+}
+
 /// Distinguishes which compositor we resolved. Used by `beckon doctor` to
 /// give the user a precise message even though the IPC backend is shared.
 ///

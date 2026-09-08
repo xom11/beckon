@@ -182,6 +182,31 @@ pub fn resolve_reports(_names: &[&str]) -> Result<Vec<beckon_core::certainty::Na
     ))
 }
 
+/// The installed-app catalog, **without a backend**, for the same reason
+/// `resolve_reports` takes none: `.app` bundles and their `Info.plist` are on
+/// disk whether or not there is a window server, and this answer does not
+/// mention windows. `MacBackend::list_installed` delegates here.
+#[cfg(target_os = "macos")]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    let mut apps = apps::installed_apps();
+    apps.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(apps
+        .into_iter()
+        .map(|a| beckon_core::InstalledApp {
+            id: a.bundle_id,
+            name: a.name,
+            exec: Some(a.bundle_path.display().to_string()),
+        })
+        .collect())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn list_installed() -> Result<Vec<beckon_core::InstalledApp>> {
+    Err(BackendError::UnsupportedEnvironment(
+        "beckon-macos only compiles on macOS".to_string(),
+    ))
+}
+
 /// Print a `resolve` resolution report for `id` on stdout. Mirrors the Linux
 /// `cmd_resolve_linux` shape but uses macOS metadata (running apps + installed
 /// .app bundles).

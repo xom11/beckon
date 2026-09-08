@@ -554,6 +554,31 @@ pub fn resolve_reports(names: &[&str]) -> Vec<NameReport> {
     resolve_reports_in(names, &scan())
 }
 
+/// The `beckon installed` catalog: every entry a person could pick out of a
+/// menu, sorted by display name.
+///
+/// `visible()` rather than `scan()`, and the split matters: `NoDisplay=true`
+/// means "keep this out of the menu", so a hidden entry is noise in a
+/// discovery listing while still being a real answer for resolution. This is
+/// the discovery half.
+///
+/// The `.desktop` filename is the id because that is what a compositor
+/// reports as `app_id` for most clients — Brave PWAs included, where
+/// `StartupWMClass` is ignored on Wayland. After running an app once,
+/// `beckon list` is the better source; this is for apps not yet started.
+pub fn list_installed() -> Vec<beckon_core::InstalledApp> {
+    let mut entries = visible(scan());
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
+        .into_iter()
+        .map(|e| beckon_core::InstalledApp {
+            id: e.id,
+            name: e.name,
+            exec: Some(e.exec),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
