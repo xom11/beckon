@@ -340,8 +340,11 @@ between the two is the thing to understand before touching either:
   macOS resolves tiers 1-2 from `NSWorkspace.runningApplications` and tiers
   3-5 from the installed catalog, so *which ladder answers* depends on whether
   the app is up. `Elsewhere` means the two ladders disagree; `Nowhere` means
-  only the running one answers at all (`Finder` is the standing case —
-  `/System/Library/CoreServices` is not a scan root). Linux's
+  only the running one answers at all — a bundle installed where the catalog
+  scan does not walk. **`Finder` used to be the standing case and no longer
+  is**: it was a true warning with no remedy a user could apply, which is how
+  a block stops being read, so the catalog was widened to reach it instead.
+  See "the roots" below. Linux's
   `desktop::resolve_reports_in` takes only `.desktop` entries and Windows'
   `apps::resolve_reports_in` only the Start-menu catalog: neither consults
   running processes, so neither can have a second answer, and both set
@@ -370,6 +373,24 @@ macOS tier 3 takes `min_by(bundle_id)` rather than the first match, because
 which app a keypress launched. The substring tier already sorted by bundle id;
 Linux fixed the same shape by sorting `scan()`. Which bundle wins is still
 arbitrary — that is what `rivals` reports — but it is the same one every run.
+
+**The macOS scan roots, and the one bundle named by hand.** `/Applications`,
+`/System/Applications`, `/System/Library/CoreServices/**Applications**`,
+`~/Applications` — plus `/System/Library/CoreServices/Finder.app` named
+individually in `apps::CORESERVICES_FINDER`. The **parent**
+`/System/Library/CoreServices` is deliberately NOT a root and adding it would
+be a regression: measured on macmini 2026-09-08 it holds 117 `.app` bundles,
+and `LSUIElement`/`LSBackgroundOnly` — the only principled filter, and how
+macOS itself marks a bundle non-user-facing — leaves 25, of which one is
+Finder. One in twenty-five is not a filter, so the exception is named. Its
+curated `Applications` subdirectory is the opposite case: 12 bundles, all
+user-facing, the same shape as `/System/Applications/Utilities`. The cost is
+real and stated: `beckon installed` gained 13 rows and 12 substring
+candidates, and **a control for this must key on bundle id, not on a name** —
+`beckon resolve Installer` now answers *iOS App Installer* by substring, which
+reads exactly like the parent having leaked in and is not.
+[`docs/notes/macos-backend.md`](docs/notes/macos-backend.md) carries the
+reversal of the earlier "widening the scan roots was rejected".
 
 ### Linux backend dispatch
 

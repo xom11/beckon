@@ -221,6 +221,45 @@ worse, would keep reporting it after the real one was fixed. It now builds a
 one-row `Model` and reads `ControlState::items[0].flag` — the literal word the
 window draws.
 
+**NARROWED 2026-09-08: the roots did widen, but not to what was rejected.**
+The sentence above rejected `/System/Library/CoreServices`, and that rejection
+stands — measured on macmini, macOS 26, the directory holds **117** `.app`
+bundles; filtering on `LSUIElement` / `LSBackgroundOnly` (how macOS itself
+marks a bundle as not user-facing) removes 91 and leaves **25**, of which
+exactly one is something anyone launches. One in twenty-five is not a filter.
+
+What the rejection did not consider is that CoreServices has a **curated
+subdirectory**, `/System/Library/CoreServices/Applications`, holding 12
+bundles and no others: About This Mac, Archive Utility, Desk View, Directory
+Utility, DVD Player, Expansion Slot Utility, Feedback Assistant, Folder
+Actions Setup, iOS App Installer, Keychain Access, Ticket Viewer, Wireless
+Diagnostics. Every one is an app a person opens — the same shape as
+`/System/Applications/Utilities`, which was already reached. That is now a
+root, and `Finder.app` is named individually beside it
+(`apps::CORESERVICES_FINDER`).
+
+The half of the old reasoning that still applies is the honest cost: `beckon
+installed` prints **13 more rows**, and the new root adds 12 substring
+candidates. One of them is reachable by a word a person might type — measured,
+`beckon resolve Installer` now answers `iOS App Installer`
+(`com.apple.IPAInstaller`) by substring. It grades `Guess`, so `check
+--resolve` says so, which is the whole reason that tier reports instead of
+failing.
+
+**A name-based control for this is misleading, and the first one written was.**
+`beckon resolve Installer` resolving looks exactly like the CoreServices parent
+having leaked in, and it is not that at all. Check by bundle id
+(`com.apple.installer` must be absent), never by name —
+`finder_is_in_the_installed_catalog` carries it.
+
+What forced the reversal was not neatness. `check --resolve` gained a
+`ColdPath::Nowhere` block, and Finder was the standing case: the warning was
+true, fired on any config binding Finder, and had **no remedy available to the
+user** — binding `com.apple.finder` does not help, because the bundle-id tier
+reads the same catalog. An unactionable warning is how a block stops being
+read. `installed_app_names`' union with the running apps stays as it is; it is
+now belt and braces rather than the only thing holding Finder up.
+
 The tray MENU was never broken. Clicking the icon opens it; `Settings…` works.
 There is no double-click-to-open path on macOS, which is why the window seemed
 unreachable.

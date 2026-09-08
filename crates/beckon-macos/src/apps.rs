@@ -123,6 +123,54 @@ pub fn running_apps() -> Vec<RunningAppInfo> {
     out
 }
 
+/// The one bundle named by hand in this file, and the measurement that says
+/// why its DIRECTORY is not a root instead.
+///
+/// Measured on macmini 2026-09-08 (macOS 26): `/System/Library/CoreServices`
+/// holds **117** `.app` bundles. The only principled filter available —
+/// `LSUIElement` / `LSBackgroundOnly`, which is how macOS itself marks a
+/// bundle as not user-facing — removes 91 and leaves **25**, of which exactly
+/// this one is something a person launches. The other 24 are `rcd.app`,
+/// `PeopleMessageService.app`, `SystemIntents.app`, `FamilyExtensionHost.app`,
+/// `Setup Assistant.app`, `Erase Assistant.app`, `Language Chooser.app` and
+/// the like: catalog noise in `beckon installed`, and a substring candidate
+/// apiece for the tier `Guess` exists to warn about. One in twenty-five is
+/// not a filter, so the exception is named rather than derived.
+///
+/// Finder earns it on three counts at once: it is on every Mac, it is among
+/// the most commonly bound apps, and it is structurally invisible to a
+/// directory-based catalog. Before this, `beckon Finder` could focus Finder
+/// and never launch it, and `check --resolve` reported that as a `Nowhere`
+/// with no remedy available to the user — binding `com.apple.finder` does not
+/// help, because the bundle-id tier reads the same catalog. An unactionable
+/// warning is how a block stops being read.
+const CORESERVICES_FINDER: &str = "/System/Library/CoreServices/Finder.app";
+
+/// The directories walked for installed `.app` bundles, highest precedence
+/// first. Split out of `installed_apps` so the list itself is testable
+/// without a filesystem.
+fn app_roots() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        // Apple's own curated subdirectory of user-facing utilities: Keychain
+        // Access, DVD Player, Wireless Diagnostics, Directory Utility, About
+        // This Mac. Twelve bundles, no subdirectories, every one of them
+        // something a person opens — the same shape as
+        // `/System/Applications/Utilities`, which the one-level descent below
+        // already reaches.
+        //
+        // Its PARENT is deliberately not here; see `CORESERVICES_FINDER`.
+        // Before this root, `beckon resolve "Keychain Access"` was a flat miss
+        // whenever the app was not already running.
+        PathBuf::from("/System/Library/CoreServices/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(&home).join("Applications"));
+    }
+    roots
+}
+
 /// All installed `.app` bundles in the standard search paths.
 ///
 /// We descend at most one level into non-.app subdirectories of each root,
@@ -136,13 +184,7 @@ pub fn running_apps() -> Vec<RunningAppInfo> {
 /// bundles like `Foo.app/Contents/Library/Bar.app` which are not
 /// user-launchable.
 pub fn installed_apps() -> Vec<InstalledAppInfo> {
-    let mut roots: Vec<PathBuf> = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(&home).join("Applications"));
-    }
+    let roots = app_roots();
 
     let mut out: Vec<InstalledAppInfo> = Vec::new();
     let mut seen_bundles = std::collections::HashSet::<String>::new();
@@ -186,6 +228,12 @@ pub fn installed_apps() -> Vec<InstalledAppInfo> {
             }
         }
     }
+
+    // The named exception, LAST so it cannot take anything from a root.
+    // `process` keys its dedup on the bundle id, so a third-party app called
+    // Finder in `/Applications` keeps its own entry and both appear — which
+    // is right: that is an ambiguity, and `rivals` is what reports it.
+    process(Path::new(CORESERVICES_FINDER), &mut out);
     out
 }
 
@@ -1202,8 +1250,81 @@ mod tests {
         assert_eq!(calls.get(), 1);
     }
 
+    // ---------- the catalog's reach ----------
+
+    /// `/System/Library/CoreServices` must NOT become a root. 117 bundles, of
+    /// which one is user-facing; the decision is in `CORESERVICES_FINDER` and
+    /// this is what stops someone "completing" the pair by adding the parent.
+    #[test]
+    fn the_coreservices_parent_is_not_a_root() {
+        let roots = app_roots();
+        assert!(
+            roots.contains(&PathBuf::from("/System/Library/CoreServices/Applications")),
+            "{roots:?}"
+        );
+        assert!(
+            !roots.contains(&PathBuf::from("/System/Library/CoreServices")),
+            "the parent holds 117 bundles, 24 of them noise: {roots:?}"
+        );
+    }
+
+    /// The only hardcoded path in this file, so it gets the only test that can
+    /// fail when Apple moves it — which is the whole risk a named exception
+    /// carries. Runs on every macOS CI leg.
+    #[test]
+    fn the_named_finder_bundle_is_where_we_say_it_is() {
+        let p = Path::new(CORESERVICES_FINDER);
+        assert!(p.is_dir(), "{CORESERVICES_FINDER}");
+        let info = read_bundle_info(p).expect("Finder.app has a readable Info.plist");
+        assert_eq!(info.bundle_id, "com.apple.finder");
+    }
+
+    /// The point of the exception: Finder resolves with nothing running.
+    /// Against the real machine, because a catalog that does not reach the
+    /// filesystem is exactly the thing being fixed.
+    #[test]
+    fn finder_is_in_the_installed_catalog() {
+        let apps = installed_apps();
+        assert!(
+            apps.iter().any(|a| a.bundle_id == "com.apple.finder"),
+            "com.apple.finder missing from a catalog of {}",
+            apps.len()
+        );
+        // The control: the noise next door must stay out. `Installer.app`
+        // sits beside Finder in CoreServices and survives the LSUIElement
+        // filter, so it is what a widened root would have dragged in.
+        //
+        // **By bundle id, not by name** — measured 2026-09-08, and the first
+        // spelling of this control was wrong for it. `beckon resolve
+        // Installer` now RESOLVES: not to the CoreServices bundle but, by
+        // substring, to `iOS App Installer` (`com.apple.IPAInstaller`) in the
+        // curated root this commit added. A name-based control reads as a
+        // leak and is not one. The id is the thing that cannot be confused.
+        assert!(
+            !apps.iter().any(|a| a.bundle_id == "com.apple.installer"),
+            "the CoreServices parent leaked into the catalog"
+        );
+    }
+
+    /// The cost of the curated root, stated rather than discovered later: 12
+    /// bundles is 12 more substring candidates, and one of them takes a word
+    /// a person might plausibly bind. It grades `Guess`, so `check --resolve`
+    /// says so — which is the whole reason that tier reports rather than
+    /// fails. Named here so the trade is on the record next to the root.
+    #[test]
+    fn the_curated_root_adds_substring_candidates_and_they_grade_as_guesses() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![
+            installed("com.apple.IPAInstaller", "iOS App Installer"),
+            installed("com.example.editor", "Editor"),
+        ];
+        let r = &reports_test(&["Installer"], &[], installed)[0];
+        assert_eq!(r.certainty, Certainty::Guess);
+        assert_eq!(r.tier, Some("installed app name substring"));
+    }
+
     /// An empty shortcuts file parses fine and reaches here. The catalog scan
-    /// reads three roots and one Info.plist per bundle; there is nothing to
+    /// reads the roots and one Info.plist per bundle; there is nothing to
     /// spend it on.
     #[test]
     fn an_empty_batch_does_not_scan_the_catalog() {
