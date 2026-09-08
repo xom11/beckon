@@ -97,6 +97,18 @@ Settings.
 macOS will ask for **Accessibility** permission the first time — beckon cannot
 move another app's windows without it.
 
+**Upgrading needs one more line.** `brew upgrade` replaces the binary without
+stopping the service that is running it, so finish with:
+
+```sh
+brew services restart beckon
+```
+
+Until you do, the hotkeys belong to the old build while `beckon --version`
+already reports the new one — two surfaces disagreeing with no error anywhere.
+beckon says so itself: Settings → About, the **Location** row reads *"This file
+changed after beckon started. Restart to run it."*
+
 ### Windows
 
 Open **beckon serve** from the Start Menu. The first run writes a starter
