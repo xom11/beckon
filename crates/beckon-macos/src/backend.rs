@@ -380,9 +380,10 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
 
     // The launch half of the answer. Everything above described the match
     // that WON, and for a running-tier match that is only what the key does
-    // while the app is up. `check --resolve` reports the same divergence per
+    // while the app is up. `check --resolve` reports the same two things per
     // binding and sends the reader here for the detail, so this is where the
     // detail has to be — a hint into silence is worse than no hint.
+    let mut cold_target: Option<String> = None;
     if matches!(
         m.match_type,
         MatchType::RunningName | MatchType::RunningBundleId
@@ -394,6 +395,7 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
                 println!("       {target:<40} ({tier})");
                 println!("   The key focuses one app and launches the other. Bind the bundle id");
                 println!("   to pin which.");
+                cold_target = Some(target);
             }
             Some(ColdPath::Nowhere) => {
                 println!();
@@ -401,6 +403,45 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
                 println!("   Focus works; once it quits, this key will error and launch nothing.");
             }
             None => {}
+        }
+    }
+
+    // The state-independent half, and the reason it is here: once tier 3
+    // picks deterministically, a name with two claimants can produce NO cold
+    // divergence at all — the block above goes quiet while the ambiguity is
+    // still there, which is the `check --resolve` footer's "shows the
+    // candidates" promise broken.
+    //
+    // `subs` is reused rather than re-scanned: a name that equals another
+    // app's name is also a substring of it, so the exact rivals are already
+    // in there. A rival the block above just named is dropped instead of
+    // printed twice.
+    if matches!(
+        m.match_type,
+        MatchType::RunningName | MatchType::InstalledName
+    ) {
+        let needle = apps::normalize(id);
+        let rivals: Vec<&_> = subs
+            .iter()
+            .filter(|e| {
+                apps::normalize(&e.name) == needle
+                    && e.bundle_id != m.bundle_id
+                    && Some(&e.bundle_id) != cold_target.as_ref()
+            })
+            .collect();
+        if !rivals.is_empty() {
+            println!();
+            println!(
+                "⚠️  {} other installed app{} answer{} to this Name:",
+                rivals.len(),
+                if rivals.len() == 1 { "" } else { "s" },
+                if rivals.len() == 1 { "s" } else { "" }
+            );
+            for e in rivals.iter().take(5) {
+                println!("       {:<40} {}", e.bundle_id, e.bundle_path.display());
+            }
+            println!("   Which one this key opens depends on which of them is running.");
+            println!("   Hint: bind a bundle id instead of the Name to pin one.");
         }
     }
 

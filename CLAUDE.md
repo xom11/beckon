@@ -321,33 +321,55 @@ A `Guess` reports **two different hazards** and says which: one candidate means
 a later install can take the name; several means the winner is already decided
 by sort order, not by anything the user wrote.
 
-**A fourth block reports the hazard `Certainty` cannot express: a name with
-two answers.** macOS resolves tiers 1-2 from `NSWorkspace.runningApplications`
-and tiers 3-5 from the installed catalog, so whether the app is up decides
-which ladder answers — and both answers are `Exact`, so no grade is wrong.
-Measured on macmini 2026-09-08: `Hermes` reaches the app
-(`com.nousresearch.hermes`) while it runs and its **installer stub**
-(`com.nousresearch.hermes.setup`, an unrelated bundle sharing the display
-name) once it quits, from an unchanged config. `beckon_core::certainty::ColdPath`
-carries the second answer and splits it in two, because they are different
-hazards: `Elsewhere` (the key focuses one app and launches another) and
-`Nowhere` (nothing installed claims the name, so the key errors once the app
-quits — `Finder` is the standing case, since
-`/System/Library/CoreServices` is not a scan root). Both print and **exit 0**,
-same call as `Guess`. `beckon resolve <ID>` prints the same two warnings, so
-the hint at the foot of each block does not lead into silence.
+**Two further blocks report the hazard `Certainty` cannot express: a Name that
+picks out more than one app.** Every answer involved is `Exact`, so no grade
+is wrong — what is missing is that there is more than one answer. Both print
+and **exit 0**, the same call as `Guess`. Two fields carry them, and the split
+between the two is the thing to understand before touching either:
 
-**This is structurally macOS-only and must not be ported by reading.** Linux's
-`desktop::resolve_reports_in` takes only `.desktop` entries and Windows'
-`apps::resolve_reports_in` only the Start-menu catalog; neither resolver
-consults running processes, so neither has a second answer and both set
-`cold: None` with a comment saying why. Adding a cold pass there would be a
-no-op.
+- **`NameReport::rivals` — cross-OS, and the one that does not go quiet.** For
+  an exact-*name* match it lists the other installed apps answering to that
+  Name, by canonical id (the names are identical, so an id is the only thing
+  that tells them apart and the only thing worth binding). Filled by **all
+  three** backends: a deb beside a snap, a user override beside the system
+  entry, two PWAs, an installer stub beside what it installed. What differs
+  per OS is *what decides the winner*, so the sentence is written per backend
+  — running-state on macOS, `scan()`'s id order on Linux, catalog order on
+  Windows — and copying one to another would be false.
+- **`beckon_core::certainty::ColdPath` — macOS only, and structurally so.**
+  macOS resolves tiers 1-2 from `NSWorkspace.runningApplications` and tiers
+  3-5 from the installed catalog, so *which ladder answers* depends on whether
+  the app is up. `Elsewhere` means the two ladders disagree; `Nowhere` means
+  only the running one answers at all (`Finder` is the standing case —
+  `/System/Library/CoreServices` is not a scan root). Linux's
+  `desktop::resolve_reports_in` takes only `.desktop` entries and Windows'
+  `apps::resolve_reports_in` only the Start-menu catalog: neither consults
+  running processes, so neither can have a second answer, and both set
+  `cold: None` with a comment saying why. **A cold pass there is a no-op —
+  do not "finish the port".**
 
-The cost is one retired optimisation, deliberately: macOS's
-`resolve_reports_in` used to skip the catalog scan when every name matched a
-running app, and a running match is now exactly the case that needs it. The
-hot path (`resolve_inner`) is untouched and still lazy.
+**`rivals` exists because `cold` alone fires at the wrong time.** `cold` is
+set only on a running-tier match, so a check run with nothing running printed
+the installer's id under a green heading and said nothing — silent on exactly
+the state in which the key *launches*. Measured on macmini 2026-09-08:
+`Hermes` is both `com.nousresearch.hermes` (the app) and
+`com.nousresearch.hermes.setup` (a 12 MB installer stub in `/Applications`).
+
+**The blocks are cut by REMEDY, not by mechanism, so no binding is printed
+twice.** `rivals` and `Elsewhere` co-occur on the ordinary macOS row and share
+`ambiguous_report`; both are fixed by binding a canonical id. `Nowhere` has no
+remedy and cannot co-occur — no exact-name match means no same-name rivals
+either. `beckon resolve <ID>` prints all three warnings, so the hint at the
+foot of each block does not lead into silence.
+
+Two costs, both deliberate. macOS's `resolve_reports_in` no longer skips the
+catalog scan when every name matched a running app — that is now the case that
+needs it most; the hot path (`resolve_inner`) is untouched and still lazy. And
+macOS tier 3 takes `min_by(bundle_id)` rather than the first match, because
+`installed_apps()` yields `read_dir` order within each root and that decided
+which app a keypress launched. The substring tier already sorted by bundle id;
+Linux fixed the same shape by sorting `scan()`. Which bundle wins is still
+arbitrary — that is what `rivals` reports — but it is the same one every run.
 
 ### Linux backend dispatch
 
