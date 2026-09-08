@@ -14,8 +14,16 @@
 //!   3. Installed app — display/bundle name exact match (case-insensitive).
 //!   4. Installed app — `CFBundleIdentifier` exact match.
 //!   5. Installed app — name substring (alphabetical-first wins, like rofi).
+//!
+//! **Tiers 1-2 and tiers 3-5 are two ladders, and they can disagree.** Which
+//! one answers is decided by whether the app happens to be running, so the
+//! same config resolves two ways on the same machine. That is correct for
+//! focus-or-launch — focusing the app you can see beats launching a second
+//! copy of it — but it means a name can focus one bundle and launch another.
+//! `cold_path_for` computes the second answer and `check --resolve` reports
+//! it; the order itself is deliberate and stays as it is.
 
-use beckon_core::certainty::{Certainty, NameReport};
+use beckon_core::certainty::{Certainty, ColdPath, NameReport};
 use objc2::rc::Retained;
 use objc2::Message;
 use objc2_app_kit::{NSRunningApplication, NSWorkspace};
@@ -331,19 +339,76 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        // Filled by `resolve_reports_in` for the running tiers only. A match
+        // that already came from the installed catalog IS the cold answer and
+        // has nothing to compare itself against.
+        cold: None,
+    }
+}
+
+/// What the same name resolves to once the running tiers are taken away, for
+/// a report that came from one of them.
+///
+/// **This is the launch half of focus-or-launch.** Tiers 1-2 answer from
+/// `NSWorkspace.runningApplications` and tiers 3-5 from the installed
+/// catalog, and nothing makes the two agree. Two bundles can carry one
+/// `localizedName` — an installer stub beside the app it installed, a dev
+/// build beside the release, an Electron app built from source — and a bundle
+/// can be installed where `installed_apps()` does not walk at all.
+///
+/// The consequence is that resolution depends on process state while the
+/// config does not: validate while the app is up and the answer is one
+/// bundle, press the key on the day it is down and beckon launches the other.
+fn cold_path_for(
+    id: &str,
+    hot: &ResolvedMatch,
+    installed: &[InstalledAppInfo],
+) -> Option<ColdPath> {
+    match resolve_installed_in(id, installed) {
+        None => Some(ColdPath::Nowhere),
+        Some(cold) if cold.bundle_id != hot.bundle_id => Some(ColdPath::Elsewhere {
+            target: cold.bundle_id,
+            tier: cold.match_type.describe(),
+        }),
+        Some(_) => None,
+    }
+}
+
+/// What a divergent name does, spelled for the row that reports it.
+fn cold_consequence(cold: &ColdPath, hot: &ResolvedMatch) -> String {
+    match cold {
+        ColdPath::Elsewhere { target, .. } => format!(
+            "while it runs this focuses {}; when it does not, the same name launches {}",
+            hot.bundle_id, target
+        ),
+        ColdPath::Nowhere => format!(
+            "only the running {} claims this name; once it quits, this key will error \
+             and launch nothing",
+            hot.bundle_id
+        ),
     }
 }
 
 /// One `NameReport` per name, in the order given, against caller-supplied
 /// snapshots. `installed_loader` runs at most once for the whole batch, and
-/// not at all when every name resolves from the running tiers.
+/// not at all for an empty one.
+///
+/// It used to be skipped entirely when every name matched a running app. The
+/// cold pass below retired that: a running match is precisely the case that
+/// now needs the catalog, because it is the only case with a second answer to
+/// look up. The laziness would survive only in a batch where no name matched
+/// running — and that batch loads the catalog for the installed tiers anyway,
+/// one line down. `resolve_inner`, the hot path, is untouched and stays lazy;
+/// `installed_loader_not_invoked_when_running_matches` still pins it.
 pub(crate) fn resolve_reports_in(
     names: &[&str],
     running: &[RunningRef<'_>],
     installed_loader: impl FnOnce() -> Vec<InstalledAppInfo>,
 ) -> Vec<NameReport> {
-    let mut loader = Some(installed_loader);
-    let mut installed: Option<Vec<InstalledAppInfo>> = None;
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let installed = installed_loader();
     let mut out = Vec::with_capacity(names.len());
 
     for id in names {
@@ -351,16 +416,26 @@ pub(crate) fn resolve_reports_in(
         // never the path, and `bundle_path_for` is an NSWorkspace round trip
         // on every running match.
         if let Some(m) = resolve_running_in(id, running, |_| None) {
-            out.push(report_for(id, &m, &[]));
+            let mut r = report_for(id, &m, &[]);
+            if let Some(cold) = cold_path_for(id, &m, &installed) {
+                // Both running tiers are `Exact`, so `report_for` left the
+                // sentence empty and this is the whole of it. Joined rather
+                // than assigned all the same: a running tier that ever grades
+                // below exact would otherwise lose its own sentence here, and
+                // silently, which is the failure this whole feature is about.
+                let sentence = cold_consequence(&cold, &m);
+                r.consequence = if r.consequence.is_empty() {
+                    sentence
+                } else {
+                    format!("{}; {}", r.consequence, sentence)
+                };
+                r.cold = Some(cold);
+            }
+            out.push(r);
             continue;
         }
-        if installed.is_none() {
-            let load = loader.take().expect("loader is taken at most once");
-            installed = Some(load());
-        }
-        let inst = installed.as_deref().expect("loaded on the line above");
-        match resolve_installed_in(id, inst) {
-            Some(m) => out.push(report_for(id, &m, inst)),
+        match resolve_installed_in(id, &installed) {
+            Some(m) => out.push(report_for(id, &m, &installed)),
             None => out.push(NameReport {
                 id: (*id).to_string(),
                 certainty: Certainty::NoMatch,
@@ -368,10 +443,19 @@ pub(crate) fn resolve_reports_in(
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                cold: None,
             }),
         }
     }
     out
+}
+
+/// The cold half of the answer for one already-resolved id, against this
+/// machine. `beckon resolve`'s entry point; `check --resolve` goes through
+/// `resolve_reports_in`, which already holds a catalog and must not scan a
+/// second time.
+pub(crate) fn cold_path(id: &str, hot: &ResolvedMatch) -> Option<ColdPath> {
+    cold_path_for(id, hot, &installed_apps())
 }
 
 /// One `NameReport` per name, against this machine.
@@ -804,13 +888,120 @@ mod tests {
     /// /System/Library/CoreServices, which `installed_apps()` does not walk,
     /// so the running tier is the only thing that finds it — and it is an
     /// exact name match, not a guess.
+    ///
+    /// It is also the `Nowhere` case, and the two halves belong in one test:
+    /// the grade is right *and* incomplete. `beckon installed | grep -ci
+    /// finder` is 0 on this machine, measured 2026-09-08.
     #[test]
     fn a_running_only_app_is_exact_not_a_guess() {
-        use beckon_core::certainty::Certainty;
+        use beckon_core::certainty::{Certainty, ColdPath};
         let running = vec![rref("com.apple.finder", "Finder")];
         let reports = reports_test(&["Finder"], &running, Vec::new());
         assert_eq!(reports[0].certainty, Certainty::Exact);
         assert_eq!(reports[0].tier, Some("running app localizedName (exact)"));
+        assert_eq!(reports[0].cold, Some(ColdPath::Nowhere));
+        assert!(
+            reports[0].consequence.contains("quits"),
+            "consequence was {:?}",
+            reports[0].consequence
+        );
+    }
+
+    // ---------- the cold ladder ----------
+
+    /// Two bundles, one `localizedName`. Measured on macmini 2026-09-08:
+    /// `com.nousresearch.hermes.setup` is a 12 MB installer stub in
+    /// /Applications and `com.nousresearch.hermes` is the app it installed.
+    /// While the app runs, tier 1 answers with the app; once it quits, tier 3
+    /// answers with the installer — from the identical config string.
+    ///
+    /// The installer is listed first here for the same reason it wins on the
+    /// machine: `installed_apps()` walks /Applications before ~/Applications
+    /// and tier 3 takes the first exact name.
+    #[test]
+    fn a_running_match_whose_cold_ladder_lands_elsewhere_is_reported() {
+        use beckon_core::certainty::{Certainty, ColdPath};
+        let running = vec![rref("com.nousresearch.hermes", "Hermes")];
+        let reports = reports_test(
+            &["Hermes"],
+            &running,
+            vec![
+                installed("com.nousresearch.hermes.setup", "Hermes"),
+                installed("com.nousresearch.hermes", "Hermes"),
+            ],
+        );
+        let r = &reports[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.target.as_deref(), Some("com.nousresearch.hermes"));
+        assert_eq!(
+            r.cold,
+            Some(ColdPath::Elsewhere {
+                target: "com.nousresearch.hermes.setup".to_string(),
+                tier: "installed app name (exact)",
+            })
+        );
+        // Both ids, because either one alone leaves the reader guessing which
+        // half of the sentence they are looking at.
+        assert!(
+            r.consequence.contains("com.nousresearch.hermes.setup")
+                && r.consequence.contains("com.nousresearch.hermes;"),
+            "consequence was {:?}",
+            r.consequence
+        );
+    }
+
+    /// The ordinary case, and the one that must stay silent: an app that is
+    /// running and is also the only thing installed under that name. A
+    /// warning here would fire on nearly every binding and stop being read.
+    #[test]
+    fn the_two_ladders_agreeing_reports_nothing() {
+        let running = vec![rref("com.anthropic.claude", "Claude")];
+        let reports = reports_test(
+            &["Claude"],
+            &running,
+            vec![installed("com.anthropic.claude", "Claude")],
+        );
+        assert_eq!(reports[0].cold, None);
+        assert!(reports[0].consequence.is_empty());
+    }
+
+    /// A report that came from the installed tiers IS the cold answer, so
+    /// there is nothing for it to differ from. Without this the same name
+    /// would report a divergence or not depending on whether the app happened
+    /// to be up — the exact defect the field exists to remove.
+    #[test]
+    fn an_installed_match_carries_no_cold_path() {
+        let reports = reports_test(
+            &["Hermes"],
+            &[],
+            vec![
+                installed("com.nousresearch.hermes.setup", "Hermes"),
+                installed("com.nousresearch.hermes", "Hermes"),
+            ],
+        );
+        assert_eq!(reports[0].cold, None);
+    }
+
+    /// `check --resolve` sorts bindings into four baskets and prints each one
+    /// once. Nothing in the types stops a report being both a `Guess` and
+    /// divergent; what stops it is that only the running tiers set `cold` and
+    /// both of them grade `Exact`. This is where that holds.
+    #[test]
+    fn a_cold_divergence_is_always_on_an_exact_report() {
+        use beckon_core::certainty::Certainty;
+        let running = vec![
+            rref("com.nousresearch.hermes", "Hermes"),
+            rref("com.apple.finder", "Finder"),
+        ];
+        let reports = reports_test(
+            &["Hermes", "Finder"],
+            &running,
+            vec![installed("com.nousresearch.hermes.setup", "Hermes")],
+        );
+        for r in &reports {
+            assert!(r.cold.is_some(), "{r:?}");
+            assert_eq!(r.certainty, Certainty::Exact, "{r:?}");
+        }
     }
 
     /// One candidate: the hazard is that a future install can take the name.
@@ -892,5 +1083,39 @@ mod tests {
         });
         assert_eq!(reports.len(), 3);
         assert_eq!(calls.get(), 1);
+    }
+
+    /// The pin that REPLACED "the loader is not invoked when every name
+    /// matches a running app". That laziness was retired on purpose: a
+    /// running match is precisely the case with a second answer to look up,
+    /// so it is the case that needs the catalog most. `resolve_inner` — the
+    /// hot path, a different function — is still lazy, and
+    /// `installed_loader_not_invoked_when_running_matches` still pins it.
+    #[test]
+    fn the_catalog_is_loaded_even_when_every_name_matched_a_running_app() {
+        use std::cell::Cell;
+        let calls = Cell::new(0usize);
+        let running = vec![rref("com.x.kitty", "Kitty")];
+        let reports = resolve_reports_in(&["Kitty"], &running, || {
+            calls.set(calls.get() + 1);
+            Vec::new()
+        });
+        assert_eq!(reports.len(), 1);
+        assert_eq!(calls.get(), 1);
+    }
+
+    /// An empty shortcuts file parses fine and reaches here. The catalog scan
+    /// reads three roots and one Info.plist per bundle; there is nothing to
+    /// spend it on.
+    #[test]
+    fn an_empty_batch_does_not_scan_the_catalog() {
+        use std::cell::Cell;
+        let called = Cell::new(false);
+        let reports = resolve_reports_in(&[], &[], || {
+            called.set(true);
+            Vec::new()
+        });
+        assert!(reports.is_empty());
+        assert!(!called.get(), "an empty batch scanned the catalog");
     }
 }

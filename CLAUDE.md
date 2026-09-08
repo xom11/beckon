@@ -321,6 +321,34 @@ A `Guess` reports **two different hazards** and says which: one candidate means
 a later install can take the name; several means the winner is already decided
 by sort order, not by anything the user wrote.
 
+**A fourth block reports the hazard `Certainty` cannot express: a name with
+two answers.** macOS resolves tiers 1-2 from `NSWorkspace.runningApplications`
+and tiers 3-5 from the installed catalog, so whether the app is up decides
+which ladder answers — and both answers are `Exact`, so no grade is wrong.
+Measured on macmini 2026-09-08: `Hermes` reaches the app
+(`com.nousresearch.hermes`) while it runs and its **installer stub**
+(`com.nousresearch.hermes.setup`, an unrelated bundle sharing the display
+name) once it quits, from an unchanged config. `beckon_core::certainty::ColdPath`
+carries the second answer and splits it in two, because they are different
+hazards: `Elsewhere` (the key focuses one app and launches another) and
+`Nowhere` (nothing installed claims the name, so the key errors once the app
+quits — `Finder` is the standing case, since
+`/System/Library/CoreServices` is not a scan root). Both print and **exit 0**,
+same call as `Guess`. `beckon resolve <ID>` prints the same two warnings, so
+the hint at the foot of each block does not lead into silence.
+
+**This is structurally macOS-only and must not be ported by reading.** Linux's
+`desktop::resolve_reports_in` takes only `.desktop` entries and Windows'
+`apps::resolve_reports_in` only the Start-menu catalog; neither resolver
+consults running processes, so neither has a second answer and both set
+`cold: None` with a comment saying why. Adding a cold pass there would be a
+no-op.
+
+The cost is one retired optimisation, deliberately: macOS's
+`resolve_reports_in` used to skip the catalog scan when every name matched a
+running app, and a running match is now exactly the case that needs it. The
+hot path (`resolve_inner`) is untouched and still lazy.
+
 ### Linux backend dispatch
 
 "Linux" is not one backend — it depends on the compositor/DE currently running.

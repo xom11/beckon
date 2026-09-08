@@ -4,6 +4,7 @@ use crate::apps::{self, MatchType, ResolvedMatch, RunningAppInfo};
 use crate::ffi;
 use crate::state;
 use crate::windows;
+use beckon_core::certainty::ColdPath;
 use beckon_core::{Backend, BackendError, BeckonAction, InstalledApp, Result, RunningApp};
 use objc2_app_kit::NSWorkspace;
 
@@ -375,6 +376,32 @@ pub fn print_resolve_report(id: &str) -> Result<()> {
             println!("       {:<40} ({})", e.name, e.bundle_id);
         }
         println!("   Hint: use the exact Name from `beckon installed` to disambiguate.");
+    }
+
+    // The launch half of the answer. Everything above described the match
+    // that WON, and for a running-tier match that is only what the key does
+    // while the app is up. `check --resolve` reports the same divergence per
+    // binding and sends the reader here for the detail, so this is where the
+    // detail has to be — a hint into silence is worse than no hint.
+    if matches!(
+        m.match_type,
+        MatchType::RunningName | MatchType::RunningBundleId
+    ) {
+        match apps::cold_path(id, &m) {
+            Some(ColdPath::Elsewhere { target, tier }) => {
+                println!();
+                println!("⚠️  Not running, this name resolves somewhere else:");
+                println!("       {target:<40} ({tier})");
+                println!("   The key focuses one app and launches the other. Bind the bundle id");
+                println!("   to pin which.");
+            }
+            Some(ColdPath::Nowhere) => {
+                println!();
+                println!("⚠️  Only the running app claims this name — no installed bundle does.");
+                println!("   Focus works; once it quits, this key will error and launch nothing.");
+            }
+            None => {}
+        }
     }
 
     if !ffi::ax_is_process_trusted() {

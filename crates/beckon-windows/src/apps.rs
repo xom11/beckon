@@ -545,6 +545,13 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        // Always `None` here, and it is a fact about this resolver rather
+        // than a gap: all four tiers read `installed`, which is the Start
+        // Menu / AppsFolder catalog. Whether the app is up cannot change
+        // what a name resolves to — the window-matching layer in
+        // `window_ops` acts on an ALREADY-resolved target — so there is no
+        // second answer to report. See `ColdPath`.
+        cold: None,
     }
 }
 
@@ -565,6 +572,7 @@ pub(crate) fn resolve_reports_in(
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                cold: None,
             },
         })
         .collect()

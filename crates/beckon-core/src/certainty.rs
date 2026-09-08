@@ -14,6 +14,10 @@
 //! `NoMatch` rather than `None`: this enum is matched inside functions that
 //! also match `Option`, and two `None` patterns a line apart is a reading trap
 //! for no gain.
+//!
+//! `ColdPath` is here too and is deliberately **not** a fourth `Certainty`:
+//! it answers a different question — not how sure one resolution is, but
+//! whether there are two of them.
 
 /// How sure a resolution is, in the only three grades that matter to a user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,13 +74,58 @@ pub struct NameReport {
     pub consequence: String,
     /// Other names worth looking at, already truncated by whoever produced it.
     pub suggestions: Vec<String>,
+    /// What the SAME name resolves to with the running apps taken away, when
+    /// that is not what `target` says. `None` is "nothing to report".
+    ///
+    /// **On Linux and Windows that is every report, structurally.**
+    /// `desktop::resolve_reports_in` takes only `.desktop` entries and
+    /// `apps::resolve_reports_in` only the Start-menu catalog: neither
+    /// resolver consults running processes at all, so there is no second
+    /// answer for a cold pass to differ from. Only macOS starts its ladder at
+    /// `NSWorkspace.runningApplications`, and only macOS fills this in.
+    pub cold: Option<ColdPath>,
+}
+
+/// What a name resolves to when its app is NOT running, for the reports whose
+/// answer came from a running app in the first place.
+///
+/// This is the launch half of focus-or-launch, and it is a **separate signal
+/// from `Certainty`, not a fourth grade of it**. Both answers can be `Exact`
+/// — two bundles sharing one display name each match a whole string — so the
+/// enum that grades one resolution has nothing wrong to say. What is missing
+/// is that there are two resolutions.
+///
+/// Measured on macmini 2026-09-08: `com.nousresearch.hermes.setup` (an
+/// installer stub in `/Applications`) and `com.nousresearch.hermes` (the app
+/// it installed) both answer to the name *Hermes*. While the app runs, tier 1
+/// finds it; once it quits, tier 3 finds the installer. Same config, opposite
+/// results, and nothing said so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColdPath {
+    /// A different target answers when the app is not running. The key
+    /// focuses one app and launches another, and which one it does is decided
+    /// by whether the app happens to be up.
+    Elsewhere {
+        /// The cold answer's identity, in the same vocabulary as `target`.
+        target: String,
+        /// The tier that produced it — the backend's own `describe()`.
+        tier: &'static str,
+    },
+    /// Nothing answers when the app is not running: the bundle lives
+    /// somewhere the installed-app scan does not walk. The key works only
+    /// while the app is already up, which is the one state in which the user
+    /// is least likely to press it.
+    Nowhere,
 }
 
 /// Counts of each `Certainty` across a batch of `NameReport`s.
 ///
 /// Built and tested, but nothing prints this today — `check --resolve`
-/// prints the two problem blocks (`unresolved_report`, `guess_report`) and
-/// stops there. `Summary` and `line()` exist for the per-binding `match`
+/// prints its problem blocks (`unresolved_report`, `guess_report`,
+/// `elsewhere_report`, `running_only_report`) and stops there. Only the first
+/// two are keyed on `Certainty` at all; the last two are keyed on `ColdPath`,
+/// which is why this summary would not describe them even if it were printed.
+/// `Summary` and `line()` exist for the per-binding `match`
 /// floor the spec describes as the next step (`match = "exact"` refusing a
 /// file with any `Guess` in it), which needs the count of each grade to
 /// decide anything.
@@ -141,6 +190,7 @@ mod tests {
             tier: None,
             consequence: String::new(),
             suggestions: Vec::new(),
+            cold: None,
         }
     }
 
@@ -171,6 +221,22 @@ mod tests {
     }
 
     // ---------- summary ----------
+
+    /// `cold` is a second signal, not a worse grade. A binding that resolves
+    /// exactly and diverges when the app is not running still counts as
+    /// `exact` — which is what keeps `check --resolve` exiting 0 over it, the
+    /// same call already made for `Guess`. Tally it as anything else and a
+    /// warning becomes a failure, which is how a check stops being run.
+    #[test]
+    fn a_cold_divergence_does_not_change_the_grade() {
+        let mut r = report("Hermes", Certainty::Exact);
+        r.cold = Some(ColdPath::Elsewhere {
+            target: "com.nousresearch.hermes.setup".to_string(),
+            tier: "installed app name (exact)",
+        });
+        let s = summarize(&[r]);
+        assert_eq!((s.exact, s.guess, s.no_match), (1, 0, 0));
+    }
 
     #[test]
     fn summarize_counts_each_variant() {

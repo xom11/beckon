@@ -481,6 +481,12 @@ fn report_for(id: &str, m: &ResolvedMatch, entries: &[DesktopEntry]) -> NameRepo
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        // Always `None` here, and it is a fact about this resolver rather
+        // than a gap: every tier reads `entries`, which is a `.desktop`
+        // scan. No tier consults running windows, so an app's being up
+        // cannot change what a name resolves to and there is no second
+        // answer to report. See `ColdPath`.
+        cold: None,
     }
 }
 
@@ -498,6 +504,7 @@ pub fn resolve_reports_in(names: &[&str], entries: &[DesktopEntry]) -> Vec<NameR
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                cold: None,
             },
         })
         .collect()

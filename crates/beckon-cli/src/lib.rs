@@ -4,7 +4,7 @@
 //! is what lets `serve.rs` have exactly one implementation.
 
 use anyhow::{anyhow, Context, Result};
-use beckon_core::certainty::{Certainty, NameReport};
+use beckon_core::certainty::{Certainty, ColdPath, NameReport};
 use beckon_core::shortcuts::Shortcut;
 use beckon_core::Backend;
 use clap::{CommandFactory, Parser, Subcommand};
@@ -585,11 +585,18 @@ fn check_resolution<'a>(
                 tier: None,
                 consequence: e.clone(),
                 suggestions: Vec::new(),
+                cold: None,
             },
         };
         graded.push((*s, r));
     }
 
+    // Four baskets, and they cannot overlap. `dead` and `guessed` partition by
+    // `certainty`; the two `cold` baskets are only ever set on a report that
+    // came from a running-app tier, and every running tier grades `Exact`. So
+    // a binding appears at most once even though nothing enforces it in the
+    // types. `beckon_macos::apps`'s
+    // `a_cold_divergence_is_always_on_an_exact_report` is what holds it.
     let dead: Vec<(&Shortcut, &NameReport)> = graded
         .iter()
         .filter(|(_, r)| r.certainty == Certainty::NoMatch)
@@ -600,6 +607,16 @@ fn check_resolution<'a>(
         .filter(|(_, r)| r.certainty == Certainty::Guess)
         .map(|(s, r)| (*s, r))
         .collect();
+    let elsewhere: Vec<(&Shortcut, &NameReport)> = graded
+        .iter()
+        .filter(|(_, r)| matches!(r.cold, Some(ColdPath::Elsewhere { .. })))
+        .map(|(s, r)| (*s, r))
+        .collect();
+    let running_only: Vec<(&Shortcut, &NameReport)> = graded
+        .iter()
+        .filter(|(_, r)| matches!(r.cold, Some(ColdPath::Nowhere)))
+        .map(|(s, r)| (*s, r))
+        .collect();
 
     if dead.is_empty() {
         println!("ok: every app name resolves on this machine");
@@ -608,6 +625,12 @@ fn check_resolution<'a>(
     }
     if !guessed.is_empty() {
         print!("{}", guess_report(&guessed));
+    }
+    if !elsewhere.is_empty() {
+        print!("{}", elsewhere_report(&elsewhere));
+    }
+    if !running_only.is_empty() {
+        print!("{}", running_only_report(&running_only));
     }
     if dead.is_empty() {
         return Ok(());
@@ -632,20 +655,7 @@ fn check_resolution<'a>(
 /// of them.
 fn unresolved_report(dead: &[(&Shortcut, &NameReport)]) -> String {
     let mut s = String::from("\nThese shortcuts name an app this machine has no match for:\n");
-    for (b, r) in dead {
-        match r.tier {
-            Some(t) => s.push_str(&format!(
-                "   {:<30} {}  ({})\n",
-                b.combo.canonical(),
-                b.app,
-                t
-            )),
-            None => s.push_str(&format!("   {:<30} {}\n", b.combo.canonical(), b.app)),
-        }
-        if !r.consequence.is_empty() {
-            s.push_str(&format!("   {:<30} {}\n", "", r.consequence));
-        }
-    }
+    s.push_str(&binding_rows(dead));
     s.push_str(
         "\nHint: `beckon resolve <ID>` explains one of them; \
          `beckon installed` lists what is installed.\n",
@@ -653,17 +663,17 @@ fn unresolved_report(dead: &[(&Shortcut, &NameReport)]) -> String {
     s
 }
 
-/// The block for bindings that resolve, but only by substring.
+/// The rows every `check --resolve` block is made of: the chord, the name the
+/// config spells, the tier that answered, then the sentence and any
+/// runners-up. Only the header and the footer differ between the four blocks,
+/// so only those are written out per block.
 ///
-/// Separate from `unresolved_report` because it says something different: not
-/// "this key is dead" but "this key works today for a reason the config does
-/// not state". Each line carries the reason, because the reason is what makes
-/// it actionable — a lone substring match invites a future install to steal
-/// the name, while several candidates means the winner is already decided by
-/// sort order rather than by anything the user wrote.
-fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
-    let mut s = String::from("\nThese shortcuts resolve, but only loosely:\n");
-    for (b, r) in guessed {
+/// The suggestion loop is a no-op for a report that carries none, which is
+/// every `NoMatch` on all three backends — the substring tier is the last
+/// tier, so a miss has nothing to suggest and none of the three invents any.
+fn binding_rows(rows: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s = String::new();
+    for (b, r) in rows {
         match r.tier {
             Some(t) => s.push_str(&format!(
                 "   {:<30} {}  ({})\n",
@@ -680,7 +690,57 @@ fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
             s.push_str(&format!("   {:<30} also matches: {}\n", "", other));
         }
     }
+    s
+}
+
+/// The block for bindings that resolve, but only by substring.
+///
+/// Separate from `unresolved_report` because it says something different: not
+/// "this key is dead" but "this key works today for a reason the config does
+/// not state". Each line carries the reason, because the reason is what makes
+/// it actionable — a lone substring match invites a future install to steal
+/// the name, while several candidates means the winner is already decided by
+/// sort order rather than by anything the user wrote.
+fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s = String::from("\nThese shortcuts resolve, but only loosely:\n");
+    s.push_str(&binding_rows(guessed));
     s.push_str("\nThey do not fail this check. Naming the app exactly makes them exact.\n");
+    s
+}
+
+/// The block for bindings whose answer *changes* with whether the app is
+/// running: focus goes to one app, launch goes to another.
+///
+/// The three blocks above all describe one resolution. This one describes the
+/// absence of a single resolution, which is why it could not be a fourth
+/// `Certainty` — both answers are exact, and the config is not what decides
+/// between them. Reported, never failed: the binding works, and the answer the
+/// user validated is a real answer. It is the *other* one they have not seen.
+fn elsewhere_report(rows: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s =
+        String::from("\nThese shortcuts resolve to a different app once it is not running:\n");
+    s.push_str(&binding_rows(rows));
+    s.push_str(
+        "\nThey do not fail this check. `beckon resolve <ID>` names both; \
+         a canonical OS id in place of the Name pins one.\n",
+    );
+    s
+}
+
+/// The block for bindings only the running-app tiers can answer.
+///
+/// Sibling of `elsewhere_report` and a different hazard: not "the key launches
+/// the wrong app" but "the key cannot launch at all". The bundle is installed
+/// somewhere the catalog scan does not walk — `/System/Library/CoreServices`
+/// is the measured case, and `Finder` lives there — so focus works for exactly
+/// as long as the app stays up.
+fn running_only_report(rows: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s = String::from("\nThese shortcuts resolve only while the app is already running:\n");
+    s.push_str(&binding_rows(rows));
+    s.push_str(
+        "\nThey do not fail this check. Nothing installed claims the name, so the \
+         key errors once the app quits; `beckon installed` lists what can be launched.\n",
+    );
     s
 }
 
@@ -1155,6 +1215,7 @@ mod tests {
                 "because".to_string()
             },
             suggestions: Vec::new(),
+            cold: None,
         }
     }
 
@@ -1368,6 +1429,74 @@ mod tests {
         assert!(out.is_ok());
     }
 
+    // ---------- the two cold blocks ----------
+
+    fn diverged(id: &str, cold: ColdPath) -> NameReport {
+        let mut r = report(id, Certainty::Exact);
+        r.tier = Some("running app localizedName (exact)");
+        r.consequence = "while it runs this focuses A; when it does not, \
+                         the same name launches B"
+            .to_string();
+        r.cold = Some(cold);
+        r
+    }
+
+    /// A binding that resolves two ways is a warning, never a failure. The
+    /// answer the user validated is a real answer — it is the other one they
+    /// have not seen — and failing here would turn a working file red, the
+    /// same call already made for `Guess`.
+    #[test]
+    fn a_binding_that_resolves_two_ways_still_exits_zero() {
+        let s = shortcuts("\"ctrl+alt+h\" = \"Hermes\"\n");
+        let out = check_resolution(&s, |_| {
+            Ok(vec![diverged(
+                "Hermes",
+                ColdPath::Elsewhere {
+                    target: "com.nousresearch.hermes.setup".to_string(),
+                    tier: "installed app name (exact)",
+                },
+            )])
+        });
+        assert!(out.is_ok(), "{out:?}");
+    }
+
+    /// The block has to name the chord and carry the sentence: a reader
+    /// scanning eighteen bindings needs to know WHICH key does this, and what
+    /// it does, without running a second command.
+    #[test]
+    fn the_elsewhere_block_names_the_chord_and_both_answers() {
+        let s = shortcuts("\"ctrl+alt+h\" = \"Hermes\"\n");
+        let r = diverged(
+            "Hermes",
+            ColdPath::Elsewhere {
+                target: "com.nousresearch.hermes.setup".to_string(),
+                tier: "installed app name (exact)",
+            },
+        );
+        let out = elsewhere_report(&[(&s[0], &r)]);
+        assert!(out.contains("ctrl+alt+h"), "{out}");
+        assert!(out.contains("Hermes"), "{out}");
+        assert!(out.contains("launches B"), "{out}");
+        assert!(out.contains("do not fail this check"), "{out}");
+    }
+
+    /// The sibling block says the other thing. Sharing one block for both
+    /// would print "resolves to a different app" over a binding that resolves
+    /// to no app at all.
+    #[test]
+    fn the_running_only_block_says_the_key_cannot_launch() {
+        let s = shortcuts("\"ctrl+alt+f\" = \"Finder\"\n");
+        let mut r = diverged("Finder", ColdPath::Nowhere);
+        r.consequence = "only the running com.apple.finder claims this name".to_string();
+        let out = running_only_report(&[(&s[0], &r)]);
+        assert!(out.contains("ctrl+alt+f"), "{out}");
+        assert!(
+            out.contains("only while the app is already running"),
+            "{out}"
+        );
+        assert!(out.contains("com.apple.finder"), "{out}");
+    }
+
     /// A plain id is unchanged in every respect, which is the case that
     /// covers every binding the user already has.
     #[test]
@@ -1424,6 +1553,7 @@ mod tests {
             tier: None,
             consequence: split,
             suggestions: Vec::new(),
+            cold: None,
         };
         let out = unresolved_report(&[(&s[0], &r)]);
         assert!(out.contains("ctrl+alt+k"), "{out}");
