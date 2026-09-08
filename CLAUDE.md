@@ -317,6 +317,23 @@ Settings*, `DeepSeek` matching *DeepSeek - Into the Unknown*), so failing on
 The scale is why the flag exists at all: measured on `rog`, **14 of 18
 shortcuts did not resolve** while `beckon check` reported `ok: 18 shortcuts`.
 
+**NARROWED 2026-09-08: "`Settings` matching *System Settings*" is a macOS
+sentence, and the same TOML line is flat wrong one machine over.** Measured on
+`rog` (Linux, beckon 0.15.0), `beckon resolve Settings` answers **`NVIDIA X
+Server Settings`** — `nvidia-settings`, the graphics control panel — with
+*Fcitx5 Lotus Settings* as the runner-up. Neither candidate is a system
+settings app. The binding is not "loose but right" there; it opens the wrong
+program, silently, and always has.
+
+That is the real argument for reporting `Guess` rather than failing on it, and
+it is stronger than "the author has two deliberate ones". **One tier, one
+config line, and the verdict flips with the machine**: on the same run `Brave`
+is also a two-candidate `Guess` — *Brave Web Browser* wins on sort order and
+that is still Brave, loose and harmless — while `Settings` two rows away is
+simply the wrong app. Nothing but the printed line distinguishes them, which
+is why the line has to carry the winner's name and the runners-up rather than
+just the word `guess`. Do not "simplify" `guess_report` down to the tier name.
+
 A `Guess` reports **two different hazards** and says which: one candidate means
 a later install can take the name; several means the winner is already decided
 by sort order, not by anything the user wrote.
