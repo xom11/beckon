@@ -299,13 +299,41 @@ const GUESS_LONE: &str = "substring match, so an app installed later can quietly
 /// What a miss means on macOS.
 const MISS_CONSEQUENCE: &str = "no match; this key will error and launch nothing";
 
+/// Bundle ids, other than the winner's, of installed apps whose name IS this
+/// id. Empty for every tier that matched a bundle id, which is unique.
+///
+/// This is the state-independent half of the two-answers problem. `cold`
+/// only fires while the app is running, so on its own it would report the
+/// hazard exactly when the user is least likely to be bitten by it and stay
+/// silent on the day the key launches the wrong thing. The catalog does not
+/// care what is running, and neither does this.
+fn same_name_rivals(id: &str, winner: &str, installed: &[InstalledAppInfo]) -> Vec<String> {
+    let needle = normalize(id);
+    let mut out: Vec<String> = installed
+        .iter()
+        .filter(|a| normalize(&a.name) == needle && a.bundle_id != winner)
+        .map(|a| a.bundle_id.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The report for one already-resolved name.
 ///
-/// `installed` is passed so a guess can name its rivals. It is empty when the
-/// match came from the running tiers, which is correct: those are exact, and
-/// an exact match has no rivals worth printing.
+/// `installed` is passed so a guess can name its rivals — and, since the
+/// exact-name tiers can have rivals too, so can an exact match. The tiers
+/// that match a bundle id cannot: an id identifies one bundle.
 fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> NameReport {
     let certainty = m.match_type.certainty();
+    let rivals = match m.match_type {
+        MatchType::RunningName | MatchType::InstalledName => {
+            same_name_rivals(id, &m.bundle_id, installed)
+        }
+        MatchType::RunningBundleId
+        | MatchType::InstalledBundleId
+        | MatchType::InstalledNameSubstring => Vec::new(),
+    };
     let (consequence, suggestions) = if certainty == Certainty::Guess {
         let needle = normalize(id);
         let mut others: Vec<String> = installed
@@ -329,6 +357,18 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         };
         others.truncate(3);
         (sentence, others)
+    } else if !rivals.is_empty() {
+        // Exact, and still not one app. Which of them the key opens is
+        // decided by whether one is running — tiers 1-2 — and otherwise by
+        // bundle-id order in tier 3. Neither is anything the config says.
+        (
+            format!(
+                "{} installed apps answer to this Name; which one this key opens \
+                 depends on which of them is running",
+                rivals.len() + 1
+            ),
+            Vec::new(),
+        )
     } else {
         (String::new(), Vec::new())
     };
@@ -339,6 +379,7 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        rivals,
         // Filled by `resolve_reports_in` for the running tiers only. A match
         // that already came from the installed catalog IS the cold answer and
         // has nothing to compare itself against.
@@ -416,7 +457,7 @@ pub(crate) fn resolve_reports_in(
         // never the path, and `bundle_path_for` is an NSWorkspace round trip
         // on every running match.
         if let Some(m) = resolve_running_in(id, running, |_| None) {
-            let mut r = report_for(id, &m, &[]);
+            let mut r = report_for(id, &m, &installed);
             if let Some(cold) = cold_path_for(id, &m, &installed) {
                 // Both running tiers are `Exact`, so `report_for` left the
                 // sentence empty and this is the whole of it. Joined rather
@@ -443,6 +484,7 @@ pub(crate) fn resolve_reports_in(
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                rivals: Vec::new(),
                 cold: None,
             }),
         }
@@ -510,7 +552,21 @@ pub(crate) fn resolve_installed_in(
         return None;
     }
 
-    if let Some(app) = installed.iter().find(|a| normalize(&a.name) == needle) {
+    // `min_by_key`, not `find`. Two bundles can carry one display name, and
+    // `installed_apps()` yields them in `read_dir` order within each root —
+    // an order nothing specifies, that changes when a neighbouring bundle is
+    // added or removed, and that decides which app a keypress launches. The
+    // substring tier below already sorts by bundle id for exactly this
+    // reason; this tier was the one that did not. Linux hit the same shape
+    // with `HashMap` iteration order and fixed it by sorting `scan()`.
+    //
+    // Which bundle wins is arbitrary either way — that is what `rivals`
+    // reports. What this buys is that it is the SAME one every time.
+    if let Some(app) = installed
+        .iter()
+        .filter(|a| normalize(&a.name) == needle)
+        .min_by(|a, b| a.bundle_id.cmp(&b.bundle_id))
+    {
         return Some(ResolvedMatch {
             bundle_id: app.bundle_id.clone(),
             display_name: app.name.clone(),
@@ -915,9 +971,10 @@ mod tests {
     /// While the app runs, tier 1 answers with the app; once it quits, tier 3
     /// answers with the installer — from the identical config string.
     ///
-    /// The installer is listed first here for the same reason it wins on the
-    /// machine: `installed_apps()` walks /Applications before ~/Applications
-    /// and tier 3 takes the first exact name.
+    /// The catalog here holds only the installer, which is the situation as
+    /// first reported: the real app lives under ~/.hermes, outside every scan
+    /// root, and became visible to `installed` only once it was symlinked
+    /// into ~/Applications. Running or not, the name answers twice.
     #[test]
     fn a_running_match_whose_cold_ladder_lands_elsewhere_is_reported() {
         use beckon_core::certainty::{Certainty, ColdPath};
@@ -925,10 +982,7 @@ mod tests {
         let reports = reports_test(
             &["Hermes"],
             &running,
-            vec![
-                installed("com.nousresearch.hermes.setup", "Hermes"),
-                installed("com.nousresearch.hermes", "Hermes"),
-            ],
+            vec![installed("com.nousresearch.hermes.setup", "Hermes")],
         );
         let r = &reports[0];
         assert_eq!(r.certainty, Certainty::Exact);
@@ -966,11 +1020,15 @@ mod tests {
     }
 
     /// A report that came from the installed tiers IS the cold answer, so
-    /// there is nothing for it to differ from. Without this the same name
-    /// would report a divergence or not depending on whether the app happened
-    /// to be up — the exact defect the field exists to remove.
+    /// there is nothing for it to differ from — `cold` is correctly `None`.
+    ///
+    /// **And that is exactly why `cold` alone is not enough.** With nothing
+    /// running this is the state a user validates in most often, and it is
+    /// the state in which the key launches something; if the report went
+    /// quiet here, the warning would appear only while the app was up and
+    /// vanish on the day it matters. `rivals` is what does not go quiet.
     #[test]
-    fn an_installed_match_carries_no_cold_path() {
+    fn nothing_running_reports_the_rivals_even_though_cold_is_silent() {
         let reports = reports_test(
             &["Hermes"],
             &[],
@@ -979,7 +1037,47 @@ mod tests {
                 installed("com.nousresearch.hermes", "Hermes"),
             ],
         );
-        assert_eq!(reports[0].cold, None);
+        let r = &reports[0];
+        assert_eq!(r.cold, None);
+        assert_eq!(r.rivals, vec!["com.nousresearch.hermes.setup".to_string()]);
+        assert!(r.consequence.contains('2'), "{:?}", r.consequence);
+    }
+
+    /// Which of two same-named bundles wins tier 3 must not depend on the
+    /// order the catalog happens to list them in — `installed_apps()` yields
+    /// `read_dir` order within each root, which nothing specifies and which
+    /// changes when a neighbouring bundle is added or removed.
+    ///
+    /// The assertion is that the two orders agree, not which one wins: the
+    /// winner is arbitrary and `rivals` is what reports that. Before
+    /// `min_by`, this test failed on the second call.
+    #[test]
+    fn the_exact_name_tier_does_not_depend_on_catalog_order() {
+        let a = installed("com.nousresearch.hermes.setup", "Hermes");
+        let b = installed("com.nousresearch.hermes", "Hermes");
+        let one = resolve_installed_in("Hermes", &[a.clone(), b.clone()]).unwrap();
+        let two = resolve_installed_in("Hermes", &[b, a]).unwrap();
+        assert_eq!(one.bundle_id, two.bundle_id);
+        assert_eq!(one.match_type, MatchType::InstalledName);
+    }
+
+    /// A bundle id names one bundle, so the tiers that match one have no
+    /// rivals to report by construction. Without this the tier check in
+    /// `report_for` could be dropped and every id-matched report would start
+    /// listing every same-named app as a rival of something it did not match
+    /// by name at all.
+    #[test]
+    fn a_bundle_id_match_reports_no_rivals() {
+        let reports = reports_test(
+            &["com.nousresearch.hermes"],
+            &[],
+            vec![
+                installed("com.nousresearch.hermes.setup", "Hermes"),
+                installed("com.nousresearch.hermes", "Hermes"),
+            ],
+        );
+        assert_eq!(reports[0].tier, Some("installed app CFBundleIdentifier"));
+        assert!(reports[0].rivals.is_empty(), "{:?}", reports[0].rivals);
     }
 
     /// `check --resolve` sorts bindings into four baskets and prints each one

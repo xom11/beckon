@@ -74,6 +74,22 @@ pub struct NameReport {
     pub consequence: String,
     /// Other names worth looking at, already truncated by whoever produced it.
     pub suggestions: Vec<String>,
+    /// Canonical ids of the OTHER installed apps that answer to this same
+    /// exact Name — bundle ids, `.desktop` ids, AUMIDs. Empty unless the
+    /// match was an exact-*name* one with company; a canonical id is unique
+    /// by construction, so the tiers that match one can never have rivals.
+    ///
+    /// Ids rather than names, and that is the whole point: the rivals share
+    /// the name, so printing names would print the same string twice. The id
+    /// is both what distinguishes them and what the user binds to pick one.
+    ///
+    /// Unlike `cold`, this is filled on **all three** backends. Two entries
+    /// sharing a display name is not a macOS quirk — a deb and a snap of one
+    /// app, a user override beside a system one, two PWAs, an installer stub
+    /// beside what it installed. What differs per OS is what decides the
+    /// winner, which is why the sentence in `consequence` is written per
+    /// backend and not shared.
+    pub rivals: Vec<String>,
     /// What the SAME name resolves to with the running apps taken away, when
     /// that is not what `target` says. `None` is "nothing to report".
     ///
@@ -190,6 +206,7 @@ mod tests {
             tier: None,
             consequence: String::new(),
             suggestions: Vec::new(),
+            rivals: Vec::new(),
             cold: None,
         }
     }
@@ -222,18 +239,19 @@ mod tests {
 
     // ---------- summary ----------
 
-    /// `cold` is a second signal, not a worse grade. A binding that resolves
-    /// exactly and diverges when the app is not running still counts as
-    /// `exact` — which is what keeps `check --resolve` exiting 0 over it, the
-    /// same call already made for `Guess`. Tally it as anything else and a
-    /// warning becomes a failure, which is how a check stops being run.
+    /// `cold` and `rivals` are second signals, not worse grades. A binding
+    /// that resolves exactly and answers two ways still counts as `exact` —
+    /// which is what keeps `check --resolve` exiting 0 over it, the same call
+    /// already made for `Guess`. Tally either as anything else and a warning
+    /// becomes a failure, which is how a check stops being run.
     #[test]
-    fn a_cold_divergence_does_not_change_the_grade() {
+    fn a_second_signal_does_not_change_the_grade() {
         let mut r = report("Hermes", Certainty::Exact);
         r.cold = Some(ColdPath::Elsewhere {
             target: "com.nousresearch.hermes.setup".to_string(),
             tier: "installed app name (exact)",
         });
+        r.rivals = vec!["com.nousresearch.hermes.setup".to_string()];
         let s = summarize(&[r]);
         assert_eq!((s.exact, s.guess, s.no_match), (1, 0, 0));
     }

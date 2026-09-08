@@ -585,18 +585,26 @@ fn check_resolution<'a>(
                 tier: None,
                 consequence: e.clone(),
                 suggestions: Vec::new(),
+                rivals: Vec::new(),
                 cold: None,
             },
         };
         graded.push((*s, r));
     }
 
-    // Four baskets, and they cannot overlap. `dead` and `guessed` partition by
-    // `certainty`; the two `cold` baskets are only ever set on a report that
-    // came from a running-app tier, and every running tier grades `Exact`. So
-    // a binding appears at most once even though nothing enforces it in the
-    // types. `beckon_macos::apps`'s
-    // `a_cold_divergence_is_always_on_an_exact_report` is what holds it.
+    // Four baskets, one row each, and no binding may land in two — a report
+    // printed twice reads as two problems. `dead` and `guessed` partition by
+    // `certainty`, so those two are disjoint by construction.
+    //
+    // `ambiguous` and `running_only` are the ones that had to be CUT to be
+    // disjoint, and the cut is by remedy rather than by mechanism. Both of
+    // `rivals` and `ColdPath::Elsewhere` mean "more than one app answers to
+    // this name" and both are fixed by binding a canonical id, so they share
+    // a basket even though one is a catalog fact and the other a process-state
+    // fact. `ColdPath::Nowhere` has no remedy at all — nothing installed
+    // claims the name — and cannot co-occur with the other two: if no
+    // installed app matched the name exactly, there are no same-name rivals
+    // to find either. `no_binding_is_reported_in_two_baskets` pins it.
     let dead: Vec<(&Shortcut, &NameReport)> = graded
         .iter()
         .filter(|(_, r)| r.certainty == Certainty::NoMatch)
@@ -607,9 +615,9 @@ fn check_resolution<'a>(
         .filter(|(_, r)| r.certainty == Certainty::Guess)
         .map(|(s, r)| (*s, r))
         .collect();
-    let elsewhere: Vec<(&Shortcut, &NameReport)> = graded
+    let ambiguous: Vec<(&Shortcut, &NameReport)> = graded
         .iter()
-        .filter(|(_, r)| matches!(r.cold, Some(ColdPath::Elsewhere { .. })))
+        .filter(|(_, r)| !r.rivals.is_empty() || matches!(r.cold, Some(ColdPath::Elsewhere { .. })))
         .map(|(s, r)| (*s, r))
         .collect();
     let running_only: Vec<(&Shortcut, &NameReport)> = graded
@@ -626,8 +634,8 @@ fn check_resolution<'a>(
     if !guessed.is_empty() {
         print!("{}", guess_report(&guessed));
     }
-    if !elsewhere.is_empty() {
-        print!("{}", elsewhere_report(&elsewhere));
+    if !ambiguous.is_empty() {
+        print!("{}", ambiguous_report(&ambiguous));
     }
     if !running_only.is_empty() {
         print!("{}", running_only_report(&running_only));
@@ -689,6 +697,16 @@ fn binding_rows(rows: &[(&Shortcut, &NameReport)]) -> String {
         for other in &r.suggestions {
             s.push_str(&format!("   {:<30} also matches: {}\n", "", other));
         }
+        // Ids, where `suggestions` prints names — and the difference is the
+        // point. A rival shares the Name exactly, so printing its name would
+        // print the same string twice; its id is both what tells the two
+        // apart and what the user binds to choose between them.
+        for other in &r.rivals {
+            s.push_str(&format!(
+                "   {:<30} also answers to this Name: {}\n",
+                "", other
+            ));
+        }
     }
     s
 }
@@ -708,21 +726,27 @@ fn guess_report(guessed: &[(&Shortcut, &NameReport)]) -> String {
     s
 }
 
-/// The block for bindings whose answer *changes* with whether the app is
-/// running: focus goes to one app, launch goes to another.
+/// The block for bindings whose name picks out more than one app.
 ///
-/// The three blocks above all describe one resolution. This one describes the
+/// The two blocks above each describe one resolution. This one describes the
 /// absence of a single resolution, which is why it could not be a fourth
-/// `Certainty` — both answers are exact, and the config is not what decides
-/// between them. Reported, never failed: the binding works, and the answer the
-/// user validated is a real answer. It is the *other* one they have not seen.
-fn elsewhere_report(rows: &[(&Shortcut, &NameReport)]) -> String {
-    let mut s =
-        String::from("\nThese shortcuts resolve to a different app once it is not running:\n");
+/// `Certainty` — every answer here is exact, and the config is not what
+/// decides between them. Reported, never failed: the binding works, and the
+/// answer the user validated is a real answer. It is the *others* they have
+/// not seen.
+///
+/// Two things land here and the row's own sentence says which. `rivals` is a
+/// catalog fact — several installed apps carry this Name — and holds whether
+/// or not anything is running, which is what makes the block trustworthy: a
+/// warning that only appeared while the app was up would go quiet on exactly
+/// the day the key launches the wrong thing. `ColdPath::Elsewhere` is the
+/// process-state fact on top of it, and macOS is the only backend with one.
+fn ambiguous_report(rows: &[(&Shortcut, &NameReport)]) -> String {
+    let mut s = String::from("\nThese shortcuts name more than one app on this machine:\n");
     s.push_str(&binding_rows(rows));
     s.push_str(
-        "\nThey do not fail this check. `beckon resolve <ID>` names both; \
-         a canonical OS id in place of the Name pins one.\n",
+        "\nThey do not fail this check. `beckon resolve <ID>` shows the candidates; \
+         a canonical OS id in place of the Name picks one for good.\n",
     );
     s
 }
@@ -1215,6 +1239,7 @@ mod tests {
                 "because".to_string()
             },
             suggestions: Vec::new(),
+            rivals: Vec::new(),
             cold: None,
         }
     }
@@ -1429,7 +1454,7 @@ mod tests {
         assert!(out.is_ok());
     }
 
-    // ---------- the two cold blocks ----------
+    // ---------- the two second-signal blocks ----------
 
     fn diverged(id: &str, cold: ColdPath) -> NameReport {
         let mut r = report(id, Certainty::Exact);
@@ -1464,7 +1489,7 @@ mod tests {
     /// scanning eighteen bindings needs to know WHICH key does this, and what
     /// it does, without running a second command.
     #[test]
-    fn the_elsewhere_block_names_the_chord_and_both_answers() {
+    fn the_ambiguous_block_names_the_chord_and_both_answers() {
         let s = shortcuts("\"ctrl+alt+h\" = \"Hermes\"\n");
         let r = diverged(
             "Hermes",
@@ -1473,11 +1498,48 @@ mod tests {
                 tier: "installed app name (exact)",
             },
         );
-        let out = elsewhere_report(&[(&s[0], &r)]);
+        let out = ambiguous_report(&[(&s[0], &r)]);
         assert!(out.contains("ctrl+alt+h"), "{out}");
         assert!(out.contains("Hermes"), "{out}");
         assert!(out.contains("launches B"), "{out}");
         assert!(out.contains("do not fail this check"), "{out}");
+    }
+
+    /// The rivals half of the same block, which is the half that holds when
+    /// nothing is running. Ids, not names — the rival's name is the string
+    /// already in the first column, so printing it again would say nothing.
+    #[test]
+    fn the_ambiguous_block_lists_rivals_by_id() {
+        let s = shortcuts("\"ctrl+alt+h\" = \"Hermes\"\n");
+        let mut r = report("Hermes", Certainty::Exact);
+        r.tier = Some("installed app name (exact)");
+        r.consequence = "2 installed apps answer to this Name".to_string();
+        r.rivals = vec!["com.nousresearch.hermes.setup".to_string()];
+        let out = ambiguous_report(&[(&s[0], &r)]);
+        assert!(out.contains("ctrl+alt+h"), "{out}");
+        assert!(
+            out.contains("also answers to this Name: com.nousresearch.hermes.setup"),
+            "{out}"
+        );
+    }
+
+    /// A binding printed twice reads as two problems. `rivals` and
+    /// `ColdPath::Elsewhere` are both true of the same row whenever a
+    /// same-named rival is also the cold answer — the ordinary shape of this
+    /// on macOS — so they had to share a basket rather than get one each.
+    #[test]
+    fn no_binding_is_reported_in_two_baskets() {
+        let s = shortcuts("\"ctrl+alt+h\" = \"Hermes\"\n");
+        let mut r = diverged(
+            "Hermes",
+            ColdPath::Elsewhere {
+                target: "com.nousresearch.hermes.setup".to_string(),
+                tier: "installed app name (exact)",
+            },
+        );
+        r.rivals = vec!["com.nousresearch.hermes.setup".to_string()];
+        let out = ambiguous_report(&[(&s[0], &r)]);
+        assert_eq!(out.matches("ctrl+alt+h").count(), 1, "{out}");
     }
 
     /// The sibling block says the other thing. Sharing one block for both
@@ -1553,6 +1615,7 @@ mod tests {
             tier: None,
             consequence: split,
             suggestions: Vec::new(),
+            rivals: Vec::new(),
             cold: None,
         };
         let out = unresolved_report(&[(&s[0], &r)]);

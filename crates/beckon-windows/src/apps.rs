@@ -506,8 +506,49 @@ const GUESS_LONE: &str = "substring match, so an app installed later can quietly
 const MISS_CONSEQUENCE: &str =
     "no installed app; focus may still match by exe or window title, launch will fail";
 
+/// What activation actually uses for one app: the AUMID for a packaged app,
+/// the exe path for a classic shortcut. The same projection `report_for` makes
+/// for `target`, so a rival is named in the same vocabulary as the winner.
+fn canonical_id(a: &InstalledAppInfo) -> String {
+    match &a.aumid {
+        Some(aumid) => aumid.clone(),
+        None => a.exe_path.clone(),
+    }
+}
+
+/// Canonical ids, other than the winner's, of installed apps whose display
+/// name IS this id. Empty for every tier that matched an AUMID or an exe,
+/// both of which identify one app.
+///
+/// Two Start Menu entries can carry one display name — a per-user install
+/// beside a machine-wide one is the ordinary way it happens. Which of them
+/// answers is decided inside the catalog, and nothing said so.
+fn same_name_rivals(id: &str, winner: &str, installed: &[InstalledAppInfo]) -> Vec<String> {
+    let needle = normalize(id);
+    let mut out: Vec<String> = installed
+        .iter()
+        .filter(|a| normalize(&a.name) == needle && canonical_id(a) != winner)
+        .map(canonical_id)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> NameReport {
     let certainty = m.match_type.certainty();
+    // An AUMID is what activation actually uses for a packaged app; for a
+    // classic shortcut the exe path is the honest answer.
+    let target = match &m.aumid {
+        Some(aumid) => aumid.clone(),
+        None => m.exe_path.clone(),
+    };
+    let rivals = match m.match_type {
+        MatchType::InstalledName => same_name_rivals(id, &target, installed),
+        MatchType::InstalledAumid
+        | MatchType::InstalledExeStem
+        | MatchType::InstalledNameSubstring => Vec::new(),
+    };
     let (consequence, suggestions) = if certainty == Certainty::Guess {
         let needle = normalize(id);
         let mut others: Vec<String> = installed
@@ -529,14 +570,24 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         };
         others.truncate(3);
         (sentence, others)
+    } else if !rivals.is_empty() {
+        // Exact, and still not one app. Deliberately NOT the macOS sentence:
+        // no tier here consults running processes, so which one answers is
+        // settled inside the catalog before a keypress happens. Deliberately
+        // not the Linux sentence either — this crate has two resolvers with
+        // two different tie rules (`resolve` takes the first match,
+        // `resolve_lazy` prefers the Start Menu shortcut), so naming one of
+        // them here would be wrong half the time.
+        (
+            format!(
+                "{} installed apps share this display name; which one this key opens \
+                 is decided by catalog order, not by the config",
+                rivals.len() + 1
+            ),
+            Vec::new(),
+        )
     } else {
         (String::new(), Vec::new())
-    };
-    // An AUMID is what activation actually uses for a packaged app; for a
-    // classic shortcut the exe path is the honest answer.
-    let target = match &m.aumid {
-        Some(aumid) => aumid.clone(),
-        None => m.exe_path.clone(),
     };
     NameReport {
         id: id.to_string(),
@@ -545,6 +596,7 @@ fn report_for(id: &str, m: &ResolvedMatch, installed: &[InstalledAppInfo]) -> Na
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        rivals,
         // Always `None` here, and it is a fact about this resolver rather
         // than a gap: all four tiers read `installed`, which is the Start
         // Menu / AppsFolder catalog. Whether the app is up cannot change
@@ -572,6 +624,7 @@ pub(crate) fn resolve_reports_in(
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                rivals: Vec::new(),
                 cold: None,
             },
         })
@@ -727,6 +780,52 @@ mod tests {
     #[test]
     fn resolve_empty_installed_returns_none() {
         assert!(resolve("anything", &[]).is_none());
+    }
+
+    /// Two Start Menu entries under one display name — a per-user install
+    /// beside a machine-wide one is the ordinary way it happens. `Exact`, so
+    /// it neither fails the check nor joins the `Guess` block; the report is
+    /// that the Name does not pick one app.
+    ///
+    /// Rivals are canonical ids (the AUMID, or the exe path for a classic
+    /// shortcut) because the display names are identical by construction.
+    #[test]
+    fn two_apps_sharing_a_display_name_report_each_other() {
+        use beckon_core::certainty::Certainty;
+        let installed = vec![
+            app("Slack", "slack.exe"),
+            appx("Slack", "SlackTechnologies.Slack_x!App", "slack.exe"),
+        ];
+        let r = &resolve_reports_in(&["Slack"], &installed)[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.tier, Some("Start Menu/app display name (exact)"));
+        assert_eq!(r.rivals, vec!["SlackTechnologies.Slack_x!App".to_string()]);
+        assert!(r.consequence.contains('2'), "{:?}", r.consequence);
+        // The macOS sentence would be wrong here: no tier in this crate
+        // consults running processes, so process state decides nothing.
+        assert!(!r.consequence.contains("running"), "{:?}", r.consequence);
+    }
+
+    /// The ordinary case stays silent.
+    #[test]
+    fn a_display_name_only_one_app_claims_reports_no_rivals() {
+        let installed = vec![app("Brave", "brave.exe"), app("Notepad", "notepad.exe")];
+        let r = &resolve_reports_in(&["Brave"], &installed)[0];
+        assert!(r.rivals.is_empty(), "{:?}", r.rivals);
+        assert!(r.consequence.is_empty(), "{:?}", r.consequence);
+    }
+
+    /// An AUMID names one app, so the tiers that match one cannot have
+    /// rivals.
+    #[test]
+    fn an_aumid_match_reports_no_rivals() {
+        let installed = vec![
+            app("Slack", "slack.exe"),
+            appx("Slack", "SlackTechnologies.Slack_x!App", "slack.exe"),
+        ];
+        let r = &resolve_reports_in(&["SlackTechnologies.Slack_x!App"], &installed)[0];
+        assert_eq!(r.tier, Some("AppUserModelID"));
+        assert!(r.rivals.is_empty(), "{:?}", r.rivals);
     }
 
     #[test]

@@ -442,8 +442,31 @@ const GUESS_LONE: &str = "substring match, so an app installed later can quietly
 const MISS_CONSEQUENCE: &str =
     "no .desktop entry; focus still works if a window's class equals this id, launch will fail";
 
+/// `.desktop` ids, other than the winner's, of entries whose `Name=` IS this
+/// id. Empty for every tier that matched an id or a WM class, both unique.
+///
+/// The scenario CLAUDE.md already names: a deb beside a snap, a user override
+/// beside the system entry, two PWAs with one display name. `scan()` sorts,
+/// so the winner is stable — but stable is not the same as stated, and
+/// nothing told the user there was a second entry at all.
+fn same_name_rivals(id: &str, winner: &str, entries: &[DesktopEntry]) -> Vec<String> {
+    let needle = normalize(id);
+    let mut out: Vec<String> = entries
+        .iter()
+        .filter(|e| normalize(&e.name) == needle && e.id != winner)
+        .map(|e| e.id.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn report_for(id: &str, m: &ResolvedMatch, entries: &[DesktopEntry]) -> NameReport {
     let certainty = m.match_type.certainty();
+    let rivals = match m.match_type {
+        MatchType::NameExact => same_name_rivals(id, &m.entry.id, entries),
+        MatchType::Filename | MatchType::StartupWmClass | MatchType::NameSubstring => Vec::new(),
+    };
     let (consequence, suggestions) = if certainty == Certainty::Guess {
         let needle = normalize(id);
         // Deliberately not `name_substring_matches`: that one calls `scan()`
@@ -471,6 +494,20 @@ fn report_for(id: &str, m: &ResolvedMatch, entries: &[DesktopEntry]) -> NameRepo
         };
         others.truncate(3);
         (sentence, others)
+    } else if !rivals.is_empty() {
+        // Exact, and still not one entry. `scan()` sorts by id, so the winner
+        // is decided by id order and nothing else — deterministic, and
+        // deterministically not what the config asked for if the user meant
+        // the other one. Deliberately NOT the macOS sentence: there is no
+        // running-app tier here, so process state has nothing to do with it.
+        (
+            format!(
+                "{} .desktop entries share this Name=; \"{}\" wins on id order alone",
+                rivals.len() + 1,
+                m.entry.id
+            ),
+            Vec::new(),
+        )
     } else {
         (String::new(), Vec::new())
     };
@@ -481,6 +518,7 @@ fn report_for(id: &str, m: &ResolvedMatch, entries: &[DesktopEntry]) -> NameRepo
         tier: Some(m.match_type.describe()),
         consequence,
         suggestions,
+        rivals,
         // Always `None` here, and it is a fact about this resolver rather
         // than a gap: every tier reads `entries`, which is a `.desktop`
         // scan. No tier consults running windows, so an app's being up
@@ -504,6 +542,7 @@ pub fn resolve_reports_in(names: &[&str], entries: &[DesktopEntry]) -> Vec<NameR
                 tier: None,
                 consequence: MISS_CONSEQUENCE.to_string(),
                 suggestions: Vec::new(),
+                rivals: Vec::new(),
                 cold: None,
             },
         })
@@ -1076,6 +1115,57 @@ mod tests {
         assert_eq!(r.tier, Some("Name= substring (alphabetical first wins)"));
         assert!(r.consequence.contains('2'), "{:?}", r.consequence);
         assert_eq!(r.suggestions, vec!["Brave Web Browser Beta".to_string()]);
+    }
+
+    /// The scenario CLAUDE.md already names — a deb beside a snap, a user
+    /// override beside the system entry, two PWAs sharing a display name.
+    /// `scan()` sorts, so `firefox` beats `firefox_firefox` every time; what
+    /// was missing is that the user was never told there were two.
+    ///
+    /// `Exact`, so it does not fail the check and does not join the `Guess`
+    /// block. Rivals are `.desktop` ids because the names are identical by
+    /// construction — printing the name twice would say nothing.
+    #[test]
+    fn two_entries_sharing_a_name_report_each_other() {
+        use beckon_core::certainty::Certainty;
+        let entries = vec![
+            entry("firefox", "Firefox"),
+            entry("firefox_firefox", "Firefox"),
+        ];
+        let r = &resolve_reports_in(&["Firefox"], &entries)[0];
+        assert_eq!(r.certainty, Certainty::Exact);
+        assert_eq!(r.tier, Some("Name= exact (case-insensitive)"));
+        assert_eq!(r.target.as_deref(), Some("firefox"));
+        assert_eq!(r.rivals, vec!["firefox_firefox".to_string()]);
+        assert!(r.consequence.contains('2'), "{:?}", r.consequence);
+        // The macOS sentence would be wrong here: no tier on Linux consults
+        // running windows, so process state decides nothing.
+        assert!(!r.consequence.contains("running"), "{:?}", r.consequence);
+    }
+
+    /// The ordinary case has to stay silent, or the block fires on nearly
+    /// every binding and stops being read.
+    #[test]
+    fn a_name_only_one_entry_claims_reports_no_rivals() {
+        let entries = vec![entry("kitty", "Kitty"), entry("alacritty", "Alacritty")];
+        let r = &resolve_reports_in(&["Kitty"], &entries)[0];
+        assert!(r.rivals.is_empty(), "{:?}", r.rivals);
+        assert!(r.consequence.is_empty(), "{:?}", r.consequence);
+    }
+
+    /// A `.desktop` id names one entry, so the tiers that match one cannot
+    /// have rivals. Drop the tier check in `report_for` and this starts
+    /// listing same-named entries as rivals of a match that never looked at
+    /// the name.
+    #[test]
+    fn a_filename_match_reports_no_rivals() {
+        let entries = vec![
+            entry("firefox", "Firefox"),
+            entry("firefox_firefox", "Firefox"),
+        ];
+        let r = &resolve_reports_in(&["firefox_firefox"], &entries)[0];
+        assert_eq!(r.tier, Some(".desktop filename"));
+        assert!(r.rivals.is_empty(), "{:?}", r.rivals);
     }
 
     #[test]
