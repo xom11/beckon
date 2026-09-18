@@ -764,6 +764,46 @@ severed it: repo file left on the old text, and home-manager moving the orphan
 aside under `backupFileExtension` on the next switch. A Save that disappears one
 rebuild later, on the file every other host copies from.
 
+### The same file, one defect further in: a Save with nothing to save still wrote
+
+**Measured on macmini 2026-09-18**, on the same nix-managed
+`launch-app.toml` — which is to say a file tracked in git, on the host every
+other machine copies from.
+
+The gesture was: turn the Caps switch on, turn it straight back off, Save.
+No net change. The file came back with two lines it had never carried:
+
+```diff
++keyboard.caps = false
++keyboard.caps_tap = "capslock"
+```
+
+`config_write::render` wrote `caps` and `caps_tap` unconditionally — not
+because a value had changed, but because the fields exist. `caps_hold` one
+line below had the correct shape the whole time (written only when it carries
+information, removed when it does not), and **the asymmetry was not
+deliberate**; it came of `caps_hold` having a backward-compatibility reason
+written down and the other two having none.
+
+The rule now: **a key is written when the FILE already spells it, or when the
+VALUE carries information — never merely because the field exists.** Both
+halves are load-bearing and both were already pinned by tests written before
+this change:
+
+- *already spells it* keeps unticking persistent
+  (`caps_off_is_still_written_so_unticking_persists`: the file says
+  `caps = true`, the model says false, the key exists, so `false` is written
+  over it rather than the line being dropped back to an implied default), and
+  it leaves a hand-written `caps = false` alone;
+- *carries information* is what stops the first Save from being a diff.
+
+Two things this is NOT. It is not the dirty flag: `Model::dirty` is sticky, so
+a value edited and put back still arms `Save`, and that is unchanged —
+`set_filter`'s own comment already states the principle this fix restores,
+that an armed Save must not rewrite the file byte-identical. And it is not
+specific to Caps: any edit at all — renaming one app, adding and removing a
+row — carried the same two lines along with it.
+
 The fix resolves the path first (`fs::canonicalize`) and renames onto the target,
 with the temp file beside the TARGET rather than beside the link — `rename` cannot
 cross filesystems and a link need not share one with its target. The function
@@ -1116,6 +1156,66 @@ even a `DROPDOWNLIST` has typeahead, which moves the selection. Enablement
 follows the check box, and note that a **disabled `CBS_DROPDOWNLIST` still
 renders white with dark text**, so it looks live beside greyed labels:
 measurements §56, and do not "fix" it.
+
+### The row asked macOS nothing, and its note answered a question it had not asked
+
+**Measured on macmini 2026-09-18**, beckon 0.15.1 from Homebrew, uninstalled
+and reinstalled from scratch to walk a new user's path. Two defects, opposite
+in direction, sitting one row apart.
+
+**Ticking the box asked for no permission.** `on_caps` read the switch and
+wrote the model, and that was all of it. Driven through `hs.axuielement` on a
+fresh install:
+
+| | before the tick | after |
+|---|---|---|
+| switch | `value=0 enabled=true` | `value=1` |
+| Ctrl / Cmd / Option | `[DISABLED]` | enabled |
+| `Tap` | `[DISABLED]` | enabled |
+| `Save` | disabled | enabled |
+| a permission dialog | — | **none** |
+| `kTCCServiceListenEvent` row | absent | **still absent** |
+
+Every control said the feature was armed while beckon had not put a single
+question to the OS. The grant reaches a tap only at the next launch, so the
+remedy is to ask on the way ON and then say what is left to do — **not** to
+block the switch: the config travels between machines, and authoring
+`caps = true` for a Mac that will be granted later is legitimate.
+
+**The note beside it said the opposite of the truth, permanently.**
+`caps_note` was a fixed string ending *"beckon cannot read the Caps key
+without it"*, drawn on every visit in both states. On this machine, with
+Accessibility granted and **no `ListenEvent` row in TCC at all**, chord
+capture recorded `ctrl+shift+F9` on the first attempt — which means
+`install_for` had already passed the `input_monitoring_granted()` gate.
+
+The control matters here, because "the warning vanished" and "the warning
+broke" look identical. `examples/caps_probe` with a driver injecting F19:
+
+```
+Input Monitoring     : granted
+events seen, ANY type : 2   last type=11 code=80
+-> the tap IS live; the MATCHING is what is wrong.
+```
+
+`code=80` is F19, so the tap received exactly what was posted. **Running that
+probe with no driver prints `CONTROL FAILED … receiving nothing at all`, which
+reads as a damning result and is only "nobody typed"** — the same shape as
+every other blind-detector trap in these notes. Its comment says *"The driver
+injects F19 here"*; run it that way or do not cite it.
+
+The sentence now follows the rule About's Accessibility line already followed
+— a healthy grant says nothing — via
+`beckon_core::settings::input_monitoring_warning`, and is re-asked on every
+`apply` because the grant can arrive while the window is open.
+
+**`Open Input Monitoring` deliberately does NOT follow the sentence**, and the
+asymmetry with About is asserted by a test rather than left to be tidied away:
+revoking the grant does not notify a running process, so a button conditioned
+on that state would be absent exactly when it is needed, and a reader who
+wants to *check* the switch has the same errand as one who needs to grant it.
+The sentence can go quiet because it makes a claim that would be false; the
+button only offers an errand, which stays true.
 
 ## Chord capture is in, as `Record` / `Stop`
 
