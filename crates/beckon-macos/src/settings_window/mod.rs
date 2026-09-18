@@ -1061,18 +1061,7 @@ define_class!(
             // hunt for a path with a nix hash in it. Doing both means the
             // common case is one click in a dialog, and the awkward case
             // still lands in the right pane.
-            if !crate::caps_tap::input_monitoring_granted() {
-                let asked = crate::caps_tap::request_input_monitoring();
-                if let Some(c) = controls() {
-                    c.kbd.note.setStringValue(&NSString::from_str(if asked {
-                        "Input Monitoring granted. Quit beckon from the menu bar and \
-                         start it again -- macOS hands the permission to a new process."
-                    } else {
-                        "Allow beckon in the list, then quit it from the menu bar and \
-                         start it again -- macOS hands the permission to a new process."
-                    }));
-                }
-            }
+            ask_for_input_monitoring();
             if let Err(e) = crate::shell::open_input_monitoring() {
                 // The notes line is the window's own voice; a modal for a
                 // failed `open` would be louder than the thing it reports.
@@ -1089,6 +1078,31 @@ define_class!(
             }
             let Some(c) = controls() else { return };
             let on = c.kbd.caps.state() == 1;
+            // **Ticking the box is the moment the grant starts to matter, so
+            // it is the moment to ask for it.**
+            //
+            // Before this, turning the switch on did nothing but write the
+            // model: `Hold`, `Tap` and `Save` all lit up, the window reported
+            // no problem, and beckon never asked macOS a single question --
+            // measured on macmini 2026-09-18 on a fresh install, where TCC
+            // gained no `kTCCServiceListenEvent` row at any point in the
+            // gesture. Whether the feature then worked depended on a
+            // permission nobody had been asked for, and the failure mode is
+            // the silent one: the tap is created successfully and receives
+            // nothing.
+            //
+            // The switch is NOT blocked when the grant is missing. The config
+            // file is meant to travel between machines, the grant is
+            // per-binary and per-machine, and authoring `caps = true` here for
+            // a Mac that will be granted later is legitimate. Asking, and
+            // then saying what remains to be done, is the whole remedy.
+            //
+            // Only on the way ON. Ticking it off needs no permission, and a
+            // dialog raised while somebody is turning a feature OFF is the
+            // definition of a nag.
+            if on {
+                ask_for_input_monitoring();
+            }
             with_cb(|cb| (cb.on_caps)(on));
         }
 
@@ -1128,6 +1142,33 @@ define_class!(
         }
     }
 );
+
+/// Ask macOS for Input Monitoring, and say on the Keyboard page's note line
+/// what happened. **A no-op when the grant is already there** — the ask is
+/// what raises a dialog, and nobody needs one for a permission they have.
+///
+/// Two callers, deliberately sharing this rather than each spelling the
+/// sentence: `Open Input Monitoring`, and ticking the Caps switch. The
+/// wording is `beckon_core::settings::input_monitoring_after_asking`, beside
+/// the rest of the status vocabulary, and neither arm of it claims the
+/// feature works yet — macOS hands the grant to a tap only at the next
+/// launch.
+///
+/// `request_input_monitoring` is silent when an answer is already recorded
+/// (a previous Deny returns that verdict without a panel), which is exactly
+/// why the note is written in both arms and why `Open Input Monitoring`
+/// still opens the pane afterwards.
+fn ask_for_input_monitoring() {
+    if crate::caps_tap::input_monitoring_granted() {
+        return;
+    }
+    let asked = crate::caps_tap::request_input_monitoring();
+    if let Some(c) = controls() {
+        c.kbd.note.setStringValue(&NSString::from_str(
+            beckon_core::settings::input_monitoring_after_asking(asked),
+        ));
+    }
+}
 
 /// The combo the shortcut controls currently spell, or `None` when no key
 /// is chosen. Spelled through core so it is the exact inverse of

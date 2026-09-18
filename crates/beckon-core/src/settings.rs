@@ -1583,6 +1583,76 @@ pub fn accessibility_warning(granted: bool) -> Option<&'static str> {
     }
 }
 
+/// The Input Monitoring sentence for the Keyboard page, and `None` when
+/// there is nothing wrong. **macOS only** -- Windows needs no such grant,
+/// and its Keyboard page never calls this.
+///
+/// Same rule as `accessibility_warning`: **a healthy grant says nothing at
+/// all.** The macOS page used to draw a fixed `&'static str` that named the
+/// pane and ended *"beckon cannot read the Caps key without it"* --
+/// unconditionally, on every visit, granted or not. Measured on macmini
+/// 2026-09-18 on a fresh install: chord capture recorded `ctrl+shift+F9`
+/// on the first try, which means `install_for` had already passed the
+/// `input_monitoring_granted()` gate, while the sentence three rows above
+/// still said the key could not be read. A permanent warning is read once
+/// and then stops being read, and this one was wrong exactly when a user
+/// was deciding whether the feature would work.
+///
+/// **The grant is handed to a process at LAUNCH**, so the missing-grant
+/// sentence has to end in "start it again" rather than implying the switch
+/// will work the moment the box is ticked -- the same correction
+/// `install_for`'s own error text carries.
+///
+/// **Unlike `accessibility_warning`, this one does NOT pair with
+/// `grant_button_shown`.** About's grant button is offered only while the
+/// grant is missing; the Keyboard page's `Open Input Monitoring` is drawn in
+/// both states on purpose, and the reason is written where it is drawn:
+/// revoking Input Monitoring does not notify a running process, so a button
+/// conditioned on that state would be absent exactly when it is needed, and
+/// a reader who wants to CHECK the switch has the same errand as one who
+/// needs to grant it. The sentence can go quiet because it makes a CLAIM
+/// that would be false; the button only offers an errand, which stays true.
+pub fn input_monitoring_warning(granted: bool) -> Option<&'static str> {
+    if granted {
+        None
+    } else {
+        Some(
+            "Needs Input Monitoring, in System Settings > Privacy & Security. That is a \
+             different permission from Accessibility, and beckon cannot read the Caps key \
+             without it. macOS hands the grant to a new process, so quit beckon from the \
+             menu bar and start it again afterwards.",
+        )
+    }
+}
+
+/// What to say straight after ASKING macOS for Input Monitoring.
+///
+/// `asked` is what `IOHIDRequestAccess` answered. **Neither arm says the
+/// feature now works**, and that is the whole content of this function: the
+/// grant reaches an event tap only at the next launch, so a process that has
+/// just been granted the permission still cannot use it. A message that
+/// stopped at "granted" would send someone off to press Caps and find
+/// nothing happening, which is the same silent failure the permission itself
+/// produces.
+///
+/// The `false` arm is not an error. `IOHIDRequestAccess` raises the dialog
+/// only for a process with **no answer recorded**; after any previous
+/// verdict it returns that verdict without showing anything, so the sentence
+/// has to work for someone who saw a dialog and someone who saw nothing at
+/// all.
+///
+/// Used by both places that can ask: the `Open Input Monitoring` button, and
+/// ticking the Caps switch itself.
+pub fn input_monitoring_after_asking(asked: bool) -> &'static str {
+    if asked {
+        "Input Monitoring granted. Quit beckon from the menu bar and start it again -- \
+         macOS hands the permission to a new process."
+    } else {
+        "Allow beckon in the list, then quit it from the menu bar and start it again -- \
+         macOS hands the permission to a new process."
+    }
+}
+
 /// The About page, decided in one place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AboutState {
@@ -7368,6 +7438,60 @@ mod tests {
                 "granted={granted}"
             );
         }
+    }
+
+    /// The Keyboard page's sentence obeys the same rule as About's. Before
+    /// this it was a fixed string drawn on every visit, so a machine where
+    /// the tap demonstrably worked was still told the Caps key could not be
+    /// read -- measured on macmini 2026-09-18.
+    #[test]
+    fn a_granted_input_monitoring_says_nothing_and_a_missing_one_explains() {
+        assert_eq!(input_monitoring_warning(true), None);
+        let warn = input_monitoring_warning(false).expect("a missing grant must explain itself");
+        assert!(warn.contains("Input Monitoring"));
+        assert!(
+            warn.contains("start it again"),
+            "the grant reaches a tap only at launch, and the sentence has to say so: {warn}"
+        );
+        assert!(warn.is_ascii(), "display strings here are ASCII");
+    }
+
+    /// **NOT the same pairing as Accessibility, and the difference is the
+    /// point.** `Open Input Monitoring` is drawn in both states on purpose --
+    /// see `input_monitoring_warning`'s own doc and the comment beside the
+    /// button in `beckon-macos`. This test exists so that a later reader who
+    /// notices the asymmetry with About finds it asserted rather than
+    /// assumes it is an oversight and "fixes" it.
+    /// **Neither answer may claim the feature works yet.** The grant is
+    /// handed to an event tap at launch, so "granted" without "start it
+    /// again" sends someone off to press Caps and watch nothing happen --
+    /// indistinguishable from not having the permission at all, which is the
+    /// failure this whole sentence exists to prevent.
+    #[test]
+    fn asking_for_input_monitoring_never_claims_it_works_yet() {
+        for asked in [true, false] {
+            let s = input_monitoring_after_asking(asked);
+            assert!(
+                s.contains("start it again"),
+                "asked={asked} must send the user to restart beckon: {s}"
+            );
+            assert!(s.is_ascii(), "display strings here are ASCII");
+        }
+        assert_ne!(
+            input_monitoring_after_asking(true),
+            input_monitoring_after_asking(false),
+            "a dialog that appeared and one that did not are different situations"
+        );
+    }
+
+    #[test]
+    fn the_input_monitoring_button_outlives_its_warning() {
+        assert_eq!(input_monitoring_warning(true), None);
+        assert!(
+            !grant_button_shown(true),
+            "About's button is the one that goes away; this test would be \
+             meaningless if it did not"
+        );
     }
 
     /// `Channel` is NOT a new input. `about_state` derives it from the

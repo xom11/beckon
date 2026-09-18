@@ -60,7 +60,8 @@ pub(super) struct KeyboardControls {
     pub(super) note: Retained<NSTextField>,
 }
 
-/// What ticking the box actually costs, in one sentence.
+/// What ticking the box actually costs, in one sentence — **or nothing at
+/// all when the grant is already there.**
 ///
 /// **It replaced a note saying the feature did not exist here.** It does now
 /// (`beckon_macos::caps_tap`, end-to-end in `examples/caps_live.rs`), and
@@ -69,10 +70,23 @@ pub(super) struct KeyboardControls {
 /// System Settings pane, and without it the tap is created successfully and
 /// then receives nothing at all. That failure is silent, so the sentence
 /// exists to make it findable before it happens rather than after.
+///
+/// **It used to say that unconditionally, and that is the bug this asks the
+/// OS to avoid.** Measured on macmini 2026-09-18, fresh Homebrew install,
+/// Accessibility granted and no `kTCCServiceListenEvent` row in TCC at all:
+/// chord capture recorded `ctrl+shift+F9` on the first attempt, so
+/// `install_for` had already passed the `input_monitoring_granted()` gate —
+/// while this sentence three rows above the switch still said the Caps key
+/// could not be read. A warning that is always on screen is read once and
+/// then stops being read, and this one was false exactly when someone was
+/// deciding whether to turn the feature on.
+///
+/// The wording lives in `beckon_core::settings::input_monitoring_warning`,
+/// with the rest of the status vocabulary; this asks the OS and hands the
+/// answer over.
 fn caps_note() -> &'static str {
-    "Needs Input Monitoring, in System Settings > Privacy & Security. That is a \
-     different permission from Accessibility, and beckon cannot read the Caps key \
-     without it."
+    beckon_core::settings::input_monitoring_warning(crate::caps_tap::input_monitoring_granted())
+        .unwrap_or("")
 }
 
 pub(super) fn build(
@@ -214,6 +228,18 @@ pub(super) fn apply(c: &KeyboardControls, st: &ControlState, shorthand_on: bool)
         CapsTap::None => 2,
     });
     c.shorthand.setState(if shorthand_on { 1 } else { 0 });
+
+    // **Re-asked here, not just at `build`.** The grant can arrive while this
+    // window is open -- `Open Input Monitoring` is one click away and the
+    // whole point of it -- and `build` runs once per window. Without this the
+    // sentence a user just acted on stays on screen contradicting them until
+    // beckon is restarted, which reads as the click having done nothing.
+    //
+    // `input_monitoring_granted` is `IOHIDCheckAccess`, which only READS an
+    // answer: it never raises a dialog, so calling it on every `apply` costs
+    // a syscall and cannot surprise anybody with a panel.
+    c.note
+        .setStringValue(&objc2_foundation::NSString::from_str(caps_note()));
 
     // Group 2 follows group 1: `Hold` and `Tap` are answers to the question
     // group 1 asks, and they mean nothing while it is off.
