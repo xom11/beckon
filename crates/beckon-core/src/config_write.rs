@@ -112,26 +112,66 @@ pub fn render(
     //    hand-aligned `caps      = true` would come back as `caps = true` on
     //    an unrelated Save — the same gratuitous diff `RowWrite::orig_key`
     //    exists to avoid, documented at the top of this file.
-    if doc.get(KEYBOARD_KEY).is_none() {
-        let mut t = Table::new();
-        t.set_dotted(true);
-        doc.insert(KEYBOARD_KEY, Item::Table(t));
-    }
-    let kb = doc[KEYBOARD_KEY]
-        .as_table_like_mut()
-        .ok_or_else(|| "`keyboard` is not a table".to_string())?;
-    *kb.entry("caps").or_insert(Item::None) = toml_edit::value(keyboard.caps);
-    *kb.entry("caps_tap").or_insert(Item::None) = toml_edit::value(keyboard.caps_tap.as_str());
+    //    **A key is written when the FILE already spells it, or when the
+    //    VALUE carries information -- never merely because the field
+    //    exists.** A default in a file that never had the key is not
+    //    information, and writing it anyway turned the first Save from this
+    //    window into a diff on a file the user had not edited. Measured on
+    //    macmini 2026-09-18: toggling the Caps switch on and straight back
+    //    off appended `keyboard.caps = false` and
+    //    `keyboard.caps_tap = "capslock"` to a nix-managed config tracked in
+    //    git. `caps_hold` below already had this shape; `caps` and
+    //    `caps_tap` did not, and the asymmetry was not deliberate.
+    //
+    //    "Already spells it" is what keeps unticking persistent: the file
+    //    says `caps = true`, the model says false, the key exists, so false
+    //    is written over it rather than the line being dropped back to an
+    //    implied default -- see
+    //    `caps_off_is_still_written_so_unticking_persists`. It is also why
+    //    a hand-written `caps = false` survives a Save untouched.
+    //
+    //    Read BEFORE the block is created, because creating it is itself one
+    //    of the decisions below.
+    let spelled = |k: &str| {
+        doc.get(KEYBOARD_KEY)
+            .and_then(|i| i.as_table_like())
+            .is_some_and(|t| t.get(k).is_some())
+    };
+    let defaults = KeyboardConfig::default();
+    let write_caps = spelled("caps") || keyboard.caps != defaults.caps;
+    let write_tap = spelled("caps_tap") || keyboard.caps_tap != defaults.caps_tap;
     // Written ONLY when it carries information. Unknown keys under
     // `keyboard` are a hard error by design, so a file that always carried
     // this key would be rejected outright by any beckon built before it
     // existed -- a real scenario when one machine updates through Scoop and
     // another has not yet.
-    if keyboard.caps_hold.is_default() {
-        kb.remove("caps_hold");
-    } else {
-        *kb.entry("caps_hold").or_insert(Item::None) =
-            toml_edit::value(keyboard.caps_hold.canonical());
+    let write_hold = !keyboard.caps_hold.is_default();
+
+    // A `keyboard` item that is already there is entered even with nothing
+    // to write: that is the path on which a stale `caps_hold` is removed,
+    // and the path on which `keyboard = 5` is still reported as an error.
+    if write_caps || write_tap || write_hold || doc.get(KEYBOARD_KEY).is_some() {
+        if doc.get(KEYBOARD_KEY).is_none() {
+            let mut t = Table::new();
+            t.set_dotted(true);
+            doc.insert(KEYBOARD_KEY, Item::Table(t));
+        }
+        let kb = doc[KEYBOARD_KEY]
+            .as_table_like_mut()
+            .ok_or_else(|| "`keyboard` is not a table".to_string())?;
+        if write_caps {
+            *kb.entry("caps").or_insert(Item::None) = toml_edit::value(keyboard.caps);
+        }
+        if write_tap {
+            *kb.entry("caps_tap").or_insert(Item::None) =
+                toml_edit::value(keyboard.caps_tap.as_str());
+        }
+        if write_hold {
+            *kb.entry("caps_hold").or_insert(Item::None) =
+                toml_edit::value(keyboard.caps_hold.canonical());
+        } else {
+            kb.remove("caps_hold");
+        }
     }
 
     // 4. Put the file's header back if step 1 ate it.
@@ -428,6 +468,78 @@ mod tests {
         .unwrap();
         let c = parse_config(&out).unwrap();
         assert!(!c.keyboard.caps, "unticking did not persist:\n{out}");
+    }
+
+    /// A Save that changes nothing must hand the file back byte-for-byte.
+    ///
+    /// The writer used to emit `caps` and `caps_tap` unconditionally, so the
+    /// FIRST Save from the settings window appended two default lines to a
+    /// file that had never carried a `keyboard` block. Measured on macmini
+    /// 2026-09-18 against a nix-managed `launch-app.toml` tracked in git: the
+    /// user toggled the Caps switch on and straight back off — no net change
+    /// — and Save wrote
+    ///
+    /// ```text
+    /// keyboard.caps = false
+    /// keyboard.caps_tap = "capslock"
+    /// ```
+    ///
+    /// into a repository that was clean a second earlier. `caps_hold` right
+    /// below already had this shape; these two did not.
+    #[test]
+    fn a_default_keyboard_block_is_not_created_in_a_file_that_had_none() {
+        let original = "# my shortcuts\n\"ctrl+alt+t\" = \"Terminal\"\n";
+        let out = render(
+            original,
+            &[row("ctrl+alt+t", "Terminal")],
+            &KeyboardConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            !out.contains("keyboard"),
+            "a default keyboard block was invented:\n{out}"
+        );
+        assert_eq!(
+            out, original,
+            "a Save that changed nothing rewrote the file"
+        );
+    }
+
+    /// The other half: a value that carries information still gets written
+    /// into a file that had no `keyboard` block at all.
+    #[test]
+    fn a_non_default_keyboard_value_is_still_created_when_absent() {
+        let kb = KeyboardConfig {
+            caps: true,
+            ..KeyboardConfig::default()
+        };
+        let out = render(
+            "\"ctrl+alt+t\" = \"Terminal\"\n",
+            &[row("ctrl+alt+t", "Terminal")],
+            &kb,
+        )
+        .unwrap();
+        assert!(out.contains("keyboard.caps"), "{out}");
+        let c = parse_config(&out).unwrap();
+        assert!(c.keyboard.caps, "{out}");
+        assert!(
+            !out.contains("caps_tap"),
+            "caps_tap was still at its default and had no business being written:\n{out}"
+        );
+    }
+
+    /// A key the user wrote by hand is theirs: it is updated in place, never
+    /// deleted for holding the default value.
+    #[test]
+    fn a_hand_written_default_key_is_kept_rather_than_removed() {
+        let original = "keyboard.caps = false\nkeyboard.caps_tap = \"capslock\"\n";
+        let out = render(original, &[], &KeyboardConfig::default()).unwrap();
+        assert!(out.contains("keyboard.caps"), "{out}");
+        assert!(out.contains("caps_tap"), "{out}");
+        assert_eq!(
+            out, original,
+            "an untouched hand-written block was rewritten"
+        );
     }
 
     #[test]
