@@ -147,19 +147,25 @@ about 600 pt tall that gained a row per binding.
 `MenuEntry` today is `{id, label, checked, enabled}` (`menu.rs:14-22`). It has
 no images, submenus, key equivalents or views. This design extends it with:
 
-- `kind`: `Item | Separator | SectionHeader | Header { subtitle, dot, on } |
-  Submenu(Vec<MenuEntry>)`
+- `kind`: `Item | SectionHeader | Header(Header { title, subtitle, dot, on })
+  | Submenu`. A separator stays "a plain `Item` with an empty label".
 - `detail: Option<String>`: the right-aligned chord text
-- `key_equivalent: Option<&'static str>`
-- `icon: Option<IconRef>`: a bundle URL for `NSWorkspace.iconForFile`
+- `key: Option<char>`: a key equivalent, always with ⌘
+- `icon: Option<String>`: a bundle id, looked up through
+  `NSWorkspace.URLForApplicationWithBundleIdentifier` then `iconForFile`
 - `flag: Option<&'static str>`: one of `row_condition`'s words
+- `tooltip: Option<String>`: the row in words, for hover and VoiceOver
+- `children: Vec<MenuEntry>`: a submenu's rows
 
 Two rules follow from that:
 
-- **`build_entries` composes the new shape only when `MenuModel::macos`.**
-  The Windows composition must stay exactly today's list, and a test pins it
-  (§10). `beckon_windows::hotkey` ignores the new fields and never receives the
-  new kinds.
+- **The new shape has its own composer, `build_mac_entries`.**
+  `build_entries` is Windows', and it changes only by
+  `..MenuEntry::default()` in its struct literals, so its existing tests are
+  what pin the Windows menu. `beckon_windows::hotkey` ignores the new fields
+  and never receives the new kinds. (The phase-1 plan chose a separate
+  function over a `macos` branch inside `build_entries`: an unchanged
+  function is a stronger guarantee than a branch.)
 - **Binding row ids** are `MENU_BINDING_BASE + model_row`. The menu is rebuilt
   on every open (`menuNeedsUpdate:`, `tray.rs:84`), so an id always names a
   row of the current model.
@@ -361,13 +367,14 @@ action is `show_keyboard_map()`, never `backend.beckon()`.
   `Change…`; and the tap popup (`Toggles Caps Lock / Sends Escape / Does
   nothing`).
 - **Show shortcuts as:** a segmented `⇪ C | ⌃⌥⌘C`.
-  - **It needs a macOS store.** `SettingsCommand::SetCapsShorthand` is an empty
-    arm on macOS today (`serve.rs:2504`).
-  - Windows keeps the look out of the TOML on purpose, in `CapsView` in
-    `HKCU\Software\beckon`, so a theme still works when the file does not
-    parse. The macOS counterpart is `NSUserDefaults`, domain
-    `com.xom11.beckon`, key `CapsView`.
-  - Like the Windows table, that key list is also the list a reset deletes.
+  - **The store already exists.** `beckon_macos::prefs` keeps `CapsView`,
+    beside `Opacity`, in `NSUserDefaults` domain `com.xom11.beckon`. Today's
+    shorthand switch writes it (`settings_window/mod.rs:859`), and the
+    segmented control writes the same key.
+  - `SettingsCommand::SetCapsShorthand` stays an empty arm on macOS
+    (`serve.rs:2504`), because the window writes the preference itself.
+    **CORRECTED 2026-09-22:** an earlier draft of this spec called that arm a
+    missing store. It is not.
 - **Keyboard map:** a switch plus a recorder for `keyboard.cheatsheet` (§4).
 - **Input Monitoring:** its state, and `Open Settings…` through
   `shell::open_input_monitoring`.
@@ -439,7 +446,7 @@ action is `show_keyboard_map()`, never `backend.beckon()`.
 | The menu carries commands only | *Needs attention* plus the *Shortcuts* submenu | Rows open Settings and never launch. `MenuEntry` grows kinds (§3.4); Windows is unchanged. |
 | The only GUI exception is `serve`'s tray and Settings window (`CLAUDE.md`, "Out of scope") | Plus the keyboard map HUD, still part of `serve` | Display only. Opt-in through one TOML line, so beckon still registers only chords the file names. |
 | `Page::System` labelled "System" | Labelled "General" on macOS | Label table only; `Page` unchanged. |
-| The stores are the TOML, plus the registry on Windows (`CLAUDE.md`, "What beckon reads and writes") | macOS also writes `NSUserDefaults` `com.xom11.beckon`: `CapsView` and `WelcomeShown` | The Windows split, where the window's look lives outside the TOML, carried over. That paragraph of `CLAUDE.md` gains the macOS list, which is also the reset list. |
+| `CLAUDE.md`, "What beckon reads and writes", names the TOML and the Windows registry only | `WelcomeShown` joins `Opacity` and `CapsView` in `beckon_macos::prefs` (`NSUserDefaults` `com.xom11.beckon`) | That domain already exists and the paragraph omits it. It gains the macOS list, which is also the reset list. |
 
 **Kept, and must stay:**
 
@@ -479,8 +486,8 @@ Phase 4 needs phase 2's shell. Phase 3 is independent of the drawing.
 
 **Core unit tests** (all three CI jobs):
 
-- **Windows is unchanged:** `build_entries` with `macos = false` equals today's
-  list, compared as a literal.
+- **Windows is unchanged:** `build_entries` itself is untouched apart from
+  `..MenuEntry::default()`, and its existing tests stay green unmodified.
 - **The macOS menu shape:** header, attention (zero, three, and more than
   three rows), submenu, and the `Open Log` omission.
 - **`menu_headline`'s precedence**, one test per step.
