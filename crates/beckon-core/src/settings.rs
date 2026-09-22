@@ -5248,8 +5248,14 @@ mod tests {
             code.len() < src.len(),
             "the test module marker moved; this scan would cover the whole file"
         );
+        // Sanctioned exceptions: chord glyphs ⌃⌥⇧⌘⇪ in combo_glyphs and CAPS_GLYPH.
+        // These are macOS-only display glyphs, never reaching log lines.
+        let glyph_chars = ['⌃', '⌥', '⇧', '⌘', '⇪'];
         for (i, line) in code.lines().enumerate() {
             let stripped = line.split("//").next().unwrap_or("");
+            if glyph_chars.iter().any(|&ch| stripped.contains(ch)) {
+                continue;
+            }
             assert!(
                 stripped.is_ascii(),
                 "shortcuts.rs:{} carries a non-ASCII character in code, which the \

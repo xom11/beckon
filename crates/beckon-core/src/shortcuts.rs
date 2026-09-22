@@ -470,6 +470,102 @@ pub fn combo_display_folded_with(s: &str, hold: Option<Chord>, l: ModifierLabels
     combo_caps_folded_with(s, hold, l).join(" + ")
 }
 
+/// The Caps Lock glyph a folded chord wears on macOS. `CAPS_CAP` is the word
+/// for the same thing in the list.
+pub const CAPS_GLYPH: &str = "⇪";
+
+/// The chord in macOS menu glyphs: `⌃⌥⇧⌘T`, or `⇪T` when `hold` folds it.
+///
+/// **macOS order** -- Control, Option, Shift, Command -- which is the order
+/// AppKit draws a key equivalent in and NOT `combo_caps`' order (Ctrl, Super,
+/// Alt). Folding asks `combo_folds_to_caps`, so the menu and the list cannot
+/// disagree about which rows are the common chord.
+///
+/// **Display only, and macOS only.** Glyphs are not ASCII; the ASCII rule for
+/// display strings (`ModifierLabels::MAC`'s doc) exists because of a Windows
+/// log, and this string never reaches a log line. Anything spoken or logged
+/// uses `combo_display_folded_with(.., ModifierLabels::MAC)` instead.
+///
+/// Empty when the string does not parse, like `combo_caps`.
+pub fn combo_glyphs(s: &str, hold: Option<Chord>) -> String {
+    let Ok(c) = Combo::parse(s) else {
+        return String::new();
+    };
+    let key = key_label(&c.key.name);
+    let sep = if key.chars().count() > 1 { " " } else { "" };
+    if let Some(h) = hold {
+        if combo_folds_to_caps(&c, h) {
+            return format!("{CAPS_GLYPH}{sep}{key}");
+        }
+    }
+    let mut g = String::new();
+    if c.ctrl {
+        g.push('⌃');
+    }
+    if c.alt {
+        g.push('⌥');
+    }
+    if c.shift {
+        g.push('⇧');
+    }
+    if c.super_ {
+        g.push('⌘');
+    }
+    format!("{g}{sep}{key}")
+}
+
+#[cfg(test)]
+mod glyph_tests {
+    use super::*;
+
+    const HOLD: Chord = Chord {
+        ctrl: true,
+        super_: true,
+        alt: true,
+    };
+
+    /// Control, Option, Shift, Command -- the order AppKit draws a key
+    /// equivalent in, whatever order the file wrote.
+    #[test]
+    fn macos_order_is_control_option_shift_command() {
+        assert_eq!(combo_glyphs("super+shift+alt+ctrl+t", None), "⌃⌥⇧⌘T");
+    }
+
+    #[test]
+    fn the_hold_chord_folds_to_one_caps_glyph() {
+        assert_eq!(combo_glyphs("ctrl+super+alt+c", Some(HOLD)), "⇪C");
+    }
+
+    /// The same predicate as the list's fold, so a shift row stays long here
+    /// for the reason `combo_folds_to_caps` gives.
+    #[test]
+    fn a_shift_row_does_not_fold() {
+        assert_eq!(
+            combo_glyphs("ctrl+super+alt+shift+m", Some(HOLD)),
+            "⌃⌥⇧⌘M"
+        );
+    }
+
+    #[test]
+    fn no_hold_means_no_fold() {
+        assert_eq!(combo_glyphs("ctrl+super+alt+c", None), "⌃⌥⌘C");
+    }
+
+    /// A word key glued to glyphs reads as one token; a single character
+    /// must not get a gap.
+    #[test]
+    fn a_word_key_is_set_apart_and_a_letter_is_not() {
+        assert_eq!(combo_glyphs("ctrl+super+alt+space", Some(HOLD)), "⇪ Space");
+        assert_eq!(combo_glyphs("ctrl+alt+space", None), "⌃⌥ Space");
+        assert_eq!(combo_glyphs("ctrl+alt+slash", None), "⌃⌥/");
+    }
+
+    #[test]
+    fn an_unparseable_chord_is_empty() {
+        assert_eq!(combo_glyphs("ctrl+nosuchkey", None), "");
+    }
+}
+
 #[cfg(test)]
 mod modifier_label_tests {
     use super::*;
