@@ -1363,6 +1363,134 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
     entries
 }
 
+#[cfg(any(target_os = "macos", test))]
+const MENU_SHORTCUTS: u32 = 9;
+#[cfg(any(target_os = "macos", test))]
+const MENU_EDIT_SHORTCUTS: u32 = 10;
+/// A binding row's id is this plus its index into `ServeState::shortcuts`.
+/// Safe because the menu is rebuilt on every open (`menuNeedsUpdate:`), so an
+/// id always names a row of the table the menu was built from.
+#[cfg(any(target_os = "macos", test))]
+const MENU_BINDING_BASE: u32 = 1000;
+
+/// What the macOS menu needs, snapshotted out of `ServeState` like
+/// `MenuModel`, so the composition is a pure function.
+#[cfg(any(target_os = "macos", test))]
+struct MacMenu {
+    phrase: String,
+    paused: bool,
+    accessibility: bool,
+    failed: usize,
+    /// `menu_log_row`'s answer. Only `Some(true)` draws on macOS.
+    log: Option<bool>,
+    rows: Vec<BindingRow>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn binding_entry(i: usize, r: &BindingRow) -> MenuEntry {
+    MenuEntry {
+        id: MENU_BINDING_BASE + i as u32,
+        label: r.name.clone(),
+        enabled: true,
+        detail: Some(r.chord.clone()),
+        flag: r.flag,
+        icon: r.bundle_id.clone(),
+        tooltip: Some(r.spoken.clone()),
+        ..MenuEntry::default()
+    }
+}
+
+/// The macOS menu (spec §3.1). Nine rows when nothing is broken, whatever
+/// the file holds; the table itself is a submenu.
+#[cfg(any(target_os = "macos", test))]
+fn build_mac_entries(m: &MacMenu) -> Vec<MenuEntry> {
+    use beckon_core::menu::{
+        attention, menu_headline, EntryKind, Header, HeadlineInputs, ATTENTION_ROWS,
+    };
+    let missing = m.rows.iter().filter(|r| r.flag == Some("missing")).count();
+    let head = menu_headline(HeadlineInputs {
+        paused: m.paused,
+        accessibility: m.accessibility,
+        phrase: &m.phrase,
+        failed: m.failed,
+        missing,
+        total: m.rows.len(),
+    });
+    let mut e = vec![
+        MenuEntry {
+            id: MENU_STATUS,
+            label: "beckon".into(),
+            enabled: true,
+            kind: EntryKind::Header(Header {
+                title: "beckon".into(),
+                subtitle: head.text,
+                dot: head.dot,
+                on: !m.paused,
+            }),
+            ..MenuEntry::default()
+        },
+        MenuEntry::separator(),
+    ];
+
+    if !m.paused {
+        let flags: Vec<Option<&str>> = m.rows.iter().map(|r| r.flag).collect();
+        let a = attention(&flags, ATTENTION_ROWS);
+        if !a.shown.is_empty() {
+            e.push(MenuEntry::section_header("Needs attention"));
+            e.extend(a.shown.iter().map(|&i| binding_entry(i, &m.rows[i])));
+            if let Some(&first) = a.rest.first() {
+                e.push(MenuEntry::item(
+                    MENU_BINDING_BASE + first as u32,
+                    format!("and {} more...", a.rest.len()),
+                ));
+            }
+            e.push(MenuEntry::separator());
+        }
+    }
+
+    let mut children: Vec<MenuEntry> = m
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| binding_entry(i, r))
+        .collect();
+    if !children.is_empty() {
+        children.push(MenuEntry::separator());
+    }
+    children.push(MenuEntry::item(MENU_EDIT_SHORTCUTS, "Edit Shortcuts..."));
+    e.push(MenuEntry {
+        id: MENU_SHORTCUTS,
+        label: "Shortcuts".into(),
+        enabled: true,
+        kind: EntryKind::Submenu,
+        children,
+        ..MenuEntry::default()
+    });
+    e.push(MenuEntry::separator());
+
+    e.push(MenuEntry {
+        key: Some(','),
+        ..MenuEntry::item(MENU_EDIT, "Settings...")
+    });
+    e.push(MenuEntry::item(
+        MENU_UPDATE,
+        beckon_core::menu::update_label(true),
+    ));
+    e.push(MenuEntry {
+        key: Some('r'),
+        ..MenuEntry::item(MENU_RELOAD, "Reload Config")
+    });
+    if m.log == Some(true) {
+        e.push(MenuEntry::item(MENU_LOG, "Open Log"));
+    }
+    e.push(MenuEntry::separator());
+    e.push(MenuEntry {
+        key: Some('q'),
+        ..MenuEntry::item(MENU_QUIT, "Quit beckon")
+    });
+    e
+}
+
 #[cfg(target_os = "windows")]
 fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let st_build = Rc::clone(state);
@@ -3168,72 +3296,6 @@ mod tests {
         );
     }
 
-    /// The macOS menu says nothing it cannot do, and each absence is
-    /// structural: launchd owns the log there through `StandardErrorPath`,
-    /// so beckon has a path only when `--log` handed it one and this model
-    /// carries `log: None`; and login lifecycle belongs to `brew services`.
-    /// (`Settings...` WAS absent while the window did not exist; it is built
-    /// now, which is why this model has `settings: true` and the flag
-    /// survives as a capability rather than a constant.)
-    ///
-    /// **CORRECTED 2026-08-16**: this said *"`--log` is
-    /// `#[cfg(target_os = "windows")]` so beckon never owns a log path
-    /// there"*. The flag is `#[cfg(any(target_os = "windows", target_os =
-    /// "macos"))]` (`lib.rs`, the `Serve` variant), which is why
-    /// `menu_log_row` takes `has_log_path` at all rather than answering from
-    /// the platform -- the absence is this run's, not the platform's.
-    ///
-    /// Asserted as a whole-shape equality rather than three separate
-    /// "row is absent" checks, because the failure this guards against is a
-    /// row being ADDED — which no absence check can see.
-    #[test]
-    fn the_macos_menu_says_nothing_it_cannot_do() {
-        let rows = build_entries(&MenuModel {
-            phrase: "18 shortcuts registered".into(),
-            paused: false,
-            autostart: None,
-            log: None,
-            settings: true,
-            macos: true,
-        });
-        let shape: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(
-            shape,
-            vec![
-                "beckon - 18 shortcuts registered",
-                "",
-                "Settings...",
-                "Check for Updates...",
-                "Reload now",
-                "",
-                "Pause hotkeys",
-                "",
-                "Quit",
-            ]
-        );
-        assert!(!rows[0].enabled, "the status row is a label, not a button");
-    }
-
-    /// The status row is the one place the phrase is actually readable —
-    /// the tooltip is the redundant copy — so it must survive the macOS
-    /// shape, including while paused.
-    #[test]
-    fn the_macos_menu_still_reports_pause_in_its_head_row() {
-        let rows = build_entries(&MenuModel {
-            phrase: "18 shortcuts registered".into(),
-            paused: true,
-            autostart: None,
-            log: None,
-            settings: true,
-            macos: true,
-        });
-        assert_eq!(rows[0].label, "beckon - paused (18 shortcuts registered)");
-        assert_eq!(
-            rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
-            Some(true)
-        );
-    }
-
     /// A menu must never end on a separator or show two in a row: AppKit
     /// draws both, so the bug is visible rather than inert. Checked for
     /// every combination of the three capability flags, because the
@@ -3592,5 +3654,219 @@ mod tests {
             .iter()
             .all(|r| r.flag.is_none() && r.bundle_id.is_none()));
         assert_eq!(rows[0].chord, "⌃⌥⌘C");
+    }
+
+    use beckon_core::menu::EntryKind;
+
+    fn mac(rows: Vec<BindingRow>) -> MacMenu {
+        MacMenu {
+            phrase: "19 shortcuts registered".into(),
+            paused: false,
+            accessibility: true,
+            failed: 0,
+            log: None,
+            rows,
+        }
+    }
+
+    fn brow(name: &str, flag: Option<&'static str>) -> BindingRow {
+        BindingRow {
+            name: name.into(),
+            chord: "⇪X".into(),
+            spoken: format!("{name}, Caps + X"),
+            flag,
+            bundle_id: None,
+        }
+    }
+
+    fn labels(v: &[MenuEntry]) -> Vec<&str> {
+        v.iter().map(|e| e.label.as_str()).collect()
+    }
+
+    /// Spec §3.1: nine rows when nothing is broken, whatever the file holds.
+    /// That was round 1's objection: 19 inline rows, one more per binding.
+    #[test]
+    fn the_healthy_macos_menu_is_nine_rows_and_does_not_grow_with_the_file() {
+        let small = build_mac_entries(&mac(vec![brow("kitty", None)]));
+        let big = build_mac_entries(&mac((0..19)
+            .map(|i| brow(&format!("app{i}"), None))
+            .collect()));
+        assert_eq!(labels(&small), labels(&big));
+        assert_eq!(
+            labels(&small),
+            vec![
+                "beckon",
+                "",
+                "Shortcuts",
+                "",
+                "Settings...",
+                "Check for Updates...",
+                "Reload Config",
+                "",
+                "Quit beckon"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_header_carries_the_headline_and_the_switch_state() {
+        let e = build_mac_entries(&MacMenu {
+            paused: true,
+            ..mac(vec![brow("kitty", None)])
+        });
+        let EntryKind::Header(h) = &e[0].kind else {
+            panic!("first row is the header")
+        };
+        assert_eq!(e[0].id, MENU_STATUS);
+        assert_eq!(h.subtitle, "Paused - shortcuts are off");
+        assert!(!h.on, "paused means the switch is off");
+    }
+
+    #[test]
+    fn needs_attention_appears_only_while_a_row_is_broken() {
+        let e = build_mac_entries(&mac(vec![
+            brow("kitty", None),
+            brow("Hermes", Some("missing")),
+        ]));
+        let i = e
+            .iter()
+            .position(|x| x.kind == EntryKind::SectionHeader)
+            .expect("section");
+        assert_eq!(e[i].label, "Needs attention");
+        assert_eq!(e[i + 1].id, MENU_BINDING_BASE + 1);
+        assert_eq!(e[i + 1].flag, Some("missing"));
+        assert!(e[i + 2].is_separator());
+        assert!(build_mac_entries(&mac(vec![brow("kitty", None)]))
+            .iter()
+            .all(|x| x.kind != EntryKind::SectionHeader));
+    }
+
+    #[test]
+    fn more_than_three_broken_rows_fold_into_one_more_row_that_opens_the_fourth() {
+        let rows = (0..5)
+            .map(|i| brow(&format!("app{i}"), Some("missing")))
+            .collect();
+        let e = build_mac_entries(&mac(rows));
+        let i = e
+            .iter()
+            .position(|x| x.kind == EntryKind::SectionHeader)
+            .unwrap();
+        assert_eq!(e[i + 4].label, "and 2 more...");
+        assert_eq!(e[i + 4].id, MENU_BINDING_BASE + 3);
+    }
+
+    /// `paused` outranks every word, and the header already says it.
+    #[test]
+    fn pausing_hides_needs_attention() {
+        let e = build_mac_entries(&MacMenu {
+            paused: true,
+            ..mac(vec![brow("Hermes", Some("missing"))])
+        });
+        assert!(e.iter().all(|x| x.kind != EntryKind::SectionHeader));
+    }
+
+    #[test]
+    fn every_binding_is_in_the_submenu_in_file_order_and_opens_its_own_row() {
+        let e = build_mac_entries(&mac(vec![brow("kitty", None), brow("Claude", None)]));
+        let sub = e.iter().find(|x| x.id == MENU_SHORTCUTS).unwrap();
+        assert_eq!(sub.kind, EntryKind::Submenu);
+        assert_eq!(
+            labels(&sub.children),
+            vec!["kitty", "Claude", "", "Edit Shortcuts..."]
+        );
+        assert_eq!(sub.children[1].id, MENU_BINDING_BASE + 1);
+        assert_eq!(sub.children[1].detail.as_deref(), Some("⇪X"));
+        assert_eq!(sub.children[1].tooltip.as_deref(), Some("Claude, Caps + X"));
+        assert_eq!(sub.children[3].id, MENU_EDIT_SHORTCUTS);
+    }
+
+    #[test]
+    fn an_empty_table_still_offers_edit_shortcuts_without_a_stray_separator() {
+        let e = build_mac_entries(&mac(vec![]));
+        let sub = e.iter().find(|x| x.id == MENU_SHORTCUTS).unwrap();
+        assert_eq!(labels(&sub.children), vec!["Edit Shortcuts..."]);
+    }
+
+    #[test]
+    fn open_log_is_there_only_when_this_run_has_a_log() {
+        let without = build_mac_entries(&mac(vec![]));
+        assert!(without.iter().all(|x| x.id != MENU_LOG));
+        let with = build_mac_entries(&MacMenu {
+            log: Some(true),
+            ..mac(vec![])
+        });
+        let reload = with.iter().position(|x| x.id == MENU_RELOAD).unwrap();
+        assert_eq!(with[reload + 1].label, "Open Log");
+    }
+
+    #[test]
+    fn the_window_rows_keep_their_command_key_equivalents() {
+        let e = build_mac_entries(&mac(vec![]));
+        let key = |id| e.iter().find(|x| x.id == id).unwrap().key;
+        assert_eq!(
+            (key(MENU_EDIT), key(MENU_RELOAD), key(MENU_QUIT)),
+            (Some(','), Some('r'), Some('q'))
+        );
+    }
+
+    fn walk(v: &[MenuEntry], f: &mut dyn FnMut(&[MenuEntry])) {
+        f(v);
+        for e in v {
+            if !e.children.is_empty() {
+                walk(&e.children, f);
+            }
+        }
+    }
+
+    #[test]
+    fn no_macos_menu_level_starts_or_ends_on_a_rule_or_doubles_one() {
+        for paused in [false, true] {
+            for log in [None, Some(true)] {
+                for rows in [
+                    vec![],
+                    vec![brow("a", None)],
+                    vec![brow("a", Some("missing"))],
+                ] {
+                    let e = build_mac_entries(&MacMenu {
+                        paused,
+                        log,
+                        ..mac(rows)
+                    });
+                    walk(&e, &mut |lvl| {
+                        assert!(!lvl.first().unwrap().is_separator());
+                        assert!(!lvl.last().unwrap().is_separator());
+                        assert!(!lvl
+                            .windows(2)
+                            .any(|w| w[0].is_separator() && w[1].is_separator()));
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_macos_row_collides_with_a_reserved_id_or_another_row() {
+        let rows = (0..25)
+            .map(|i| brow(&format!("app{i}"), (i % 2 == 0).then_some("missing")))
+            .collect();
+        let e = build_mac_entries(&mac(rows));
+        let mut seen = std::collections::HashMap::new();
+        walk(&e, &mut |lvl| {
+            for x in lvl
+                .iter()
+                .filter(|x| !x.is_separator() && x.kind != EntryKind::SectionHeader)
+            {
+                assert_ne!(x.id, beckon_core::menu::MENU_ID_DOUBLE_CLICK);
+                assert_ne!(x.id, beckon_core::menu::MENU_ID_ALT_CLICK);
+                // A binding appears twice (attention + submenu) on purpose;
+                // it must be the SAME binding both times.
+                // `and N more...` deliberately shares the id of the first
+                // binding it folds, so it opens that one.
+                if let Some(prev) = seen.insert(x.id, x.label.clone()) {
+                    let folded = prev.starts_with("and ") || x.label.starts_with("and ");
+                    assert!(prev == x.label || folded, "id {} is two rows", x.id);
+                }
+            }
+        });
     }
 }
