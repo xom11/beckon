@@ -133,6 +133,105 @@ pub fn update_label(macos: bool) -> &'static str {
     }
 }
 
+/// What the macOS header says, and the colour of its dot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Headline {
+    pub text: String,
+    pub dot: Dot,
+}
+
+/// Everything `menu_headline` weighs, already counted by `serve`.
+#[derive(Debug, Clone, Copy)]
+pub struct HeadlineInputs<'a> {
+    pub paused: bool,
+    pub accessibility: bool,
+    /// `serve`'s `last_phrase`, said verbatim when a registration failed so
+    /// the header and the tooltip use one sentence.
+    pub phrase: &'a str,
+    /// Bindings whose registration returned an error.
+    pub failed: usize,
+    /// Bindings whose every candidate is a `NoMatch`.
+    pub missing: usize,
+    pub total: usize,
+}
+
+/// The header's subtitle and dot. The precedence is spec §3.2, and each rung
+/// hides the ones below it because the one above explains more.
+pub fn menu_headline(i: HeadlineInputs) -> Headline {
+    if i.paused {
+        return Headline {
+            text: "Paused - shortcuts are off".into(),
+            dot: Dot::Off,
+        };
+    }
+    if !i.accessibility {
+        return Headline {
+            text: "Needs Accessibility to switch windows".into(),
+            dot: Dot::Warn,
+        };
+    }
+    if i.failed > 0 {
+        return Headline {
+            text: i.phrase.to_string(),
+            dot: Dot::Warn,
+        };
+    }
+    let noun = if i.total == 1 {
+        "shortcut"
+    } else {
+        "shortcuts"
+    };
+    let text = if i.missing > 0 {
+        format!("{} {noun}, {} missing", i.total, i.missing)
+    } else {
+        format!("{} {noun}", i.total)
+    };
+    Headline { text, dot: Dot::Ok }
+}
+
+/// The one word a binding row carries in the menu, from `settings::FLAGS`,
+/// in `row_condition`'s precedence.
+///
+/// `paused` is absent on purpose -- the header says it once, instead of every
+/// row saying it. `other chord` is absent because it is a view fact about the
+/// list, not a fault (`docs/notes/settings-window.md`).
+pub fn row_flag(in_use: bool, missing: bool) -> Option<&'static str> {
+    if in_use {
+        Some(crate::settings::FLAGS[1])
+    } else if missing {
+        Some(crate::settings::FLAGS[2])
+    } else {
+        None
+    }
+}
+
+/// How many broken rows the *Needs attention* section lists before folding
+/// the rest into one `and N more...` row.
+pub const ATTENTION_ROWS: usize = 3;
+
+/// Which rows *Needs attention* shows, in file order, and which it folds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Attention {
+    pub shown: Vec<usize>,
+    pub rest: Vec<usize>,
+}
+
+/// Split the flagged rows of `flags` (one per binding, in file order) into
+/// the first `max` and the rest. Both empty means the section is not drawn.
+pub fn attention(flags: &[Option<&str>], max: usize) -> Attention {
+    let flagged: Vec<usize> = flags
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    let cut = flagged.len().min(max);
+    Attention {
+        shown: flagged[..cut].to_vec(),
+        rest: flagged[cut..].to_vec(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,8 +290,146 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn the_two_reserved_ids_are_distinct_and_at_the_top() {
         assert_ne!(MENU_ID_ALT_CLICK, MENU_ID_DOUBLE_CLICK);
         assert!(MENU_ID_ALT_CLICK > 1_000_000);
+    }
+
+    fn inputs() -> HeadlineInputs<'static> {
+        HeadlineInputs {
+            paused: false,
+            accessibility: true,
+            phrase: "19 shortcuts registered",
+            failed: 0,
+            missing: 0,
+            total: 19,
+        }
+    }
+
+    /// One test per rung, each proving it outranks the next (spec §3.2).
+    #[test]
+    fn paused_outranks_everything() {
+        let h = menu_headline(HeadlineInputs {
+            paused: true,
+            accessibility: false,
+            failed: 2,
+            missing: 2,
+            ..inputs()
+        });
+        assert_eq!(
+            h,
+            Headline {
+                text: "Paused - shortcuts are off".into(),
+                dot: Dot::Off
+            }
+        );
+    }
+
+    #[test]
+    fn missing_accessibility_outranks_a_failed_registration() {
+        let h = menu_headline(HeadlineInputs {
+            accessibility: false,
+            failed: 2,
+            ..inputs()
+        });
+        assert_eq!(
+            h,
+            Headline {
+                text: "Needs Accessibility to switch windows".into(),
+                dot: Dot::Warn
+            }
+        );
+    }
+
+    /// A failed registration is said in `serve`'s own words, verbatim.
+    #[test]
+    fn a_failed_registration_uses_the_registration_phrase() {
+        let h = menu_headline(HeadlineInputs {
+            phrase: "17 of 19 shortcuts registered (2 failed)",
+            failed: 2,
+            missing: 1,
+            ..inputs()
+        });
+        assert_eq!(h.text, "17 of 19 shortcuts registered (2 failed)");
+        assert_eq!(h.dot, Dot::Warn);
+    }
+
+    /// Missing apps are counted but do not turn the dot orange: the keys are
+    /// registered and serving.
+    #[test]
+    fn missing_apps_are_counted_on_a_green_dot() {
+        let h = menu_headline(HeadlineInputs {
+            missing: 2,
+            ..inputs()
+        });
+        assert_eq!(
+            h,
+            Headline {
+                text: "19 shortcuts, 2 missing".into(),
+                dot: Dot::Ok
+            }
+        );
+    }
+
+    #[test]
+    fn a_clean_file_just_counts_and_agrees_in_number() {
+        assert_eq!(menu_headline(inputs()).text, "19 shortcuts");
+        assert_eq!(
+            menu_headline(HeadlineInputs {
+                total: 1,
+                ..inputs()
+            })
+            .text,
+            "1 shortcut"
+        );
+    }
+
+    #[test]
+    fn every_headline_is_ascii() {
+        for i in [
+            inputs(),
+            HeadlineInputs {
+                paused: true,
+                ..inputs()
+            },
+            HeadlineInputs {
+                accessibility: false,
+                ..inputs()
+            },
+            HeadlineInputs {
+                missing: 3,
+                ..inputs()
+            },
+        ] {
+            assert!(menu_headline(i).text.is_ascii());
+        }
+    }
+
+    /// The indices into FLAGS are what `row_flag` depends on; pin the words.
+    #[test]
+    fn row_flag_speaks_the_settings_vocabulary_in_its_precedence() {
+        assert_eq!(crate::settings::FLAGS[1], "in use");
+        assert_eq!(crate::settings::FLAGS[2], "missing");
+        assert_eq!(row_flag(true, true), Some("in use"));
+        assert_eq!(row_flag(false, true), Some("missing"));
+        assert_eq!(row_flag(false, false), None);
+    }
+
+    #[test]
+    fn attention_keeps_file_order_and_cuts_at_max() {
+        let flags = [
+            None,
+            Some("missing"),
+            None,
+            Some("in use"),
+            Some("missing"),
+            Some("missing"),
+            Some("missing"),
+        ];
+        let a = attention(&flags, ATTENTION_ROWS);
+        assert_eq!(a.shown, vec![1, 3, 4]);
+        assert_eq!(a.rest, vec![5, 6]);
+        assert_eq!(attention(&[None, None], 3), Attention::default());
     }
 }
