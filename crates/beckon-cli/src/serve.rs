@@ -1200,6 +1200,7 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
             label: head,
             checked: None,
             enabled: false,
+            ..MenuEntry::default()
         },
         MenuEntry::separator(),
     ];
@@ -1220,6 +1221,7 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
             label: "Open log".into(),
             checked: None,
             enabled,
+            ..MenuEntry::default()
         });
     }
     entries.extend([
@@ -1229,6 +1231,7 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
             label: "Pause hotkeys".into(),
             checked: Some(m.paused),
             enabled: true,
+            ..MenuEntry::default()
         },
     ]);
     if let Some(checked) = m.autostart {
@@ -1237,6 +1240,7 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
             label: "Start with Windows".into(),
             checked: Some(checked),
             enabled: true,
+            ..MenuEntry::default()
         });
     }
     entries.push(MenuEntry::separator());
@@ -1245,6 +1249,7 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
         label: "Quit".into(),
         checked: None,
         enabled: true,
+        ..MenuEntry::default()
     });
     entries
 }

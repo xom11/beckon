@@ -79,6 +79,7 @@ fn main() {
                     label: "PROBE - status row".into(),
                     checked: None,
                     enabled: false,
+                    ..MenuEntry::default()
                 },
                 MenuEntry::separator(),
                 MenuEntry::item(2, "PROBE - click me"),
@@ -87,6 +88,7 @@ fn main() {
                     label: "PROBE - checkable".into(),
                     checked: Some(true),
                     enabled: true,
+                    ..MenuEntry::default()
                 },
                 MenuEntry::separator(),
                 MenuEntry::item(4, "PROBE - quit"),
