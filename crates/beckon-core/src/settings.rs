@@ -2294,6 +2294,20 @@ impl Model {
         parse_config(&text)?;
         Ok(text)
     }
+
+    /// The MODEL row whose chord is `canonical` (`Combo::canonical`
+    /// spelling), however the file wrote it. A row whose chord does not parse
+    /// matches nothing.
+    ///
+    /// A model index, like `selected` -- not a view index, which the filter
+    /// moves (`selected_is_a_view_index_while_filtered`).
+    pub fn row_for_combo(&self, canonical: &str) -> Option<usize> {
+        self.rows.iter().position(|r| {
+            crate::shortcuts::Combo::parse(&r.combo)
+                .map(|c| c.canonical() == canonical)
+                .unwrap_or(false)
+        })
+    }
 }
 
 /// Bare `key = value` lines at the root, in file order.
@@ -6202,6 +6216,16 @@ mod tests {
             "\"ctrl+alt+a\"=\"Notepad\"\n\"ctrl+alt+b\"=\"Brave\"\n\"ctrl+alt+q\"=\"Weather\"\n",
         )
         .unwrap()
+    }
+
+    /// A menu row names its binding by chord, and the file may spell that
+    /// chord in any modifier order.
+    #[test]
+    fn a_row_is_found_by_its_chord_however_the_file_spelled_it() {
+        let m = Model::from_text("\"alt+ctrl+a\"=\"Notepad\"\n\"ctrl+alt+b\"=\"Brave\"\n").unwrap();
+        assert_eq!(m.row_for_combo("ctrl+alt+a"), Some(0));
+        assert_eq!(m.row_for_combo("ctrl+alt+b"), Some(1));
+        assert_eq!(m.row_for_combo("ctrl+alt+z"), None);
     }
 
     #[test]
