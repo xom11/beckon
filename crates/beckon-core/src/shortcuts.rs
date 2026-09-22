@@ -540,10 +540,7 @@ mod glyph_tests {
     /// for the reason `combo_folds_to_caps` gives.
     #[test]
     fn a_shift_row_does_not_fold() {
-        assert_eq!(
-            combo_glyphs("ctrl+super+alt+shift+m", Some(HOLD)),
-            "⌃⌥⇧⌘M"
-        );
+        assert_eq!(combo_glyphs("ctrl+super+alt+shift+m", Some(HOLD)), "⌃⌥⇧⌘M");
     }
 
     #[test]

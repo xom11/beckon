@@ -370,14 +370,25 @@ mod tests {
     /// A Guess resolves: the ladder stops there, and so must the grade.
     #[test]
     fn a_guess_stops_the_ladder() {
-        let rs = [report("Brave", Certainty::Guess), report("Brave Browser", Certainty::Exact)];
-        assert_eq!(chain_winner(&["Brave", "Brave Browser"], graded(&rs)).unwrap().id, "Brave");
+        let rs = [
+            report("Brave", Certainty::Guess),
+            report("Brave Browser", Certainty::Exact),
+        ];
+        assert_eq!(
+            chain_winner(&["Brave", "Brave Browser"], graded(&rs))
+                .unwrap()
+                .id,
+            "Brave"
+        );
     }
 
     /// Every rung missed: the LAST candidate is the one whose absence is news.
     #[test]
     fn when_every_candidate_misses_the_last_one_is_reported() {
-        let rs = [report("A", Certainty::NoMatch), report("B", Certainty::NoMatch)];
+        let rs = [
+            report("A", Certainty::NoMatch),
+            report("B", Certainty::NoMatch),
+        ];
         let w = chain_winner(&["A", "B"], graded(&rs)).unwrap();
         assert_eq!((w.id.as_str(), w.certainty), ("B", Certainty::NoMatch));
     }
