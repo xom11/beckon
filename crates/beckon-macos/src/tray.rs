@@ -33,16 +33,24 @@
 //! out of every call site, which is what lets the settings-window work add
 //! a real main-queue hop later without touching any caller.
 
-use beckon_core::menu::{MenuEntry, MENU_ID_DOUBLE_CLICK};
+use beckon_core::menu::{Dot, EntryKind, Header, MenuEntry, MENU_ID_DOUBLE_CLICK};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSAccessibility, NSApplication, NSAttributedStringNSStringDrawing, NSColor, NSControl, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSLayoutAttribute, NSMenu,
+    NSMenuDelegate, NSMenuItem, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSStackView, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextField, NSTextTab,
+    NSUserInterfaceLayoutOrientation, NSVariableStatusItemLength, NSView, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSObject, NSObjectProtocol, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSData, NSDictionary,
+    NSEdgeInsets, NSMutableAttributedString, NSObject, NSObjectProtocol, NSOperatingSystemVersion,
+    NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+};
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 type MenuBuilder = Box<dyn Fn() -> Vec<MenuEntry>>;
 type MenuHandler = Box<dyn FnMut(u32)>;
@@ -57,6 +65,17 @@ struct Tray {
     _target: Retained<MenuTarget>,
     build: MenuBuilder,
     on_click: MenuHandler,
+    /// App icons by bundle id, fetched once. `iconForFile` goes to disk.
+    icons: HashMap<String, Retained<NSImage>>,
+    /// The header's live parts, so flipping its switch can update the
+    /// subtitle in place while the menu stays open.
+    header: Option<HeaderParts>,
+}
+
+struct HeaderParts {
+    dot: Retained<NSTextField>,
+    subtitle: Retained<NSTextField>,
+    switch: Retained<NSSwitch>,
 }
 
 thread_local! {
@@ -86,26 +105,7 @@ define_class!(
             let Some(mtm) = MainThreadMarker::new() else {
                 return;
             };
-            // The builder is taken OUT of the slot, not borrowed across, for
-            // the reason `dispatch` states and the settings window learned
-            // the hard way (`settings_window::controls`): a callback that
-            // re-enters this module while a borrow is live panics. Today's
-            // builder only reads `ServeState`, so this is insurance rather
-            // than a fix -- but it is the same shape as the bug that
-            // actually happened, and the cost is one take-and-restore.
-            let Some(build) = TRAY.with(|t| {
-                t.borrow_mut()
-                    .as_mut()
-                    .map(|x| std::mem::replace(&mut x.build, Box::new(Vec::new)))
-            }) else {
-                return;
-            };
-            let entries = build();
-            TRAY.with(|t| {
-                if let Some(x) = t.borrow_mut().as_mut() {
-                    x.build = build;
-                }
-            });
+            let Some(entries) = built() else { return };
             populate(menu, &entries, self, mtm);
         }
     }
@@ -117,8 +117,39 @@ define_class!(
             let id = sender.tag() as u32;
             dispatch(id);
         }
+
+        /// The header's switch. Its tag is the header entry's id.
+        #[unsafe(method(beckonControlAction:))]
+        fn beckon_control_action(&self, sender: &NSControl) {
+            let id = sender.tag() as u32;
+            dispatch(id);
+            refresh_header();
+        }
     }
 );
+
+/// Run `build` with the tray borrow released -- the rule `dispatch` states.
+///
+/// The builder is taken OUT of the slot, not borrowed across, for the reason
+/// `dispatch` states and the settings window learned the hard way
+/// (`settings_window::controls`): a callback that re-enters this module
+/// while a borrow is live panics. Today's builder only reads `ServeState`,
+/// so this is insurance rather than a fix -- but it is the same shape as the
+/// bug that actually happened, and the cost is one take-and-restore.
+fn built() -> Option<Vec<MenuEntry>> {
+    let build = TRAY.with(|t| {
+        t.borrow_mut()
+            .as_mut()
+            .map(|x| std::mem::replace(&mut x.build, Box::new(Vec::new)))
+    })?;
+    let entries = build();
+    TRAY.with(|t| {
+        if let Some(x) = t.borrow_mut().as_mut() {
+            x.build = build;
+        }
+    });
+    Some(entries)
+}
 
 /// Run `on_click` with the tray borrow released.
 ///
@@ -143,36 +174,337 @@ fn dispatch(id: u32) {
     });
 }
 
-/// Replace `menu`'s rows with `entries`.
+/// Replace `menu`'s rows with `entries`, recursing into submenus.
 fn populate(menu: &NSMenu, entries: &[MenuEntry], target: &MenuTarget, mtm: MainThreadMarker) {
     menu.removeAllItems();
+    let tab = tab_stop(entries);
     for e in entries {
-        if e.is_separator() {
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
-            continue;
-        }
-        let title = NSString::from_str(&e.label);
-        let item = unsafe {
-            NSMenuItem::initWithTitle_action_keyEquivalent(
-                NSMenuItem::alloc(mtm),
-                &title,
-                // A disabled row still gets the action: AppKit decides
-                // enablement from `setEnabled:` below, and leaving the
-                // selector off would ALSO grey the row, making `enabled`
-                // impossible to observe separately.
-                Some(sel!(beckonMenuAction:)),
-                &NSString::from_str(""),
-            )
+        let item = match &e.kind {
+            EntryKind::SectionHeader => section_header(&e.label, mtm),
+            EntryKind::Header(h) => header_item(e.id, h, target, mtm),
+            EntryKind::Submenu => {
+                let item = plain_item(e, target, tab, mtm);
+                let sub = NSMenu::new(mtm);
+                sub.setAutoenablesItems(false);
+                populate(&sub, &e.children, target, mtm);
+                item.setSubmenu(Some(&sub));
+                item
+            }
+            EntryKind::Item if e.is_separator() => NSMenuItem::separatorItem(mtm),
+            EntryKind::Item => plain_item(e, target, tab, mtm),
         };
-        unsafe {
-            item.setTarget(Some(target as &AnyObject));
-            item.setTag(e.id as isize);
-        }
-        item.setEnabled(e.enabled);
-        if let Some(checked) = e.checked {
-            item.setState(if checked { 1 } else { 0 });
-        }
         menu.addItem(&item);
+    }
+}
+
+/// A plain, clickable row: label, optional flag/chord, optional icon.
+fn plain_item(
+    e: &MenuEntry,
+    target: &MenuTarget,
+    tab: f64,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
+    let key = e.key.map(String::from).unwrap_or_default();
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(&e.label),
+            // A disabled row still gets the action: AppKit decides
+            // enablement from `setEnabled:` below, and leaving the selector
+            // off would ALSO grey the row, making `enabled` impossible to
+            // observe separately.
+            Some(sel!(beckonMenuAction:)),
+            &NSString::from_str(&key),
+        )
+    };
+    unsafe {
+        item.setTarget(Some(target as &AnyObject));
+        item.setTag(e.id as isize);
+    }
+    item.setEnabled(e.enabled);
+    if let Some(checked) = e.checked {
+        item.setState(if checked { 1 } else { 0 });
+    }
+    if e.detail.is_some() || e.flag.is_some() {
+        item.setAttributedTitle(Some(&row_title(e, tab)));
+    }
+    // Every binding row gets an image, so the column lines up even when a
+    // bundle is unknown -- a gap would read as a rendering fault.
+    if e.detail.is_some() {
+        let img = e
+            .icon
+            .as_deref()
+            .and_then(app_icon)
+            .or_else(unknown_app_icon);
+        item.setImage(img.as_deref());
+    }
+    if let Some(t) = &e.tooltip {
+        item.setToolTip(Some(&NSString::from_str(t)));
+    }
+    item
+}
+
+/// Label, then the flag in orange, then a tab to a right-aligned chord.
+///
+/// **The label carries no colour attribute on purpose**, so AppKit still
+/// inverts it on the highlighted row. The flag and the chord are coloured and
+/// will NOT invert -- that is Probe P2 below.
+fn row_title(e: &MenuEntry, tab: f64) -> Retained<NSAttributedString> {
+    let font = NSFont::menuFontOfSize(0.0);
+    let para = NSMutableParagraphStyle::new();
+    let stop = unsafe {
+        NSTextTab::initWithTextAlignment_location_options(
+            NSTextTab::alloc(),
+            NSTextAlignment::Right,
+            tab,
+            &NSDictionary::new(),
+        )
+    };
+    para.setTabStops(Some(&NSArray::from_retained_slice(&[stop])));
+    let out = NSMutableAttributedString::new();
+    append(&out, &e.label, &font, None, &para);
+    if let Some(f) = e.flag {
+        append(
+            &out,
+            &format!("  {f}"),
+            &NSFont::menuFontOfSize(11.0),
+            Some(&NSColor::systemOrangeColor()),
+            &para,
+        );
+    }
+    if let Some(d) = &e.detail {
+        append(
+            &out,
+            &format!("\t{d}"),
+            &font,
+            Some(&NSColor::secondaryLabelColor()),
+            &para,
+        );
+    }
+    Retained::into_super(out)
+}
+
+fn append(
+    out: &NSMutableAttributedString,
+    text: &str,
+    font: &NSFont,
+    color: Option<&NSColor>,
+    para: &NSMutableParagraphStyle,
+) {
+    let mut keys: Vec<&NSAttributedStringKey> = vec![unsafe { NSFontAttributeName }, unsafe {
+        NSParagraphStyleAttributeName
+    }];
+    let mut vals: Vec<&AnyObject> = vec![font.as_ref(), para.as_ref()];
+    if let Some(c) = color {
+        keys.push(unsafe { NSForegroundColorAttributeName });
+        vals.push(c.as_ref());
+    }
+    let attrs = NSDictionary::from_slices(&keys, &vals);
+    let piece = unsafe {
+        NSAttributedString::initWithString_attributes(
+            NSAttributedString::alloc(),
+            &NSString::from_str(text),
+            Some(&attrs),
+        )
+    };
+    out.appendAttributedString(&piece);
+}
+
+/// Where the right-aligned chord column ends: the widest label plus flag,
+/// a gap, and the widest chord, all in the menu font. Measured per menu
+/// level, so the submenu's column is its own.
+fn tab_stop(entries: &[MenuEntry]) -> f64 {
+    const GAP: f64 = 28.0;
+    let font = NSFont::menuFontOfSize(0.0);
+    let small = NSFont::menuFontOfSize(11.0);
+    let rows = entries.iter().filter(|e| e.detail.is_some());
+    let label = rows
+        .clone()
+        .map(|e| width(&e.label, &font) + e.flag.map_or(0.0, |f| width(&format!("  {f}"), &small)))
+        .fold(0.0, f64::max);
+    let chord = rows
+        .filter_map(|e| e.detail.as_deref())
+        .map(|d| width(d, &font))
+        .fold(0.0, f64::max);
+    label + GAP + chord
+}
+
+fn width(s: &str, font: &NSFont) -> f64 {
+    let attrs = NSDictionary::from_slices(
+        &[unsafe { NSFontAttributeName }],
+        &[font.as_ref() as &AnyObject],
+    );
+    let a = unsafe {
+        NSAttributedString::initWithString_attributes(
+            NSAttributedString::alloc(),
+            &NSString::from_str(s),
+            Some(&attrs),
+        )
+    };
+    a.size().width
+}
+
+/// macOS 14's real section header. Below 14 -- `Info.plist` allows 11 -- a
+/// disabled row reads as a heading.
+fn section_header(title: &str, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
+    let t = NSString::from_str(title);
+    let v14 = NSOperatingSystemVersion {
+        majorVersion: 14,
+        minorVersion: 0,
+        patchVersion: 0,
+    };
+    if NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(v14) {
+        return NSMenuItem::sectionHeaderWithTitle(&t, mtm);
+    }
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &t,
+            None,
+            &NSString::from_str(""),
+        )
+    };
+    item.setEnabled(false);
+    item
+}
+
+/// A bundle's icon at menu size, cached by id.
+fn app_icon(bundle_id: &str) -> Option<Retained<NSImage>> {
+    let cached = TRAY.with(|t| {
+        t.borrow()
+            .as_ref()
+            .and_then(|x| x.icons.get(bundle_id).cloned())
+    });
+    if cached.is_some() {
+        return cached;
+    }
+    let ws = NSWorkspace::sharedWorkspace();
+    let url = ws.URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))?;
+    let path = url.path()?;
+    let img = ws.iconForFile(&path);
+    img.setSize(NSSize::new(16.0, 16.0));
+    TRAY.with(|t| {
+        if let Some(x) = t.borrow_mut().as_mut() {
+            x.icons.insert(bundle_id.to_string(), img.clone());
+        }
+    });
+    Some(img)
+}
+
+/// The placeholder for a binding whose app did not resolve. It is a template
+/// SF Symbol, so it tints with the menu.
+fn unknown_app_icon() -> Option<Retained<NSImage>> {
+    let img = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+        &NSString::from_str("app.dashed"),
+        None,
+    )?;
+    img.setSize(NSSize::new(16.0, 16.0));
+    Some(img)
+}
+
+fn dot_color(d: Dot) -> Retained<NSColor> {
+    match d {
+        Dot::Ok => NSColor::systemGreenColor(),
+        Dot::Warn => NSColor::systemOrangeColor(),
+        Dot::Off => NSColor::tertiaryLabelColor(),
+    }
+}
+
+const HEADER_WIDTH: f64 = 260.0;
+
+/// The header: dot, title over subtitle, and the switch hard right.
+fn header_item(
+    id: u32,
+    h: &Header,
+    target: &MenuTarget,
+    mtm: MainThreadMarker,
+) -> Retained<NSMenuItem> {
+    let item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(&h.title),
+            None,
+            &NSString::from_str(""),
+        )
+    };
+    let dot = NSTextField::labelWithString(&NSString::from_str("\u{25CF}"), mtm);
+    dot.setTextColor(Some(&dot_color(h.dot)));
+    let title = NSTextField::labelWithString(&NSString::from_str(&h.title), mtm);
+    title.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
+    let subtitle = NSTextField::labelWithString(&NSString::from_str(&h.subtitle), mtm);
+    subtitle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+    subtitle.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    let text = NSStackView::stackViewWithViews(
+        &NSArray::from_slice(&[title.as_ref() as &NSView, subtitle.as_ref()]),
+        mtm,
+    );
+    text.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    text.setAlignment(NSLayoutAttribute::Leading);
+    text.setSpacing(1.0);
+    // The text column is what stretches, so the switch sits hard right.
+    text.setContentHuggingPriority_forOrientation(
+        1.0,
+        objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
+    );
+    let switch = NSSwitch::new(mtm);
+    switch.setState(if h.on { 1 } else { 0 });
+    unsafe {
+        switch.setTarget(Some(target as &AnyObject));
+        switch.setAction(Some(sel!(beckonControlAction:)));
+    }
+    switch.setTag(id as isize);
+    switch.setAccessibilityLabel(Some(&NSString::from_str("Shortcuts on")));
+    let row = NSStackView::stackViewWithViews(
+        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), switch.as_ref()]),
+        mtm,
+    );
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setSpacing(8.0);
+    row.setEdgeInsets(NSEdgeInsets {
+        top: 6.0,
+        left: 14.0,
+        bottom: 6.0,
+        right: 14.0,
+    });
+    row.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HEADER_WIDTH, 44.0),
+    ));
+    item.setView(Some(&row));
+    TRAY.with(|t| {
+        if let Some(x) = t.borrow_mut().as_mut() {
+            x.header = Some(HeaderParts {
+                dot,
+                subtitle,
+                switch,
+            });
+        }
+    });
+    item
+}
+
+/// After the switch was flipped: rebuild, and move the header's three parts
+/// to what the rebuilt header says. The rest of the open menu stays as drawn
+/// until the next open, which is when `menuNeedsUpdate:` rebuilds it anyway.
+fn refresh_header() {
+    let Some(entries) = built() else { return };
+    let Some(h) = entries.iter().find_map(|e| match &e.kind {
+        EntryKind::Header(h) => Some(h.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+    let parts = TRAY.with(|t| {
+        t.borrow().as_ref().and_then(|x| {
+            x.header
+                .as_ref()
+                .map(|p| (p.dot.clone(), p.subtitle.clone(), p.switch.clone()))
+        })
+    });
+    if let Some((dot, subtitle, switch)) = parts {
+        dot.setTextColor(Some(&dot_color(h.dot)));
+        subtitle.setStringValue(&NSString::from_str(&h.subtitle));
+        switch.setState(if h.on { 1 } else { 0 });
     }
 }
 
@@ -287,6 +619,8 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
             _target: target,
             build,
             on_click,
+            icons: HashMap::new(),
+            header: None,
         });
     });
     Ok(())

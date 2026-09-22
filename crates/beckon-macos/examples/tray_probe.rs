@@ -54,8 +54,10 @@ fn main() {
 
     #[cfg(target_os = "macos")]
     {
-        use beckon_core::menu::MenuEntry;
+        use beckon_core::menu::{Dot, EntryKind, Header, MenuEntry};
         use beckon_macos::{hotkey, tray};
+        use std::cell::Cell;
+        use std::rc::Rc;
 
         // Mirrors `serve`: the UIElement transform happens inside
         // `HotkeyManager::install`, and it is a precondition for the status
@@ -72,32 +74,82 @@ fn main() {
         // Held so the manager is not dropped out from under the loop.
         std::mem::forget(mgr);
 
-        let build = Box::new(|| {
+        let on = Rc::new(Cell::new(true));
+        let on_b = Rc::clone(&on);
+        let row =
+            |id: u32, name: &str, chord: &str, flag: Option<&'static str>, icon: Option<&str>| {
+                MenuEntry {
+                    id,
+                    label: name.into(),
+                    enabled: true,
+                    detail: Some(chord.into()),
+                    flag,
+                    icon: icon.map(Into::into),
+                    tooltip: Some(format!("{name}, {chord}")),
+                    ..MenuEntry::default()
+                }
+            };
+        let build = Box::new(move || {
+            let on = on_b.get();
             vec![
                 MenuEntry {
                     id: 1,
-                    label: "PROBE - status row".into(),
-                    checked: None,
-                    enabled: false,
-                    ..MenuEntry::default()
-                },
-                MenuEntry::separator(),
-                MenuEntry::item(2, "PROBE - click me"),
-                MenuEntry {
-                    id: 3,
-                    label: "PROBE - checkable".into(),
-                    checked: Some(true),
+                    label: "beckon".into(),
                     enabled: true,
+                    kind: EntryKind::Header(Header {
+                        title: "beckon".into(),
+                        subtitle: if on {
+                            "3 shortcuts, 1 missing".into()
+                        } else {
+                            "Paused - shortcuts are off".into()
+                        },
+                        dot: if on { Dot::Ok } else { Dot::Off },
+                        on,
+                    }),
                     ..MenuEntry::default()
                 },
                 MenuEntry::separator(),
-                MenuEntry::item(4, "PROBE - quit"),
+                MenuEntry::section_header("Needs attention"),
+                row(1001, "Hermes", "⇪H", Some("missing"), None),
+                MenuEntry::separator(),
+                MenuEntry {
+                    id: 9,
+                    label: "Shortcuts".into(),
+                    enabled: true,
+                    kind: EntryKind::Submenu,
+                    children: vec![
+                        row(1000, "Finder", "⇪F", None, Some("com.apple.finder")),
+                        row(1001, "Hermes", "⇪H", Some("missing"), None),
+                        row(
+                            1002,
+                            "System Settings",
+                            "⌃⌥⇧⌘S",
+                            None,
+                            Some("com.apple.systempreferences"),
+                        ),
+                        MenuEntry::separator(),
+                        MenuEntry::item(10, "Edit Shortcuts..."),
+                    ],
+                    ..MenuEntry::default()
+                },
+                MenuEntry::separator(),
+                MenuEntry {
+                    key: Some(','),
+                    ..MenuEntry::item(2, "Settings...")
+                },
+                MenuEntry::separator(),
+                MenuEntry {
+                    key: Some('q'),
+                    ..MenuEntry::item(4, "Quit beckon")
+                },
             ]
         });
-        let on_click = Box::new(|id: u32| {
-            // Printing is the whole point: it is the only evidence that a
-            // click reached Rust rather than merely dismissing the menu.
+        let on_c = Rc::clone(&on);
+        let on_click = Box::new(move |id: u32| {
             println!("menu click: id={id}");
+            if id == 1 {
+                on_c.set(!on_c.get());
+            }
             if id == 4 {
                 println!("quitting on request");
                 std::process::exit(0);
