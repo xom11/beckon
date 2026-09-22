@@ -38,11 +38,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSApplication, NSAttributedStringNSStringDrawing, NSColor, NSControl, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSLayoutAttribute, NSMenu,
-    NSMenuDelegate, NSMenuItem, NSMutableParagraphStyle, NSParagraphStyleAttributeName,
-    NSStackView, NSStatusBar, NSStatusItem, NSSwitch, NSTextAlignment, NSTextField, NSTextTab,
-    NSUserInterfaceLayoutOrientation, NSVariableStatusItemLength, NSView, NSWorkspace,
+    NSAccessibility, NSApplication, NSAttributedStringNSStringDrawing, NSAutoresizingMaskOptions,
+    NSColor, NSControl, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
+    NSLayoutAttribute, NSMenu, NSMenuDelegate, NSMenuItem, NSMutableParagraphStyle,
+    NSParagraphStyleAttributeName, NSStackView, NSStatusBar, NSStatusItem, NSSwitch,
+    NSTextAlignment, NSTextField, NSTextTab, NSUserInterfaceLayoutOrientation,
+    NSVariableStatusItemLength, NSView, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSData, NSDictionary,
@@ -470,6 +471,12 @@ fn header_item(
         NSPoint::new(0.0, 0.0),
         NSSize::new(HEADER_WIDTH, 44.0),
     ));
+    // HEADER_WIDTH is only the starting frame. AppKit does not widen a menu
+    // item's custom view on its own, so without this mask a menu wider than
+    // 260pt (an ordinary binding row easily is: "Hermes  missing  ⇪H"
+    // already clears it) leaves the switch short of the real right edge
+    // instead of hard against it.
+    row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
     item.setView(Some(&row));
     TRAY.with(|t| {
         if let Some(x) = t.borrow_mut().as_mut() {

@@ -111,6 +111,11 @@ fn main() {
                 MenuEntry::separator(),
                 MenuEntry::section_header("Needs attention"),
                 row(1001, "Hermes", "⇪H", Some("missing"), None),
+                // A long label, so the top-level menu clears HEADER_WIDTH
+                // (260pt) and the header's switch has to actually be pushed
+                // by the width-sizable mask rather than merely fitting by
+                // coincidence.
+                row(1003, "com.nousresearch.hermes", "⇪H", Some("missing"), None),
                 MenuEntry::separator(),
                 MenuEntry {
                     id: 9,

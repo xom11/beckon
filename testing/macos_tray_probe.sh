@@ -156,8 +156,10 @@ ask_about() {
   printf '       if you see neither, say n)\n'
   read -r -p "      [y/n] " a
   if [ "$a" = y ] || [ "$a" = Y ]; then
-    printf '  >>> Now click it and choose "PROBE - click me".\n'
-    printf '      Does a line "menu click: id=2" appear above?\n'
+    printf '  >>> Now click it, open the "Shortcuts" submenu, and choose\n'
+    printf '      "Edit Shortcuts..." at the bottom of it (this also exercises\n'
+    printf '      a click dispatched through a submenu, not just the top level).\n'
+    printf '      Does a line "menu click: id=10" appear above?\n'
     read -r -p "      [y/n] " b
   else
     b="-"
