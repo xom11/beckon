@@ -43,6 +43,8 @@
 //! `on_hotkey`.
 
 use anyhow::{anyhow, Context, Result};
+#[cfg(any(target_os = "macos", test))]
+use beckon_core::certainty::NameReport;
 use beckon_core::menu::MenuEntry;
 use beckon_core::shortcuts::{parse_config, KeyboardConfig, Shortcut};
 use beckon_core::Backend;
@@ -1186,6 +1188,113 @@ pub(crate) fn menu_log_row(has_log_path: bool, beckon_owns_the_log: bool) -> Opt
     } else {
         has_log_path.then_some(true)
     }
+}
+
+/// What config load resolved for one binding (spec §3.5), cached in
+/// `ServeState::menu_rows` so the macOS menu never resolves when it opens.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Resolved {
+    /// The candidate the key will open, as the file spells it. When every
+    /// candidate misses, the FIRST one: the app the user thinks of the key as.
+    name: String,
+    /// The winner's canonical id, for its icon. `None` when nothing resolved.
+    bundle_id: Option<String>,
+    /// Every candidate is a `NoMatch`, or the chain does not split: the key
+    /// will error and launch nothing.
+    missing: bool,
+}
+
+/// One `Resolved` per binding, in file order, graded by
+/// `certainty::chain_winner` -- the rule `check --resolve` uses, so the menu
+/// and the check cannot disagree about a key.
+#[cfg(any(target_os = "macos", test))]
+fn resolve_rows(shortcuts: &[Shortcut], reports: &[NameReport]) -> Vec<Resolved> {
+    use beckon_core::certainty::{chain_winner, Certainty};
+    let grade: std::collections::HashMap<&str, &NameReport> =
+        reports.iter().map(|r| (r.id.as_str(), r)).collect();
+    shortcuts
+        .iter()
+        .map(|s| match beckon_core::candidates::split(&s.app) {
+            Err(_) => Resolved {
+                name: s.app.clone(),
+                bundle_id: None,
+                missing: true,
+            },
+            Ok(cands) => match chain_winner(&cands, |c| grade.get(c).copied()) {
+                Some(r) if r.certainty != Certainty::NoMatch => Resolved {
+                    name: r.id.clone(),
+                    bundle_id: r.target.clone(),
+                    missing: false,
+                },
+                Some(_) => Resolved {
+                    name: cands[0].to_string(),
+                    bundle_id: None,
+                    missing: true,
+                },
+                // Not answered: unknown, which is not missing.
+                None => Resolved {
+                    name: cands[0].to_string(),
+                    bundle_id: None,
+                    missing: false,
+                },
+            },
+        })
+        .collect()
+}
+
+/// One binding as the macOS menu draws it.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BindingRow {
+    name: String,
+    /// `combo_glyphs`: `⇪C`, `⌃⌥⇧⌘M`.
+    chord: String,
+    /// The same row in words, for the tooltip and VoiceOver.
+    spoken: String,
+    flag: Option<&'static str>,
+    bundle_id: Option<String>,
+}
+
+/// Every binding, in file order, as a menu row.
+///
+/// `resolved` is indexed like `shortcuts`. A shorter cache -- a resolve that
+/// failed outright -- leaves the tail named as written and claiming nothing.
+/// `hold` is `settings::caps_view_fold`'s answer.
+#[cfg(any(target_os = "macos", test))]
+fn binding_rows(
+    shortcuts: &[Shortcut],
+    resolved: &[Resolved],
+    registered: &std::collections::HashMap<String, Result<(), String>>,
+    paused: bool,
+    hold: Option<beckon_core::shortcuts::Chord>,
+) -> Vec<BindingRow> {
+    use beckon_core::shortcuts::{combo_display_folded_with, combo_glyphs, ModifierLabels};
+    shortcuts
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let canon = s.combo.canonical();
+            let r = resolved.get(i);
+            let name = r.map_or_else(|| s.app.clone(), |r| r.name.clone());
+            let in_use = matches!(registered.get(&canon), Some(Err(_)));
+            let missing = r.is_some_and(|r| r.missing);
+            BindingRow {
+                chord: combo_glyphs(&canon, hold),
+                spoken: format!(
+                    "{name}, {}",
+                    combo_display_folded_with(&canon, hold, ModifierLabels::MAC)
+                ),
+                flag: if paused {
+                    None
+                } else {
+                    beckon_core::menu::row_flag(in_use, missing)
+                },
+                bundle_id: r.and_then(|r| r.bundle_id.clone()),
+                name,
+            }
+        })
+        .collect()
 }
 
 fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
@@ -3308,5 +3417,180 @@ mod tests {
             macos: false,
         });
         assert!(rows.iter().all(|r| r.id != MENU_UPDATE));
+    }
+
+    use beckon_core::certainty::{Certainty, NameReport};
+    use beckon_core::shortcuts::{parse_shortcuts, Chord};
+    use std::collections::HashMap;
+
+    fn nr(id: &str, certainty: Certainty, target: Option<&str>) -> NameReport {
+        NameReport {
+            id: id.into(),
+            certainty,
+            target: target.map(Into::into),
+            tier: None,
+            consequence: String::new(),
+            suggestions: Vec::new(),
+            rivals: Vec::new(),
+            cold: None,
+        }
+    }
+
+    #[test]
+    fn a_chain_row_is_named_by_the_candidate_that_wins() {
+        let s = parse_shortcuts("\"ctrl+alt+f\" = \"File Explorer || Finder\"\n").unwrap();
+        let r = resolve_rows(
+            &s,
+            &[
+                nr("File Explorer", Certainty::NoMatch, None),
+                nr("Finder", Certainty::Exact, Some("com.apple.finder")),
+            ],
+        );
+        assert_eq!(
+            r,
+            vec![Resolved {
+                name: "Finder".into(),
+                bundle_id: Some("com.apple.finder".into()),
+                missing: false
+            }]
+        );
+    }
+
+    /// Named by the FIRST candidate: that is the app the user thinks of the
+    /// key as, even though `check --resolve` reports the last.
+    #[test]
+    fn a_row_whose_every_candidate_misses_is_missing_under_its_first_name() {
+        let s =
+            parse_shortcuts("\"ctrl+alt+j\" = \"Tao Monitor || https://tao.example/\"\n").unwrap();
+        let r = resolve_rows(
+            &s,
+            &[
+                nr("Tao Monitor", Certainty::NoMatch, None),
+                nr("https://tao.example/", Certainty::NoMatch, None),
+            ],
+        );
+        assert_eq!(
+            r[0],
+            Resolved {
+                name: "Tao Monitor".into(),
+                bundle_id: None,
+                missing: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_guess_resolves_rather_than_going_missing() {
+        let s = parse_shortcuts("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        let r = resolve_rows(
+            &s,
+            &[nr("Brave", Certainty::Guess, Some("com.brave.Browser"))],
+        );
+        assert!(!r[0].missing);
+        assert_eq!(r[0].bundle_id.as_deref(), Some("com.brave.Browser"));
+    }
+
+    /// Not answered is not the same as not installed -- the same distinction
+    /// as "not yet probed is not free".
+    #[test]
+    fn an_unanswered_name_is_unknown_not_missing() {
+        let s = parse_shortcuts("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        assert_eq!(
+            resolve_rows(&s, &[])[0],
+            Resolved {
+                name: "Brave".into(),
+                bundle_id: None,
+                missing: false
+            }
+        );
+    }
+
+    /// A chain that does not split can never launch anything, which is what
+    /// `missing` means. `beckon_ladder` refuses it before any backend.
+    #[test]
+    fn a_chain_that_does_not_split_is_missing_under_its_whole_text() {
+        let s = parse_shortcuts("\"ctrl+alt+b\" = \"Brave ||\"\n").unwrap();
+        assert_eq!(
+            resolve_rows(&s, &[])[0],
+            Resolved {
+                name: "Brave ||".into(),
+                bundle_id: None,
+                missing: true
+            }
+        );
+    }
+
+    const HOLD: Chord = Chord {
+        ctrl: true,
+        super_: true,
+        alt: true,
+    };
+
+    fn table() -> Vec<Shortcut> {
+        parse_shortcuts(
+            "\"ctrl+super+alt+c\" = \"Claude\"\n\"ctrl+super+alt+h\" = \"Hermes\"\n\"ctrl+super+alt+shift+m\" = \"Gmail\"\n",
+        )
+        .unwrap()
+    }
+
+    fn resolved() -> Vec<Resolved> {
+        vec![
+            Resolved {
+                name: "Claude".into(),
+                bundle_id: Some("com.anthropic.claudefordesktop".into()),
+                missing: false,
+            },
+            Resolved {
+                name: "Hermes".into(),
+                bundle_id: None,
+                missing: true,
+            },
+            Resolved {
+                name: "Gmail".into(),
+                bundle_id: None,
+                missing: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_binding_row_carries_glyphs_words_icon_and_its_one_word() {
+        let rows = binding_rows(&table(), &resolved(), &HashMap::new(), false, Some(HOLD));
+        assert_eq!(rows[0].chord, "⇪C");
+        assert_eq!(rows[0].spoken, "Claude, Caps + C");
+        assert_eq!(
+            rows[0].bundle_id.as_deref(),
+            Some("com.anthropic.claudefordesktop")
+        );
+        assert_eq!(rows[0].flag, None);
+        assert_eq!(rows[1].flag, Some("missing"));
+        assert_eq!(rows[2].chord, "⌃⌥⇧⌘M", "a shift row does not fold");
+    }
+
+    #[test]
+    fn a_refused_registration_is_in_use_and_outranks_missing() {
+        let mut reg = HashMap::new();
+        reg.insert("ctrl+super+alt+h".to_string(), Err("taken".to_string()));
+        let rows = binding_rows(&table(), &resolved(), &reg, false, Some(HOLD));
+        assert_eq!(rows[1].flag, Some("in use"));
+    }
+
+    #[test]
+    fn a_paused_table_carries_no_words() {
+        let rows = binding_rows(&table(), &resolved(), &HashMap::new(), true, Some(HOLD));
+        assert!(rows.iter().all(|r| r.flag.is_none()));
+    }
+
+    /// A resolve that failed outright leaves an empty cache. The rows still
+    /// draw, named as written, and claim nothing.
+    #[test]
+    fn an_empty_cache_still_draws_every_row_and_claims_nothing() {
+        let rows = binding_rows(&table(), &[], &HashMap::new(), false, None);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[1].name, "Hermes");
+        assert!(rows
+            .iter()
+            .all(|r| r.flag.is_none() && r.bundle_id.is_none()));
+        assert_eq!(rows[0].chord, "⌃⌥⌘C");
     }
 }
