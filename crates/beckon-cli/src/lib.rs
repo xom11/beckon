@@ -554,20 +554,14 @@ fn check_resolution<'a>(
     // order given, and a silent drop takes the binding out of both the dead
     // list and the count.
     let winner = |cands: &[&str]| -> Result<&NameReport> {
-        let mut last = None;
-        for c in cands {
-            let r = *grade
-                .get(c)
-                .with_context(|| format!("the resolver returned no report for `{c}`"))?;
-            if r.certainty != Certainty::NoMatch {
-                return Ok(r);
-            }
-            last = Some(r);
+        // Checked first so the error still names the candidate: `chain_winner`
+        // folds "not answered" into `None`, and here that is a resolver
+        // contract violation, not a miss.
+        if let Some(c) = cands.iter().find(|c| !grade.contains_key(**c)) {
+            return Err(anyhow!("the resolver returned no report for `{c}`"));
         }
-        // Every rung missed. Report the LAST one: it is the candidate the
-        // user added as the fallback, so it is the one whose absence is news.
-        // `split` never yields an empty chain, so there is always one.
-        last.ok_or_else(|| anyhow!("`{}` names no candidate at all", cands.join(" || ")))
+        beckon_core::certainty::chain_winner(cands, |c| grade.get(c).copied())
+            .ok_or_else(|| anyhow!("`{}` names no candidate at all", cands.join(" || ")))
     };
 
     // One grade per binding, in file order. Both arms answer the same

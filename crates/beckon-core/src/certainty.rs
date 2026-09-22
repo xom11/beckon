@@ -194,6 +194,33 @@ pub fn summarize(reports: &[NameReport]) -> Summary {
     s
 }
 
+/// The candidate a binding will actually live with: the first of `cands`
+/// that is not a `NoMatch`, else the LAST one -- the fallback the user added,
+/// whose absence is the news.
+///
+/// `None` when `cands` is empty or when `grade` has no report for a
+/// candidate the ladder reached. **Those are not "missing"**: not-answered is
+/// not the same as not-installed, and a caller that must tell the two apart
+/// checks `grade` itself (`check --resolve` does, and errors).
+///
+/// This is `beckon_ladder`'s rule. `check --resolve` and the macOS menu both
+/// ask it, so a check line and a menu row cannot disagree about which app a
+/// key opens.
+pub fn chain_winner<'a>(
+    cands: &[&str],
+    grade: impl Fn(&str) -> Option<&'a NameReport>,
+) -> Option<&'a NameReport> {
+    let mut last = None;
+    for c in cands {
+        let r = grade(c)?;
+        if r.certainty != Certainty::NoMatch {
+            return Some(r);
+        }
+        last = Some(r);
+    }
+    last
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +348,44 @@ mod tests {
     fn line_on_an_empty_file_says_there_was_nothing_to_do() {
         assert_eq!(Summary::default().line(), "nothing to resolve");
         assert_eq!(summarize(&[]).line(), "nothing to resolve");
+    }
+
+    // ---------- chain_winner ----------
+
+    fn graded<'a>(rs: &'a [NameReport]) -> impl Fn(&str) -> Option<&'a NameReport> {
+        move |c| rs.iter().find(|r| r.id == c)
+    }
+
+    #[test]
+    fn the_first_candidate_that_is_not_a_miss_wins() {
+        let rs = [
+            report("File Explorer", Certainty::NoMatch),
+            report("Finder", Certainty::Exact),
+            report("Files", Certainty::Exact),
+        ];
+        let w = chain_winner(&["File Explorer", "Finder", "Files"], graded(&rs)).unwrap();
+        assert_eq!(w.id, "Finder");
+    }
+
+    /// A Guess resolves: the ladder stops there, and so must the grade.
+    #[test]
+    fn a_guess_stops_the_ladder() {
+        let rs = [report("Brave", Certainty::Guess), report("Brave Browser", Certainty::Exact)];
+        assert_eq!(chain_winner(&["Brave", "Brave Browser"], graded(&rs)).unwrap().id, "Brave");
+    }
+
+    /// Every rung missed: the LAST candidate is the one whose absence is news.
+    #[test]
+    fn when_every_candidate_misses_the_last_one_is_reported() {
+        let rs = [report("A", Certainty::NoMatch), report("B", Certainty::NoMatch)];
+        let w = chain_winner(&["A", "B"], graded(&rs)).unwrap();
+        assert_eq!((w.id.as_str(), w.certainty), ("B", Certainty::NoMatch));
+    }
+
+    #[test]
+    fn an_unanswered_candidate_or_an_empty_chain_is_none() {
+        let rs = [report("A", Certainty::NoMatch)];
+        assert!(chain_winner(&["A", "B"], graded(&rs)).is_none());
+        assert!(chain_winner(&[], graded(&rs)).is_none());
     }
 }
