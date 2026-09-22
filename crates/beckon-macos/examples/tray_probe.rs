@@ -149,8 +149,16 @@ fn main() {
                 },
             ]
         });
+        let dimmed = Rc::new(Cell::new(false));
+        let dimmed_c = Rc::clone(&dimmed);
         let on_c = Rc::clone(&on);
         let on_click = Box::new(move |id: u32| {
+            if id == beckon_core::menu::MENU_ID_ALT_CLICK {
+                println!("alt-click");
+                dimmed_c.set(!dimmed_c.get());
+                tray::set_dimmed(dimmed_c.get());
+                return;
+            }
             println!("menu click: id={id}");
             if id == 1 {
                 on_c.set(!on_c.get());

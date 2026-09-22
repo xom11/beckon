@@ -58,12 +58,17 @@ type MenuHandler = Box<dyn FnMut(u32)>;
 
 struct Tray {
     /// Held for the life of the process. Releasing an `NSStatusItem`
-    /// removes the icon, so this is not an idle field.
-    _item: Retained<NSStatusItem>,
+    /// removes the icon, so this is not an idle field. Read in `pop_menu`
+    /// and `set_dimmed`, so it is no longer prefixed `_`.
+    item: Retained<NSStatusItem>,
     /// Kept alive because `NSMenu`'s delegate reference is weak/unowned;
     /// dropping this makes `menuNeedsUpdate:` stop arriving and the menu
     /// silently freeze at whatever it last showed.
     _target: Retained<MenuTarget>,
+    /// The menu, shown on demand by `pop_menu` rather than attached for
+    /// good -- attached, AppKit opens it on every click and no modifier can
+    /// be seen (spec §3.3).
+    menu: Retained<NSMenu>,
     build: MenuBuilder,
     on_click: MenuHandler,
     /// App icons by bundle id, fetched once. `iconForFile` goes to disk.
@@ -126,8 +131,50 @@ define_class!(
             dispatch(id);
             refresh_header();
         }
+
+        /// Every click on the icon. ⌥ + left click is the pause toggle and
+        /// opens nothing; anything else opens the menu.
+        #[unsafe(method(beckonStatusClick:))]
+        fn beckon_status_click(&self, _sender: &AnyObject) {
+            let Some(mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let ev = NSApplication::sharedApplication(mtm).currentEvent();
+            let option = ev.as_ref().is_some_and(|e| {
+                e.modifierFlags()
+                    .contains(objc2_app_kit::NSEventModifierFlags::Option)
+            });
+            let right = ev
+                .as_ref()
+                .is_some_and(|e| e.r#type() == objc2_app_kit::NSEventType::RightMouseUp);
+            if option && !right {
+                dispatch(beckon_core::menu::MENU_ID_ALT_CLICK);
+                return;
+            }
+            pop_menu(mtm);
+        }
     }
 );
+
+/// Show the menu under the icon. Attaching it for the length of one
+/// `performClick` is what gives it the system's own placement and highlight;
+/// detaching it again is what lets the next click reach
+/// `beckonStatusClick:`.
+fn pop_menu(mtm: MainThreadMarker) {
+    let parts = TRAY.with(|t| {
+        t.borrow()
+            .as_ref()
+            .map(|x| (x.item.clone(), x.menu.clone()))
+    });
+    let Some((item, menu)) = parts else {
+        return;
+    };
+    item.setMenu(Some(&menu));
+    if let Some(b) = item.button(mtm) {
+        unsafe { b.performClick(None) };
+    }
+    item.setMenu(None);
+}
 
 /// Run `build` with the tray borrow released -- the rule `dispatch` states.
 ///
@@ -614,16 +661,28 @@ pub fn set_menu(build: MenuBuilder, on_click: MenuHandler) -> Result<(), String>
 
     let target: Retained<MenuTarget> = unsafe { msg_send![MenuTarget::alloc(mtm), init] };
 
+    // Route every click through `beckonStatusClick:` instead of attaching
+    // the menu (no `item.setMenu` here) -- attached, AppKit opens the menu
+    // on every click and no modifier can be seen (spec §3.3). `pop_menu`
+    // attaches it for the length of one `performClick` instead.
+    unsafe {
+        button.setTarget(Some(&*target as &AnyObject));
+        button.setAction(Some(sel!(beckonStatusClick:)));
+    }
+    let _ = button.sendActionOn(
+        objc2_app_kit::NSEventMask::LeftMouseUp | objc2_app_kit::NSEventMask::RightMouseUp,
+    );
+
     let menu = NSMenu::new(mtm);
     // Without this AppKit greys every row it thinks nobody handles.
     menu.setAutoenablesItems(false);
     menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
-    item.setMenu(Some(&menu));
 
     TRAY.with(|t| {
         *t.borrow_mut() = Some(Tray {
-            _item: item,
+            item,
             _target: target,
+            menu,
             build,
             on_click,
             icons: HashMap::new(),
@@ -651,11 +710,28 @@ pub fn set_status(text: &str) {
     };
     // Handle out first, borrow released, THEN the AppKit call -- the rule
     // `settings_window::controls` exists to enforce.
-    let item = TRAY.with(|t| t.borrow().as_ref().map(|x| x._item.clone()));
+    let item = TRAY.with(|t| t.borrow().as_ref().map(|x| x.item.clone()));
     if let Some(item) = item {
         if let Some(button) = item.button(mtm) {
             button.setToolTip(Some(&NSString::from_str(text)));
         }
+    }
+}
+
+/// Dim the icon while paused, the way Maccy does, and say so to VoiceOver.
+/// ASCII, like every other display string here.
+pub fn set_dimmed(dimmed: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let item = TRAY.with(|t| t.borrow().as_ref().map(|x| x.item.clone()));
+    if let Some(button) = item.and_then(|i| i.button(mtm)) {
+        button.setAppearsDisabled(dimmed);
+        button.setAccessibilityLabel(Some(&NSString::from_str(if dimmed {
+            "beckon - paused"
+        } else {
+            "beckon"
+        })));
     }
 }
 
