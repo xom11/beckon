@@ -3435,12 +3435,22 @@ pub fn base_moved(model: &Model, on_disk: Option<&str>) -> bool {
 
 /// Decide what an edit should do to the file.
 ///
-/// **The order of these checks is the design.** `FileMoved` is first
-/// because when the base is stale no amount of validity makes the write
-/// safe. `FinishTheRow` is next because an unrenderable model has nothing
-/// to offer the file. `AppWentMissing` is last because it is the only one
-/// that refuses a write that WOULD have succeeded -- it is a judgement
-/// about the live hotkey, not about the text.
+/// **The order of these checks is the design, and `!dirty` is the first
+/// of them.** A model with nothing to write answers `Nothing` before any
+/// question about the file is asked -- which is what keeps a clean model
+/// silent: promoting `base_moved` above it would make a clean model over a
+/// file somebody else edited answer `Hold(FileMoved)`, raising the banner
+/// and CLEARING THE UNDO STACK for a model that was never going to write.
+/// (`settings_saw_external_change` owns that announcement instead, and it
+/// reloads a clean model rather than complaining about it.) This sentence
+/// used to say "`FileMoved` is first", which invited exactly that reorder.
+///
+/// `FileMoved` is next, because when the base is stale no amount of
+/// validity makes the write safe. `FinishTheRow` follows because an
+/// unrenderable model has nothing to offer the file. `AppWentMissing` is
+/// last because it is the only one that refuses a write that WOULD have
+/// succeeded -- it is a judgement about the live hotkey, not about the
+/// text.
 ///
 /// **`base` and `on_disk` are TWO QUESTIONS, and one parameter answering
 /// both was a defect.** `base` asks *has the file moved under me* -- it is
@@ -8529,6 +8539,25 @@ mod tests {
         let m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
         assert_eq!(
             autosave_plan(&m, Some(m.original()), Some(m.original()), false),
+            AutosavePlan::Nothing
+        );
+    }
+
+    /// **The `!dirty` check is first, and this is what says so (M1).**
+    /// `a_clean_model_plans_no_write` above passes a base that has not
+    /// moved, so it would survive the two checks being swapped. This one
+    /// would not: with `base_moved` promoted above the dirty test, a clean
+    /// model over a file somebody else edited answers `Hold(FileMoved)`,
+    /// and the driver then raises the banner and clears the undo stack for
+    /// a model that was never going to write. Announcing that file is
+    /// `settings_saw_external_change`'s job, and it reloads a clean model
+    /// rather than complaining about it.
+    #[test]
+    fn a_clean_model_plans_no_write_even_when_the_file_moved() {
+        let m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        assert_eq!(
+            autosave_plan(&m, Some(theirs), Some(theirs), false),
             AutosavePlan::Nothing
         );
     }
