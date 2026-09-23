@@ -4025,6 +4025,198 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
     }
 
+    // -----------------------------------------------------------------
+    // The footer's Undo button (`undo_pressed`, four-doors §6.4, G-g)
+    // -----------------------------------------------------------------
+
+    /// **The Undo button's own compare-and-swap.** The file watcher can
+    /// raise `external_change` on a dirty model WITHOUT touching the undo
+    /// stack (see its own call site), so a bare pop-and-write here would
+    /// silently overwrite an edit somebody else just made -- every stack
+    /// entry's base is the SAME `model.original()`, so once that no longer
+    /// matches the file, none of them are safe, not just the top one.
+    ///
+    /// **Asserted on the FILE's bytes, not on the return value**, the same
+    /// discipline `a_write_is_abandoned_when_the_file_moved_under_us` uses:
+    /// the whole claim is that nothing was written.
+    ///
+    /// **Mutation proved this test can fail.** Commenting out the `return;`
+    /// on the `moved` branch in `undo_pressed` (falling through into the pop
+    /// and write below) turned this red: `theirs` was replaced by `Brave`'s
+    /// text and `can_undo()` came back `true`. Reverted before committing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn undo_is_abandoned_when_the_file_moved_under_us() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None);
+        assert!(
+            st.settings.as_ref().unwrap().can_undo(),
+            "precondition: there is an entry for Undo to reach for"
+        );
+
+        // Somebody else edits the file behind the model's back.
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        undo_pressed(&mut st);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            theirs,
+            "the other party's text must still be on disk, byte for byte"
+        );
+        assert!(
+            st.external_change,
+            "the banner is what tells the user their Undo did not go in"
+        );
+        assert!(
+            !st.settings.as_ref().unwrap().can_undo(),
+            "every remaining entry's base is stale too, so the whole stack \
+             goes -- not just a decline of the one press"
+        );
+        assert_eq!(
+            st.last_not_saved,
+            Some(beckon_core::settings::NotSaved::FileMoved)
+        );
+    }
+
+    /// The success path, end to end: pop the top entry, write it, reseed
+    /// from what was written, and carry what is LEFT of the stack onto the
+    /// fresh model -- `carry_undo` is what makes a second Undo possible, and
+    /// this is the assertion that would catch its removal.
+    ///
+    /// The selection assertion is what proves `restore_view_state` actually
+    /// ran: `Model::from_text` (what a bare reseed would leave behind)
+    /// starts every model at `selected: None`, so a `Some(0)` here can only
+    /// come from the view being carried across the write.
+    ///
+    /// **Mutation proved this test can fail.** Commenting out the
+    /// `carry_undo(old, &mut fresh)` call in `undo_pressed`'s success arm
+    /// turned this red: the second `take_undo()` returned `None` instead of
+    /// `Some(original)`. Reverted before committing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn undo_pops_writes_and_carries_the_rest_of_the_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let original = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, original).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None); // stack: [original]
+
+        st.settings.as_mut().unwrap().set_app(0, "Zed");
+        assert_eq!(autosave(&mut st, false), None); // stack: [original, ..Brave..]
+
+        assert!(std::fs::read_to_string(&config).unwrap().contains("Zed"));
+
+        undo_pressed(&mut st);
+
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "Undo restores the text from just before the LAST write, not \
+             the original"
+        );
+        assert_eq!(
+            st.last_not_saved, None,
+            "a successful Undo clears any earlier refusal"
+        );
+        assert!(!st.external_change);
+
+        let m = st.settings.as_mut().unwrap();
+        assert_eq!(
+            m.selected,
+            Some(0),
+            "the view survives the write -- see this test's own doc"
+        );
+        assert_eq!(
+            m.take_undo().as_deref(),
+            Some(original),
+            "the OLDER entry must have carried onto the reseeded model, or \
+             a second Undo has nowhere left to go"
+        );
+        assert_eq!(m.take_undo(), None, "and that really was the last one");
+    }
+
+    /// Rule 1's other half, for Undo: a write that FAILS must leave the
+    /// popped entry back on the stack, or one failed write silently costs
+    /// the user a level of history. Same technique as
+    /// `a_failed_write_leaves_no_undo_entry` (I2): write permission is taken
+    /// off the directory so `write_config_text`'s temp file cannot be
+    /// created.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failed_undo_write_pushes_the_entry_back() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let original = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, original).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None);
+        assert!(st.settings.as_ref().unwrap().can_undo());
+
+        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        undo_pressed(&mut st);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // The control: the write really did fail, so this test is about a
+        // failed write and not about one that quietly worked.
+        assert_eq!(
+            st.last_not_saved,
+            Some(beckon_core::settings::NotSaved::CannotWrite),
+            "precondition: the directory must really have refused the write"
+        );
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "and nothing reached the file"
+        );
+        assert_eq!(
+            st.settings.as_mut().unwrap().take_undo().as_deref(),
+            Some(original),
+            "the popped entry must go straight back, or a retry has \
+             nothing left to pop"
+        );
+    }
+
+    /// A no-op when there is nothing to pop. `saved_readout`'s `undo` flag
+    /// and the button's own `apply_enabled`-style gating already keep this
+    /// from being reachable from the UI, but a stray `SettingsCommand::Undo`
+    /// must still do nothing rather than touch the file or panic.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn undo_with_an_empty_stack_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        // Dirty, but never autosaved -- so there is no entry yet.
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert!(!st.settings.as_ref().unwrap().can_undo());
+
+        undo_pressed(&mut st);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "untouched"
+        );
+        assert_eq!(st.last_not_saved, None);
+        assert!(!st.external_change);
+        assert!(
+            st.settings.as_ref().unwrap().dirty(),
+            "the in-memory edit survives too -- Undo did nothing at all"
+        );
+    }
+
     /// **The `.bak` is a copy of the file, not of the resolved-away link.**
     /// It has to land beside the REAL file for the same reason
     /// `write_config_text`'s temp file does -- a backup in a different
