@@ -1,13 +1,17 @@
 //! Door 2 — **Keyboard**.
 //!
-//! Design §3.2, three groups in one card, hairlines between:
+//! Design §5.2/§5.6: a grouped form, three rounded cards rather than the one
+//! card three groups used to share:
 //!
 //! ```text
-//! Use Caps Lock as a shortcut key                       ( ●══)
-//! ──────────────────────────────────────────────────────────
-//! Hold [ ]Ctrl [ ]Cmd [ ]Option          Tap [ Caps Lock  ▾ ]
-//! ──────────────────────────────────────────────────────────
-//! Write shortcuts as Caps instead of Ctrl + Cmd + Option ( ●══)
+//! ┌ Use Caps Lock as a shortcut key ─────────────────────── ( ●══) ┐
+//! │ While held, Caps Lock presses ────────── [ ]Ctrl [ ]Cmd [ ]Opt │
+//! │ When tapped alone ───────────────────────── [ Caps Lock    ▾ ] │
+//! └──────────────────────────────────────────────────────────────┘
+//! ┌ Show shortcuts as Caps ─────────────────────────────── ( ●══) ┐
+//! └──────────────────────────────────────────────────────────────┘
+//! ┌ Input Monitoring ──────────────── [ Open Input Monitoring    ] │
+//! └──────────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! **No card heading.** The Win32 twin's `Keyboard` group label was deleted
@@ -93,46 +97,18 @@ pub(super) fn build(
     target: &AnyObject,
     mtm: MainThreadMarker,
 ) -> (Retained<NSView>, KeyboardControls) {
-    // --- group 1: the arming switch ---------------------------------------
-    //
-    // A label plus `NSSwitch`, full width with the track on the card's right
-    // edge, so this row and group 3's line up with each other and with the
-    // System door's. It is a SENTENCE, not a key, which is why it is not
-    // drawn as a keycap on either platform.
+    // --- group 1: Caps Lock as the beckon key -------------------------------
     let caps = w::switch(sel!(beckonCaps:), target, mtm);
-    let caps_row = w::hstack(
-        &[
-            &*w::label("Use Caps Lock as a shortcut key", mtm) as &NSView,
-            &*w::spring(mtm),
-            &caps,
-        ],
+    let caps_row = w::form_row(
+        &w::labelled(
+            "Use Caps Lock as a shortcut key",
+            Some("Hold Caps Lock and press a key instead of the chord below."),
+            mtm,
+        ),
+        &caps,
         mtm,
     );
 
-    let note = w::wrapping(caps_note(), mtm);
-
-    // **A button, because the sentence names a pane four clicks deep.**
-    // Every one of those clicks is a chance to land in Accessibility instead
-    // -- the neighbouring row, the permission this is most often confused
-    // with, and the one that is usually already granted. The sentence stays:
-    // it is the half that says *why*, and a reader who has the pane open
-    // still has to know which switch and that it is not Accessibility.
-    //
-    // It is drawn unconditionally rather than only while the grant is
-    // missing. Revoking Input Monitoring does not notify this process, so a
-    // button that appears on a state we cannot observe would be absent
-    // exactly when it is needed; and a reader who wants to CHECK the switch
-    // has the same errand as one who needs to grant it.
-    let open_im = w::push(
-        "Open Input Monitoring",
-        sel!(beckonOpenInputMonitoring:),
-        target,
-        mtm,
-    );
-    let note_row = w::hstack(&[&*open_im as &NSView, &*w::spring(mtm)], mtm);
-
-    // --- group 2: Hold chips and the Tap list, one line --------------------
-    //
     // **Three chips and there must never be a fourth.** `Chord` has exactly
     // `ctrl` / `super_` / `alt`, because the alias has to RELEASE whatever it
     // presses, and releasing Shift under the user's fingers makes everything
@@ -141,6 +117,12 @@ pub(super) fn build(
     let hold_ctrl = w::check("Ctrl", sel!(beckonHold:), target, mtm);
     let hold_super = w::check("Cmd", sel!(beckonHold:), target, mtm);
     let hold_alt = w::check("Option", sel!(beckonHold:), target, mtm);
+    let mods_row = w::hstack(&[&*hold_ctrl as &NSView, &hold_super, &hold_alt], mtm);
+    let hold_row = w::form_row(
+        &w::labelled("While held, Caps Lock presses", None, mtm),
+        &mods_row,
+        mtm,
+    );
 
     let tap = NSPopUpButton::new(mtm);
     unsafe {
@@ -154,53 +136,63 @@ pub(super) fn build(
     for t in ["Caps Lock", "Escape", "Nothing"] {
         tap.addItemWithTitle(&NSString::from_str(t));
     }
+    let tap_row = w::form_row(&w::labelled("When tapped alone", None, mtm), &tap, mtm);
 
-    let hold_row = w::hstack(
-        &[
-            &*w::label("Hold", mtm) as &NSView,
-            &hold_ctrl,
-            &hold_super,
-            &hold_alt,
-            &*w::spring(mtm),
-            &*w::label("Tap", mtm),
-            &tap,
-        ],
-        mtm,
-    );
+    let g_caps = w::group(&[&*caps_row, &*hold_row, &*tap_row], mtm);
 
-    // --- group 3: the view preference --------------------------------------
+    // --- group 2: how the list writes a bound chord -------------------------
     let shorthand = w::switch(sel!(beckonShorthand:), target, mtm);
-    let shorthand_row = w::hstack(
-        &[
-            &*w::label(
-                "Write shortcuts as Caps instead of Ctrl + Cmd + Option",
-                mtm,
-            ) as &NSView,
-            &*w::spring(mtm),
-            &shorthand,
-        ],
+    let shorthand_row = w::form_row(
+        &w::labelled("Show shortcuts as Caps", None, mtm),
+        &shorthand,
         mtm,
     );
+    let g_view = w::group(&[&*shorthand_row], mtm);
 
-    let inner = w::vstack(
-        &[
-            &*caps_row as &NSView,
-            &note,
-            &note_row,
-            &w::divider(mtm),
-            &hold_row,
-            &w::divider(mtm),
-            &shorthand_row,
-        ],
-        10.0,
+    // --- group 3: the grant this page's feature needs -----------------------
+    //
+    // **A button, because the sentence names a pane four clicks deep.**
+    // Every one of those clicks is a chance to land in Accessibility instead
+    // -- the neighbouring row, the permission this is most often confused
+    // with, and the one that is usually already granted. The sentence stays:
+    // it is the half that says *why*, and a reader who has the pane open
+    // still has to know which switch and that it is not Accessibility.
+    //
+    // It is drawn unconditionally rather than only while the grant is
+    // missing. Revoking Input Monitoring does not notify this process, so a
+    // button that appears on a state we cannot observe would be absent
+    // exactly when it is needed; and a reader who wants to CHECK the switch
+    // has the same errand as one who needs to grant it.
+    //
+    // **Built by hand rather than through `widgets::labelled`.** `labelled`
+    // manufactures its OWN secondary `NSTextField` and hands back only the
+    // assembled stack, so there is no way to reach back into it from here --
+    // and `apply` has to keep re-asking `IOHIDCheckAccess` into this exact
+    // field every time the window redraws (the grant can arrive mid-session).
+    // `labelled`'s secondary line is also a plain non-wrapping `secondary()`
+    // label; this sentence runs past 250 characters, and a non-wrapping field
+    // that long either clips at the card edge or drags the window wide --
+    // the same class of defect `widgets::wrapping`'s own doc records on the
+    // other axis. So this row keeps building its note with `w::wrapping`,
+    // arranged in the same title-then-note shape `labelled` uses, instead of
+    // calling `labelled` itself.
+    let note = w::wrapping(caps_note(), mtm);
+    let im_label = w::vstack(
+        &[&*w::label("Input Monitoring", mtm) as &NSView, &*note],
+        2.0,
         mtm,
     );
+    let open_im = w::push(
+        "Open Input Monitoring",
+        sel!(beckonOpenInputMonitoring:),
+        target,
+        mtm,
+    );
+    let im_row = w::form_row(&im_label, &open_im, mtm);
+    let g_grant = w::group(&[&*im_row], mtm);
 
-    // Same as About's disclosure: a wrapping label is the child a
-    // `Width`-aligned column leaves at its own width.
-    w::pin_width_to(&note, &inner, 0.0);
-
-    let view: Retained<NSView> = w::card(&inner, mtm).into_super();
+    let page = w::vstack(&[&*g_caps, &*g_view, &*g_grant], 12.0, mtm);
+    let view: Retained<NSView> = page.into_super();
 
     (
         view,
