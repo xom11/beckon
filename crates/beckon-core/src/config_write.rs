@@ -26,7 +26,7 @@ pub fn render(
     rows: &[RowWrite],
     keyboard: &KeyboardConfig,
 ) -> Result<String, String> {
-    use toml_edit::{DocumentMut, Item, Table};
+    use toml_edit::{DocumentMut, Item, Key, Table};
 
     let mut doc: DocumentMut = if original.trim().is_empty() {
         DocumentMut::new()
@@ -36,13 +36,76 @@ pub fn render(
             .map_err(|e: toml_edit::TomlError| e.to_string())?
     };
 
-    // 1. Drop every shortcut key that no longer has a row spelling it the
-    //    same way. A retyped combo is a remove-plus-insert, not an edit.
-    let keep: std::collections::HashSet<&str> = rows
+    // 1. Rename, before anything is dropped. A row whose `combo` differs
+    //    from its `orig_key` is the SAME binding retyped, not a removal
+    //    plus an addition -- four-doors design G-c. Dropping and
+    //    re-inserting it destroyed the line's trailing comment and moved
+    //    the binding to the end of the file, which under auto-save happens
+    //    while the user is still typing the chord.
+    //
+    //    Only a row whose old key is really there and whose new key is not
+    //    is renamed; anything else falls through to the drop-and-insert
+    //    path below, which is still correct for a genuine add or remove.
+    //
+    //    `toml_edit` 0.22 has no key-rename accessor. `KeyMut` exposes only
+    //    decor and `fmt()`, never the string, and that is not an oversight:
+    //    the table's `IndexMap<Key, Item>` hashes and compares a `Key` by
+    //    that string alone (`Key`'s `Hash`/`Eq`/`Borrow<str>` all go through
+    //    `get()`), so the string IS the key's identity in the map, and
+    //    `Table::insert_formatted` on a spelling that is not already present
+    //    always lands in `indexmap`'s `Vacant` arm, which appends -- there
+    //    is no public index-aware insert. The only way to keep a renamed
+    //    row's slot without reaching into `toml_edit`'s private `items`
+    //    field is to rebuild the whole top-level table in its current
+    //    order, substituting the renamed key(s) as they are walked: every
+    //    entry is popped with `remove_entry` (`IndexMap::shift_remove_entry`,
+    //    which does not reorder what is left behind) and put back with
+    //    `insert_formatted`, whose `Vacant` arm appends -- and because the
+    //    table is emptied first, that append always lands at the walk's
+    //    current position, reproducing the original order with the rename
+    //    substituted in. The renamed key's own decor (its leading
+    //    comment/blank-line prefix) is carried over the same way; the
+    //    trailing `# comment` lives on the VALUE's decor, which is never
+    //    touched, so it survives regardless.
+    let renames: std::collections::HashMap<&str, &str> = rows
         .iter()
-        .filter(|r| r.orig_key.as_deref() == Some(r.combo.as_str()))
-        .filter_map(|r| r.orig_key.as_deref())
+        .filter_map(|r| {
+            let old = r.orig_key.as_deref()?;
+            if old == r.combo {
+                return None;
+            }
+            if doc.get(old).is_none() || doc.get(r.combo.as_str()).is_some() {
+                return None;
+            }
+            Some((old, r.combo.as_str()))
+        })
         .collect();
+    if !renames.is_empty() {
+        let table = doc.as_table_mut();
+        let order: Vec<String> = table.iter().map(|(k, _)| k.to_string()).collect();
+        let mut pairs: Vec<(Key, Item)> = Vec::with_capacity(order.len());
+        for k in &order {
+            let (key, item) = table
+                .remove_entry(k)
+                .expect("key was just listed by this table's own iter()");
+            let key = match renames.get(k.as_str()) {
+                Some(new) => Key::new(*new)
+                    .with_leaf_decor(key.leaf_decor().clone())
+                    .with_dotted_decor(key.dotted_decor().clone()),
+                None => key,
+            };
+            pairs.push((key, item));
+        }
+        for (key, item) in pairs {
+            table.insert_formatted(&key, item);
+        }
+    }
+
+    // 2. Drop every shortcut key that no longer has a row wanting it. A
+    //    genuine remove is the only way a key reaches this filter now --
+    //    the rename pass above already re-spelled a retyped combo in place,
+    //    so `keep` only needs each row's CURRENT combo.
+    let keep: std::collections::HashSet<&str> = rows.iter().map(|r| r.combo.as_str()).collect();
     //
     //    Only keys that ARE shortcuts are candidates. The filter used to be
     //    "not `keyboard` and not kept", which made every top-level key beckon
@@ -64,7 +127,7 @@ pub fn render(
         doc.remove(&k);
     }
 
-    // 2. Write every row. A kept key already exists; assigning a whole
+    // 3. Write every row. A kept key already exists; assigning a whole
     //    fresh `Item` over it would drop that line's decor, and the decor
     //    is where a trailing `# comment` lives. Swap only the value and put
     //    the decor back. Anything else is a plain insert at the end.
@@ -89,7 +152,7 @@ pub fn render(
         }
     }
 
-    // 3. Keyboard settings. An existing `keyboard` item is edited in place
+    // 4. Keyboard settings. An existing `keyboard` item is edited in place
     //    whatever shape the user gave it; a fresh one is created DOTTED,
     //    never as a `[keyboard]` header — a header captures every bare
     //    key-value pair written after it, which would silently swallow the
@@ -174,7 +237,7 @@ pub fn render(
         }
     }
 
-    // 4. Put the file's header back if step 1 ate it.
+    // 5. Put the file's header back if step 2 ate it.
     //
     // `toml_edit` carries a leading comment block as the PREFIX DECOR OF THE
     // FIRST KEY, not as a property of the document. So `doc.remove(k)` on the
@@ -333,6 +396,46 @@ mod tests {
         let c = parse_config(&out).unwrap();
         assert_eq!(c.shortcuts.len(), 1, "the old key survived:\n{out}");
         assert_eq!(c.shortcuts[0].combo.canonical(), "ctrl+alt+y");
+    }
+
+    /// G-c: a retyped chord is a key rename, not a delete-and-append. Before
+    /// the rename pass at the top of `render`, the renamed binding lost its
+    /// trailing comment and was appended after every other row -- exactly
+    /// the jump auto-save turns from a once-a-day annoyance into something
+    /// that happens while the user is still typing the chord.
+    #[test]
+    fn retyping_a_chord_renames_the_key_in_place_and_keeps_its_comment() {
+        let original = "\
+\"ctrl+alt+a\" = \"Anki\"  # the flashcards one
+\"ctrl+alt+b\" = \"Brave\"
+";
+        let rows = vec![
+            RowWrite {
+                orig_key: Some("ctrl+alt+a".into()),
+                combo: "ctrl+alt+z".into(),
+                app: "Anki".into(),
+            },
+            RowWrite {
+                orig_key: Some("ctrl+alt+b".into()),
+                combo: "ctrl+alt+b".into(),
+                app: "Brave".into(),
+            },
+        ];
+        let out = render(original, &rows, &KeyboardConfig::default()).unwrap();
+
+        // The renamed binding keeps its place: first line, not appended last.
+        let first = out.lines().next().unwrap();
+        assert!(
+            first.starts_with("\"ctrl+alt+z\""),
+            "the renamed key should still be the first line, got: {first}"
+        );
+        // And it keeps the trailing comment that sat on that line.
+        assert!(
+            first.contains("# the flashcards one"),
+            "the trailing comment should survive a rename, got: {first}"
+        );
+        // The old spelling is gone.
+        assert!(!out.contains("ctrl+alt+a"), "old key still present:\n{out}");
     }
 
     #[test]
@@ -634,5 +737,27 @@ mod tests {
         );
         let c = parse_config(&out).unwrap();
         assert_eq!(c.keyboard.caps_hold, crate::shortcuts::Chord::default());
+    }
+
+    /// G-d pin: a file that never spelled `keyboard` at all must not gain
+    /// one just because the model holds (default) values for it. This guard
+    /// is already implemented above -- see `write_caps` / `write_tap` /
+    /// `write_hold` and the `doc.get(KEYBOARD_KEY).is_some()` gate around
+    /// the whole block -- and this test exists only to keep it from being
+    /// undone by a later change.
+    #[test]
+    fn a_file_that_never_spelled_caps_does_not_gain_it() {
+        let original = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let rows = vec![RowWrite {
+            orig_key: Some("ctrl+alt+a".into()),
+            combo: "ctrl+alt+a".into(),
+            app: "Anki".into(),
+        }];
+        // The model holds defaults, and the file never mentioned `keyboard`.
+        let out = render(original, &rows, &KeyboardConfig::default()).unwrap();
+        assert!(
+            !out.contains("keyboard"),
+            "a default-valued keyboard block must not be injected:\n{out}"
+        );
     }
 }
