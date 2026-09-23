@@ -109,6 +109,16 @@ rather than glyphs (`Cmd`, not `⌘`): the editor's own check boxes read `Cmd`,
 and a cell showing a symbol beside a box showing a word is two names for one
 key on one screen. `key_label` was already neutral.
 
+**NARROWED 2026-09-23: the reasoning above is about the settings WINDOW, and
+the macOS menu bar now draws glyphs.** Spec §7 gives macOS a core renderer,
+`combo_glyphs`, and `serve::BindingRow::chord` carries its output (`⇪C`,
+`⌃⌥⇧⌘M`) into every menu row. The check-box argument does not reach there —
+a menu has no check boxes to disagree with, and `NSMenu` draws its own key
+equivalents as glyphs, so words would have been the odd spelling. The words
+remain for the window, and remain on Windows, and `ModifierLabels::MAC` is
+still what the menu's tooltips and VoiceOver strings (`BindingRow::spoken`)
+are built from.
+
 **CORRECTED 2026-08-16: the platform string in `theme.rs` is a table too, and
 there is no local workaround left to name.** This paragraph used to end
 *"`theme::TransparencyBlock::reason`'s `"Off in Windows settings"` is the one

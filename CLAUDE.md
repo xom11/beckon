@@ -763,7 +763,11 @@ when `apps.toml` does not parse — the one state a user most needs a GUI in.
 
 **macOS keeps the same kind of store in `NSUserDefaults`**, domain
 `com.xom11.beckon` (`crates/beckon-macos/src/prefs.rs`): `Opacity` and
-`CapsView`. As on Windows, that list is the reset list.
+`CapsView`. As on Windows, that list is the reset list — **but it takes both
+domains**, because `prefs.rs` still reads the pre-0.9.18
+`LEGACY_DOMAIN = "beckon"` as a fallback and writes the answer forward, so a
+reset that deletes only `com.xom11.beckon` resurrects the old values on the
+next read.
 
 **One more read, and it is not a config: `current_exe()` and a `stat` of it.**
 The About page shows the RUNNING IMAGE's path and compares its mtime against

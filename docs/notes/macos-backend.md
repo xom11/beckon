@@ -1148,11 +1148,11 @@ calls this function at all.
 
 ### First live session (2026-09-22): the menu itself
 
-Ten checks, a person driving the real `serve`, a fresh dev binary with no
-Accessibility grant (the free live check for the header's orange "Needs
-Accessibility to switch windows" rung — **not separately verified**, because
-this binary already had the grant on this machine; the header showed the
-green dot and `19 shortcuts, 2 missing` instead).
+Ten checks, a person driving the real `serve`, a fresh dev binary (the
+header's orange "Needs Accessibility to switch windows" rung was **not
+separately verified**, because this binary already had the grant on this
+machine; the header showed the green dot and `19 shortcuts, 2 missing`
+instead).
 
 - **`Needs attention` listed exactly the two `missing` rows**
   (`com.nousresearch.hermes`, `Tao Monitor`) and no others. The control —
@@ -1253,3 +1253,32 @@ hit-testing the way a real mouse event does. Driving this menu from a script
 needs Accessibility's `perform action "AXPress" of button 1 of menu item 1
 ...`, not a coordinate click. A real mouse click works normally; this only
 bites synthetic input.
+
+### Two things the reader should not "fix" (2026-09-23)
+
+**The macOS-14 fallback for a section header DEVIATES from the spec, on
+purpose.** Spec §3.2 asks for a small secondary-coloured title; `tray.rs`'s
+`section_header` gives macOS 14 and later exactly that, through
+`NSMenuItem::sectionHeaderWithTitle` (the system idiom), and gives anything
+older a plain **disabled row** instead — no font change, no colour. The
+`Info.plist` allows 11, so the branch is reachable in principle. It is
+**untestable on this machine**: Darwin 25 takes the first arm every time, and
+no control exists here that could tell a correct hand-drawn fallback from a
+broken one. Writing the styled version blind — a measured font size, a
+`secondaryLabelColor` attributed title, a custom view — would be three
+guesses about an OS nobody here runs, and this repository's own rule is that
+a measurement on one OS is data about that OS. Left as a follow-up, to be
+done on a machine that can see it, rather than shipped unseen.
+
+**The status item opens its menu on mouse-UP, and press-drag-release is gone
+with it.** `tray.rs` calls
+`sendActionOn(LeftMouseUp | RightMouseUp)` on the status button, because the
+click has to be inspected for ⌥ before the menu is attached (spec §3.3 — an
+attached menu opens on every click and no modifier can be seen). The cost is
+the classic menu-bar gesture: press, drag down to a row, release to pick it.
+That no longer works — the press does nothing and the menu appears when the
+button comes up, so the drag has nowhere to go. **This matches Maccy**, which
+the spec cites as the reference for this menu, and it was seen and accepted
+in the live session. The line exists so the next reader recognises it as the
+price of the ⌥ path rather than as a bug to be fixed by moving the action
+back to mouse-down.
