@@ -2147,6 +2147,27 @@ fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
     }
 }
 
+/// May the window close, given the state it is in (G-j)?
+///
+/// **The decision half of `close_request`, split out so it has somewhere a
+/// test can reach it (I6).** The other half raises an `NSAlert` and drops
+/// the model, neither of which a unit test can be near; this half takes
+/// `&ServeState` like every other driver function the tests drive, and the
+/// whole refusal is `beckon_core::settings::close_is_refused` -- which is
+/// where the policy lives, with its own tests, `remove_needs_confirm`'s
+/// reason. G-j shipped as an inline predicate with no test and no
+/// on-screen run of its refusal arm; deleting it would have turned nothing
+/// red.
+///
+/// A read-only window has no model, so `dirty` is false and this answers
+/// `true`: there is nothing that could have been edited and nothing to
+/// refuse for.
+#[cfg(target_os = "macos")]
+fn close_verdict(s: &ServeState) -> bool {
+    let dirty = s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false);
+    !beckon_core::settings::close_is_refused(dirty, s.last_not_saved)
+}
+
 /// Should the window be allowed to close right now (G-j)?
 ///
 /// **The only prompt auto-save keeps.** Under auto-save a dirty model is
@@ -2163,19 +2184,19 @@ fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
 /// save it. That is the only refusal left, and it is a single ASCII alert
 /// naming the problem -- not a choice, because there is nothing to choose
 /// between here that `Undo` and a second attempt do not already cover.
+///
+/// Everything this function still owns is the part that touches AppKit or
+/// the model's lifetime: the alert, and `forget_settings`. The answer
+/// itself is `close_verdict` above. The borrow is scoped to a block that
+/// ends before either, which is this module's rule for any call that can
+/// re-enter `ServeState`.
 #[cfg(target_os = "macos")]
 fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
-    let (dirty, write_failed) = {
+    let may_close = {
         let s = st.borrow();
-        (
-            s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false),
-            matches!(
-                s.last_not_saved,
-                Some(beckon_core::settings::NotSaved::CannotWrite)
-            ),
-        )
+        close_verdict(&s)
     };
-    if dirty && write_failed {
+    if !may_close {
         swin::error(
             "Cannot close: your last change could not be saved.\n\n\
              Use Undo, or fix the problem, then close again.",
@@ -4460,6 +4481,73 @@ mod tests {
             "nor put `Not saved - the file changed on disk` in the footer \
              for a button that is greyed out"
         );
+    }
+
+    /// **G-j's refusal arm, which nothing covered (I6).** Eight of the nine
+    /// guards this branch added redden a named test when removed; this one
+    /// had neither a test nor an on-screen run of the refusal -- every
+    /// session drove the close that was ALLOWED.
+    ///
+    /// The failure is made the way `a_failed_write_leaves_no_undo_entry`
+    /// makes it, by taking write permission off the directory, so the
+    /// `CannotWrite` this test refuses over is one `write_config_text`
+    /// really produced rather than a field set by hand.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_close_over_a_write_that_failed_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = autosave(&mut st, false);
+        let verdict = close_verdict(&st);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // The control: the write really did fail, so this is a test about a
+        // refused close and not about a state that never arose.
+        assert_eq!(
+            outcome,
+            Some(beckon_core::settings::NotSaved::CannotWrite),
+            "precondition: the directory must really have refused the write"
+        );
+        assert!(
+            st.settings.as_ref().unwrap().dirty(),
+            "precondition: the edit is still only in memory"
+        );
+        assert!(
+            !verdict,
+            "closing here discards an edit with no other door offering to \
+             save it -- the one case G-j exists for"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "and the file is still what it was"
+        );
+    }
+
+    /// The control for the test above, and the close every on-screen
+    /// session has driven: the write went in, so there is nothing to refuse
+    /// and nothing to say. Without this, a `close_verdict` that refused
+    /// everything would pass.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_close_over_a_write_that_worked_is_allowed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None);
+
+        assert!(close_verdict(&st));
     }
 
     /// **A refusal must not outlive the model it was about (I1).** `Reload

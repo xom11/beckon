@@ -3642,6 +3642,39 @@ pub fn remove_needs_confirm(marked: usize, filter_active: bool) -> bool {
     marked > 1 || filter_active
 }
 
+/// Must the settings window refuse to close (G-j)?
+///
+/// **The only prompt auto-save keeps**, and the narrowness is the design.
+/// Under auto-save a dirty model is the routine state -- the debounce
+/// window before a keystroke's write lands, and every reason `autosave`
+/// holds one. Gating the close on `dirty` alone, the way the old three-way
+/// Save/Cancel/Discard prompt did, would raise a question on nearly every
+/// close and train it away, which is the failure four-doors design §6's
+/// G-j exists to prevent.
+///
+/// **`CannotWrite` and nothing else.** G-j glosses itself as "a dismissed
+/// write-failure dialog turning a whole session of edits into a silent
+/// loss" -- an I/O failure. Every other refusal is continuously visible in
+/// the footer with its own phrase (`not_saved_phrase`), so closing over one
+/// is an informed act rather than a silent loss; `FinishTheRow` in
+/// particular is up during every partially-typed row. The cost is stated
+/// rather than hidden: a user who closes on an `AppWentMissing` hold loses
+/// one valid edit the footer had been naming the whole time.
+///
+/// **`dirty` is the other half and is not redundant.** A `CannotWrite`
+/// recorded by a failed `undo_pressed` leaves the model CLEAN -- there is
+/// nothing left in memory to lose, so there is nothing to refuse for.
+///
+/// Extracted here rather than left inline in `serve.rs` for
+/// `remove_needs_confirm`'s reason: it is a decision, it is the one guard
+/// this phase shipped with nothing behind it, and this is where a test can
+/// reach it on all three CI jobs. macOS is its only caller -- Windows still
+/// gates every write behind Save and keeps its own three-way prompt -- and
+/// that is a fact about the callers, not a `cfg` on the decision.
+pub fn close_is_refused(dirty: bool, last: Option<NotSaved>) -> bool {
+    dirty && matches!(last, Some(NotSaved::CannotWrite))
+}
+
 /// The state a reseed must carry across a reload, so "the file wins" does
 /// not also cost the user their view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -8951,6 +8984,49 @@ mod tests {
     #[test]
     fn removing_under_a_filter_needs_confirmation_even_for_one_row() {
         assert!(remove_needs_confirm(1, true));
+    }
+
+    // ---------- close_is_refused (G-j) ----------
+
+    /// The one state nothing else on screen is already saying: the write
+    /// was attempted, `write_config_text` refused, and closing now would
+    /// discard an edit with no other door offering to save it.
+    #[test]
+    fn a_dirty_model_over_a_failed_write_refuses_the_close() {
+        assert!(close_is_refused(true, Some(NotSaved::CannotWrite)));
+    }
+
+    /// The three refusals that do NOT stop the close, one assertion each.
+    /// Each is continuously visible in the footer with its own phrase, so
+    /// closing over one is an informed act -- and `FinishTheRow` is up
+    /// during every partially-typed row, which is the nag G-j exists to
+    /// prevent.
+    #[test]
+    fn the_other_refusals_do_not_stop_the_close() {
+        for r in [
+            NotSaved::FinishTheRow,
+            NotSaved::FileMoved,
+            NotSaved::AppWentMissing,
+        ] {
+            assert!(
+                !close_is_refused(true, Some(r)),
+                "{r:?} has its own footer phrase and must not raise a prompt"
+            );
+        }
+    }
+
+    /// `dirty` is not redundant: a `CannotWrite` from a failed
+    /// `undo_pressed` leaves the model CLEAN, and a clean model has nothing
+    /// in memory left to lose.
+    #[test]
+    fn a_clean_model_closes_even_after_a_failed_write() {
+        assert!(!close_is_refused(false, Some(NotSaved::CannotWrite)));
+    }
+
+    /// The healthy close, which is the one every on-screen session drove.
+    #[test]
+    fn a_dirty_model_that_saved_closes_without_a_word() {
+        assert!(!close_is_refused(true, None));
     }
 
     #[test]
