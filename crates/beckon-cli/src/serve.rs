@@ -2154,6 +2154,13 @@ fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
             // verdict the user has typed past disappears rather than being
             // shown against its replacement.
             probe: s.probe.clone(),
+            // macOS only: Windows keeps its command bar and its own Save, so
+            // there is no `last_not_saved` field there to read -- see both
+            // fields' own docs.
+            #[cfg(target_os = "macos")]
+            last_not_saved: s.last_not_saved,
+            #[cfg(not(target_os = "macos"))]
+            last_not_saved: None,
         };
         beckon_core::settings::control_state(model, &rt)
     } else if let Some(notes) = s.settings_unreadable.as_ref() {
@@ -2748,6 +2755,97 @@ fn autosave(s: &mut ServeState, keep_mine: bool) -> Option<beckon_core::settings
     outcome
 }
 
+/// The footer's `Undo` button (four-doors §6.4): put the file back to what
+/// the undo stack's top entry says it used to hold.
+///
+/// **Pops, and does NOT push.** Recording the text this call is replacing
+/// would turn the stack into a two-state toggle -- press Undo twice and land
+/// back where the first press started -- rather than a walk back through
+/// history. The remaining entries carry onto the reseeded model exactly the
+/// way a successful `autosave` write carries them (`carry_undo`), so a
+/// second press keeps reaching further back.
+///
+/// **Guarded by the same compare-and-swap `autosave` makes before every
+/// write, and for the identical reason.** The file watcher can raise
+/// `external_change` on its own 1 Hz tick (see its own call site) WITHOUT
+/// touching the undo stack -- a dirty model with unsaved edits and a file
+/// that just moved under it, caught before any edit reached `autosave` at
+/// all. Skipping the check here would let Undo overwrite that external
+/// edit with a stack entry whose base is `model.original()` as it stood
+/// before the drift, which is exactly the silent clobber this whole branch
+/// exists to refuse. `base_moved` is the same function `autosave` and
+/// `apply_settings` already answer this question with -- reused, not
+/// reimplemented, for `app_lookup`'s reason.
+///
+/// On a moved file every remaining entry is stale (each one's base is the
+/// SAME `model.original()`), so the whole stack is cleared -- `autosave`'s
+/// rule 3, verbatim -- rather than only declining the one press.
+///
+/// A no-op when there is no model (`settings.is_none()`, the read-only
+/// state) or nothing left to pop -- both `saved_readout`'s `undo` flag and
+/// the button's own `apply_enabled`-style gating already keep the control
+/// from being reachable then, but a stray `SettingsCommand::Undo` must still
+/// do nothing rather than panic.
+///
+/// On a write failure the popped entry goes straight back on the stack --
+/// `autosave`'s rule 1 from the other side -- so a retry does not quietly
+/// cost one step of history, and `last_not_saved` records `CannotWrite` for
+/// the same reason `autosave` does: the footer and the close prompt read one
+/// answer.
+#[cfg(target_os = "macos")]
+fn undo_pressed(s: &mut ServeState) {
+    use beckon_core::settings::NotSaved;
+
+    if !s.settings.as_ref().is_some_and(|m| m.can_undo()) {
+        return;
+    }
+    let path = s.config.clone();
+    // THE READ, immediately before either the pop or the write below --
+    // `autosave`'s own compare-and-swap pairing, and for the same reason:
+    // nothing may move between this and `write_config_text`.
+    let disk = std::fs::read_to_string(&path).ok();
+    let moved = {
+        let model = s.settings.as_ref().expect("checked above");
+        beckon_core::settings::base_moved(model, disk.as_deref())
+    };
+    if moved {
+        s.external_change = true;
+        if let Some(m) = s.settings.as_mut() {
+            m.clear_undo();
+        }
+        s.last_not_saved = Some(NotSaved::FileMoved);
+        return;
+    }
+    // Safe to pop now: the CAS above already confirmed nobody else owns the
+    // file this entry's base describes.
+    let Some(text) = s.settings.as_mut().and_then(|m| m.take_undo()) else {
+        return;
+    };
+    let view = s.settings.as_ref().expect("checked above").view_state();
+    match write_config_text(&path, &text) {
+        Err(e) => {
+            eprintln!("beckon serve: cannot write {}: {e}", path.display());
+            if let Some(m) = s.settings.as_mut() {
+                m.push_undo(text);
+            }
+            s.last_not_saved = Some(NotSaved::CannotWrite);
+        }
+        Ok(_) => {
+            // Reseeded from the text that was WRITTEN, never from a second
+            // read -- `autosave`'s rule 2, for the same reason.
+            if let Ok(mut fresh) = beckon_core::settings::Model::from_text(&text) {
+                fresh.restore_view_state(&view);
+                if let Some(old) = s.settings.as_mut() {
+                    carry_undo(old, &mut fresh);
+                }
+                s.settings = Some(fresh);
+            }
+            s.external_change = false;
+            s.last_not_saved = None;
+        }
+    }
+}
+
 /// The App field's debounce has no timer of its own, so this is what turns
 /// "the field has gone quiet" into a write.
 ///
@@ -3308,14 +3406,25 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 // that CAN react, and the exercise of the channel by the
                 // control that raises it.
                 //
-                // Keyboard's shorthand toggle (§3.2) and auto-save's undo
-                // (§6) are the other two, and those genuinely have no control
-                // yet. All three are left as an empty arm rather than folded
-                // into a `_`, so the day one needs answering the compiler
-                // names this site.
-                SettingsCommand::SetCapsShorthand(_)
-                | SettingsCommand::Copy(_)
-                | SettingsCommand::Undo => {}
+                // Keyboard's shorthand toggle (§3.2) is the other one, and it
+                // genuinely has no control yet. Left as an empty arm rather
+                // than folded into a `_`, so the day one needs answering the
+                // compiler names this site.
+                SettingsCommand::SetCapsShorthand(_) | SettingsCommand::Copy(_) => {}
+                // Auto-save's own undo (§6.4). macOS only: Windows never
+                // pushes anything onto the stack (`autosave` is the one
+                // writer and it is macOS-only), so `can_undo()` is always
+                // false there and this arm has nothing to do.
+                SettingsCommand::Undo => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        {
+                            let mut s = st.borrow_mut();
+                            undo_pressed(&mut s);
+                        }
+                        refresh_settings(&st);
+                    }
+                }
                 SettingsCommand::CheckForUpdates => check_for_updates(&st),
             }
         }),

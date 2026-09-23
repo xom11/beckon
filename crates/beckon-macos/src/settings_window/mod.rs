@@ -65,8 +65,8 @@
 //! answer that, and it has to run in an Aqua session.
 
 use beckon_core::settings::{
-    command_bar_shown, copy_text, page_label, Bar, Callbacks, ControlState, Field, Mark, Page,
-    PageLabels, Paths, SettingsCommand,
+    command_bar_shown, copy_text, not_saved_phrase, page_label, Bar, Callbacks, ControlState,
+    Field, Mark, Page, PageLabels, Paths, SavedReadout, SettingsCommand,
 };
 // `beckon_core::settings::Target` names a link destination; `Target` in this
 // file is the Objective-C class every control sends its action to. Aliasing
@@ -248,6 +248,16 @@ struct Controls {
     /// the whole reason `show_page` hides the three BUTTONS rather than the
     /// band that holds them.
     service: Retained<NSTextField>,
+    /// The command bar's right half (four-doors §6.4): what the last
+    /// auto-save did. Also on all four doors, like `service` -- `apply_state`
+    /// draws it from `st.readout`, a `beckon_core::settings::SavedReadout`
+    /// this window did not compute.
+    readout: Retained<NSTextField>,
+    /// The one control `readout` sits beside. Pops the undo stack and writes
+    /// the result (`SettingsCommand::Undo`, answered in `serve.rs`) --
+    /// nothing here decides what popping means, only that a click asks for
+    /// it.
+    undo: Retained<NSButton>,
     kbd: keyboard::KeyboardControls,
     sys: system::SystemControls,
     abt: about::AboutControls,
@@ -980,6 +990,15 @@ define_class!(
         #[unsafe(method(beckonOpenFile:))]
         fn on_open_file(&self, _s: &AnyObject) {
             with_cb(|cb| (cb.on_open_file)());
+        }
+
+        /// The command bar's `Undo` (four-doors §6.4, G-g). Raised as a
+        /// command rather than acted on here, exactly like `beckonPause:` --
+        /// popping the stack and writing the file is `serve.rs`'s job, not a
+        /// window's.
+        #[unsafe(method(beckonUndo:))]
+        fn on_undo(&self, _s: &AnyObject) {
+            cmd(SettingsCommand::Undo);
         }
 
         /// Group 3 of the Keyboard door.
@@ -2080,13 +2099,25 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // meaning, and an empty bar is indistinguishable from the window ground it
     // is painted on.
     let service = widgets::secondary("", mtm);
+    // **The right half of the same line (design §6.4): what the last
+    // auto-save did, and the one control beside it.** `readout` is a plain
+    // `secondary` label like `service` -- `apply_state` recolors both from
+    // what `beckon_core::settings` already decided, never from a guess made
+    // here. `Undo`'s `setEnabled` is likewise driven by `st.readout`, not by
+    // a local read of the model: see `apply_state`.
+    let readout = widgets::secondary("", mtm);
+    let undo = push("Undo", sel!(beckonUndo:), &target, mtm);
     // `Open config file` then `Close` and `Save`: the pair that ends the
     // session sits where the eye finishes. `Reload` is NOT here — the System
-    // door owns it now, and the banner owns the other one.
+    // door owns it now, and the banner owns the other one. `readout` and
+    // `undo` sit between the spring and that trio, which is what makes them
+    // the RIGHT half of the bar rather than a fourth button crowding Save.
     let bar = hstack(
         &[
             &*service as &NSView,
             &*widgets::spring(mtm),
+            &*readout,
+            &undo,
             &*open_file,
             &close_btn,
             &save,
@@ -2287,6 +2318,8 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 pages: [page_shortcuts, page_keyboard, page_system, page_about],
                 bar,
                 service,
+                readout,
+                undo,
                 kbd,
                 sys,
                 abt,
@@ -2808,6 +2841,22 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         };
         x.service.setTextColor(Some(&tone));
 
+        // The bar's right half (design §6.4): what the last auto-save did.
+        // `readout_text` only spells `st.readout` -- the state itself is
+        // `saved_readout`'s answer, carried through `control_state`
+        // untouched. Same quiet-when-healthy tone as `service`: `Saved` and
+        // `Blank` get `secondaryLabelColor`, a refusal gets the one colour
+        // `service` uses for "worth saying, not worth stopping for".
+        x.readout
+            .setStringValue(&NSString::from_str(&readout_text(st.readout)));
+        let readout_tone = match st.readout {
+            SavedReadout::NotSaved(_) => objc2_app_kit::NSColor::systemOrangeColor(),
+            SavedReadout::Saved { .. } | SavedReadout::Blank => {
+                objc2_app_kit::NSColor::secondaryLabelColor()
+            }
+        };
+        x.readout.setTextColor(Some(&readout_tone));
+
         x.table.reloadData();
         if let Some(i) = st.selected {
             let set = objc2_foundation::NSIndexSet::indexSetWithIndex(i);
@@ -2871,6 +2920,13 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.save.setEnabled(st.apply_enabled && edit);
         x.remove.setEnabled(st.remove_enabled && edit);
         x.add.setEnabled(edit);
+        // `SavedReadout::Saved { undo }` is the one place this is decided --
+        // never a local read of whether the model's undo stack looks
+        // non-empty. `edit` still ANDs in, the same guard every other
+        // mutating control in this door gets, for the state that has no
+        // model to pop from at all.
+        x.undo
+            .setEnabled(matches!(st.readout, SavedReadout::Saved { undo: true }) && edit);
         x.kbd.caps.setEnabled(edit);
         x.kbd.shorthand.setEnabled(edit);
         let has_row = st.detail.is_some() && edit;
@@ -2915,6 +2971,23 @@ fn mark_glyph(m: Mark) -> &'static str {
         Mark::Warn => "!",
         Mark::Bad => "x",
         Mark::Unknown => "?",
+    }
+}
+
+/// The command bar's readout, spelled out. **Not a decision** -- which of
+/// the three states this is was already `saved_readout`'s call, carried
+/// through untouched on `ControlState::readout`; this only assigns each one
+/// a sentence, the same shape `mark_glyph` already is for `Mark`.
+///
+/// `not_saved_phrase` supplies the `NotSaved` sentence, ASCII per its own
+/// doc. `"Saved just now"` has no core counterpart to call because it is the
+/// one state with nothing to distinguish -- `SavedReadout::Saved`'s own doc
+/// names this exact wording.
+fn readout_text(r: SavedReadout) -> String {
+    match r {
+        SavedReadout::Blank => String::new(),
+        SavedReadout::Saved { .. } => "Saved just now".to_string(),
+        SavedReadout::NotSaved(ns) => not_saved_phrase(ns).to_string(),
     }
 }
 

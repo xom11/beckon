@@ -91,6 +91,7 @@ caps_hold = "ctrl+super+alt"
                     ]),
                     paused: false,
                     probe: None,
+                    last_not_saved: None,
                 };
                 let cs = control_state(&m.borrow(), &rt);
                 win::apply_state(&cs, false, None);

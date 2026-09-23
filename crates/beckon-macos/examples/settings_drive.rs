@@ -345,6 +345,7 @@ caps_hold = "ctrl+super+alt"
                     catalog: Some(vec!["Brave".into(), "Claude".into(), "kitty".into()]),
                     paused: false,
                     probe: None,
+                    last_not_saved: None,
                 };
                 let cs = control_state(&m.borrow(), &rt);
                 win::apply_state(&cs, false, None);

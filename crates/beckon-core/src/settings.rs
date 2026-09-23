@@ -101,6 +101,16 @@ pub struct RuntimeStatus {
     /// The combo is carried so a verdict for a chord the user has since
     /// changed can be ignored rather than shown against the new one.
     pub probe: Option<ProbeResult>,
+    /// Why the last auto-save did not write, or `None` when it did (or none
+    /// has run yet). Feeds `control_state`'s `readout` through
+    /// `saved_readout`; mirrors `ServeState::last_not_saved`, which is the
+    /// one writer.
+    ///
+    /// **Always `None` on Windows.** That window keeps its own command bar
+    /// and never auto-saves, so there is no refusal to carry and this field
+    /// is dead weight there -- present anyway so `RuntimeStatus` stays one
+    /// shape on every platform, the same choice `probe` already made.
+    pub last_not_saved: Option<NotSaved>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,6 +442,15 @@ pub struct ControlState {
     /// function's own doc argues the case at length, and this sentence named
     /// it by mistake while describing the other one.
     pub service: ServiceLine,
+    /// The command band's right half (four-doors §6.4): what the last
+    /// auto-save did, and whether Undo has anything to reach.
+    ///
+    /// **A projection, not a guess.** This is `saved_readout`'s own answer,
+    /// carried straight through -- the window draws it and decides nothing.
+    /// `Task 8`'s own lesson: a readout computed locally from "the write
+    /// probably went through" is exactly the bug `Keep mine` had, where a
+    /// silent no-op would have drawn `Saved` over somebody else's file.
+    pub readout: SavedReadout,
 }
 
 /// Which door the window is showing.
@@ -3333,6 +3352,7 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
                 .count(),
             m.rows.len(),
         ),
+        readout: saved_readout(true, rt.last_not_saved, m.can_undo()),
         selected,
         detail,
         filter: m.filter().to_string(),
@@ -4021,6 +4041,9 @@ pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
         // layers that fact on afterward, and `service_line` never raises a
         // mark that is already `Bad`.
         service: base_service_line(false, false, 0, 0),
+        // No model parsed, so `saved_readout`'s first argument is `false` --
+        // the same `Blank` a filter box has nothing to say about either.
+        readout: saved_readout(false, None, false),
     }
 }
 
@@ -4679,6 +4702,7 @@ mod tests {
             catalog: Some(vec!["Terminal".into(), "File Explorer".into()]),
             paused: false,
             probe: None,
+            last_not_saved: None,
         }
     }
 
@@ -4710,6 +4734,7 @@ mod tests {
             catalog: None,
             paused: false,
             probe: None,
+            last_not_saved: None,
         };
         let mut m = model();
         m.selected = Some(0);
@@ -7291,6 +7316,7 @@ mod tests {
                 combo: combo.into(),
                 verdict,
             }),
+            last_not_saved: None,
         }
     }
 
@@ -8803,6 +8829,7 @@ mod tests {
                 catalog: Some(catalog()),
                 paused: false,
                 probe: None,
+                last_not_saved: None,
             };
             let flagged = control_state(&m, &rt).items[0].flag.as_deref() == Some("missing");
             assert_eq!(flagged, want_missing, "the row flag disagrees for `{app}`");
