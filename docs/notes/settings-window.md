@@ -1531,7 +1531,7 @@ disposition after this phase:
 | G-f | confirm a risky Remove | built |
 | G-g | bounded Undo, depth 20 | built |
 | G-h | `<config>.bak` written once at window open | built |
-| G-i | flush a pending write on session end | **built on macOS after all** — the close is a session end (CORRECTED, below); still nothing to do for `WM_QUERYENDSESSION` |
+| G-i | flush a pending write on session end | **built on macOS after all** — both the close and Quit are session ends (CORRECTED, below); still nothing to do for `WM_QUERYENDSESSION` |
 | G-j | one close prompt | built — **fires only on `NotSaved::CannotWrite`**, and the close flushes before it asks |
 | G-k | carry the filter/selection/marks across a reload | built, same identity rule as G-b |
 
@@ -1815,6 +1815,40 @@ sentence across a platform boundary: **a disposition written about one
 mechanism does not dispose of the hazard.** When a guard is scoped out,
 name the hazard and ask which gestures on THIS platform produce it, rather
 than which API the design names.
+
+**And asking that question found a second door the same day: Quit.**
+`beckon_macos::tray::request_quit` is `std::process::exit(0)` and its own
+comment already said **"`Quit` never reaches a window delegate"** — so
+`windowShouldClose:`, `close_request` and the flush it had just gained were
+not on that path at all. Same loss, more final door. The flush is therefore
+**one body with two callers**: `flush_pending_write` in `serve.rs`, called by
+`close_verdict` (which then decides whether to refuse, G-j) and by
+`quit_flush` (which cannot refuse anything and returns). Two spellings of
+that rule would have been two chances to fix only one of them.
+
+Three things about the Quit half are worth keeping:
+
+- **A last chance is not a licence.** The flush goes through `autosave`, so a
+  stale base still holds and an unrenderable row still writes nothing. Quit
+  proceeds regardless: what is lost is the in-memory edit, and what told the
+  user is the footer, which had been naming the refusal continuously up to
+  the click. Nothing new is said at the moment of the quit — the window goes
+  with the process.
+- **`process::exit` runs no destructors, and nothing on this path needs one.**
+  `write_config_text` is `fs::write` (write_all and the close, both inside
+  the call) then `fs::rename`: two synchronous syscalls that have returned
+  before `autosave` does, before `quit_flush` does, and before the menu arm
+  reaches `request_quit()`. There is no buffered writer and nothing spawned
+  or queued. Durability across a power cut is a different question and has
+  never been claimed — no `fsync`, here or anywhere else beckon writes.
+- **The third `process::exit` on macOS was assessed and left alone.**
+  `GrantRecovery::RestartUnderLaunchd` (`serve.rs`) exits so launchd can
+  restart beckon once Accessibility is granted. Reaching it with a pending
+  write needs the grant to land in System Settings within `AUTOSAVE_QUIET_MS`
+  of a keystroke in beckon's own window — the user must switch apps and click
+  a toggle inside 600 ms, and the 0.25 s `autosave_tick` is running the whole
+  time. It also only exists in a session that started without the grant.
+  Adding the flush there is one line if that judgement ever looks wrong.
 
 ## CORRECTED 2026-09-23: the service line lagging the registration map was blamed on the wrong commit
 
