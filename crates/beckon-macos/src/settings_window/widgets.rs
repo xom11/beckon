@@ -350,11 +350,37 @@ pub(super) fn divider(mtm: MainThreadMarker) -> Retained<NSBox> {
 /// The spring is what pins the control right, the same primitive every row
 /// in this window already uses -- this function exists so the THREE pages
 /// stop spelling it out, not because the shape is new.
+///
+/// **`label`'s own minimum height is pinned before it goes in, and this is
+/// load-bearing.** Fix round 2, G1: a title-over-note two-line label
+/// (`widgets::labelled`'s `Some` arm, or a hand-built equivalent) reported a
+/// correct STANDALONE `fittingSize` -- 32pt for a 16pt title plus a 14pt
+/// note -- but once folded into this row's `hstack` alongside a
+/// SwiftUI-hosted control (`NSSwitch`, `NSPopUpButton` on this macOS: both
+/// show up in a frame dump as `_TtGC6AppKit18_NSCoreHostingView…`), the
+/// ROW'S OWN `fittingSize` came back as the SMALLER of the label's and the
+/// control's natural heights, not the larger -- 24pt for a label needing 32
+/// beside a 24pt switch, compressing the label's frame to 24 (its title
+/// clipped to 8pt) with no competing constraint or priority involved:
+/// raising the label's own vertical compression resistance to `Required`
+/// changed nothing, because nothing was actively fighting it down --
+/// `NSStackView`'s cross-axis fitting computation for this shape simply
+/// undercounts. An explicit `>=` floor, measured on the label BEFORE it is
+/// added to the row (its `fittingSize` here is still the correct,
+/// uncorrupted 32), sidesteps the question of why rather than answering it:
+/// once the floor is a real constraint the row has to satisfy, the row (and
+/// the card, and the window) size to fit it, and the shorter control just
+/// centres in the extra height it does not need. Measured 2026-09-23,
+/// `fix2_probe.rs` (not part of this commit) -- before this pin, `size_to_page`
+/// baked the undercounted 24pt into the window's own height on open, so the
+/// clipping was not a rendering artifact of too little room; the room itself
+/// was already wrong before anything was drawn.
 pub(super) fn form_row(
     label: &NSView,
     control: &NSView,
     mtm: MainThreadMarker,
 ) -> Retained<NSStackView> {
+    pin_min_height(label, label.fittingSize().height);
     hstack(&[label, &*spring(mtm), control], mtm)
 }
 
@@ -567,6 +593,27 @@ pub(super) fn pin_min_width(v: &NSView, w: f64) {
             NSLayoutAttribute::NotAnAttribute,
             1.0,
             w,
+        )
+        .setActive(true);
+    }
+}
+
+/// Pin a view to a minimum height, the same shape as `pin_min_width`.
+///
+/// `form_row`'s one caller measures `label.fittingSize().height` before
+/// this runs and passes that back in -- see its own doc for why a `>=`
+/// floor, rather than a priority, is what the two-line label case needs.
+pub(super) fn pin_min_height(v: &NSView, h: f64) {
+    v.setTranslatesAutoresizingMaskIntoConstraints(false);
+    unsafe {
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            v,
+            NSLayoutAttribute::Height,
+            NSLayoutRelation::GreaterThanOrEqual,
+            None,
+            NSLayoutAttribute::NotAnAttribute,
+            1.0,
+            h,
         )
         .setActive(true);
     }
