@@ -24,6 +24,7 @@
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Sel};
+use objc2::Message;
 use objc2_app_kit::{
     NSBezelStyle, NSBox, NSBoxType, NSButton, NSColor, NSControlSize, NSFont, NSLayoutAttribute,
     NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh,
@@ -341,6 +342,60 @@ pub(super) fn divider(mtm: MainThreadMarker) -> Retained<NSBox> {
     }
     pin_height(&b, 1.0);
     b
+}
+
+/// One row of a grouped form: a label block on the left, a control hard
+/// right (spec §5.2).
+///
+/// The spring is what pins the control right, the same primitive every row
+/// in this window already uses -- this function exists so the THREE pages
+/// stop spelling it out, not because the shape is new.
+pub(super) fn form_row(
+    label: &NSView,
+    control: &NSView,
+    mtm: MainThreadMarker,
+) -> Retained<NSStackView> {
+    hstack(&[label, &*spring(mtm), control], mtm)
+}
+
+/// The left half of a form row: a title, and under it the secondary line
+/// that explains it when one is needed.
+///
+/// `None` is the common case and costs nothing: a row whose meaning its own
+/// title carries says nothing more, which is the same rule the settings
+/// list's status words follow.
+pub(super) fn labelled(
+    title: &str,
+    note: Option<&str>,
+    mtm: MainThreadMarker,
+) -> Retained<NSStackView> {
+    let t = label(title, mtm);
+    match note {
+        None => vstack(&[&*t], 2.0, mtm),
+        Some(n) => {
+            let s = secondary(n, mtm);
+            s.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            vstack(&[&*t, &*s], 2.0, mtm)
+        }
+    }
+}
+
+/// A rounded group with a hairline between each pair of rows (spec §5.2).
+///
+/// `card` draws the ground; this adds the dividers, so a page never
+/// interleaves `divider()` calls with its rows by hand -- which is how the
+/// Windows twin's `system_plan` ends up owning divider offsets, and is the
+/// same defect in a different spelling.
+pub(super) fn group(rows: &[&NSView], mtm: MainThreadMarker) -> Retained<NSBox> {
+    let mut stacked: Vec<Retained<NSView>> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            stacked.push(Retained::into_super(divider(mtm)));
+        }
+        stacked.push((*r).retain());
+    }
+    let refs: Vec<&NSView> = stacked.iter().map(|v| &**v).collect();
+    card(&vstack(&refs, 10.0, mtm), mtm)
 }
 
 /// Pin a view to an exact height.
