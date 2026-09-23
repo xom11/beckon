@@ -1508,16 +1508,17 @@ last of those is a write that was attempted and errored; the other three
 never tried to write at all. "The last write failed" reads naturally as
 covering all four (nothing got saved, in each), and the build instead reads
 it as the narrow sense — an attempted write that came back an error — so
-only `NotSaved::CannotWrite` prompts on close. `AMENDED 2026-09-23, Task 10`
-in `windowShouldClose:`'s doc comment
-(`crates/beckon-macos/src/settings_window/mod.rs`) states the reading
-directly: this replaces gating on `dirty` alone, the way the old three-way
-Save/Cancel/Discard prompt did, because under auto-save a dirty model is
-the ROUTINE state — the debounce window before a keystroke's write lands,
-and every one of the four hold reasons leaves the model dirty too — so
-prompting on the broad reading would fire on nearly every close and be
-trained away, which is exactly the failure G-j's own "Prevents" column
-names.
+only `NotSaved::CannotWrite` prompts on close. In
+`crates/beckon-macos/src/settings_window/mod.rs`, `AMENDED 2026-09-23,
+Task 10` sits on `may_close()`'s own doc comment — the private function
+whose doc explains that `windowShouldClose:` is its one caller — and
+states the reading directly: this replaces gating on `dirty` alone, the
+way the old three-way Save/Cancel/Discard prompt did, because under
+auto-save a dirty model is the ROUTINE state — the debounce window before
+a keystroke's write lands, and every one of the four hold reasons leaves
+the model dirty too — so prompting on the broad reading would fire on
+nearly every close and be trained away, which is exactly the failure
+G-j's own "Prevents" column names.
 
 The other three refusals are never silent regardless: the footer readout is
 drawn on all four doors, unconditionally, with its own phrase per refusal.
@@ -1652,6 +1653,33 @@ replaced onto its replacement, because a reseed is what clears `dirty` and
 gives every row a fresh `orig_key`, and without carrying the stack across
 that boundary every successful write would empty the history it had just
 added to.
+
+### G-h: `<config>.bak` is a session rollback, and it does not cover the stale-base case
+
+`backup_config` copies the config beside itself as `<name>.bak`, once, at
+window open — beside the RESOLVED target, for the same reason
+`write_config_text`'s temp file is (see "A Save renamed onto the config
+path" above): `with_extension` swaps to `.toml.bak`, and `watch_config`,
+which compares by file name, cannot mistake the copy for a config write.
+The file is overwritten every time the window opens, so at any moment it
+holds exactly one snapshot — the state the config was in a moment before
+THIS session's first edit.
+
+That makes it a session rollback, and nothing more: one file, good for
+undoing a whole session of auto-saved edits the user wants out wholesale,
+gone the next time the window opens. **It does not cover the stale-base
+case, and a reader must not assume it does.** The compare-and-swap guard
+(G-a) is the one actually protecting against another writer's edit landing
+unseen — refusing a write whose base moved, with `Keep mine` as the
+explicit override. `.bak` cannot stand in for that, and the reason is
+timing, not mechanism: `.bak` is written once, at open, before either
+version of the later conflict exists. A stale-base clobber happens later,
+mid-session, after an external edit has already landed — so by the moment
+G-a's guard would matter, `.bak` already predates BOTH the model's current
+text and whatever the other writer put on disk. Restoring from it recovers
+neither. Best effort, and deliberately so: a failure to write it is not
+worth refusing to open the window over, and there is nothing a user could
+do about a failed backup from inside this window anyway.
 
 ### Two guards that need no separate story: G-f and G-i
 
