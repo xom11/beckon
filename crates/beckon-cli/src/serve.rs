@@ -2546,31 +2546,34 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// every_door` is the assertion, and it is the reason this function still needs
 /// no guard.
 ///
-/// **NARROWED 2026-09-23, auto-save: the two paragraphs above are now a
-/// WINDOWS sentence.** They are still exactly right there, and nothing about
-/// them changed. What changed is that macOS grew a second writer: `autosave`
-/// refuses a write whose base has moved and leaves the model DIRTY, so the
-/// close prompt's `Save` reaches this function with an edit auto-save has
-/// already declined to make -- and without a guard it makes it anyway, over
-/// the top of whoever moved the file. "The warning is on screen" is a real
-/// protection against a person pressing Save blind; it is no protection at
-/// all against a prompt that offers Save as the way out of a refusal. So
-/// there IS a guard here again, `#[cfg(target_os = "macos")]`, immediately
-/// before the write. See it for why it is not on both platforms.
+/// **WINDOWS ONLY as of 2026-09-23 (I2), and the `cfg` now says so.** Two
+/// amendments used to stand here. The first (auto-save) added a
+/// `#[cfg(target_os = "macos")]` compare-and-swap immediately before the
+/// write, because the macOS close prompt's `Save` could reach this function
+/// with an edit `autosave` had just refused. The second (Task 10, G-j)
+/// recorded that the close prompt was gone and that `on_apply` -- the Save
+/// press and its `Ctrl+S` accelerator -- was "the ONLY door left onto this
+/// function" on macOS. One commit later Task 11 deleted that door too:
+/// `beckonSave:`, the button views and the accelerator are all gone from
+/// `beckon-macos`, and `cb.on_apply` is raised from exactly one place in
+/// the program, `beckon-windows`' `IDC_APPLY` handler.
 ///
-/// **AMENDED 2026-09-23, Task 10 (G-j): macOS's route through the close
-/// prompt is gone, and the paragraph above is now itself a WINDOWS
-/// sentence.** `on_close_request`'s macOS arm (`close_request`, below) no
-/// longer raises a three-way Save/Cancel/Discard question at all -- it
-/// refuses the close outright when the model is dirty and the last write
-/// failed, and closes silently otherwise, in neither case calling this
-/// function. On macOS `on_apply` (the Save press and its `Ctrl+S`
-/// accelerator) is the ONLY door left onto this function, and the guard two
-/// paragraphs up still earns its keep there: a direct Save press can still
-/// race an external change with no close prompt anywhere in the story.
-/// Windows is unchanged -- its close prompt still offers `SaveChoice::Save`,
-/// which is still the second route the opening paragraph names.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+/// So the guard was standing on a bricked door while its own comment told
+/// the next reader the door was open -- and a reader auditing macOS's write
+/// paths would have counted three where there are two (`autosave` and
+/// `undo_pressed`). Both are gone with the function's macOS half: the `cfg`
+/// is `windows`, the compare-and-swap it carried went with it, and
+/// `open_settings` fills macOS's `on_apply` with a closure that does
+/// nothing. **`base_moved` is unaffected** -- it still has two callers,
+/// both macOS, both tested.
+///
+/// The two paragraphs above (REVERTED / AMENDED 2026-08-14) are the
+/// unchanged Windows story and are why this function still needs no guard
+/// there: the banner or the warn dot is on screen from every door, so no
+/// Save is pressed without the warning having been visible. Windows' close
+/// prompt still offers `SaveChoice::Save`, which is still the second route
+/// the opening paragraph names.
+#[cfg(target_os = "windows")]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let rendered = {
         let s = state.borrow();
@@ -2586,47 +2589,15 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
             return;
         }
     };
-    // **The same compare-and-swap `autosave` runs, immediately before the
-    // same write (I3).** Without it this function is a second door onto the
-    // file with no guard on it: `autosave` holds a write because the base
-    // moved, the model stays dirty, and the close prompt's `Save` then calls
-    // straight through here and clobbers the external edit auto-save had
-    // just refused to clobber. The read is here rather than at the top of
-    // the function for the reason `autosave` states: the pairing IS the
-    // guard.
-    //
-    // **macOS only, and that is not timidity.** On Windows `Keep mine` only
-    // dismisses the banner -- it has no write behind it there -- so a
-    // refusal here would leave no way at all to save over an external edit,
-    // which is a regression in the Save workflow this branch is required to
-    // leave alone. Windows keeps its documented protection instead: the
-    // banner or the warn dot is on screen from every door, so no Save is
-    // pressed without the warning having been visible.
-    #[cfg(target_os = "macos")]
-    {
-        // **`base_moved`, not a second spelling of it.** This check had its
-        // own inline comparison for one commit, which is the same
-        // agreement-by-discipline shape `app_lookup` was extracted to end --
-        // and this one had no test at all, because `apply_settings` has
-        // none. The shared function is where the test lives.
-        let disk = std::fs::read_to_string(&path).ok();
-        let moved = {
-            let s = state.borrow();
-            s.settings
-                .as_ref()
-                .is_some_and(|m| beckon_core::settings::base_moved(m, disk.as_deref()))
-        };
-        if moved {
-            state.borrow_mut().external_change = true;
-            refresh_settings(state);
-            swin::error(
-                "Not saved - the file changed on disk.\n\nYour edits are still here. \
-                 Use Reload to take the file's version, or Keep mine to write yours \
-                 over it.",
-            );
-            return;
-        }
-    }
+    // **There was a `#[cfg(target_os = "macos")]` compare-and-swap here,
+    // and it is gone with the platform (I2).** It guarded a door Task 11
+    // bricked: macOS's Save press. What it protected against -- a prompt
+    // offering `Save` as the way out of a refusal `autosave` had just made
+    // -- cannot happen on Windows, where `Keep mine` has no write behind it
+    // and a refusal here would leave no way at all to save over an external
+    // edit. Windows keeps its documented protection instead, stated in this
+    // function's doc: the banner or the warn dot is on screen from every
+    // door, so no Save is pressed without the warning having been visible.
     if let Err(e) = write_config_text(&path, &text) {
         swin::error(&format!("Cannot write {}:\n\n{e}", path.display()));
         return;
@@ -3167,11 +3138,14 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
         // old path had. This line is the missing half of that trade.
         //
         // Save shows the same stale count TODAY, present tense, for a
-        // separate and simpler reason: `apply_settings` (`:2436`) never
-        // touches `s.registered` at all -- only `reload()` does -- so a
-        // chord edit followed by Save reaches this same branch with the
-        // same stale map, on both platforms (this function is
-        // `any(windows, macos)`).
+        // separate and simpler reason: `apply_settings` never touches
+        // `s.registered` at all -- only `reload()` does -- so a chord edit
+        // followed by Save reaches this same branch with the same stale
+        // map. **That is a WINDOWS sentence now (I2)**: this function is
+        // `any(windows, macos)`, but `apply_settings` is `windows` since
+        // Task 11 deleted macOS's Save press, so on macOS there is no
+        // gesture left that reaches this branch by that route -- only
+        // auto-save's own write does.
         //
         // Safe regardless of whether the model is dirty by the time this
         // runs. `original()` is a fixed base and `dirty()` is an independent
@@ -3422,10 +3396,20 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 refresh_settings(&st);
             }
         }),
+        // **Windows raises this; macOS has nothing left that can (I2).**
+        // `IDC_APPLY` and its `Ctrl+S` accelerator are the only things in
+        // the program that call `cb.on_apply`, and both are Win32. Task 11
+        // deleted macOS's `beckonSave:` and its views, so the macOS arm is
+        // a closure the window never runs -- spelled as one here rather
+        // than as a call into a function no macOS door can reach, which is
+        // what left a guard standing on a bricked door for two commits.
+        #[cfg(target_os = "windows")]
         on_apply: Box::new({
             let st = Rc::clone(state);
             move || apply_settings(&st)
         }),
+        #[cfg(target_os = "macos")]
+        on_apply: Box::new(|| {}),
         on_catalog: Box::new({
             let st = Rc::clone(state);
             move |names: Vec<String>| {

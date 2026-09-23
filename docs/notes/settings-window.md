@@ -1731,5 +1731,14 @@ told about it.
 One present-tense fact survives from the wrong account unchanged: **Save
 shows the same stale count today**, because `apply_settings` never touches
 `s.registered` at all — only `reload()` does — so a chord edit followed by
-Save reaches the same stale map on both platforms, this function being
-`any(windows, macos)`.
+Save reaches the same stale map.
+
+**NARROWED 2026-09-23: that is a Windows sentence.** It was written after
+the macOS button came down and still said "on both platforms, this function
+being `any(windows, macos)`" — true of `settings_saw_external_change`, which
+is where the stale map is read, and false of the gesture. There is no Save
+press on macOS to follow a chord edit with: `apply_settings` is
+`#[cfg(target_os = "windows")]` and `cb.on_apply` is raised from one place in
+the program, `beckon-windows`' `IDC_APPLY` handler. On macOS the only thing
+that reaches this branch is auto-save's own write, which is what the
+`refresh_settings` call above was added for.
