@@ -2051,6 +2051,12 @@ impl Model {
         self.dirty
     }
 
+    /// The file text this model was loaded from. The compare-and-swap
+    /// guard's base.
+    pub fn original(&self) -> &str {
+        &self.original
+    }
+
     /// Set the list filter. Deliberately does NOT set `dirty`, for the same
     /// reason `set_marked` does not: `apply_enabled` is `dirty && valid`, so
     /// a filter that dirtied the model would light up Save and rewrite the
@@ -3235,6 +3241,93 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         // There is a `Model`, therefore the file parsed, therefore it can be
         // edited. The only `false` in the program is `unreadable_state`.
         editable: true,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-save
+// ---------------------------------------------------------------------------
+
+/// Why a valid-looking edit was not written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotSaved {
+    /// The model does not render -- a half-typed row, a duplicate chord.
+    FinishTheRow,
+    /// The file on disk is no longer the text this model was loaded from.
+    FileMoved,
+    /// The selected row's app was resolvable and now matches nothing.
+    /// Writing would put a broken hotkey live mid-word.
+    AppWentMissing,
+    /// `write_config_text` returned an error.
+    CannotWrite,
+}
+
+/// What the driver should do after an edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutosavePlan {
+    /// Nothing changed since the last write.
+    Nothing,
+    /// Write this text, after pushing the current on-disk text onto the
+    /// undo stack.
+    Write(String),
+    /// Do not write, and say why.
+    Hold(NotSaved),
+}
+
+/// What the footer's right-hand side reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedReadout {
+    /// The config does not parse: there is nothing to save and nothing to
+    /// claim.
+    Blank,
+    /// `Saved just now`, with Undo offered when the stack is not empty.
+    Saved {
+        undo: bool,
+    },
+    NotSaved(NotSaved),
+}
+
+/// Decide what an edit should do to the file.
+///
+/// **The order of these checks is the design.** `FileMoved` is first
+/// because when the base is stale no amount of validity makes the write
+/// safe. `FinishTheRow` is next because an unrenderable model has nothing
+/// to offer the file. `AppWentMissing` is last because it is the only one
+/// that refuses a write that WOULD have succeeded -- it is a judgement
+/// about the live hotkey, not about the text.
+pub fn autosave_plan(model: &Model, on_disk: &str, selected_app_missing: bool) -> AutosavePlan {
+    if !model.dirty() {
+        return AutosavePlan::Nothing;
+    }
+    if on_disk != model.original() {
+        return AutosavePlan::Hold(NotSaved::FileMoved);
+    }
+    let Ok(text) = model.render() else {
+        return AutosavePlan::Hold(NotSaved::FinishTheRow);
+    };
+    if selected_app_missing {
+        return AutosavePlan::Hold(NotSaved::AppWentMissing);
+    }
+    AutosavePlan::Write(text)
+}
+
+pub fn saved_readout(parsed: bool, last: Option<NotSaved>, can_undo: bool) -> SavedReadout {
+    if !parsed {
+        return SavedReadout::Blank;
+    }
+    match last {
+        Some(r) => SavedReadout::NotSaved(r),
+        None => SavedReadout::Saved { undo: can_undo },
+    }
+}
+
+/// The sentence the footer shows for each refusal. ASCII only.
+pub fn not_saved_phrase(r: NotSaved) -> &'static str {
+    match r {
+        NotSaved::FinishTheRow => "Not saved - finish the row below",
+        NotSaved::FileMoved => "Not saved - the file changed on disk",
+        NotSaved::AppWentMissing => "Not saved - that app name matches nothing",
+        NotSaved::CannotWrite => "Not saved - cannot write the file",
     }
 }
 
@@ -8113,5 +8206,97 @@ mod tests {
         m.clear_undo();
         assert!(!m.can_undo());
         assert_eq!(m.take_undo(), None);
+    }
+
+    // ---------- autosave_plan (G-a, G-e) ----------
+
+    #[test]
+    fn a_clean_model_plans_no_write() {
+        let m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        assert_eq!(
+            autosave_plan(&m, m.original(), false),
+            AutosavePlan::Nothing
+        );
+    }
+
+    #[test]
+    fn an_edit_plans_the_rendered_text() {
+        let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "Brave");
+        match autosave_plan(&m, m.original(), false) {
+            AutosavePlan::Write(text) => assert!(text.contains("Brave"), "{text}"),
+            other => panic!("expected a write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_file_that_moved_under_us_holds_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        m.set_app(0, "Brave");
+        assert_eq!(
+            autosave_plan(&m, "somebody else edited this\n", false),
+            AutosavePlan::Hold(NotSaved::FileMoved)
+        );
+    }
+
+    #[test]
+    fn an_unrenderable_model_holds_the_write_and_says_to_finish_the_row() {
+        let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        m.set_combo(0, "not a chord");
+        assert_eq!(
+            autosave_plan(&m, m.original(), false),
+            AutosavePlan::Hold(NotSaved::FinishTheRow)
+        );
+    }
+
+    #[test]
+    fn a_selected_row_whose_app_went_missing_holds_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "B");
+        assert_eq!(
+            autosave_plan(&m, m.original(), true),
+            AutosavePlan::Hold(NotSaved::AppWentMissing)
+        );
+    }
+
+    #[test]
+    fn the_readout_is_blank_when_the_config_does_not_parse() {
+        assert_eq!(saved_readout(false, None, true), SavedReadout::Blank);
+    }
+
+    #[test]
+    fn the_readout_offers_undo_only_when_there_is_something_to_undo() {
+        assert_eq!(
+            saved_readout(true, None, true),
+            SavedReadout::Saved { undo: true }
+        );
+        assert_eq!(
+            saved_readout(true, None, false),
+            SavedReadout::Saved { undo: false }
+        );
+    }
+
+    #[test]
+    fn a_refusal_outranks_the_saved_readout() {
+        assert_eq!(
+            saved_readout(true, Some(NotSaved::CannotWrite), true),
+            SavedReadout::NotSaved(NotSaved::CannotWrite)
+        );
+    }
+
+    #[test]
+    fn every_refusal_phrase_is_ascii_and_says_what_to_do() {
+        for r in [
+            NotSaved::FinishTheRow,
+            NotSaved::FileMoved,
+            NotSaved::AppWentMissing,
+            NotSaved::CannotWrite,
+        ] {
+            let s = not_saved_phrase(r);
+            assert!(s.is_ascii(), "{r:?} phrase is not ASCII: {s}");
+            assert!(s.starts_with("Not saved"), "{r:?}: {s}");
+        }
     }
 }
