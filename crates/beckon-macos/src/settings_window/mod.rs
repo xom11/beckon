@@ -949,28 +949,39 @@ define_class!(
 
         /// **Asks first when `remove_needs_confirm` says the press is risky
         /// (G-f).** Auto-save is what makes this load-bearing -- see that
-        /// function's own doc. `marked` is read from `Ui::items`, which
-        /// mirrors the last-pushed `ControlState::items` (visible rows
-        /// only, exactly what `Model::marked_count` counts); `filter_active`
-        /// is read live off the filter field itself, trimmed the same way
-        /// `Model::visible` trims it. Both reads finish and their borrows
-        /// drop -- the `UI` borrow inside its own closure, `controls()`'s
-        /// internal borrow before it returns -- before `confirm_remove` runs
-        /// its modal loop, which re-enters this module's `with_cb` the
-        /// moment the user answers.
+        /// function's own doc. `marked` and `file_name` are both read from
+        /// `Ui` (`items`, which mirrors the last-pushed
+        /// `ControlState::items` -- visible rows only, exactly what
+        /// `Model::marked_count` counts; and `paths.config`'s file name, the
+        /// same string the title bar's subtitle shows -- Round 1 F1);
+        /// `filter_active` is read live off the filter field itself,
+        /// trimmed the same way `Model::visible` trims it. Every read
+        /// finishes and its borrow drops -- the `UI` borrow inside its own
+        /// closure, `controls()`'s internal borrow before it returns --
+        /// before `confirm_remove` runs its modal loop, which re-enters
+        /// this module's `with_cb` the moment the user answers.
         #[unsafe(method(beckonRemove:))]
         fn on_remove(&self, _s: &AnyObject) {
             let proceed = match controls() {
                 Some(c) => {
-                    let marked = UI.with(|u| {
+                    let (marked, file_name) = UI.with(|u| {
                         u.borrow()
                             .as_ref()
-                            .map(|x| x.items.iter().filter(|i| i.marked).count())
-                            .unwrap_or(0)
+                            .map(|x| {
+                                let marked = x.items.iter().filter(|i| i.marked).count();
+                                let file_name = x
+                                    .paths
+                                    .config
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| x.paths.config.display().to_string());
+                                (marked, file_name)
+                            })
+                            .unwrap_or((0, String::new()))
                     });
                     let filter_active = !c.filter.stringValue().to_string().trim().is_empty();
                     if beckon_core::settings::remove_needs_confirm(marked, filter_active) {
-                        confirm_remove(marked.max(1))
+                        confirm_remove(marked.max(1), &file_name)
                     } else {
                         true
                     }
@@ -1826,7 +1837,17 @@ pub fn ask_save(title: &str, body: &str) -> SaveChoice {
 /// `count` is the number of rows the press will actually remove --
 /// `marked_count`, or `1` for the selection-only fallback `remove_pressed`
 /// takes when nothing is ticked.
-fn confirm_remove(count: usize) -> bool {
+///
+/// **`file_name` is real, not a guess (Round 1 F1).** The first version of
+/// this dialog hard-coded `apps.toml`, which is only the DEFAULT config
+/// name -- the config path is user-supplied, and on at least one real
+/// machine the file behind a chain of symlinks is `launch-app.toml`. The
+/// window already computes this exact string for the title bar's subtitle
+/// (`open()`, above: `paths.config.file_name()`, falling back to the whole
+/// path when a file name cannot be taken); the caller passes the same
+/// string here rather than this function reaching for `Paths` on its own,
+/// so there is one place that decides what "the file" is called on screen.
+fn confirm_remove(count: usize, file_name: &str) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         // No way to ask, so do not guess in the destructive direction.
         return false;
@@ -1838,7 +1859,9 @@ fn confirm_remove(count: usize) -> bool {
         format!("Remove {count} shortcuts?")
     };
     alert.setMessageText(&NSString::from_str(&title));
-    alert.setInformativeText(&NSString::from_str("This writes apps.toml right away."));
+    alert.setInformativeText(&NSString::from_str(&format!(
+        "This writes {file_name} right away."
+    )));
     alert.addButtonWithTitle(&NSString::from_str("Cancel"));
     alert.addButtonWithTitle(&NSString::from_str("Remove"));
     // NSAlertFirstButtonReturn is 1000; Cancel is first, so Remove is 1001.
