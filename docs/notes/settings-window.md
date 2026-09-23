@@ -42,6 +42,18 @@ Each is a platform fact rather than a shortfall:
   because hugging needs a width only its layout pass computes — and it brings
   the contrast, focus ring and keyboard story each Win32 pill state needed its
   own measurement to get right.
+
+  **NARROWED 2026-09-23: the control itself moved on.** Phase 2 (spec §5.1)
+  replaces the `NSSegmentedControl` with a real `NSToolbar` in `.preference`
+  style. The argument above still holds and now applies one level up: AppKit's
+  own preference toolbar draws the centred pill group, the selection
+  highlight, the SF Symbol + caption layout and a keyboard story in both
+  appearances — what the segmented control bought over four hand-drawn pills
+  is what the toolbar now brings over the segmented control, for the same
+  reason. What the segmented control paid for that — a caption that could
+  carry data, the Shortcuts segment's binding count and external-change dot —
+  is retired with it; see "A 'does this platform consult that decision?' guard
+  was REJECTED" below for where those two facts live now.
 - **About draws an Accessibility row where Windows draws `HOOK_DISCLOSURE`.**
   With no `CGEventTap` built, *"the keyboard hook is installed only while…"*
   was vacuously true while telling the reader a keyboard hook is part of the
@@ -571,6 +583,25 @@ in `AXDescription`; and `settings_saw_external_change` branches on `dirty`, so
 a test that does not edit first takes the silent-reload path and asserts
 nothing.
 
+**NARROWED 2026-09-23: the surface this smoke test read is gone.** Phase 2
+retires the `NSSegmentedControl` tab strip for an `NSToolbar` (spec §5.1), and
+a toolbar item cannot carry a caption that changes with the data the way an
+`AXSegment` could — so there is nothing left on this platform for an AX read
+to catch either fact on. The Shortcuts segment used to read
+`shortcuts_tab_label(binding_count, warn)`, e.g. `Shortcuts  19 •` for
+nineteen bindings with the bullet appended whenever `warn_dot_shown` was true;
+both the function and the segment it drew on are deleted with the strip.
+**Both facts moved to the service line instead**, drawn on all four doors:
+the count is what `Serving · N of N` already said (`base_service_line`), and
+the external-change warning is now an appended clause — `service_line`,
+`" -- the file changed on disk"` — rather than a caption glyph, raising the
+line's mark to `Warn` unless it is already `Bad`. Neither reaches the tray's
+own `Needs attention` section: that lists rows whose BINDING is broken, is
+unrelated to a config file moving on disk, and predates this branch. The
+smoke test this guard motivated is retired with its surface:
+`the_warn_dot_is_the_complement_of_the_banner` now pins only core's
+`banner_shown` / `warn_dot_shown` partition, not a caption on this platform.
+
 ## The status vocabulary is four words, and a healthy row says nothing
 
 `paused` > `in use` > `missing` > `other chord`, and that order IS the
@@ -693,6 +724,23 @@ exactly like a broken window. It cannot say whether text is elided or hard-cut,
 and it cannot see the scroller; both need pixels.
 
 ### The vertical twin: 48 pt of dead band, and About was never the tallest door
+
+**RETIRED 2026-09-23 (macOS): one shared height for all four doors is gone.**
+Phase 2's toolbar (spec §5.1) lets three doors be smaller than Shortcuts, so
+the window now takes each page's own height (`size_to_page`), floored at
+`MIN_CONTENT_HEIGHT` rather than derived from the tallest door's fitting
+size. The four measured page heights below are why one shared height was
+wrong in the first place, and are kept as that record — they are no longer a
+live derivation, `MIN_HEIGHT` no longer exists as a name, and neither does the
+480/500 pair this section produces. **Windows' own geometry
+(`page_plan`, `layout.rs`) is untouched** — this entry was always
+macOS-specific, unlike the pixel-based `MIN_HEIGHT` / `WINDOW_HEIGHT`
+derivation in the Windows section above. See `WINDOW_HEIGHT`'s own doc
+comment in `crates/beckon-macos/src/settings_window/mod.rs` for the current
+mechanism. The per-page heights this branch actually measured with the
+toolbar installed moved four times during five fix rounds, and are recorded
+in `docs/notes/macos-backend.md` as a shape rather than a table, for that
+reason.
 
 Same probe, the other axis. Measured on macmini 2026-08-17 with
 `BECKON_PROBE_H` unset, i.e. at the shipped 500 pt content height:

@@ -1282,3 +1282,155 @@ the spec cites as the reference for this menu, and it was seen and accepted
 in the live session. The line exists so the next reader recognises it as the
 price of the ⌥ path rather than as a bug to be fixed by moving the action
 back to mouse-down.
+
+## The settings window's new shell, measured (2026-09-23, UI redesign phase 2)
+
+Branch `macos-settings-shell`, `airm3`, 2026-09-23, five fix rounds against
+`docs/superpowers/specs/2026-09-22-macos-ui-redesign-design.md` §5-§7: a real
+`NSToolbar` in `.preference` style replaces the `NSSegmentedControl` tab
+strip, all four doors become grouped forms (`widgets::group`, rounded cards
+with hairlines), and the window takes each page's own height
+(`size_to_page`) instead of one height shared by all four. The toolbar itself
+is four items, centred, SF Symbol over caption, in AppKit's own selection
+pill — the third item's caption is `General`, not `System`
+(`the_toolbar_captions_come_from_the_mac_table` pins
+`page_label(Page::System, PageLabels::MAC) == "General"`), and switching
+pages is animated (`show_page`); the first door `open()` shows is sized
+unanimated, in one write, so nothing visibly resizes before the window is on
+screen (`size_to_page` vs. the first-open path, in
+`settings_window/mod.rs`).
+
+### A sentence in the repository is now measured-false
+
+`widgets::pin_width_to`'s own doc used to say *"The inner columns were never
+affected, so the property is specific to that stack rather than general."*
+**That is false, disproved by measurement on 2026-09-23.** The title-over-note
+column inside `widgets::labelled` is an inner column, and it showed the
+identical trailing-alignment defect the root stack had: the title sat at its
+own intrinsic width flush against the column's trailing edge, so the title
+and the note ended at the same X and the title read as centred when it was
+not. Photographed on the real window (`Keyboard.png`, `General.png`), fixed
+by pinning the column's children (`pin_width_at_least`, fix round 3's H1).
+The narrowing is: the defect is not specific to the root stack; an inner
+column shows it whenever one child is narrower than the column the other
+child sizes. Marked in place, not deleted, in `pin_width_to`'s own doc
+comment (`crates/beckon-macos/src/settings_window/widgets.rs`) and in
+`docs/notes/settings-window.md`'s tab-strip and status-vocabulary entries,
+which carry the same class of narrowing for the toolbar itself.
+
+### `NSStackView` undercounts a row's fitting height, and the fix sidesteps the question
+
+Measured with an offscreen probe that switches pages through the real
+toolbar action rather than forcing a window size:
+
+- A two-line label block (16 pt title + 14 pt note) reports a correct
+  standalone `fittingSize` height of 32.
+- Folded into `form_row`'s `hstack` beside a 24 pt control, the ROW's own
+  `fittingSize` comes back as **24** — the smaller of the label's and the
+  control's natural heights, not the larger.
+- `size_to_page` then bakes that 24 into the window's height on open, so the
+  clipping exists before anything is drawn. It was never a rendering-time
+  squeeze.
+- Confirmed for `caps_row` and `pause_row` (control: `NSSwitch`) and for
+  `im_row` (control: a plain push button), which rules out "specific to
+  `NSSwitch`".
+- **Control run:** raising the label's own vertical compression resistance to
+  `Required` changed nothing, because nothing was actively fighting it down.
+  The fitting computation itself undercounts, independent of priority.
+
+The fix is an explicit `>=` floor measured on the label BEFORE it joins the
+row, while its own number is still uncorrupted. It sidesteps the mechanism
+rather than naming it — `NSStackView`'s own row-fitting arithmetic is still
+undocumented by Apple and this repository does not claim to have found it,
+only worked around its effect.
+
+### The probe that agrees with the screen, and the one that does not
+
+Round 1's probe opened directly on the page under test and forced
+`setContentSize(640, 700)`. Every row then had far more room than it needed,
+so a row whose `fittingSize` was already wrong never visibly compressed, and
+the probe reported a correct layout for a layout that was visibly broken.
+
+**A layout probe must reach the page the way the window does**: open on
+`Page::Shortcuts` and switch through the real toolbar action, so
+`size_to_page` sizes the window from the row's own number — and it must print
+`fittingSize` alongside `frame`, not `frame` alone. A frame dump alone cannot
+see this class of defect at all.
+
+### How to see the permission-missing state at all
+
+**A process launched from a terminal inherits the terminal's TCC
+attribution.** A dev build run from a shell therefore reports
+`AXIsProcessTrusted() == true` no matter how it is signed, how freshly it was
+built, or what path it sits at — re-signing the bare binary with a different
+identifier does not change this. So the settings window's two permission
+warnings are empty on a developer's machine and the layout that carries them
+is never exercised there.
+
+The recipe that does work, and touches no TCC grant:
+
+```sh
+cp -R /opt/homebrew/opt/beckon/beckon.app /tmp/<fresh>/beckon.app
+cp <branch binary> /tmp/<fresh>/beckon.app/Contents/MacOS/beckon
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.example.<fresh>" \
+    /tmp/<fresh>/beckon.app/Contents/Info.plist
+rm -rf /tmp/<fresh>/beckon.app/Contents/_CodeSignature
+codesign --force --deep --sign - /tmp/<fresh>/beckon.app
+open -a /tmp/<fresh>/beckon.app --args serve <config>
+```
+
+A fresh bundle identity at a fresh path reports both permissions missing and
+`apply()` fills both warning fields for real. Verify with a printed control
+line (`accessibility_trusted = ... input_monitoring_granted = ...`) so a
+reader can tell an OS answer from a forced one, and check
+`~/Library/Application Support/com.apple.TCC/TCC.db`'s mtime has not moved
+afterwards, as the negative control that the bundle teardown touched no real
+grant.
+
+**This is what caught the only regression on this branch that a user would
+have hit**: a 250-character wrapping paragraph sharing a form row with a
+button was squeezed into a ~100 pt column and truncated, and About's row
+title rendered at zero height — in the state every new install starts in.
+The control that made it blocking was putting the released 0.15.2 binary in
+the same untrusted bundle, where the same sentence renders correctly.
+
+**Consequence for the design: a wrapping paragraph and a control cannot share
+a form row.** `im_row` and `access_row` use
+`vstack([form_row(title, control), note])` instead, and that is deliberate,
+not an inconsistency to tidy up.
+
+### The per-page heights are not stable numbers — do not assert them
+
+Each page takes its own height from `content_height`, subject to
+`MIN_CONTENT_HEIGHT`, at a fixed 640 pt width; the number moves whenever a
+row's content moves. They moved four times during this branch's five fix
+rounds as rows gained their correct heights, and they move again whenever the
+Keyboard or About permission warnings go from empty to non-empty, because the
+warning fields add height. A probe, an example or a note asserting a literal
+height therefore has a short shelf life by construction — do not add one; see
+the RETIRED entry in `docs/notes/settings-window.md` for the shared-height
+derivation this replaced, and `WINDOW_HEIGHT`'s own doc comment in
+`crates/beckon-macos/src/settings_window/mod.rs` for the one number
+(`fittingSize` 360 for Shortcuts, measured on macmini 2026-08-17 before this
+branch existed) that is kept as a record rather than a floor.
+
+### Smaller items
+
+- The window title is the page label and the config file name is the window
+  SUBTITLE; AppKit joins them with its own en dash, so an AX title reads
+  `Shortcuts - launch-app.toml`. The dash is AppKit's, not beckon's — this
+  window's own strings stay ASCII, and a future ASCII audit should not "fix"
+  it.
+- Core's service line uses a middle dot (`Serving · 20 of 20`) — non-ASCII in
+  a GUI string, pre-existing and out of scope for this branch, but worth a
+  line so a reader finds it deliberately rather than by surprise.
+- Both permission cards — About's Accessibility row and the Keyboard page's
+  Input Monitoring row — reserve a blank band in the granted state, because
+  `apply()` writes an empty string rather than hiding the field. Known and
+  deliberate; `apply()` was out of scope for this phase.
+- A `hstack` with two unconstrained springs is ambiguous, and AppKit's choice
+  is not stable across unrelated constraint changes: About's links row sat
+  hard right for both permission states before this branch, and hard LEFT in
+  one of them after, with nothing in that row edited. It is now one leading
+  spring. `widgets::centred`'s doc already records the two-spring ambiguity
+  for its own case — this is a second instance and confirms it is general.

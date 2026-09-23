@@ -582,6 +582,15 @@ pub(super) fn pin_height(v: &NSView, h: f64) {
 /// affected, so the property is specific to that stack rather than general,
 /// and a constraint says what was meant without depending on which reading of
 /// `alignment` this AppKit takes.
+///
+/// **NARROWED 2026-09-23: "the inner columns were never affected" is
+/// measured-false.** `labelled`'s title/note column, above in this file, is
+/// an inner column and showed the identical trailing-alignment defect —
+/// title and note ending at the same X, reading as centred when it was not
+/// (see that function's own doc for the measurement and the fix,
+/// `pin_width_at_least`). The defect is not specific to the root stack: an
+/// inner column shows it whenever one child is narrower than the column the
+/// other child sizes.
 pub(super) fn pin_width_to(v: &NSView, other: &NSView, inset: f64) {
     v.setTranslatesAutoresizingMaskIntoConstraints(false);
     v.widthAnchor()
