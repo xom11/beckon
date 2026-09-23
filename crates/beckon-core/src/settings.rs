@@ -491,6 +491,54 @@ impl Page {
     }
 }
 
+/// What each door is CALLED on a given platform.
+///
+/// The same shape as `shortcuts::ModifierLabels`, and for the same reason:
+/// exactly one of the four differs, so a table shows which one at a glance
+/// where four literals in two windows would not. `Page` itself is unchanged
+/// -- this is display text, not identity.
+///
+/// **`System` is `General` on macOS** because that is what the platform calls
+/// the door holding "everything that is not a document" (spec
+/// `2026-09-22-macos-ui-redesign-design.md` §5.1). Windows keeps `System`,
+/// and `WINDOWS` below is byte-identical to the literals its window already
+/// draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageLabels {
+    pub shortcuts: &'static str,
+    pub keyboard: &'static str,
+    pub system: &'static str,
+    pub about: &'static str,
+}
+
+impl PageLabels {
+    /// What the Win32 window has always drawn.
+    pub const WINDOWS: PageLabels = PageLabels {
+        shortcuts: "Shortcuts",
+        keyboard: "Keyboard",
+        system: "System",
+        about: "About",
+    };
+
+    /// macOS, where the third door is `General`.
+    pub const MAC: PageLabels = PageLabels {
+        shortcuts: "Shortcuts",
+        keyboard: "Keyboard",
+        system: "General",
+        about: "About",
+    };
+}
+
+/// One door's caption, in a named platform's words.
+pub fn page_label(page: Page, l: PageLabels) -> &'static str {
+    match page {
+        Page::Shortcuts => l.shortcuts,
+        Page::Keyboard => l.keyboard,
+        Page::System => l.system,
+        Page::About => l.about,
+    }
+}
+
 /// The live service line at the left end of the command bar (design §6.4).
 ///
 /// **On all four doors**, which is the point: since the store split the bar
@@ -7819,5 +7867,42 @@ mod tests {
             "every display string in this window is ASCII: a face that lacks \
              a glyph draws a box"
         );
+    }
+
+    /// The four captions were literals in each window. They are a table for
+    /// the reason `ModifierLabels` is one: only ONE of them differs by
+    /// platform, and a reader must be able to see which.
+    #[test]
+    fn only_the_system_page_is_named_differently_on_macos() {
+        let w = PageLabels::WINDOWS;
+        let m = PageLabels::MAC;
+        assert_eq!(
+            (w.shortcuts, w.keyboard, w.about),
+            (m.shortcuts, m.keyboard, m.about)
+        );
+        assert_eq!(w.system, "System");
+        assert_eq!(m.system, "General");
+    }
+
+    #[test]
+    fn page_label_reads_the_table_it_is_given() {
+        for (p, w, m) in [
+            (Page::Shortcuts, "Shortcuts", "Shortcuts"),
+            (Page::Keyboard, "Keyboard", "Keyboard"),
+            (Page::System, "System", "General"),
+            (Page::About, "About", "About"),
+        ] {
+            assert_eq!(page_label(p, PageLabels::WINDOWS), w);
+            assert_eq!(page_label(p, PageLabels::MAC), m);
+        }
+    }
+
+    #[test]
+    fn every_page_label_is_ascii() {
+        for l in [PageLabels::WINDOWS, PageLabels::MAC] {
+            for p in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+                assert!(page_label(p, l).is_ascii());
+            }
+        }
     }
 }
