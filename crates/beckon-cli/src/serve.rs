@@ -390,10 +390,24 @@ struct ServeState {
     pending_select: Option<usize>,
     /// Why the last auto-save did not write, or `None` when it did.
     ///
-    /// **Written by `autosave` alone**, and by every path through it, so
-    /// there is one answer rather than one per call site. Read by the
-    /// footer's readout (`saved_readout`) and by the close prompt, which is
-    /// the only prompt auto-save leaves standing.
+    /// **Scoped to ONE model, not to the process.** It answers "why did the
+    /// last write of the model currently in `settings` not happen", so
+    /// every path that replaces that model clears it -- `load_settings_model`,
+    /// `forget_settings` and `reload_settings_from_disk`. Read by the
+    /// footer's readout (`saved_readout`) and by `close_request`, whose
+    /// refusal is the only prompt auto-save leaves standing.
+    ///
+    /// **Four write sites in two functions**, and naming them is the point:
+    /// `autosave` sets it once at its end, from the plan's outcome, so every
+    /// path through it gives one answer; `undo_pressed` sets it directly on
+    /// each of its three exits (`FileMoved`, `CannotWrite`, and `None` on a
+    /// successful pop). **This doc used to say "written by `autosave`
+    /// alone", which stopped being true in Task 8** -- and the cost was not
+    /// just a wrong sentence. Both writers need a DIRTY model, so a reader
+    /// who believed the single-writer claim also believed the field
+    /// resynchronises on every edit and had no reason to check what happens
+    /// when the model goes clean. That is exactly how the stale-footer
+    /// defect (I1) survived a review that traced every reachable path.
     ///
     /// macOS only, and structurally so: Windows keeps its command bar and
     /// its own Save, so nothing there ever writes without being asked and
