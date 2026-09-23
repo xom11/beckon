@@ -2147,23 +2147,55 @@ fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
     }
 }
 
-/// May the window close, given the state it is in (G-j)?
+/// Flush what is still pending, then say whether the window may close
+/// (G-j, and the flush is C1).
+///
+/// **The flush comes first, and it ignores the debounce deliberately.**
+/// The App field is the one debounced input: `edit!` and `autosave_tick`
+/// both decline to write while `autosave_is_deferred()`, so for up to
+/// `AUTOSAVE_QUIET_MS` plus one tick after a keystroke the model is dirty
+/// and the file does not have the edit. Closing in that window used to
+/// drop the model with `forget_settings` and lose the keystroke silently
+/// -- and because `last_not_saved` is `None` throughout, the footer read
+/// `Saved just now` while it happened. Four-doors design §6's G-i names
+/// exactly this loss, scoped to logoff; on macOS the close ends the
+/// model's session just as finally, and since Task 11 it is the only way
+/// out of the window.
+///
+/// **The deadline exists to avoid writing on every keystroke, not to
+/// withhold a write that has nowhere left to go.** So this calls
+/// `autosave` directly, which has no deferral check of its own -- the
+/// check lives in the two callers that fire repeatedly, and this one
+/// fires once, at the end.
+///
+/// Nothing about the guards is skipped with it: `autosave` runs the whole
+/// plan, so a base that moved still holds, an unrenderable row still
+/// holds, and `Keep mine` is still the only clobber. A flush that HOLDS
+/// leaves `last_not_saved` set with its own footer phrase and the close
+/// then proceeds -- which is G-j's recorded ruling, with its recorded
+/// cost: a user who closes on an `AppWentMissing` hold loses one valid
+/// edit that the footer had been naming the whole time. A flush that
+/// FAILS leaves `CannotWrite`, and the line below reads it back, so the
+/// refusal is about this attempt rather than an older one.
 ///
 /// **The decision half of `close_request`, split out so it has somewhere a
 /// test can reach it (I6).** The other half raises an `NSAlert` and drops
 /// the model, neither of which a unit test can be near; this half takes
-/// `&ServeState` like every other driver function the tests drive, and the
-/// whole refusal is `beckon_core::settings::close_is_refused` -- which is
+/// `&mut ServeState` like every other driver function the tests drive, and
+/// the refusal itself is `beckon_core::settings::close_is_refused` --
 /// where the policy lives, with its own tests, `remove_needs_confirm`'s
-/// reason. G-j shipped as an inline predicate with no test and no
-/// on-screen run of its refusal arm; deleting it would have turned nothing
-/// red.
+/// reason.
 ///
-/// A read-only window has no model, so `dirty` is false and this answers
-/// `true`: there is nothing that could have been edited and nothing to
-/// refuse for.
+/// A read-only window has no model, so there is nothing to flush,
+/// `dirty` is false and this answers `true`.
 #[cfg(target_os = "macos")]
-fn close_verdict(s: &ServeState) -> bool {
+fn close_verdict(s: &mut ServeState) -> bool {
+    // Only a model with something to write, so a clean close still touches
+    // no file -- and so a `CannotWrite` recorded over a model the user has
+    // since undone is not re-tried on the way out.
+    if s.settings.as_ref().is_some_and(|m| m.dirty()) {
+        autosave(s, false);
+    }
     let dirty = s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false);
     !beckon_core::settings::close_is_refused(dirty, s.last_not_saved)
 }
@@ -2187,16 +2219,25 @@ fn close_verdict(s: &ServeState) -> bool {
 ///
 /// Everything this function still owns is the part that touches AppKit or
 /// the model's lifetime: the alert, and `forget_settings`. The answer
-/// itself is `close_verdict` above. The borrow is scoped to a block that
-/// ends before either, which is this module's rule for any call that can
-/// re-enter `ServeState`.
+/// itself -- including the flush that C1 added -- is `close_verdict`
+/// above. The borrow is scoped to a block that ends before either, which
+/// is this module's rule for any call that can re-enter `ServeState`.
+/// `autosave` runs inside that borrow, as it already does from `edit!` and
+/// `autosave_tick`: it does file I/O and an `eprintln!`, never a dialog,
+/// which is the reason its failure arm is a log line.
+///
+/// **`refresh_settings` before the alert, and that ordering is the point.**
+/// The flush may have just turned `Saved just now` into `Not saved -
+/// cannot write the file`; pushing it first means the footer behind the
+/// box already says what the box is about, rather than contradicting it.
 #[cfg(target_os = "macos")]
 fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
     let may_close = {
-        let s = st.borrow();
-        close_verdict(&s)
+        let mut s = st.borrow_mut();
+        close_verdict(&mut s)
     };
     if !may_close {
+        refresh_settings(st);
         swin::error(
             "Cannot close: your last change could not be saved.\n\n\
              Use Undo, or fix the problem, then close again.",
@@ -4507,7 +4548,10 @@ mod tests {
         let perms = std::fs::metadata(dir.path()).unwrap().permissions();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let outcome = autosave(&mut st, false);
-        let verdict = close_verdict(&st);
+        // The close FLUSHES first (C1), so this retries the write and fails
+        // again -- the refusal is about the attempt just made, not about an
+        // older verdict left lying in the field.
+        let verdict = close_verdict(&mut st);
         std::fs::set_permissions(dir.path(), perms).unwrap();
 
         // The control: the write really did fail, so this is a test about a
@@ -4531,6 +4575,21 @@ mod tests {
             before,
             "and the file is still what it was"
         );
+        // **The footer may not say `Saved just now` over an edit that has
+        // not reached the file (C1's second condition).** The readout is a
+        // projection of the same field the refusal reads, so this is the
+        // one place both can be checked against one state.
+        assert_eq!(
+            beckon_core::settings::saved_readout(
+                true,
+                st.last_not_saved,
+                st.settings.as_ref().unwrap().can_undo()
+            ),
+            beckon_core::settings::SavedReadout::NotSaved(
+                beckon_core::settings::NotSaved::CannotWrite
+            ),
+            "the footer has to name the failure the alert is about"
+        );
     }
 
     /// The control for the test above, and the close every on-screen
@@ -4547,7 +4606,105 @@ mod tests {
         let mut st = state_with_an_edit(&config, "Brave");
         assert_eq!(autosave(&mut st, false), None);
 
-        assert!(close_verdict(&st));
+        assert!(close_verdict(&mut st));
+    }
+
+    /// **C1: closing inside the App field's debounce must not lose the
+    /// keystroke.** `edit!` and `autosave_tick` both decline to write while
+    /// `autosave_is_deferred()`, so between a keystroke and the first tick
+    /// at or after `t + AUTOSAVE_QUIET_MS` the model is dirty and the file
+    /// does not have the edit. The close used to drop the model there --
+    /// with the footer reading `Saved just now`, because `last_not_saved`
+    /// is `None` throughout.
+    ///
+    /// **What this test reproduces is the STATE, not the timer**, and the
+    /// distinction is worth being explicit about. The deadline itself lives
+    /// in `beckon-macos`' `UI` thread-local (`app_last_typed`, read through
+    /// `swin::app_field_quiet_for`), which exists only while a real window
+    /// does -- so `autosave_is_deferred()` is always `false` in a unit test
+    /// and no test here can be inside the debounce. What the debounce
+    /// PRODUCES is a dirty model whose edit has not reached the file, which
+    /// is exactly what `state_with_an_edit` builds and what the first
+    /// assertion pins. That the close's flush cannot be deferred is true by
+    /// construction rather than by this test: it calls `autosave`, which
+    /// has no deferral check in it.
+    ///
+    /// Asserted on the FILE's bytes, the discipline
+    /// `a_write_is_abandoned_when_the_file_moved_under_us` set: the whole
+    /// claim is about what is on disk once the window is gone.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn closing_writes_an_edit_that_was_still_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        // The debounce state: typed, dirty, and nothing written yet.
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "precondition: the edit is only in memory"
+        );
+        assert!(st.settings.as_ref().unwrap().dirty());
+
+        assert!(
+            close_verdict(&mut st),
+            "the flush succeeded, so there is nothing to refuse"
+        );
+
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "the pending keystroke has to reach the file before the model \
+             is dropped -- there is no later tick to write it"
+        );
+        assert!(
+            !st.settings.as_ref().unwrap().dirty(),
+            "the reseed is what clears dirty, so this is the write's own \
+             receipt rather than a second read of the file"
+        );
+        assert_eq!(
+            st.last_not_saved, None,
+            "and `Saved just now` is now true instead of merely displayed"
+        );
+    }
+
+    /// The other half of C1's flush, and the reason it goes through
+    /// `autosave` rather than writing directly: a flush whose plan HOLDS
+    /// must not write. Here the file moved under the model, so the close
+    /// leaves the other party's text exactly where it is.
+    ///
+    /// The close is still ALLOWED, which is G-j's recorded ruling and its
+    /// recorded cost: `FileMoved` has been in the footer and behind the
+    /// banner the whole time, so closing over it is an informed act. Only
+    /// `CannotWrite` stops the close.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_flush_on_close_still_obeys_the_compare_and_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        // Somebody else edits the file behind the model's back.
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        assert!(close_verdict(&mut st), "a hold does not refuse the close");
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            theirs,
+            "the flush is a write with all the guards on it, not a write \
+             that skips them because the window is closing"
+        );
+        assert_eq!(
+            st.last_not_saved,
+            Some(beckon_core::settings::NotSaved::FileMoved),
+            "and the footer names the hold rather than claiming a save"
+        );
     }
 
     /// **A refusal must not outlive the model it was about (I1).** `Reload
