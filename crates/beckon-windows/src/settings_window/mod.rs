@@ -152,9 +152,9 @@ use crate::shell;
 use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
     about_state, banner_shown, caps_view_enabled, caps_view_fold, combo_needs_placing,
-    command_bar_shown, copy_text, default_button, image_identity, opacity_alpha, system_state,
-    warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton, Field,
-    FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, ServiceLine, SettingsCommand,
+    command_bar_shown, copy_text, default_button, image_identity, opacity_alpha, service_line,
+    system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton,
+    Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, ServiceLine, SettingsCommand,
     SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{
@@ -6826,7 +6826,15 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // window that answers "are the hotkeys working", and it is chrome, so
         // it is written whichever door is open. `show_service` no-ops when
         // nothing changed, so this costs a comparison on the common push.
-        show_service(hwnd, &st.service);
+        //
+        // **`false`, always -- this door already carries the external-change
+        // fact on the Shortcuts pill's warn dot** (`set_pill_badge`, driven
+        // by `warn_dot_shown` a few lines below), so the service line stays
+        // exactly what it read before macOS's shell gained a reason to fold
+        // that fact into this line instead (spec §5.1 -- the macOS toolbar
+        // cannot carry a warn dot the way the old tab strip could; Windows'
+        // tab strip is untouched and still can).
+        show_service(hwnd, &service_line(st.service.clone(), false));
         enable(hwnd, IDC_CAPS, st.editable);
         // **The view switch is NOT gated on `st.editable`**, and that is
         // design §1's split by store rather than an oversight -- the same

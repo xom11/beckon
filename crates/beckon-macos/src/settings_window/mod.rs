@@ -1485,7 +1485,8 @@ fn teardown() -> Option<Ui> {
 /// `Ui` owns the ONLY strong reference to both roots: `Controls::window` is
 /// a `Retained` and — since `setReleasedWhenClosed(false)` — nothing else
 /// retains the window, while `NSWindow::setDelegate` is a documented **weak**
-/// property, so `Ui::_target` is the only thing keeping the delegate alive.
+/// property, so `Ui::_target` is the only thing keeping the WINDOW's delegate
+/// alive.
 ///
 /// Dropping that pair inline would deallocate them from inside a frame that
 /// is still using them: `windowWillClose:` is a method ON the delegate, sent
@@ -1493,6 +1494,32 @@ fn teardown() -> Option<Ui> {
 /// other route is a subview of the content view the window owns — so the
 /// button's own action would return into freed memory. Handing both to the
 /// autorelease pool costs two slots and removes the whole class of failure.
+///
+/// **`Ui::_toolbar_target` is NOT in that pair, and `drop(ui)` frees it
+/// inline, on this same call.** That is deliberately narrower than "every
+/// `Retained` `Ui` owns goes through the pool" -- it is safe today for two
+/// reasons together, and losing either one reopens the same class of bug
+/// this function exists to close:
+///
+/// - **No toolbar route reaches `close()` or `teardown()` at all.** Nothing
+///   here is symmetric with `windowWillClose:` — no `ToolbarTarget` method
+///   (`item_for_identifier`, `default_identifiers`, `beckonToolbarPage:`, …)
+///   is anywhere on the call stack that leads to this function, so freeing
+///   `_toolbar_target` here does not free an object whose own method is
+///   still executing one frame up.
+/// - **`NSToolbar::setDelegate` and `NSToolbarItem::setTarget` are BOTH
+///   zeroing-weak**, exactly like `NSWindow::setDelegate` above — so even a
+///   stray reference from outside this call (a paint tick, a pending
+///   selector) reads `nil` rather than a dangling pointer. That protects a
+///   THIRD party reading the property late; it does nothing for the
+///   re-entrancy hazard above, which is why the first reason still has to
+///   hold on its own.
+///
+/// **If a future change adds a route from inside a `ToolbarTarget` method
+/// to `close()`** — a toolbar item that could itself trigger a window close,
+/// say — this inline `drop` becomes exactly the bug `release_later` was
+/// written to close, and `_toolbar_target` needs to move into the
+/// `autorelease_ptr` pair above rather than staying here.
 ///
 /// The pool is `[NSApp run]`'s, one per event; see the `serve` note in
 /// `CLAUDE.md` for why that loop and not Carbon's.
@@ -2213,9 +2240,12 @@ fn mod_segments(
     let s = objc2_app_kit::NSSegmentedControl::new(mtm);
     unsafe {
         s.setSegmentCount(4);
-        // **`SelectAny`, not `SelectOne`.** The tab strip above uses `SelectOne`
-        // because a reader is on exactly one door; a chord is a SET, and
-        // `SelectOne` would make picking Cmd silently drop Ctrl.
+        // **`SelectAny`, not `SelectOne`.** `SelectOne` is for a control
+        // where exactly one segment is ever true at a time -- the toolbar's
+        // four doors work that way (`NSToolbar` handles it natively, not
+        // through this control at all any more -- see the toolbar's own
+        // construction comment in `open()`). A chord is a SET, and
+        // `SelectOne` here would make picking Cmd silently drop Ctrl.
         s.setTrackingMode(objc2_app_kit::NSSegmentSwitchTracking::SelectAny);
         s.setTarget(Some(target));
         s.setAction(Some(sel!(beckonShortcut:)));
@@ -2554,13 +2584,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     // — the rule `controls()` exists to make structural.
     let caps_view = UI.with(|u| u.borrow().as_ref().map(|y| y.caps_view).unwrap_or(false));
     {
-        // **No toolbar item carries the binding count or the
-        // external-change warning any more** (spec §5.1) -- a toolbar item
-        // cannot hold a caption that changes with the data the way the old
-        // segment could. The service line below reports the same file-moved
-        // condition, and the menu's *Needs attention* section carries it too
-        // (phase 1), so nothing observable is lost -- see
-        // `the_warn_dot_is_the_complement_of_the_banner`.
+        // **The warn dot is gone from the shell** (spec §5.1): a toolbar
+        // item cannot hold a caption that changes with the data the way the
+        // old segment could, so it has no home there any more. The footer's
+        // service line -- below, and visible on all four doors -- reports
+        // the moved file instead, via `service_line`.
         //
         // The dirty mark. `setDocumentEdited:` is AppKit's own — it puts a
         // dot in the close button — so the Win32 twin's `*` title prefix does
@@ -2568,6 +2596,14 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         x.window.setDocumentEdited(st.dirty);
 
         // The service line, on every door.
+        //
+        // **`external_change` is layered on here, not carried on `st`.**
+        // `control_state` cannot know whether the file moved under the
+        // window -- see `service_line`'s own doc for why that fact stays a
+        // separate step -- so this is the one call in the window that turns
+        // the parameter `apply_state` already takes into the clause this
+        // door was missing since the toolbar took the tab strip's warn dot
+        // away.
         //
         // **No glyph in front of it.** The Win32 twin owner-draws one because
         // it also owner-draws the colour; here the colour IS the signal and
@@ -2577,9 +2613,9 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // rest of the chrome — because a healthy state announcing itself is
         // the noise the Shortcuts door's status vocabulary already refuses to
         // make.
-        x.service
-            .setStringValue(&NSString::from_str(&st.service.text));
-        let tone = match st.service.mark {
+        let service = beckon_core::settings::service_line(st.service.clone(), external_change);
+        x.service.setStringValue(&NSString::from_str(&service.text));
+        let tone = match service.mark {
             Mark::Bad => objc2_app_kit::NSColor::systemRedColor(),
             Mark::Warn => objc2_app_kit::NSColor::systemOrangeColor(),
             Mark::Ok | Mark::Unknown => objc2_app_kit::NSColor::secondaryLabelColor(),

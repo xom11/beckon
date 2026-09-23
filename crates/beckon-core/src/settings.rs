@@ -554,7 +554,9 @@ pub struct ServiceLine {
     pub text: String,
 }
 
-/// What the service line says.
+/// What the service line says before the external-change fact, if any, is
+/// layered on top -- see `service_line` below for that step and for why it
+/// is a separate one.
 ///
 /// Four inputs, all of which `control_state` already holds, which is why this
 /// needs no push of its own — see design §12 q4, which phrases the data as
@@ -580,7 +582,7 @@ pub struct ServiceLine {
 /// **The mark is a function of the text**, and that is fine but is not a
 /// reason for the window to cache it: `WM_DRAWITEM` cannot re-derive a `Mark`
 /// from a window's text, so the painter needs it pushed alongside.
-pub fn service_line(
+fn base_service_line(
     editable: bool,
     paused: bool,
     registered_ok: usize,
@@ -612,6 +614,49 @@ pub fn service_line(
         },
         text: format!("Serving · {registered_ok} of {total}"),
     }
+}
+
+/// Layers the external-change fact onto an already-decided service line
+/// (macOS UI redesign spec §5.1).
+///
+/// **A second, separate step, not a fifth input to `base_service_line`.**
+/// `control_state`'s whole reason for owning that computation is that every
+/// input it needs is already in `control_state`'s own two arguments — see
+/// that function's doc. Whether the file changed under an open window is not
+/// one of them: it is `ServeState::external_change`, tracked in `beckon-cli`,
+/// visible only to the window layer that already receives it as
+/// `apply_state`'s own second parameter. Threading it any further back would
+/// mean adding a field to `RuntimeStatus` (20 literal constructions in this
+/// file's tests) or a third parameter to `control_state` (75-odd call sites)
+/// for one bool a single door of one platform now wants to show — the
+/// "fourth push... `cfg`-gated per platform" `ControlState::service`'s own
+/// doc already argued against. Layering it on the finished line instead
+/// keeps that argument true and costs one small, fully testable function.
+///
+/// **Why the shell gained a reason to call this at all.** The macOS toolbar
+/// (design §5.1) cannot carry a caption that changes with the data the way
+/// the retired `NSSegmentedControl` tab strip could, so the external-change
+/// warning that used to ride there moved here, onto the one line every door
+/// shows. Windows still draws the fact on its tab's warn dot
+/// (`paint::tab_pill`, driven by `warn_dot_shown`) and keeps doing so
+/// unchanged, which is why its call passes `false`.
+///
+/// **The text is kept, not replaced**, so a reader who already knows what
+/// `Serving · 18 of 19` or `Paused` means loses nothing — the clause only
+/// adds the one fact those words cannot carry. **The mark rises to `Warn`
+/// but never falls**: a `Bad` line (the config did not parse) is already the
+/// most severe word in the vocabulary, and downgrading its cause to a milder
+/// one because the disk ALSO moved would bury the more urgent fact under the
+/// newer one. ASCII only, matching every other label in this window — see
+/// `global-constraints.md`.
+pub fn service_line(mut line: ServiceLine, external_change: bool) -> ServiceLine {
+    if external_change {
+        line.text = format!("{} -- the file changed on disk", line.text);
+        if line.mark != Mark::Bad {
+            line.mark = Mark::Warn;
+        }
+    }
+    line
 }
 
 /// Which chord the Shortcuts list folds into a single `Caps` cap, if any.
@@ -3109,12 +3154,14 @@ pub fn control_state(m: &Model, rt: &RuntimeStatus) -> ControlState {
         // `m.rows`, never `items.len()` -- see the field's own doc. `vis` is
         // already computed above and is the filtered set; this is the file.
         binding_count: m.rows.len(),
-        service: service_line(
+        service: base_service_line(
             true,
             rt.paused,
             // Over `m.rows` and not over the map's values, so the numerator
-            // is bounded by the denominator beside it -- see `service_line`'s
-            // own doc for the removal direction that closes.
+            // is bounded by the denominator beside it -- see
+            // `base_service_line`'s own doc for the removal direction that
+            // closes. `apply_state` layers the external-change fact on top
+            // of this, per platform -- see `service_line`.
             m.rows
                 .iter()
                 .filter(|r| {
@@ -3555,9 +3602,12 @@ pub fn unreadable_state(notes: Vec<Note>) -> ControlState {
         marked_count: 0,
         editable: false,
         // The one state where the phrase is not about counts at all: there is
-        // no model to count. `service_line`'s first branch is exactly this,
-        // and it outranks a pause for the reason stated there.
-        service: service_line(false, false, 0, 0),
+        // no model to count. `base_service_line`'s first branch is exactly
+        // this, and it outranks a pause for the reason stated there. Also
+        // why an external change never reaches this line: `apply_state`
+        // layers that fact on afterward, and `service_line` never raises a
+        // mark that is already `Bad`.
+        service: base_service_line(false, false, 0, 0),
     }
 }
 
@@ -6018,25 +6068,94 @@ mod tests {
     /// reading `row_condition` gives its own four words one surface down.
     #[test]
     fn the_service_line_says_one_thing_at_a_time() {
-        let broken = service_line(false, false, 0, 0);
+        let broken = base_service_line(false, false, 0, 0);
         assert_eq!(broken.mark, Mark::Bad);
         assert!(broken.text.starts_with("Not serving"));
         // ...and it still outranks a pause.
-        assert_eq!(service_line(false, true, 0, 0), broken);
+        assert_eq!(base_service_line(false, true, 0, 0), broken);
 
-        let paused = service_line(true, true, 3, 19);
+        let paused = base_service_line(true, true, 3, 19);
         assert_eq!(paused.mark, Mark::Warn);
         assert_eq!(paused.text, "Paused");
 
-        let all = service_line(true, false, 19, 19);
+        let all = base_service_line(true, false, 19, 19);
         assert_eq!(all.mark, Mark::Ok);
         assert_eq!(all.text, "Serving · 19 of 19");
 
         // Some chord did not take. `Warn`, not `Bad`: the rest are working,
         // which is `row_condition`'s own reading of `in use` on one row.
-        let some = service_line(true, false, 18, 19);
+        let some = base_service_line(true, false, 18, 19);
         assert_eq!(some.mark, Mark::Warn);
         assert_eq!(some.text, "Serving · 18 of 19");
+    }
+
+    /// The external-change clause: appears only when asked, keeps the text
+    /// it would otherwise have, and raises the mark without ever lowering
+    /// it -- the fix round 1 tests spec §5.1 asked for.
+    #[test]
+    fn external_change_adds_a_clause_and_never_lowers_the_mark() {
+        let unchanged = base_service_line(true, false, 18, 19);
+        // The flag is false: the line service_line returns must be the
+        // input, unchanged, byte for byte -- this is what lets Windows pass
+        // `false` and mean "leave it exactly as it was."
+        assert_eq!(service_line(unchanged.clone(), false), unchanged);
+
+        let changed = service_line(unchanged.clone(), true);
+        assert_eq!(
+            changed.text,
+            format!("{} -- the file changed on disk", unchanged.text),
+            "the serving text survives, with the clause appended after it"
+        );
+        assert!(
+            changed.text.starts_with(&unchanged.text),
+            "the underlying serving/paused text is preserved verbatim"
+        );
+        assert_eq!(
+            changed.mark,
+            Mark::Warn,
+            "an Ok or Warn line rises to Warn when the file moved"
+        );
+
+        // A line that was already `Warn` (paused, or some chord not taken)
+        // stays `Warn` -- there is nowhere higher to rise to short of `Bad`,
+        // and the file moving is not worse than that.
+        let already_warn = base_service_line(true, true, 0, 19);
+        assert_eq!(already_warn.mark, Mark::Warn);
+        assert_eq!(service_line(already_warn, true).mark, Mark::Warn);
+
+        // `Bad` is the one mark this never raises FROM -- the config not
+        // parsing already outranks the file having moved, and saying both
+        // at once would bury the more urgent word under the newer one.
+        let broken = base_service_line(false, false, 0, 0);
+        assert_eq!(broken.mark, Mark::Bad);
+        let still_broken = service_line(broken.clone(), true);
+        assert_eq!(
+            still_broken.mark,
+            Mark::Bad,
+            "a Bad mark is not downgraded by an external change"
+        );
+        assert!(
+            still_broken.text.starts_with(&broken.text),
+            "the Bad line still gains the clause -- only the MARK is pinned"
+        );
+    }
+
+    /// Every clause this function can add is ASCII, matching every other
+    /// label in this window (`global-constraints.md`). Run against the
+    /// `Paused` branch, the one base text with no non-ASCII character of its
+    /// own, so a failure here can only be the new clause's doing.
+    #[test]
+    fn the_external_change_clause_is_ascii() {
+        let paused = base_service_line(true, true, 0, 19);
+        assert!(
+            paused.text.is_ascii(),
+            "precondition: the base text is ASCII"
+        );
+        let noted = service_line(paused, true);
+        assert!(
+            noted.text.is_ascii(),
+            "the clause must not add a non-ASCII byte"
+        );
     }
 
     /// **The denominator is the same number the Shortcuts pill shows.** The
