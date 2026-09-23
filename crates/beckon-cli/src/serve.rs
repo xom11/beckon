@@ -216,10 +216,13 @@ fn unreadable_phrase() -> String {
 
 struct ServeState {
     shortcuts: Vec<Shortcut>,
-    /// The `keyboard` block. `caps`/`caps_tap`/`caps_hold` today. Windows
-    /// acts on all three; macOS reads `caps`/`caps_hold` too, from the menu
-    /// bar's build closure (`caps_view_fold`) — the file is parsed
-    /// identically everywhere so one config can travel between machines.
+    /// The `keyboard` block. `caps`/`caps_tap`/`caps_hold` today. Both
+    /// windowed platforms act on all three — `sync_caps_hook` is written
+    /// once and feeds `caps`, `caps_tap` and `caps_hold` to the Win32 hook
+    /// and the macOS event tap alike. macOS additionally READS
+    /// `caps`/`caps_hold` a second time, from the menu bar's build closure
+    /// (`caps_view_fold`). The file is parsed identically everywhere so one
+    /// config can travel between machines.
     keyboard: KeyboardConfig,
     config: PathBuf,
     /// Hotkeys deliberately unregistered from the tray menu. A reload while
@@ -1098,15 +1101,25 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             settings_retry_unreadable(state);
         }
         Ok(new) => {
-            let mut m = mgr.borrow_mut();
-            m.unregister_all();
             {
                 let mut s = state.borrow_mut();
                 s.shortcuts = new.shortcuts;
                 s.keyboard = new.keyboard;
             }
+            // **The resolve runs before the manager is borrowed and before
+            // anything is unregistered, and both halves of that matter.**
+            // `refresh_menu_rows` calls `beckon_macos::resolve_reports`,
+            // measured at 60-95 ms on `airm3`
+            // (`docs/notes/macos-backend.md`): unregistering first would
+            // leave every hotkey dead for that whole window, and a press
+            // landing in it reaches the frontmost app instead of beckon.
+            // Holding `mgr.borrow_mut()` across it is separately ruled out
+            // by this module's own rule that no `RefCell` borrow is held
+            // across a resolver.
             #[cfg(target_os = "macos")]
             refresh_menu_rows(state);
+            let mut m = mgr.borrow_mut();
+            m.unregister_all();
             let paused = state.borrow().paused;
             if paused {
                 // A file save is not a request to un-pause. The table is
@@ -1297,10 +1310,14 @@ fn refresh_menu_rows(state: &Rc<RefCell<ServeState>>) {
         }
     };
     if beckon_core::verbose() {
+        // Milliseconds spelled out, not `{:?}`: `Duration`'s Debug renders a
+        // sub-millisecond value as `537.25µs`, and every `serve` log line is
+        // ASCII by rule (Windows PowerShell 5.1's `Get-Content` defaults to
+        // ANSI).
         eprintln!(
-            "beckon serve: resolved {} menu rows in {:?}",
+            "beckon serve: resolved {} menu rows in {} ms",
             rows.len(),
-            started.elapsed()
+            started.elapsed().as_millis()
         );
     }
     state.borrow_mut().menu_rows = rows;
@@ -1436,8 +1453,15 @@ const MENU_SHORTCUTS: u32 = 9;
 #[cfg(any(target_os = "macos", test))]
 const MENU_EDIT_SHORTCUTS: u32 = 10;
 /// A binding row's id is this plus its index into `ServeState::shortcuts`.
-/// Safe because the menu is rebuilt on every open (`menuNeedsUpdate:`), so an
-/// id always names a row of the table the menu was built from.
+///
+/// The menu is rebuilt on every open (`menuNeedsUpdate:`), but that is not
+/// enough to make the id stable: the 1 Hz reload tick runs in
+/// `kCFRunLoopCommonModes`, so a reload WHILE the menu is open re-points
+/// every id at a different table. What makes it safe is the consumer --
+/// `select_binding` looks the index up with `.get(i)` and returns on `None`,
+/// so a stale id selects a different row or no row at all. Never a panic, and
+/// never a launch: no path from a binding id does anything but move the
+/// settings window's selection.
 #[cfg(any(target_os = "macos", test))]
 const MENU_BINDING_BASE: u32 = 1000;
 
@@ -1488,7 +1512,8 @@ fn build_mac_entries(m: &MacMenu) -> Vec<MenuEntry> {
         MenuEntry {
             id: MENU_STATUS,
             label: "beckon".into(),
-            enabled: true,
+            // No `enabled`: the view-based row never reads it (`header_item`
+            // takes the `Header`, not the entry's flags).
             kind: EntryKind::Header(Header {
                 title: "beckon".into(),
                 subtitle: head.text,
