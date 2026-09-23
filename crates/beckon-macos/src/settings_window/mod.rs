@@ -820,12 +820,12 @@ define_class!(
     unsafe impl NSControlTextEditingDelegate for Target {
         /// Every keystroke in the App field reaches the model.
         ///
-        /// **This is what replaces `commit_fields`.** That function is
-        /// called from `beckonSave:` alone, so before auto-save the Save
-        /// button was the thing that rescued text typed and never
-        /// committed -- the combo box's own action fires on Enter or on a
-        /// list pick, not per keystroke. With no Save there is no later
-        /// rescue, so the keystroke is the commit.
+        /// **This is what replaced `commit_fields`.** That function was
+        /// called from `beckonSave:` alone -- both gone since Task 11 -- so
+        /// before auto-save the Save button was the thing that rescued text
+        /// typed and never committed -- the combo box's own action fires on
+        /// Enter or on a list pick, not per keystroke. With no Save there is
+        /// no later rescue, so the keystroke is the commit.
         ///
         /// Same guard, same read, same callback as `beckonApp:` -- the
         /// only addition is recording when this fired, under its own
@@ -889,36 +889,38 @@ define_class!(
         }
     }
 
-    /// The title bar's red `X`, and every other route AppKit owns.
+    /// The title bar's red `X` — the window's one close route, and the only
+    /// one AppKit owns.
     ///
-    /// Both methods are deliberately thin. The policy they carry is already
-    /// written for the `Close` button — `may_close` asks about unsaved edits,
-    /// `teardown` forgets the window — and a second spelling of either would
+    /// Both methods are deliberately thin. The policy they carry is written
+    /// exactly once — `may_close` asks whether it is safe to close,
+    /// `teardown` forgets the window — so a second spelling of either would
     /// be a second answer to the same question. See the module doc.
     unsafe impl NSWindowDelegate for Target {
         /// May the window close?
         ///
         /// This is the ONLY thing standing between the red `X` and a
         /// discarded config edit: AppKit asks, and a `false` here leaves the
-        /// window up. It runs the same `on_close_request` the command bar's
-        /// `Close` runs, so the prompt cannot be reached by one route and
-        /// missed by the other.
+        /// window up. It runs `on_close_request` through `may_close` — the
+        /// one place that question is asked.
         ///
         /// It must NOT close the window itself — returning `true` is the
-        /// instruction to close, and calling `close()` here as well would
-        /// re-enter `NSWindow::close` from inside its own gate.
+        /// instruction to close; AppKit does that afterward. Calling
+        /// `NSWindow::close` here directly would re-enter it from inside its
+        /// own gate.
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _w: &NSWindow) -> bool {
             may_close()
         }
 
-        /// The window IS closing — by any route, including our own `close()`.
+        /// The window IS closing, synchronously, from inside
+        /// `-[NSWindow close]` — which the title bar's red `X` is the only
+        /// thing that starts.
         ///
-        /// Idempotent, because `close()` empties the slot before it calls
-        /// `NSWindow::close` and this handler then runs synchronously inside
-        /// that call: on that path `teardown` returns `None` and there is
-        /// nothing left to do. On the red `X` path it is the only thing that
-        /// runs, and without it `UI` keeps a closed window forever.
+        /// Idempotent, because `teardown` answers `None` once the slot is
+        /// already empty — belt and suspenders now that this handler is the
+        /// one place `teardown` runs at all. Without it `UI` would keep a
+        /// closed window forever.
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _n: &NSNotification) {
             if let Some(ui) = teardown() {
@@ -1627,9 +1629,11 @@ pub fn flush_paint() {
 /// May the window close now?
 ///
 /// The close question lives behind `on_close_request`, and this is the one
-/// place it is asked. Both ways out — the command bar's `Close` and the
-/// title bar's red `X` — call it, so a refusal means the same thing from
-/// either, and neither can be the route that skips the question.
+/// place it is asked. `windowShouldClose:` is its only caller — the title
+/// bar's red `X`, the window's one close route since Task 11 retired the
+/// command bar's `Close` button that used to call it too — so there is
+/// exactly one route in and no way to reach the window's other side of
+/// closing without going through here.
 ///
 /// **AMENDED 2026-09-23, Task 10 (G-j): it is no longer an unsaved-edits
 /// prompt.** Under auto-save a dirty model is the routine state -- the
@@ -1653,16 +1657,17 @@ fn may_close() -> bool {
 ///
 /// Returns the state instead of dropping it, because the caller is what
 /// knows whether AppKit is currently standing on those objects — see
-/// `release_later`. Idempotent: a second call answers `None`, which is what
-/// makes the `close()` / `windowWillClose:` pair safe to run in either order.
+/// `release_later`. Idempotent: a second call answers `None`, which keeps
+/// calling this more than once harmless. `windowWillClose:` is its only
+/// caller today, but the guarantee does not depend on staying that way.
 ///
-/// **`stop_recording` is the first thing it does, and this function is where
-/// it belongs rather than in `close()`.** A `CGEventTap` that swallows every
-/// keystroke must not outlive the window that armed it, and the title bar's
-/// red `X` never reaches `close()` at all — it arrives at `windowWillClose:`,
-/// which calls only this. Put it one level up and the one exit route a user
-/// is most likely to take is the one that leaves the keyboard captured, with
-/// nothing on screen to say so and no `Stop` button left to press.
+/// **`stop_recording` is the first thing it does.** A `CGEventTap` that
+/// swallows every keystroke must not outlive the window that armed it, and
+/// the title bar's red `X` — the one route this window closes by — reaches
+/// this function through `windowWillClose:` and nothing else. Put the call
+/// anywhere but here and the exit route a user actually takes is the one
+/// that leaves the keyboard captured, with nothing on screen to say so and
+/// no `Stop` button left to press.
 ///
 /// It runs **before** the state is taken because `stop_recording` reads
 /// `controls()` to put the `Record` caption back; afterwards the slot is
@@ -1739,47 +1744,19 @@ pub fn post_catalog(names: Vec<String>) {
     with_cb(|cb| (cb.on_catalog)(names));
 }
 
-/// What the user chose when asked about unsaved edits on close.
-///
-/// Mirrors `beckon_windows::shell::SaveChoice`. Three answers and not two:
-/// Cancel means "do not close", which a bool cannot say without conflating
-/// it with "close and discard".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaveChoice {
-    Save,
-    Discard,
-    Cancel,
-}
-
-/// Ask about unsaved edits.
-///
-/// Button order is Save / Cancel / Discard because AppKit gives the FIRST
-/// button the return key, and Save is the safe default here — the same
-/// place the window's own default ring rests.
-pub fn ask_save(title: &str, body: &str) -> SaveChoice {
-    let Some(mtm) = MainThreadMarker::new() else {
-        // No way to ask, so do not guess in the destructive direction.
-        return SaveChoice::Cancel;
-    };
-    let alert = objc2_app_kit::NSAlert::new(mtm);
-    alert.setMessageText(&NSString::from_str(title));
-    alert.setInformativeText(&NSString::from_str(body));
-    alert.addButtonWithTitle(&NSString::from_str("Save"));
-    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
-    alert.addButtonWithTitle(&NSString::from_str("Discard"));
-    // NSAlertFirstButtonReturn is 1000, and the rest count up from there.
-    match alert.runModal() {
-        1000 => SaveChoice::Save,
-        1002 => SaveChoice::Discard,
-        _ => SaveChoice::Cancel,
-    }
-}
-
 /// Ask before a risky Remove (G-f) -- more than one row ticked, or any
-/// removal while a filter is narrowing the table. Same shape as `ask_save`
-/// above: an `NSAlert`, ASCII strings, and the SAFE choice takes the first
-/// button so it inherits the return key -- here that is `Cancel`, not
-/// `Remove`, which is the one difference from `ask_save`'s own order.
+/// removal while a filter is narrowing the table. An `NSAlert`, ASCII
+/// strings, and the SAFE choice takes the first button so it inherits the
+/// return key -- here that is `Cancel`.
+///
+/// **This module used to have a second dialog of this shape, `ask_save` /
+/// `SaveChoice`, mirroring `beckon_windows::shell::SaveChoice` for the old
+/// three-way Save/Cancel/Discard close prompt.** `serve.rs`'s macOS
+/// `close_request` stopped calling it when the close question stopped being
+/// that one at all (Task 10, G-j) -- the dialog itself was left behind,
+/// unreachable from anywhere in the workspace, and Task 11's F1 fix round
+/// deleted it rather than leave a second dead `Save`-shaped control beside
+/// the ones this task already removed.
 ///
 /// `count` is the number of rows the press will actually remove --
 /// `marked_count`, or `1` for the selection-only fallback `remove_pressed`
@@ -2314,9 +2291,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // sets this to NO for exactly the same reason; we do it by hand
         // because we build the window ourselves.
         window.setReleasedWhenClosed(false);
-        // The delegate, so the red `X` reaches the same code the `Close`
-        // button does. **Weak** — the window does not retain it, which is why
-        // `Ui::_target` exists and why `release_later` has to hold it up.
+        // The delegate, so the red `X` reaches `may_close`/`teardown`
+        // through `windowShouldClose:`/`windowWillClose:`. **Weak** — the
+        // window does not retain it, which is why `Ui::_target` exists and
+        // why `release_later` has to hold it up.
         window.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         // **Set the size deliberately, and do not let AppKit restore one.**
         //
