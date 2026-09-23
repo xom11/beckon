@@ -390,6 +390,53 @@ pub(super) fn form_row(
 /// `None` is the common case and costs nothing: a row whose meaning its own
 /// title carries says nothing more, which is the same rule the settings
 /// list's status words follow.
+///
+/// **`Some` pins `title`'s width to `note`'s, and this is load-bearing.**
+/// Fix round 3, H1: `vstack`'s `Width` alignment does not stretch this
+/// INNER column's children either -- the identical defect `pin_width_to`'s
+/// own doc names for the root stack and F1 already fixed one level out
+/// (the page) and G2 fixed another level out still (a wrapped row) -- so
+/// the shorter of `title`/`note` was left at its own intrinsic width and
+/// pushed to the TRAILING edge of a column the longer one sized. Measured
+/// on screen (`Keyboard.png`, `General.png`): the title reads as centred
+/// over its note and is not -- "Use Caps Lock as a shortcut key" and "Hold
+/// Caps Lock and press a key instead of the chord below." END AT THE SAME
+/// X, which is trailing alignment, not centring. **This narrows
+/// `pin_width_to`'s own "the inner columns were never affected" -- this
+/// one is.**
+///
+/// **`pin_width_at_least`, not `pin_width_to` -- two things went wrong with
+/// the first attempt and both are worth keeping on record.**
+///
+/// 1. The very first version called `pin_width_to(&t, &s, 0.0)` BEFORE
+///    either view was an arranged subview of anything, which raised an
+///    `NSInternalInconsistencyException` and crashed the process outright
+///    (measured against the real window with `fix3_probe.rs`, reproducible,
+///    absent on `d3ef7ed`). Every constraint in this file that references
+///    two views runs after both already share a parent; this one has to as
+///    well.
+/// 2. Fixed the crash by moving the pin after `block` was built, still
+///    with `pin_width_to` (an EQUALITY) and still pinning BOTH lines to
+///    `block`'s own (self-derived) width -- which crashed nothing but
+///    produced the WRONG answer for a `w::wrapping` note (measured on the
+///    two hand-built blocks that use one, Keyboard's Input Monitoring and
+///    About's Accessibility, with the real warning text written in): an
+///    equality constraint's "who yields" is decided by each side's own
+///    hugging/compression priority, not by which side of the call looks
+///    like the dependent one, and `wrapping()`'s explicit 249 compression
+///    resistance sits close enough to a plain label's default hugging that
+///    the solver chose to shrink the NOTE instead of growing the title --
+///    measured: a label column 100pt wide instead of the row's ~580, the
+///    note's own height need more than doubling. `secondary()`'s note
+///    (this function's own case) has ordinary, un-lowered resistance and
+///    was never close to that priority, which is why pinning both sides to
+///    the column looked right there.
+///
+/// `pin_width_at_least` (a `>=`, see its own doc) sidesteps the priority
+/// question entirely: `note`/`s` never appears on the shrinking side of
+/// any constraint this function installs, so it stays exactly as free as
+/// it always was, and `title`/`t` just grows to match whatever that turns
+/// out to be.
 pub(super) fn labelled(
     title: &str,
     note: Option<&str>,
@@ -401,7 +448,9 @@ pub(super) fn labelled(
         Some(n) => {
             let s = secondary(n, mtm);
             s.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-            vstack(&[&*t, &*s], 2.0, mtm)
+            let block = vstack(&[&*t, &*s], 2.0, mtm);
+            pin_width_at_least(&t, &s, 0.0);
+            block
         }
     }
 }
@@ -537,6 +586,37 @@ pub(super) fn pin_width_to(v: &NSView, other: &NSView, inset: f64) {
     v.setTranslatesAutoresizingMaskIntoConstraints(false);
     v.widthAnchor()
         .constraintEqualToAnchor_constant(&other.widthAnchor(), -2.0 * inset)
+        .setActive(true);
+}
+
+/// `v.width >= other.width`, not `v.width == other.width` -- `labelled`'s
+/// own doc has the reason a title needs THIS relation to its note rather
+/// than `pin_width_to`'s equality.
+///
+/// **An equality constraint's "who yields" is decided by each side's OWN
+/// priority, not by argument order, and that made the first version of
+/// this fix collapse a `w::wrapping` note instead of stretching its
+/// title.** `v.width == other.width` costs EITHER side something whenever
+/// their intrinsic widths differ: growing `v` past its own preferred width
+/// costs `v`'s HUGGING priority; shrinking `other` below ITS preferred
+/// width costs `other`'s COMPRESSION RESISTANCE. AppKit's solver pays
+/// whichever is cheaper. A plain label's default horizontal hugging sits
+/// around the same low end as `widgets::wrapping`'s explicit 249 -- close
+/// enough that for `secondary()`'s ordinary, un-lowered resistance the
+/// title happened to be the one growing (measured correct), but for
+/// `wrapping()`'s deliberately-249 note the two priorities were close
+/// enough that the solver chose to shrink the note instead (measured:
+/// column width 100pt instead of the row's ~580, the note's own height
+/// need more than doubling). `>=` sidesteps the whole priority comparison:
+/// `other` is never mentioned on either side of a constraint that could
+/// shrink it, so it stays exactly as free as it always was, and `v`, with
+/// nothing opposing its own low hugging, grows to the minimum width that
+/// satisfies the inequality -- which is `other`'s, whatever that turns out
+/// to be.
+pub(super) fn pin_width_at_least(v: &NSView, other: &NSView, inset: f64) {
+    v.setTranslatesAutoresizingMaskIntoConstraints(false);
+    v.widthAnchor()
+        .constraintGreaterThanOrEqualToAnchor_constant(&other.widthAnchor(), -2.0 * inset)
         .setActive(true);
 }
 

@@ -285,11 +285,17 @@ pub(super) fn build(
     // sentence runs past 250 characters uncollapsed. So the row is built with
     // `w::wrapping`, in the same title-then-note shape `labelled` uses.
     let access = w::wrapping("", mtm);
-    let access_label = w::vstack(
-        &[&*w::label("Accessibility", mtm) as &NSView, &*access],
-        2.0,
-        mtm,
-    );
+    let access_title = w::label("Accessibility", mtm);
+    let access_label = w::vstack(&[&*access_title as &NSView, &*access], 2.0, mtm);
+    // Same fix as `widgets::labelled`'s `Some` arm, and for the identical
+    // reason -- see its own doc for the full account, including two things
+    // that went wrong first: pinning before both views shared a parent
+    // crashed the process, and pinning with `pin_width_to` (an equality)
+    // let `access` collapse toward `access_title`'s narrower width instead
+    // of the reverse, because `access`'s `w::wrapping` compression
+    // resistance is deliberately low. `pin_width_at_least` (a `>=`) leaves
+    // `access` as free as it always was. Fix round 3, H1.
+    w::pin_width_at_least(&access_title, &access, 0.0);
     let grant = w::push(
         "Grant Accessibility…",
         sel!(beckonGrantAccess:),

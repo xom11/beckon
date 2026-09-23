@@ -177,11 +177,17 @@ pub(super) fn build(
     // arranged in the same title-then-note shape `labelled` uses, instead of
     // calling `labelled` itself.
     let note = w::wrapping(caps_note(), mtm);
-    let im_label = w::vstack(
-        &[&*w::label("Input Monitoring", mtm) as &NSView, &*note],
-        2.0,
-        mtm,
-    );
+    let im_title = w::label("Input Monitoring", mtm);
+    let im_label = w::vstack(&[&*im_title as &NSView, &*note], 2.0, mtm);
+    // Same fix as `widgets::labelled`'s `Some` arm, and for the identical
+    // reason -- see its own doc for the full account, including two things
+    // that went wrong first: pinning before both views shared a parent
+    // crashed the process, and pinning with `pin_width_to` (an equality)
+    // let `note` collapse toward `im_title`'s narrower width instead of
+    // the reverse, because `note`'s `w::wrapping` compression resistance
+    // is deliberately low. `pin_width_at_least` (a `>=`) leaves `note` as
+    // free as it always was. Fix round 3, H1.
+    w::pin_width_at_least(&im_title, &note, 0.0);
     let open_im = w::push(
         "Open Input Monitoring",
         sel!(beckonOpenInputMonitoring:),
