@@ -761,6 +761,10 @@ the caps fold behind and the Shortcuts list comes back folded on a machine the
 user believes is clean. This split is what makes a theme switch keep working
 when `apps.toml` does not parse — the one state a user most needs a GUI in.
 
+**macOS keeps the same kind of store in `NSUserDefaults`**, domain
+`com.xom11.beckon` (`crates/beckon-macos/src/prefs.rs`): `Opacity` and
+`CapsView`. As on Windows, that list is the reset list.
+
 **One more read, and it is not a config: `current_exe()` and a `stat` of it.**
 The About page shows the RUNNING IMAGE's path and compares its mtime against
 this process's start time. It exists because a recorded failure had every
@@ -819,7 +823,10 @@ it.
   breaks the install the same package manager is supposed to own.
 - **GUI / TUI — CLI only, with one exception**, which is `serve`'s control
   surface rather than a launcher: the tray context menu (reload, pause, open
-  the log, toggle autostart, quit) and the settings window it opens. Four doors
+  the log, toggle autostart, quit), and, on macOS, the whole table as a
+  `Shortcuts` submenu plus a `Needs attention` section that exists only while
+  a binding is broken -- every row opens Settings on its binding, never the
+  app -- and the settings window it opens. Four doors
   on both macOS and Windows, against one `beckon_core::settings` contract, so
   **the place to change a decision is `beckon-core`, never a window**.
 

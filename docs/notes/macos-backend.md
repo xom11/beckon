@@ -1117,3 +1117,114 @@ Apple's, not ours:
   to take an extra retain so the per-window CF lifetime extends past the array.
   The `AxElement::from_borrowed` constructor is `unsafe` and must be paired
   with `mem::forget` — see the inline comment in `windows.rs`.
+
+## The menu bar menu (2026-09-22 redesign, phase 1)
+
+Dev build of branch `macos-menu-phase-1`, on `airm3`, Darwin 25.6.0 / macOS 26.
+Two sessions: 2026-09-22 (a person looking at the menu) and 2026-09-23 (the
+controller, chasing the header's toggle). Read `docs/superpowers/specs/
+2026-09-22-macos-ui-redesign-design.md` §3 for the shape this measures against.
+
+### Resolve cost, and why it runs at load and not at menu open
+
+`beckon_macos::resolve_reports` — the same LaunchServices/`NSWorkspace`
+catalog scan the settings window already pays for — is run **once per config
+load or reload**, cached into `ServeState::menu_rows`, and never run again
+while the menu is open. Measured across four rebuilds, 19 bindings each:
+93.4 ms, 77.2 ms, 69.7 ms, 60.3 ms. The spread is rebuild-to-rebuild noise
+(disk cache, thermal state), not a trend; no run came close to opening on the
+hot path.
+
+The reason this is a load-time cost and not an open-time one (spec §3.5) is
+structural, not a preference: the scan is synchronous on macOS, and a menu
+bar's `menuNeedsUpdate:` is expected to return the same tick the click lands
+in — a person clicking the icon and waiting 60-90 ms for the catalog to
+re-scan before the menu even draws is the wrong trade for something that only
+changes when the file itself changes. `beckon <id>` — the hot path — never
+calls this function at all.
+
+### First live session (2026-09-22): the menu itself
+
+Ten checks, a person driving the real `serve`, a fresh dev binary with no
+Accessibility grant (the free live check for the header's orange "Needs
+Accessibility to switch windows" rung — **not separately verified**, because
+this binary already had the grant on this machine; the header showed the
+green dot and `19 shortcuts, 2 missing` instead).
+
+- **`Needs attention` listed exactly the two `missing` rows**
+  (`com.nousresearch.hermes`, `Tao Monitor`) and no others. The control —
+  a healthy row, `kitty` — was absent, which is what rules out "the section
+  lists everything" as the thing that passed.
+- The section header itself renders as macOS 14's small grey section title
+  (the system idiom, not a beckon-drawn label).
+- **`Shortcuts ▸`** held all 19 bindings in file order, chord column aligned,
+  a highlighted row staying legible. Chords drew unfolded (`⌃⌥⌘H`, not `⇪H`)
+  because `keyboard.caps` / `CapsView` are both off on this machine — this
+  says nothing about the fold path itself, only that it was not exercised.
+- Real 16 pt app icons drew for resolved rows; both `missing` rows drew the
+  dashed `app.dashed` placeholder — the control for the placeholder path
+  (something has to draw when there is no bundle to fetch an icon from, and
+  this is what it looked like).
+- Pause/resume: ⇪C did nothing while paused, worked again after resuming.
+- Click behavior: a plain click opened the menu at the system's own
+  placement; a right-click opened it too; ⌥-click toggled pause and opened
+  no menu.
+- **Clicking `Claude` in the submenu opened Settings on the Shortcuts page
+  with that row selected, and did not launch or focus Claude** — checked
+  with Claude not frontmost beforehand, so a launch or focus would have been
+  visible. This is the spec's central rule for the table
+  ("nothing in the shortcut table focuses or launches anything") holding on
+  the macOS menu specifically, not just in the settings window.
+
+### The header's toggle (2026-09-23, controller)
+
+Two things happened in this session; the first reading of the second one was
+wrong, and the wrongness is worth keeping.
+
+**`NSSwitch` renders grey in both states, and the cause is beckon's own
+activation policy, not a bug in the switch.** beckon runs as a `UIElement`
+(accessory) app and is not the active application while its menu is open, so
+AppKit draws every `NSControl` inside that menu in its *inactive* appearance.
+Forcing beckon frontmost made the identical switch draw blue — the control
+that settles it. Making beckon active on menu open was rejected (it would
+stay active after the menu closes, stealing focus from whatever the user was
+in), so the fix draws the switch by hand: an `NSBox` track, an `NSBox` knob,
+and a transparent `NSButton` as the hit target — none of which have an
+inactive appearance to fall back to.
+
+**AppKit widens a menu item's custom view to the menu's width**, and this
+changed the header's own layout math: the container measured 260 pt at build
+time and 381 pt once laid out (an ordinary binding row already clears 260 pt,
+which is what forces the widening). That is why the track and the button
+share one frame pinned with `ViewMinXMargin` — the left margin is the
+flexible one — rather than a fixed x: at a fixed x the toggle would end up
+floating in empty space to the left of where the row actually ends.
+
+**REFUTED: "a transparent `NSButton` suppresses the drawing of its own
+subtree."** Two rounds were spent on a report that the header drew its three
+labels and nothing at all on the right. The actual cause was a capture error,
+not a rendering one: the screenshot region was 380 pt wide and cut off at
+1170 pt, while the row had already widened to 381 pt and the toggle sat near
+1175 pt — just past the edge of every photograph taken. A red `NSBox`
+control, added at a known x at the same time as the real track, is what
+separated "not drawn" from "not photographed": it appeared in the same
+screenshots that showed no toggle, which is only possible if the capture
+region was the thing that was wrong. A click test taken at the time agreed
+with the bad reading, because it was aimed at the same wrong point the
+screenshot was cut off at. This is the repo's own "always run a control"
+rule failing once (no control on the capture itself) and then catching
+itself (a control on the drawing).
+
+Verified after the fix, driven live: on = blue track, knob right; an AXPress
+on the button paused with the menu staying open and the header updating in
+place (grey dot, grey track, knob left, "Paused - shortcuts are off");
+reopening the menu while paused showed no `Needs attention` section at all;
+a second AXPress resumed it.
+
+**Instrument note.** A synthetic `click at {x, y}` lands on the *menu item*,
+not on a control inside that item's custom view — menus run their own
+tracking loop and do not route a synthetic click into AppKit's normal
+hit-testing the way a real mouse event does. Driving this menu from a script
+needs Accessibility's `perform action "AXPress" of button 1 of menu item 1
+...`, not a coordinate click. A real mouse click works normally; this only
+bites synthetic input.
