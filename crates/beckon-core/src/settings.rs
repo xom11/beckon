@@ -2455,6 +2455,40 @@ impl Model {
     pub fn clear_undo(&mut self) {
         self.undo.clear();
     }
+
+    pub fn view_state(&self) -> ViewState {
+        ViewState {
+            filter: self.filter.clone(),
+            selected_key: self
+                .selected
+                .and_then(|i| self.rows.get(i))
+                .and_then(|r| r.orig_key.clone()),
+            marked_keys: self
+                .rows
+                .iter()
+                .filter(|r| r.marked)
+                .filter_map(|r| r.orig_key.clone())
+                .collect(),
+        }
+    }
+
+    /// **By identity, never by index** -- four-doors design G-b. A write
+    /// can reorder the file, and a raw index then points the editor at a
+    /// different binding while the user is still typing into it.
+    pub fn restore_view_state(&mut self, v: &ViewState) {
+        self.set_filter(&v.filter);
+        self.selected = v.selected_key.as_ref().and_then(|k| {
+            self.rows
+                .iter()
+                .position(|r| r.orig_key.as_deref() == Some(k.as_str()))
+        });
+        for r in self.rows.iter_mut() {
+            r.marked = r
+                .orig_key
+                .as_deref()
+                .is_some_and(|k| v.marked_keys.iter().any(|m| m == k));
+        }
+    }
 }
 
 /// Bare `key = value` lines at the root, in file order.
@@ -3329,6 +3363,36 @@ pub fn not_saved_phrase(r: NotSaved) -> &'static str {
         NotSaved::AppWentMissing => "Not saved - that app name matches nothing",
         NotSaved::CannotWrite => "Not saved - cannot write the file",
     }
+}
+
+// ---------------------------------------------------------------------------
+// The three view guards (G-b, G-f, G-k)
+// ---------------------------------------------------------------------------
+
+/// Does pressing Remove need a confirmation first?
+///
+/// **Auto-save is what makes this load-bearing.** `remove_pressed`'s own
+/// doc used to argue a silent multi-row delete was acceptable because the
+/// effect is visible and Save is still a gate. Auto-save falsifies the
+/// second half: the delete reaches the file before the user has looked.
+///
+/// The filter arm is the sharper one. Four-doors design 6.3 measured a
+/// filter that matched the combo column showing every row while the window
+/// looked filtered; the column bug is fixed, but "I am looking at a subset"
+/// remains the state in which a multi-delete surprises somebody.
+pub fn remove_needs_confirm(marked: usize, filter_active: bool) -> bool {
+    marked > 1 || filter_active
+}
+
+/// The state a reseed must carry across a reload, so "the file wins" does
+/// not also cost the user their view.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ViewState {
+    pub filter: String,
+    /// The `orig_key` of the selected row, not its index.
+    pub selected_key: Option<String>,
+    /// The `orig_key` of every ticked row.
+    pub marked_keys: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8298,5 +8362,81 @@ mod tests {
             assert!(s.is_ascii(), "{r:?} phrase is not ASCII: {s}");
             assert!(s.starts_with("Not saved"), "{r:?}: {s}");
         }
+    }
+
+    // ---------- the three view guards (G-b, G-f, G-k) ----------
+
+    #[test]
+    fn removing_one_unfiltered_row_needs_no_confirmation() {
+        assert!(!remove_needs_confirm(1, false));
+    }
+
+    #[test]
+    fn removing_several_rows_needs_confirmation() {
+        assert!(remove_needs_confirm(2, false));
+    }
+
+    #[test]
+    fn removing_under_a_filter_needs_confirmation_even_for_one_row() {
+        assert!(remove_needs_confirm(1, true));
+    }
+
+    #[test]
+    fn the_filter_matches_the_app_column_only() {
+        // Pins the fix for four-doors design 6.3: every beckon chord contains
+        // `alt`, so a filter matching the combo showed everything while
+        // looking filtered, and Remove then took the table.
+        //
+        // `control_state_rows_len_for_test` does not exist and is not added
+        // for this -- the property is asserted through the real
+        // `control_state(..)` contract instead, the same one the window
+        // reads, so this stays a test of behavior and not of a bespoke
+        // accessor.
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.set_filter("alt");
+        let cs = control_state(&m, &RuntimeStatus::default());
+        assert_eq!(
+            cs.items.len(),
+            0,
+            "a filter matching only combos must show nothing"
+        );
+    }
+
+    #[test]
+    fn a_reseed_carries_the_filter_the_selection_and_the_ticks() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n";
+        let mut m = Model::from_text(text).unwrap();
+        m.set_filter("br");
+        m.selected = Some(1);
+        m.set_marked(1, true);
+        let v = m.view_state();
+
+        // The file changed underneath and the model is reseeded from it.
+        let mut fresh = Model::from_text(text).unwrap();
+        fresh.restore_view_state(&v);
+
+        assert_eq!(fresh.filter(), "br");
+        assert_eq!(fresh.selected, Some(1));
+        assert!(fresh.rows[1].marked);
+    }
+
+    #[test]
+    fn a_reseed_drops_view_state_for_rows_the_file_no_longer_has() {
+        let mut m =
+            Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.selected = Some(1);
+        m.set_marked(1, true);
+        let v = m.view_state();
+
+        // Somebody deleted the Brave binding by hand.
+        let mut fresh = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        fresh.restore_view_state(&v);
+
+        assert_eq!(
+            fresh.selected, None,
+            "the selection must not point at a stranger"
+        );
+        assert!(!fresh.rows[0].marked);
     }
 }
