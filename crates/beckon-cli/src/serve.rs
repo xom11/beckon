@@ -2466,6 +2466,15 @@ fn load_settings_model(state: &Rc<RefCell<ServeState>>) -> Result<(), String> {
         }
     }
     s.external_change = false;
+    // **The verdict is about a model, and this is a different one.**
+    // `last_not_saved` answers "why did the last auto-save not write THIS
+    // model", so a model that has just been read off disk starts with no
+    // answer at all -- see the field's own doc. Without this the first frame
+    // of a reopened window reads a refusal about the previous session.
+    #[cfg(target_os = "macos")]
+    {
+        s.last_not_saved = None;
+    }
     Ok(())
 }
 
@@ -2478,6 +2487,14 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
     let mut s = state.borrow_mut();
     s.settings = None;
     s.settings_unreadable = None;
+    // The model the verdict was about is gone, so the verdict goes with it.
+    // Belt and braces beside `load_settings_model`'s own clear: between a
+    // close and the next open there is no model for a stale answer to be
+    // wrong about, and this is the half that runs first.
+    #[cfg(target_os = "macos")]
+    {
+        s.last_not_saved = None;
+    }
 }
 
 /// Write the model to disk, atomically.
@@ -3014,6 +3031,19 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
             // banner that owns `Reload` is hidden there).
             s.settings_unreadable = None;
             s.external_change = false;
+            // **The refusal was about the model this line just replaced.**
+            // Nothing else clears it -- `autosave` and `undo_pressed` are
+            // the only writers and both need a dirty model -- so without
+            // this the footer keeps reading `Not saved - the file changed
+            // on disk` over a file the model now matches byte for byte,
+            // permanently, until the user makes another edit. The banner
+            // one line up is cleared for the same reason and was already
+            // right; this field was missed because its own doc claimed a
+            // single writer that runs on every edit.
+            #[cfg(target_os = "macos")]
+            {
+                s.last_not_saved = None;
+            }
         }
         // Deliberately NOT the read-only state: `Reload` means "discard my
         // in-memory edits", and there IS a model here to discard. Dropping
@@ -4319,6 +4349,88 @@ mod tests {
         assert!(
             st.settings.as_ref().unwrap().dirty(),
             "the in-memory edit survives too -- Undo did nothing at all"
+        );
+    }
+
+    /// **A refusal must not outlive the model it was about (I1).** `Reload
+    /// from disk` builds a fresh model that matches the file byte for byte;
+    /// a `last_not_saved` carried across it leaves the footer reading `Not
+    /// saved - the file changed on disk` over a file nothing is wrong with,
+    /// and it stays there: `autosave` and `undo_pressed` are the field's
+    /// only writers and both need a dirty model, so a clean one never
+    /// reaches either again.
+    ///
+    /// Asserted on `last_not_saved` itself rather than on the rendered
+    /// footer, because the footer is `saved_readout`'s projection of this
+    /// field and core already pins that projection.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reloading_from_disk_clears_the_refusal_it_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
+
+        // Somebody else edits the file, so the next edit is held.
+        std::fs::write(&config, "\"ctrl+alt+z\" = \"Zed\"\n").unwrap();
+        {
+            let mut s = st.borrow_mut();
+            autosave(&mut s, false);
+        }
+        // The control: this test is about a refusal that was really
+        // recorded, not about a field that was never set.
+        assert_eq!(
+            st.borrow().last_not_saved,
+            Some(beckon_core::settings::NotSaved::FileMoved),
+            "precondition: the hold must have been recorded"
+        );
+        assert!(st.borrow().external_change);
+
+        reload_settings_from_disk(&st);
+
+        let s = st.borrow();
+        assert_eq!(
+            s.settings.as_ref().unwrap().original(),
+            std::fs::read_to_string(&config).unwrap(),
+            "precondition: the model is now the file, byte for byte"
+        );
+        assert!(!s.settings.as_ref().unwrap().dirty());
+        assert!(!s.external_change, "the banner goes, and it already did");
+        assert_eq!(
+            s.last_not_saved, None,
+            "and so does the sentence beside it, or the footer complains \
+             about a file it matches exactly -- for the rest of the session"
+        );
+    }
+
+    /// The same rule across a close and a reopen, which is the form the
+    /// ledger recorded: `forget_settings` and `load_settings_model` each
+    /// replace the model, so neither may leave the previous model's verdict
+    /// behind for the reopened window's first frame to draw.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_reopened_window_does_not_inherit_the_last_sessions_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
+        st.borrow_mut().last_not_saved = Some(beckon_core::settings::NotSaved::CannotWrite);
+
+        forget_settings(&st);
+        assert_eq!(
+            st.borrow().last_not_saved,
+            None,
+            "the model the verdict was about is gone"
+        );
+
+        st.borrow_mut().last_not_saved = Some(beckon_core::settings::NotSaved::CannotWrite);
+        load_settings_model(&st).unwrap();
+        assert_eq!(
+            st.borrow().last_not_saved,
+            None,
+            "and a model read off disk starts with no verdict at all"
         );
     }
 
