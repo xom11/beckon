@@ -153,9 +153,9 @@ use beckon_core::capture::{hint, Outcome, HINT_ARMED, HINT_UNAVAILABLE};
 use beckon_core::settings::{
     about_state, banner_shown, caps_view_enabled, caps_view_fold, combo_needs_placing,
     command_bar_shown, copy_text, default_button, image_identity, opacity_alpha, service_line,
-    system_state, warn_dot_shown, AboutInputs, AboutState, ComboSpot, ControlState, DefaultButton,
-    Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, ServiceLine, SettingsCommand,
-    SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
+    system_state, warn_dot_shown, AboutInputs, AboutState, Bar, ComboSpot, ControlState,
+    DefaultButton, Field, FlagTone, ImageOnDisk, ListItem, Mark, Note, Page, Paths, ServiceLine,
+    SettingsCommand, SystemInputs, SystemState, Target, Transparency, BANNER_PAGE,
 };
 use beckon_core::shortcuts::{
     combo_display_folded, combo_view, key_label, key_table, CapsTap, Chord, ComboView,
@@ -830,7 +830,7 @@ unsafe fn show_page_controls(hwnd: HWND, page: Page, external_change: bool) {
     // on", which held for one day: design §6.4's service line
     // (`IDC_SERVICE_LINE`) is chrome, is drawn on all four doors, and on
     // System and About has the whole bar to itself.
-    let bar = command_bar_shown(page);
+    let bar = command_bar_shown(page, Bar::Buttons);
     for id in [IDC_OPENFILE, IDC_CLOSE, IDC_APPLY] {
         if let Ok(h) = GetDlgItem(Some(hwnd), id) {
             show(h, bar);
@@ -3031,7 +3031,7 @@ unsafe fn repair_default_button(hwnd: HWND, st: &ControlState, external_change: 
     // The fallback is the open door's own pill, which is `show_page`'s
     // successor and is on screen by construction: the strip is chrome and is
     // never hidden.
-    let successor = if command_bar_shown(page) {
+    let successor = if command_bar_shown(page, Bar::Buttons) {
         IDC_CLOSE
     } else {
         tab_id_of(page)
@@ -10146,7 +10146,7 @@ fn handle_command(hwnd: HWND, id: i32, code: u32) {
             // `dirty && no errors` and has no page term, and a hidden button
             // is not a disabled one -- the window never calls
             // `enable(false)` on a control it hides.
-            if !command_bar_shown(PAGE.with(|p| p.get())) {
+            if !command_bar_shown(PAGE.with(|p| p.get()), Bar::Buttons) {
                 return;
             }
             // The fields are the source of truth at the moment Save is

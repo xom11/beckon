@@ -65,7 +65,7 @@
 //! answer that, and it has to run in an Aqua session.
 
 use beckon_core::settings::{
-    command_bar_shown, copy_text, page_label, Callbacks, ControlState, Field, Mark, Page,
+    command_bar_shown, copy_text, page_label, Bar, Callbacks, ControlState, Field, Mark, Page,
     PageLabels, Paths, SettingsCommand,
 };
 // `beckon_core::settings::Target` names a link destination; `Target` in this
@@ -659,7 +659,15 @@ fn show_page_sized(p: Page, animate: bool) {
     // every door; hiding it would take a status that belongs on all four off
     // three of them. `command_bar_shown` answers only "does this door write
     // the config", which is what decides the buttons.
-    let buttons = command_bar_shown(p);
+    //
+    // **Still `Bar::Buttons`, not `Bar::Readout`, until Task 11.** The net
+    // goes up before the button comes down (global constraints): this branch
+    // auto-saves nothing yet, so asking for the macOS readout here would
+    // hide Save/Close/Open config file with no replacement on screen. Task 5
+    // only makes the predicate platform-aware; Task 11 is where this call
+    // site switches to `Bar::Readout` alongside the readout/Undo control
+    // that replaces the row.
+    let buttons = command_bar_shown(p, Bar::Buttons);
     for b in [&c.save, &c.close_btn, &c.open_file] {
         b.setHidden(!buttons);
     }

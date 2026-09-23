@@ -1965,7 +1965,7 @@ pub(super) unsafe fn layout(hwnd: HWND) {
     // and at the card column's own left edge where it is not. Both ends come
     // from `command_bar_shown`, the same predicate that shows the buttons, so
     // the gap and the thing filling it cannot disagree.
-    let (service_left, service_right) = if command_bar_shown(ui.page) {
+    let (service_left, service_right) = if command_bar_shown(ui.page, Bar::Buttons) {
         (
             cx + bw_open + gap * 2,
             cx + clamp(cw - bw_apply - gap - bw_close - gap * 2),

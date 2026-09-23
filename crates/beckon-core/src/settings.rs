@@ -717,6 +717,15 @@ pub fn caps_view_enabled(caps_on: bool) -> bool {
     caps_on
 }
 
+/// Which platform's command bar is being asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bar {
+    /// Windows still gates its writes behind Save.
+    Buttons,
+    /// macOS auto-saves; the bar holds a readout and Undo instead.
+    Readout,
+}
+
 /// Is the command bar's row of buttons on screen?
 ///
 /// **One condition, three readers**, in `banner_shown`'s shape and for the same
@@ -739,8 +748,20 @@ pub fn caps_view_enabled(caps_on: bool) -> bool {
 /// is chrome, drawn on all four doors, and on System and About it has the
 /// whole bar to itself. What §6.4 still owes is the band's right half -- the
 /// `Saved` readout and `Undo` -- both of which belong to §6's auto-save.
-pub fn command_bar_shown(page: Page) -> bool {
-    page.writes_config()
+///
+/// **Platform-aware since Task 5.** `Bar::Buttons` is the predicate above,
+/// unchanged. `Bar::Readout` always answers `false`: macOS auto-saves, so
+/// there is no button row to gate -- the band's right half carries a `Saved`
+/// readout and `Undo` instead (design §6's auto-save), which this predicate
+/// does not decide.
+pub fn command_bar_shown(page: Page, bar: Bar) -> bool {
+    match bar {
+        // **macOS lost the row, not the band.** Auto-save replaced the
+        // three buttons with a readout and Undo (design 5.5); the band
+        // itself still carries the service line on all four doors.
+        Bar::Readout => false,
+        Bar::Buttons => page.writes_config(),
+    }
 }
 
 /// Is the external-change banner on screen?
@@ -3534,7 +3555,7 @@ impl DefaultButton {
     /// `BN_SETFOCUS` moves the ring there -- which is the same rule the other
     /// two doors follow, minus a resting place.
     pub fn home(page: Page) -> Option<DefaultButton> {
-        command_bar_shown(page).then_some(DefaultButton::Save)
+        command_bar_shown(page, Bar::Buttons).then_some(DefaultButton::Save)
     }
 
     /// Is this button on screen in the state described?
@@ -3578,7 +3599,7 @@ impl DefaultButton {
             // its body with `IDC_CLOSE` -- the dialog manager sends that id,
             // not the button, so hiding the button does not disarm the key.
             DefaultButton::Save | DefaultButton::OpenFile | DefaultButton::Close => {
-                command_bar_shown(page)
+                command_bar_shown(page, Bar::Buttons)
             }
             DefaultButton::Reload | DefaultButton::KeepMine => banner_shown(external_change, page),
             // Shortcuts-page controls. `Add` and `Remove` sit on the list's
@@ -6446,11 +6467,27 @@ mod tests {
         assert!(!Page::About.writes_config());
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
             assert_eq!(
-                command_bar_shown(page),
+                command_bar_shown(page, Bar::Buttons),
                 page.writes_config(),
                 "the bar and the store split disagree on {page:?}"
             );
         }
+    }
+
+    /// macOS auto-saves (Task 5): every door answers `false` for
+    /// `Bar::Readout`, regardless of `Page::writes_config`. Windows is
+    /// unchanged -- `Bar::Buttons` still follows the page that writes.
+    #[test]
+    fn the_button_row_is_windows_only_now() {
+        for p in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert!(
+                !command_bar_shown(p, Bar::Readout),
+                "{p:?}: macOS auto-saves and shows no Save button"
+            );
+        }
+        // Windows is unchanged: the buttons follow the page that writes.
+        assert!(command_bar_shown(Page::Shortcuts, Bar::Buttons));
+        assert!(!command_bar_shown(Page::About, Bar::Buttons));
     }
 
     /// **REPLACED 2026-08-15.** This test was `the_command_bar_is_on_every_page`
