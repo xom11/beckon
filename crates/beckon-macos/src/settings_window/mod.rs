@@ -1645,6 +1645,16 @@ pub fn flush_paint() {
 /// (`NotSaved::CannotWrite`); everything else closes silently. The refusal
 /// still comes back through this same `bool`, so nothing here changed.
 ///
+/// **AMENDED 2026-09-23, C1: the close WRITES before it answers.** The App
+/// field's debounce means a keystroke can still be pending when the red `X`
+/// is clicked, and dropping the model there lost it silently -- with the
+/// footer reading `Saved just now`, because nothing had failed. `serve.rs`'s
+/// `close_verdict` now flushes through `autosave` first, with every guard
+/// on it, and only then asks the question above. Two consequences for
+/// anyone reading this function: a `false` may be about a write THIS
+/// gesture attempted, and a `true` normally means the file has just
+/// changed.
+///
 /// `true` when no callbacks are installed: there is then no model, so there
 /// are no edits to lose, and refusing would strand a window nobody can shut.
 fn may_close() -> bool {

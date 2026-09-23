@@ -1531,8 +1531,8 @@ disposition after this phase:
 | G-f | confirm a risky Remove | built |
 | G-g | bounded Undo, depth 20 | built |
 | G-h | `<config>.bak` written once at window open | built |
-| G-i | flush a pending write on session end | **out of scope this branch** |
-| G-j | one close prompt | built — **fires only on `NotSaved::CannotWrite`** |
+| G-i | flush a pending write on session end | **built on macOS after all** — the close is a session end (CORRECTED, below); still nothing to do for `WM_QUERYENDSESSION` |
+| G-j | one close prompt | built — **fires only on `NotSaved::CannotWrite`**, and the close flushes before it asks |
 | G-k | carry the filter/selection/marks across a reload | built, same identity rule as G-b |
 
 Three of these read as omissions if the design document is taken as the
@@ -1605,6 +1605,32 @@ particular must not prompt: it is true during every half-typed row, and a
 prompt that fires constantly is one people dismiss reflexively — the same
 training-away failure G-j was written against, arriving from the opposite
 direction.
+
+**AMENDED 2026-09-23 (final review, C1 and I6): the close FLUSHES first,
+and the predicate is now a tested core function.** Two things this section
+described are no longer the whole story.
+
+The predicate was an inline `dirty && matches!(last, Some(CannotWrite))` in
+`serve.rs` — the only one of the eleven guards with neither a unit test nor
+an on-screen run of its refusal arm, so deleting it would have turned
+nothing red. It is `beckon_core::settings::close_is_refused(dirty, last)`
+now, beside `remove_needs_confirm`, with four tests of its own (one per
+input class, including a CLEAN model over a `CannotWrite` — a failed
+`undo_pressed` leaves exactly that, and there is nothing in memory left to
+lose) and two in the driver that make the failure with a read-only
+directory rather than by setting the field.
+
+And the close **writes before it asks**. The narrow reading above is right
+about which refusals should stop a close, and it silently assumed the
+dirty-but-not-refused state is one the user can afford to close over. It is
+not, in one case: the App field's debounce leaves a keystroke pending for up
+to `AUTOSAVE_QUIET_MS` plus a tick, and closing there dropped the model with
+the edit in it — with the footer reading `Saved just now`, because nothing
+had failed. That is design §6's G-i loss arriving through the ordinary
+close, which Task 11 made the only way out. `close_verdict` now calls
+`autosave` before answering, so the pending write lands; a hold still holds
+(with its own footer phrase), and a failed flush is what the refusal above
+is then about.
 
 ### G-a: the compare-and-swap, and why the read sits immediately before the write
 
@@ -1770,6 +1796,25 @@ falsifies that — the delete reaches the file before the user has looked.
 G-i (flush on session end) is a Win32 message, and Windows still keeps its
 Save button in this phase, so there is nothing for it to flush ahead of.
 Revisit when Windows consumes this auto-save layer.
+
+**CORRECTED 2026-09-23: that disposition was right about the MECHANISM and
+wrong about the HAZARD, and it cost this phase its one Critical.**
+`WM_QUERYENDSESSION` is indeed a Win32 message with nothing behind it here.
+But G-i is about *a pending debounced write dying when the session ends*,
+and on macOS **closing the window ends the model's session as finally as a
+logoff does** — `forget_settings` drops the model, and there is no later
+tick to write what the debounce was still holding. Task 11 then made that
+close the only way out of the window. So the phase's own headline hazard
+arrived through the phase's own new front door, with the footer reading
+`Saved just now` while the keystroke was discarded.
+
+The fix is in `serve.rs`'s `close_verdict` (C1): flush through `autosave`
+before deciding, guards and all. The lesson generalises past this one
+guard, and it is the same one `CLAUDE.md` records about carrying a measured
+sentence across a platform boundary: **a disposition written about one
+mechanism does not dispose of the hazard.** When a guard is scoped out,
+name the hazard and ask which gestures on THIS platform produce it, rather
+than which API the design names.
 
 ## CORRECTED 2026-09-23: the service line lagging the registration map was blamed on the wrong commit
 
