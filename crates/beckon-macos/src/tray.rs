@@ -563,6 +563,24 @@ fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
 ///
 /// Nothing here calls `setTranslatesAutoresizingMaskIntoConstraints` or
 /// activates a constraint. Re-adding either re-opens the two failures above.
+///
+/// ## The transparent hit target is a SIBLING of the track, never its parent
+///
+/// Measured on airm3 with the frames above printed and confirmed correct
+/// (`toggle frame (212, 12, 34, 20)`, `track (0, 0, 34, 20)`): the header
+/// drew the dot, the title and the subtitle, and **nothing at all** where the
+/// toggle was. A `setTransparent(true)` `NSButton` draws nothing, and that
+/// suppressed the drawing of its whole subtree -- the track was its child at
+/// the time. In the two rounds before that the track was a SIBLING of the
+/// button and did draw, blue and visible; becoming the button's child was the
+/// only structural change between them.
+///
+/// So the container holds dot, title, subtitle, **track, then button**, in
+/// that order. The track and the button carry the same frame and the same
+/// `ViewMinXMargin` mask, so they stay on top of each other; the button is
+/// added last, which puts it above the track in z-order and is what makes the
+/// click land on it. The button has no subviews. "Correct frames, nothing
+/// drawn" is the symptom to remember if anything ever re-parents them.
 fn header_item(
     id: u32,
     h: &Header,
@@ -611,11 +629,37 @@ fn header_item(
     subtitle.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
     container.addSubview(&subtitle);
 
-    // The hit target, and the parent of the two drawn boxes. Same
+    // The drawn switch. `ViewMinXMargin` -- the LEFT margin is the flexible
+    // one -- is what keeps it hard against the right edge as the menu widens,
+    // and the track and the button below carry the SAME frame and the SAME
+    // mask so they stay on top of each other.
+    let toggle_frame = NSRect::new(
+        NSPoint::new(HEADER_WIDTH - HEADER_PAD_X - TRACK_W, TOGGLE_Y),
+        NSSize::new(TRACK_W, TRACK_H),
+    );
+
+    let track = plain_box(mtm);
+    track.setCornerRadius(TRACK_H / 2.0);
+    track.setFillColor(&track_color(h.on));
+    track.setFrame(toggle_frame);
+    track.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+    container.addSubview(&track);
+
+    // In the TRACK's own coordinates, which `plain_box`'s zero content-view
+    // margins are what make true.
+    let knob = plain_box(mtm);
+    knob.setCornerRadius(KNOB_SIZE / 2.0);
+    knob.setFillColor(&NSColor::whiteColor());
+    knob.setFrame(NSRect::new(
+        NSPoint::new(knob_x(h.on), KNOB_MARGIN),
+        NSSize::new(KNOB_SIZE, KNOB_SIZE),
+    ));
+    track.addSubview(&knob);
+
+    // The hit target: a SIBLING of the track, added AFTER it so it is above
+    // it in z-order and takes the click, and deliberately childless. Same
     // target/action/tag the `NSSwitch` used to carry, so `dispatch` and
-    // `beckon_control_action` are unchanged. `ViewMinXMargin` -- the LEFT
-    // margin is the flexible one -- is what keeps it hard against the right
-    // edge as the menu widens.
+    // `beckon_control_action` are unchanged.
     let button = NSButton::new(mtm);
     button.setTitle(&NSString::from_str(""));
     button.setBordered(false);
@@ -626,43 +670,22 @@ fn header_item(
     }
     button.setTag(id as isize);
     button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
-    button.setFrame(NSRect::new(
-        NSPoint::new(HEADER_WIDTH - HEADER_PAD_X - TRACK_W, TOGGLE_Y),
-        NSSize::new(TRACK_W, TRACK_H),
-    ));
+    button.setFrame(toggle_frame);
     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
     container.addSubview(&button);
 
-    let track = plain_box(mtm);
-    track.setCornerRadius(TRACK_H / 2.0);
-    track.setFillColor(&track_color(h.on));
-    track.setFrame(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(TRACK_W, TRACK_H),
-    ));
-    track.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
-    );
-    button.addSubview(&track);
-
-    let knob = plain_box(mtm);
-    knob.setCornerRadius(KNOB_SIZE / 2.0);
-    knob.setFillColor(&NSColor::whiteColor());
-    knob.setFrame(NSRect::new(
-        NSPoint::new(knob_x(h.on), KNOB_MARGIN),
-        NSSize::new(KNOB_SIZE, KNOB_SIZE),
-    ));
-    track.addSubview(&knob);
-
     item.setView(Some(&container));
 
-    // TEMPORARY, this fix round only: the controller reads these off a real
-    // `serve -v` to settle the geometry without a screenshot. Remove when
-    // told to. `header_item` runs on every menu open, so one line per open.
+    // TEMPORARY, kept for one more round: the controller reads these off a
+    // real `serve -v` to settle the geometry without a screenshot. Remove
+    // when told to. `header_item` runs on every menu open, so one line per
+    // open. `track` is now in CONTAINER coordinates (it is the container's
+    // own subview since the re-parenting above), so it reports the
+    // right-pinning directly rather than the button's bounds.
     if beckon_core::verbose() {
         eprintln!(
             "beckon serve: header container {:?} dot {:?} title {:?} subtitle {:?} \
-             toggle frame {:?} track {:?} knob {:?}",
+             toggle frame {:?} track in container {:?} knob in track {:?}",
             container.frame(),
             dot.frame(),
             title.frame(),
@@ -727,17 +750,18 @@ fn refresh_header() {
             NSSize::new(KNOB_SIZE, KNOB_SIZE),
         ));
         button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
-        // TEMPORARY, this fix round only, and the more informative of the two
-        // prints: this one runs AFTER the menu has been displayed and laid
-        // out, so these are the frames as drawn, not the ones just set. It
-        // also proves the click reached the button at all. The toggle's
-        // `origin.x` reports the container's live width too, since the
-        // autoresizing mask keeps it at `width - 14 - 34`. Remove with the
-        // print at the end of `header_item`.
+        // TEMPORARY, kept for one more round, and the more informative of the
+        // two prints: this one runs AFTER the menu has been displayed and
+        // laid out, so these are the frames as drawn, not the ones just set.
+        // It also proves the click reached the button at all. Both
+        // `origin.x`es report the container's live width, since the
+        // autoresizing mask keeps them at `width - 14 - 34`, and they must
+        // AGREE with each other or the track and the hit target have drifted
+        // apart. Remove with the print at the end of `header_item`.
         if beckon_core::verbose() {
             eprintln!(
                 "beckon serve: header AFTER LAYOUT on={} toggle frame {:?} \
-                 track {:?} knob {:?}",
+                 track in container {:?} knob in track {:?}",
                 h.on,
                 button.frame(),
                 track.frame(),
