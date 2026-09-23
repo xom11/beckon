@@ -2459,17 +2459,17 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     // pressed without the warning having been visible.
     #[cfg(target_os = "macos")]
     {
-        let base = state
-            .borrow()
-            .settings
-            .as_ref()
-            .map(|m| m.original().to_string());
-        let moved = match (base, std::fs::read_to_string(&path)) {
-            (Some(base), Ok(disk)) => disk != base,
-            // Unreadable is the stale-base case by another name, exactly as
-            // `autosave` treats it.
-            (Some(_), Err(_)) => true,
-            (None, _) => false,
+        // **`base_moved`, not a second spelling of it.** This check had its
+        // own inline comparison for one commit, which is the same
+        // agreement-by-discipline shape `app_lookup` was extracted to end --
+        // and this one had no test at all, because `apply_settings` has
+        // none. The shared function is where the test lives.
+        let disk = std::fs::read_to_string(&path).ok();
+        let moved = {
+            let s = state.borrow();
+            s.settings
+                .as_ref()
+                .is_some_and(|m| beckon_core::settings::base_moved(m, disk.as_deref()))
         };
         if moved {
             state.borrow_mut().external_change = true;
@@ -2643,18 +2643,25 @@ fn autosave(s: &mut ServeState, keep_mine: bool) -> Option<beckon_core::settings
     // and nothing that can block or re-enter: that is what makes this pair a
     // compare-and-swap rather than two separate decisions.
     let disk = std::fs::read_to_string(&path).ok();
-    let plan = match disk.as_deref() {
-        Some(text) => {
-            let model = s.settings.as_ref().expect("checked above");
-            let base = if keep_mine { model.original() } else { text };
-            beckon_core::settings::autosave_plan(model, base, missing)
-        }
-        // A config that cannot be read at all is not a base to write over:
-        // deleted, renamed, or replaced by something this process cannot
-        // open is the stale-base case wearing a different hat, so it takes
-        // the stale-base arm rather than recreating the file from a model
-        // whose base is gone.
-        None => AutosavePlan::Hold(NotSaved::FileMoved),
+    let plan = {
+        let model = s.settings.as_ref().expect("checked above");
+        // **Two questions, and `keep_mine` is the gesture that separates
+        // them** -- see `autosave_plan`. `base` is what the model's edits
+        // are relative to, and pressing `Keep mine` is the user saying the
+        // other party's text is no longer that. `on_disk` is what is really
+        // in the file, and NOTHING overrides it: it is what decides whether
+        // this write would change anything, and substituting the base there
+        // is what made `Keep mine` silently do nothing.
+        //
+        // On every ordinary edit the two are the same string. That is why
+        // one parameter answering both survived as long as it did.
+        let base = if keep_mine {
+            Some(model.original())
+        } else {
+            disk.as_deref()
+        };
+        let on_disk = disk.as_deref();
+        beckon_core::settings::autosave_plan(model, base, on_disk, missing)
     };
 
     let outcome = match plan {
@@ -3842,6 +3849,47 @@ mod tests {
             st.settings.as_mut().unwrap().take_undo().as_deref(),
             Some(theirs),
             "the clobbered text is what Undo has to be able to put back"
+        );
+    }
+
+    /// **R7, at the level the defect was found: `Keep mine` must not
+    /// silently do nothing.** The user edits, then undoes their edits by
+    /// hand, so the model still says dirty while rendering back to its own
+    /// base -- and the file holds somebody else's text. With one parameter
+    /// answering both of `autosave_plan`'s questions, the driver's
+    /// substituted base reached the no-op check, the plan answered
+    /// `Nothing`, and the other party's text stayed. Nothing on screen said
+    /// so, because `external_change` is cleared either way -- and Task 8's
+    /// readout would have called it `Saved`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keep_mine_writes_when_the_edits_net_back_to_the_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, mine).unwrap();
+
+        let mut st = test_state(&config);
+        let mut m = beckon_core::settings::Model::from_text(mine).unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "Brave");
+        m.set_app(0, "Anki"); // undone by hand: dirty, but nets to the base
+        st.settings = Some(m);
+
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        assert_eq!(autosave(&mut st, true), None);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            mine,
+            "Keep mine means the user's text reaches the file, or the button lies"
+        );
+        assert_eq!(
+            st.settings.as_mut().unwrap().take_undo().as_deref(),
+            Some(theirs),
+            "and the clobbered text is still one Undo away"
         );
     }
 

@@ -3395,6 +3395,24 @@ pub enum SavedReadout {
     NotSaved(NotSaved),
 }
 
+/// Has the file moved out from under the model's base?
+///
+/// **Extracted so `autosave_plan` and `apply_settings` cannot answer it
+/// differently** -- the same "by construction, not by discipline" rule that
+/// `app_lookup` exists for. `apply_settings` had its own spelling of this
+/// for one commit, with no test anywhere; this is where the test lives.
+///
+/// `None` is a file that could not be READ at all: deleted, renamed, or
+/// replaced by something this process cannot open. That is the stale-base
+/// case wearing a different hat -- there is no base there to write over --
+/// so it answers `true` rather than being a separate outcome.
+pub fn base_moved(model: &Model, on_disk: Option<&str>) -> bool {
+    match on_disk {
+        Some(text) => text != model.original(),
+        None => true,
+    }
+}
+
 /// Decide what an edit should do to the file.
 ///
 /// **The order of these checks is the design.** `FileMoved` is first
@@ -3404,14 +3422,33 @@ pub enum SavedReadout {
 /// that refuses a write that WOULD have succeeded -- it is a judgement
 /// about the live hotkey, not about the text.
 ///
-/// **`dirty` is not the same question as "the file would change", and
-/// answering only the first one loses rows.** `add_row` dirties the model
-/// and `render` correctly drops the unfinished row it added, so the rendered
-/// text is byte-identical to what is already on disk -- and the write that
-/// followed cost the user the row they had just added, within one tick:
-/// the reseed threw it away, the selection went to `None`, an `orig_key`
-/// was gratuitously respelled and a no-op entry went on the undo stack.
-/// Measured 2026-09-23, `rows 2 -> 1`, `selected Some(1) -> None`.
+/// **`base` and `on_disk` are TWO QUESTIONS, and one parameter answering
+/// both was a defect.** `base` asks *has the file moved under me* -- it is
+/// what the model's edits are relative to. `on_disk` asks *would this write
+/// change the file* -- it is what is really there. They are the same string
+/// on every ordinary edit, which is exactly why the conflation survived; the
+/// gesture that separates them is `Keep mine`, which overrides the first
+/// (the user has said the other party's text is not their base any more) and
+/// must leave the second alone.
+///
+/// Conflated, this lost the write: a user who edits and then undoes their
+/// edits by hand has a dirty model whose `render()` nets back to its own
+/// `original()`. Press `Keep mine`, the driver substitutes the base, the
+/// no-op check then compares the render against that SUBSTITUTED base,
+/// answers `Nothing` -- and the other party's text is never overwritten,
+/// which is the exact opposite of what the button says. With Task 8's
+/// readout wired that state reads `Saved` over somebody else's file.
+/// **The `Nothing` arm compares against the real file, never against a
+/// base.**
+///
+/// **`dirty` is not the same question as "the file would change" either,
+/// and answering only the first one loses rows.** `add_row` dirties the
+/// model and `render` correctly drops the unfinished row it added, so the
+/// rendered text is byte-identical to what is already on disk -- and the
+/// write that followed cost the user the row they had just added, within
+/// one tick: the reseed threw it away, the selection went to `None`, an
+/// `orig_key` was gratuitously respelled and a no-op entry went on the undo
+/// stack. Measured 2026-09-23, `rows 2 -> 1`, `selected Some(1) -> None`.
 ///
 /// The second `Nothing` below is that fix, and it belongs HERE rather than
 /// in the driver: "would this write change the file" is a decision, and a
@@ -3421,17 +3458,28 @@ pub enum SavedReadout {
 /// refuse -- putting `Not saved - that app name matches nothing` on screen
 /// for a no-op would be a complaint about something that was not going to
 /// happen.
-pub fn autosave_plan(model: &Model, on_disk: &str, selected_app_missing: bool) -> AutosavePlan {
+///
+/// Both are `Option` because an unreadable file is a real answer to each:
+/// no base to be stale against, and no text to be identical to. `None` for
+/// `base` is `FileMoved` (via `base_moved`); `None` for `on_disk` cannot
+/// make a write a no-op, so it falls through to the write -- which is what
+/// recreates a config someone deleted while `Keep mine` was the answer.
+pub fn autosave_plan(
+    model: &Model,
+    base: Option<&str>,
+    on_disk: Option<&str>,
+    selected_app_missing: bool,
+) -> AutosavePlan {
     if !model.dirty() {
         return AutosavePlan::Nothing;
     }
-    if on_disk != model.original() {
+    if base_moved(model, base) {
         return AutosavePlan::Hold(NotSaved::FileMoved);
     }
     let Ok(text) = model.render() else {
         return AutosavePlan::Hold(NotSaved::FinishTheRow);
     };
-    if text == on_disk {
+    if on_disk == Some(text.as_str()) {
         return AutosavePlan::Nothing;
     }
     if selected_app_missing {
@@ -8454,7 +8502,7 @@ mod tests {
     fn a_clean_model_plans_no_write() {
         let m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
         assert_eq!(
-            autosave_plan(&m, m.original(), false),
+            autosave_plan(&m, Some(m.original()), Some(m.original()), false),
             AutosavePlan::Nothing
         );
     }
@@ -8464,7 +8512,7 @@ mod tests {
         let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
         m.selected = Some(0);
         m.set_app(0, "Brave");
-        match autosave_plan(&m, m.original(), false) {
+        match autosave_plan(&m, Some(m.original()), Some(m.original()), false) {
             AutosavePlan::Write(text) => assert!(text.contains("Brave"), "{text}"),
             other => panic!("expected a write, got {other:?}"),
         }
@@ -8475,7 +8523,12 @@ mod tests {
         let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
         m.set_app(0, "Brave");
         assert_eq!(
-            autosave_plan(&m, "somebody else edited this\n", false),
+            autosave_plan(
+                &m,
+                Some("somebody else edited this\n"),
+                Some("somebody else edited this\n"),
+                false
+            ),
             AutosavePlan::Hold(NotSaved::FileMoved)
         );
     }
@@ -8485,7 +8538,7 @@ mod tests {
         let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
         m.set_combo(0, "not a chord");
         assert_eq!(
-            autosave_plan(&m, m.original(), false),
+            autosave_plan(&m, Some(m.original()), Some(m.original()), false),
             AutosavePlan::Hold(NotSaved::FinishTheRow)
         );
     }
@@ -8507,7 +8560,10 @@ mod tests {
         m.add_row();
         assert!(m.dirty(), "the precondition: Add really does dirty it");
         assert_eq!(m.rows.len(), 2, "and the row really is in the model");
-        assert_eq!(autosave_plan(&m, text, false), AutosavePlan::Nothing);
+        assert_eq!(
+            autosave_plan(&m, Some(text), Some(text), false),
+            AutosavePlan::Nothing
+        );
     }
 
     /// The control for the test above: once the row says something, the
@@ -8520,10 +8576,74 @@ mod tests {
         let i = m.rows.len() - 1;
         m.set_combo(i, "ctrl+alt+b");
         m.set_app(i, "Brave");
-        match autosave_plan(&m, text, false) {
+        match autosave_plan(&m, Some(text), Some(text), false) {
             AutosavePlan::Write(t) => assert!(t.contains("Brave"), "{t}"),
             other => panic!("expected a write, got {other:?}"),
         }
+    }
+
+    // ---------- base_moved (N1) ----------
+
+    #[test]
+    fn a_file_that_still_holds_the_models_base_has_not_moved() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let m = Model::from_text(text).unwrap();
+        assert!(!base_moved(&m, Some(text)));
+        assert!(base_moved(&m, Some("\"ctrl+alt+z\" = \"Zed\"\n")));
+    }
+
+    /// A file that cannot be read is the stale-base case by another name:
+    /// there is no base there to write over. One answer, shared by
+    /// `autosave_plan` and `apply_settings`, so they cannot differ about it.
+    #[test]
+    fn an_unreadable_file_counts_as_moved() {
+        let m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        assert!(base_moved(&m, None));
+    }
+
+    /// **R7: `Keep mine` must write even when the edits net back to the
+    /// base.** The user edits, then undoes their edits by hand, so `render`
+    /// returns the model's own `original` -- while the file holds somebody
+    /// else's text. Conflating the two questions made the no-op check
+    /// compare the render against the SUBSTITUTED base, answer `Nothing`,
+    /// and leave the other party's text in place: the exact opposite of what
+    /// the button promises, and a state Task 8's readout would call `Saved`.
+    #[test]
+    fn keep_mine_writes_when_the_edits_net_back_to_the_base() {
+        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let mut m = Model::from_text(mine).unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "Brave");
+        m.set_app(0, "Anki"); // undone by hand
+        assert!(m.dirty(), "precondition: the model is still dirty");
+        assert_eq!(
+            m.render().unwrap(),
+            mine,
+            "precondition: and renders back to its own base"
+        );
+
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        // What `Keep mine` passes: the base overridden, the file NOT.
+        match autosave_plan(&m, Some(m.original()), Some(theirs), false) {
+            AutosavePlan::Write(t) => assert_eq!(t, mine, "the user's text wins"),
+            other => panic!("Keep mine must write, got {other:?}"),
+        }
+    }
+
+    /// The control: the same nets-to-base model with nobody else involved
+    /// writes nothing, so the test above is about `Keep mine` and not about
+    /// the no-op check having been weakened.
+    #[test]
+    fn a_net_zero_edit_over_an_unchanged_file_still_writes_nothing() {
+        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let mut m = Model::from_text(mine).unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "Brave");
+        m.set_app(0, "Anki");
+        assert_eq!(
+            autosave_plan(&m, Some(mine), Some(mine), false),
+            AutosavePlan::Nothing
+        );
     }
 
     /// **G-b, in the case it was written for: the identity moves because
@@ -8540,7 +8660,7 @@ mod tests {
         m.set_marked(1, true);
         m.set_combo(1, "ctrl+alt+c");
 
-        let AutosavePlan::Write(written) = autosave_plan(&m, text, false) else {
+        let AutosavePlan::Write(written) = autosave_plan(&m, Some(text), Some(text), false) else {
             panic!("expected a write");
         };
         let view = m.view_state();
@@ -8565,7 +8685,7 @@ mod tests {
         m.selected = Some(0);
         m.set_app(1, "Zed");
 
-        let AutosavePlan::Write(written) = autosave_plan(&m, text, false) else {
+        let AutosavePlan::Write(written) = autosave_plan(&m, Some(text), Some(text), false) else {
             panic!("expected a write");
         };
         let view = m.view_state();
@@ -8582,7 +8702,7 @@ mod tests {
         m.selected = Some(0);
         m.set_app(0, "B");
         assert_eq!(
-            autosave_plan(&m, m.original(), true),
+            autosave_plan(&m, Some(m.original()), Some(m.original()), true),
             AutosavePlan::Hold(NotSaved::AppWentMissing)
         );
     }
