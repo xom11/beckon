@@ -3376,6 +3376,77 @@ pub fn autosave_plan(model: &Model, on_disk: &str, selected_app_missing: bool) -
     AutosavePlan::Write(text)
 }
 
+/// `autosave_plan`'s third argument, worked out from the model and this
+/// machine's installed-app catalog (G-e).
+///
+/// **The guard is about a TRANSITION, not about a broken row**, which is
+/// what the name says and what `NotSaved::AppWentMissing` documents: the
+/// selected row's app resolved in the file as it stands and does not resolve
+/// as edited. `"B"` typed over `"Brave"` must not reach disk, because the
+/// key goes live pointing at nothing while the user is still mid-word.
+///
+/// A row the FILE already has broken is deliberately NOT held. Holding it
+/// would mean its chord could never be edited at all once Save is gone --
+/// every keystroke refused, with the remedy being to fix an app name the
+/// user may have no intention of fixing. Its `missing` flag already says
+/// what is wrong, on the row they are looking at.
+///
+/// `catalog: None` is a scan that has not finished, and **a scan that has
+/// not finished cannot prove absence** -- the same rule `row_condition`
+/// states with its `Checking installed apps...` note. A row the user ADDED
+/// has no counterpart in the file, so there is no "was valid" for it to have
+/// left; `Problem`s and the `missing` flag cover that one.
+///
+/// The base is [`Model::original`], which at the point this matters IS the
+/// on-disk text: `autosave_plan` answers `FileMoved` and never reaches this
+/// argument once the two have parted.
+pub fn selected_app_went_missing(m: &Model, catalog: Option<&[String]>) -> bool {
+    let Some(names) = catalog else {
+        return false;
+    };
+    let Some(row) = m.selected.and_then(|i| m.rows.get(i)) else {
+        return false;
+    };
+    if app_resolves(names, &row.app) {
+        return false;
+    }
+    let Some(key) = row.orig_key.as_deref() else {
+        return false;
+    };
+    let Ok(base) = Model::from_text(&m.original) else {
+        return false;
+    };
+    base.rows
+        .iter()
+        .find(|r| r.orig_key.as_deref() == Some(key))
+        .is_some_and(|r| app_resolves(names, &r.app))
+}
+
+/// Does `app` match anything in the installed-app catalog?
+///
+/// **The same two calls `row_condition` makes, in the same order** --
+/// `candidates::split`, then `catalog_hit` per candidate with the first hit
+/// winning -- so the footer's `Not saved` sentence and the row's `missing`
+/// flag answer one question one way. `the_autosave_guard_agrees_with_the_
+/// row_flag_about_missing` is what holds the two together.
+///
+/// An EMPTY name resolves here. `row_condition` guards it the same way: an
+/// empty app is reported as a `Problem`, not as a catalog miss, and a model
+/// carrying one does not render -- so `FinishTheRow` has already refused the
+/// write before this argument is looked at.
+fn app_resolves(names: &[String], app: &str) -> bool {
+    let app = app.trim();
+    if app.is_empty() {
+        return true;
+    }
+    match candidates::split(app) {
+        // A stray `||` makes the key permanently dead: no candidate can be
+        // formed, so nothing can resolve.
+        Err(_) => false,
+        Ok(cands) => cands.iter().any(|c| catalog_hit(names, c).is_some()),
+    }
+}
+
 pub fn saved_readout(parsed: bool, last: Option<NotSaved>, can_undo: bool) -> SavedReadout {
     if !parsed {
         return SavedReadout::Blank;
@@ -8370,6 +8441,108 @@ mod tests {
             autosave_plan(&m, m.original(), true),
             AutosavePlan::Hold(NotSaved::AppWentMissing)
         );
+    }
+
+    // ---------- selected_app_went_missing (G-e) ----------
+
+    fn catalog() -> Vec<String> {
+        vec!["Brave".into(), "Anki".into(), "System Settings".into()]
+    }
+
+    #[test]
+    fn an_app_edited_into_a_name_nothing_matches_holds_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "Qx");
+        assert!(selected_app_went_missing(&m, Some(&catalog())));
+    }
+
+    /// **MEASURED, and it narrows four-doors G-e's own example.** That guard
+    /// is written up as `"ctrl+super+alt+c" = "B"` reaching disk mid-word,
+    /// and `B` does NOT fire it: every beckon resolver ends in a
+    /// case-insensitive SUBSTRING tier, `B` is a substring of `Brave`, so
+    /// the name still resolves and the row is not `missing` either.
+    ///
+    /// That is the tier doing its job rather than a gap in the guard -- the
+    /// binding written in that instant points at Brave, which is where the
+    /// user was heading. What the guard catches is a name that matches
+    /// NOTHING, which is the state a key actually dies in. Do not "fix"
+    /// this by comparing whole strings: that is the defect measured on
+    /// macmini 2026-08-17 which made every candidate-chain row say
+    /// `missing`.
+    #[test]
+    fn a_prefix_of_the_intended_name_still_resolves_and_is_not_held() {
+        let mut m = Model::from_text("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "B");
+        assert!(!selected_app_went_missing(&m, Some(&catalog())));
+    }
+
+    /// The other half of the same sentence: a name that still resolves is
+    /// not a transition, however much of it the user has retyped.
+    #[test]
+    fn an_app_that_still_resolves_does_not_hold_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "brave");
+        assert!(!selected_app_went_missing(&m, Some(&catalog())));
+    }
+
+    /// **A row the FILE already has broken keeps saving**, or its CHORD
+    /// could never be edited once Save is gone: every keystroke would be
+    /// refused for an app name the user is not trying to change.
+    #[test]
+    fn a_row_that_was_already_broken_on_disk_does_not_hold_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+z\" = \"Nowhere\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_combo(0, "ctrl+alt+y");
+        assert!(!selected_app_went_missing(&m, Some(&catalog())));
+    }
+
+    /// A scan that has not finished cannot prove absence -- the rule
+    /// `row_condition` states with its `Checking installed apps...` note.
+    #[test]
+    fn an_unscanned_catalog_never_holds_the_write() {
+        let mut m = Model::from_text("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+        m.selected = Some(0);
+        m.set_app(0, "B");
+        assert!(!selected_app_went_missing(&m, None));
+    }
+
+    /// **The two readers of the catalog must not disagree.** `row_condition`
+    /// flags the row `missing`; this guard refuses the write. They are two
+    /// call sites of `candidates::split` + `catalog_hit`, so this is the
+    /// test that keeps them one rule -- including the substring tier, which
+    /// an equality comparison would get wrong in exactly the way measured on
+    /// airm3 2026-08-16.
+    #[test]
+    fn the_autosave_guard_agrees_with_the_row_flag_about_missing() {
+        for (app, want_missing) in [
+            ("Brave", false),
+            ("Settings", false), // substring of `System Settings`
+            ("B", false),        // substring of `Brave` -- see the test above
+            ("Qx", true),
+            ("Nowhere at all", true),
+            ("Brave || Nowhere", false), // first rung wins
+            ("Nowhere || Brave", false), // a later rung still resolves
+        ] {
+            let mut m = Model::from_text("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
+            m.selected = Some(0);
+            m.set_app(0, app);
+            let rt = RuntimeStatus {
+                registered: HashMap::new(),
+                catalog: Some(catalog()),
+                paused: false,
+                probe: None,
+            };
+            let flagged = control_state(&m, &rt).items[0].flag.as_deref() == Some("missing");
+            assert_eq!(flagged, want_missing, "the row flag disagrees for `{app}`");
+            assert_eq!(
+                selected_app_went_missing(&m, Some(&catalog())),
+                want_missing,
+                "the autosave guard disagrees for `{app}`"
+            );
+        }
     }
 
     #[test]

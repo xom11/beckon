@@ -388,6 +388,18 @@ struct ServeState {
     /// A menu row asked Settings to open on this binding: an index into
     /// `shortcuts`. Consumed by `open_settings`, like `pending_update_check`.
     pending_select: Option<usize>,
+    /// Why the last auto-save did not write, or `None` when it did.
+    ///
+    /// **Written by `autosave` alone**, and by every path through it, so
+    /// there is one answer rather than one per call site. Read by the
+    /// footer's readout (`saved_readout`) and by the close prompt, which is
+    /// the only prompt auto-save leaves standing.
+    ///
+    /// macOS only, and structurally so: Windows keeps its command bar and
+    /// its own Save, so nothing there ever writes without being asked and
+    /// there is no refusal to record.
+    #[cfg(target_os = "macos")]
+    last_not_saved: Option<beckon_core::settings::NotSaved>,
 }
 
 /// Take the single-instance lock, preserving the error's type.
@@ -520,6 +532,8 @@ pub fn cmd_serve_app(
         #[cfg(target_os = "macos")]
         menu_rows: Vec::new(),
         pending_select: None,
+        #[cfg(target_os = "macos")]
+        last_not_saved: None,
     }));
 
     let mgr = {
@@ -559,6 +573,26 @@ pub fn cmd_serve_app(
                 reload(&st, &mg);
             }),
         );
+    }
+
+    // **The auto-save flush, and a third tick rather than a branch in the
+    // one above** -- for the reason the grant watcher below states: that one
+    // returns early unless the file watcher fired, and this has to run
+    // whether or not the config changed.
+    //
+    // Two things need it. The App field is debounced (four-doors 6.1.2) and
+    // macOS has no `SetTimer`, so nothing else turns "the field went quiet"
+    // into a write; and the three settings callbacks that are not built by
+    // the `edit!` macro would otherwise each have to remember to save.
+    //
+    // Four times a second, so a write lands within the debounce plus a
+    // quarter rather than plus a second. `autosave_tick` returns on its
+    // first line whenever the model is clean, which is every tick with the
+    // window shut, so the cost at rest is one `Option` test.
+    #[cfg(target_os = "macos")]
+    {
+        let st = Rc::clone(&state);
+        hotkey::add_tick(0.25, Box::new(move || autosave_tick(&st)));
     }
 
     // **Watch for the grant appearing, so "allow it" is the last step.**
@@ -2423,6 +2457,268 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     eprintln!("beckon serve: settings saved");
 }
 
+/// Copy the config beside itself as `<name>.bak`, once, when the window
+/// opens.
+///
+/// **This does not protect against the stale-base clobber.** The
+/// compare-and-swap guard in `autosave` refuses a write whose base moved;
+/// this is the net for everything else, including a whole session of
+/// auto-saved edits the user wants out of wholesale. Session-level rollback,
+/// one file, overwritten on the next open.
+///
+/// Best effort: a failure is not worth refusing to open the window over, and
+/// there is nothing a user could do about it from here anyway.
+///
+/// **Beside the RESOLVED target, like `write_config_text`'s temp file** --
+/// the config reaches this author's Macs through a `mkOutOfStoreSymlink`, and
+/// a backup written beside the LINK would sit in a different directory from
+/// the file it is a backup of. `with_extension` replaces the extension, so
+/// `apps.toml` becomes `apps.toml.bak`; `watch_config` compares by file NAME,
+/// so the copy cannot be mistaken for a config write.
+#[cfg(target_os = "macos")]
+fn backup_config(path: &Path) {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let bak = target.with_extension("toml.bak");
+    let _ = std::fs::copy(&target, &bak);
+}
+
+/// Move the undo stack from a model being replaced onto its replacement,
+/// oldest entry first.
+///
+/// A reseed builds a NEW `Model` -- that is what clears `dirty` and gives
+/// every row a fresh `orig_key` -- and the stack lives inside it, so without
+/// this every successful write would empty the history it had just added to
+/// and Undo would never reach further back than one step. `take_undo` pops
+/// newest-first, so the drained vector goes back in reversed.
+#[cfg(target_os = "macos")]
+fn carry_undo(from: &mut beckon_core::settings::Model, to: &mut beckon_core::settings::Model) {
+    let mut stack = Vec::new();
+    while let Some(t) = from.take_undo() {
+        stack.push(t);
+    }
+    for t in stack.into_iter().rev() {
+        to.push_undo(t);
+    }
+}
+
+/// Is a keystroke in the App field still pending, so the write should WAIT?
+///
+/// The App field is the one debounced input (four-doors 6.1.2): writing from
+/// inside a keystroke handler would rename the config once per character
+/// typed. macOS has no `SetTimer`, so the deadline is
+/// `swin::app_field_quiet_for` compared against
+/// `beckon_core::settings::AUTOSAVE_QUIET_MS`, and `autosave_tick` is what
+/// turns "the field went quiet" into a write.
+///
+/// **`None` means "no keystroke to wait for", never "nothing to write", and
+/// the difference is a data-loss shape.** `beckonApp:` still fires on Enter
+/// and on a PICK from the combo box's list, and that path does not go
+/// through `controlTextDidChange:` -- so a user who chooses a name from the
+/// dropdown and never types a character leaves the model dirty with
+/// `app_last_typed` still `None`. Reading `None` as "skip" would lose that
+/// edit silently, and no test that types could ever see it. `Model::dirty`
+/// is what says there is something to write; this only says whether it is
+/// safe to write it yet.
+#[cfg(target_os = "macos")]
+fn autosave_is_deferred() -> bool {
+    match swin::app_field_quiet_for() {
+        Some(since) => {
+            since < std::time::Duration::from_millis(beckon_core::settings::AUTOSAVE_QUIET_MS)
+        }
+        None => false,
+    }
+}
+
+/// Run the auto-save plan after an edit, and perform the write it asks for
+/// (G-a).
+///
+/// **The read is immediately before the write** -- that pairing IS the
+/// compare-and-swap guard, and anything inserted between them widens the
+/// window in which somebody else's edit lands unseen. Nothing may move
+/// between the `read_to_string` below and `write_config_text`.
+///
+/// Three orderings are load-bearing and each one is data loss if it is got
+/// wrong:
+///
+/// 1. **The undo entry is pushed BEFORE the write**, never after. An entry
+///    pushed after a write that failed halfway describes a file state that
+///    never existed, and Undo would then restore it over a good file. The
+///    failure arm takes it straight back off, which is the same rule from
+///    the other side.
+/// 2. **The reseed comes from the text that was WRITTEN**, never from a
+///    second read of the file. Re-reading invites exactly the race the guard
+///    just closed -- a write landing between our rename and our read would be
+///    adopted as our own base and silently overwritten by the next keystroke.
+/// 3. **`FileMoved` clears the undo stack.** Every entry's base is this
+///    model's `original`; once somebody else owns the file, restoring one
+///    would clobber their edit -- the same loss the guard exists to prevent,
+///    arriving through the Undo button.
+///
+/// `keep_mine` is the banner's own button and the one deliberate clobber in
+/// the program: it tells the guard the base did not move, because the user
+/// has just said the other party's text is not their base any more. It does
+/// NOT change what goes on the undo stack -- that is always the text really
+/// on disk -- so the clobber is one press away from being reversed, and
+/// `<config>.bak` still holds where the session started.
+///
+/// Returns the refusal, if any, and records it in
+/// `ServeState::last_not_saved` so the footer and the close prompt read one
+/// answer rather than re-running the plan.
+#[cfg(target_os = "macos")]
+fn autosave(s: &mut ServeState, keep_mine: bool) -> Option<beckon_core::settings::NotSaved> {
+    use beckon_core::settings::{AutosavePlan, NotSaved};
+
+    // No model: the window is open READ ONLY over a file that does not
+    // parse. There is nothing to write and nothing to claim -- `saved_readout`
+    // draws `Blank` for that state without being told.
+    if s.settings.is_none() {
+        return s.last_not_saved;
+    }
+
+    let path = s.config.clone();
+    // **Worked out BEFORE the read, on purpose.** It depends on the model
+    // and the catalog and not on the file at all, and it can parse -- so
+    // leaving it inside the read/write pair below would put a TOML parse in
+    // the one window this function exists to keep narrow.
+    let missing = beckon_core::settings::selected_app_went_missing(
+        s.settings.as_ref().expect("checked above"),
+        s.catalog.as_deref(),
+    );
+
+    // THE READ. Everything from here to `write_config_text` is pure --
+    // a comparison, a render, a `ViewState` clone and a `push_undo`. No I/O
+    // and nothing that can block or re-enter: that is what makes this pair a
+    // compare-and-swap rather than two separate decisions.
+    let disk = std::fs::read_to_string(&path).ok();
+    let plan = match disk.as_deref() {
+        Some(text) => {
+            let model = s.settings.as_ref().expect("checked above");
+            let base = if keep_mine { model.original() } else { text };
+            beckon_core::settings::autosave_plan(model, base, missing)
+        }
+        // A config that cannot be read at all is not a base to write over:
+        // deleted, renamed, or replaced by something this process cannot
+        // open is the stale-base case wearing a different hat, so it takes
+        // the stale-base arm rather than recreating the file from a model
+        // whose base is gone.
+        None => AutosavePlan::Hold(NotSaved::FileMoved),
+    };
+
+    let outcome = match plan {
+        AutosavePlan::Nothing => None,
+        AutosavePlan::Hold(NotSaved::FileMoved) => {
+            // The banner comes up, and the stack goes with it -- rule 3.
+            s.external_change = true;
+            if let Some(m) = s.settings.as_mut() {
+                m.clear_undo();
+            }
+            Some(NotSaved::FileMoved)
+        }
+        AutosavePlan::Hold(other) => Some(other),
+        AutosavePlan::Write(text) => {
+            // One short borrow: what the user is looking at, and the undo
+            // entry, both taken before the rename.
+            let view = {
+                // Checked on this function's first line, and nothing
+                // between there and here writes `settings`.
+                let model = s.settings.as_mut().expect("checked above");
+                let view = model.view_state();
+                // **Rule 1.** The entry is the text really on disk, which is
+                // the model's base except under `keep_mine`, where it is the
+                // other party's text and is exactly what Undo has to be able
+                // to put back.
+                let entry = match disk {
+                    Some(t) => t,
+                    // Unreachable: an unreadable file took the `Hold` arm
+                    // above, so a `Write` always has the disk text in hand.
+                    None => model.original().to_string(),
+                };
+                model.push_undo(entry);
+                view
+            };
+            match write_config_text(&path, &text) {
+                Err(e) => {
+                    // **A log line, never a dialog**, and that is the
+                    // difference from `apply_settings`. That one answers a
+                    // button press, where a box is the only way to report.
+                    // This one answers a keystroke, and it runs under the
+                    // caller's `borrow_mut` -- a modal `MessageBoxW`/NSAlert
+                    // here would fire per character AND re-enter
+                    // `ServeState` from inside a live borrow. The footer's
+                    // readout is where the user hears about it.
+                    eprintln!("beckon serve: cannot write {}: {e}", path.display());
+                    // Rule 1 from the other side: that entry describes a
+                    // file state this write did not produce.
+                    if let Some(m) = s.settings.as_mut() {
+                        let _ = m.take_undo();
+                    }
+                    Some(NotSaved::CannotWrite)
+                }
+                Ok(_) => {
+                    // **Rule 2**: reseeded from the text that WAS written.
+                    // `autosave_plan` rendered it through `parse_config`, so
+                    // this cannot fail; if it somehow did, the model keeps
+                    // its old base and the next edit answers `FileMoved`,
+                    // which raises the banner rather than losing anything.
+                    if let Ok(mut fresh) = beckon_core::settings::Model::from_text(&text) {
+                        fresh.restore_view_state(&view);
+                        if let Some(old) = s.settings.as_mut() {
+                            carry_undo(old, &mut fresh);
+                        }
+                        s.settings = Some(fresh);
+                    }
+                    s.external_change = false;
+                    // **The probe is deliberately NOT cleared here, and
+                    // `apply_settings` clearing it is not a precedent.**
+                    // There the user pressed Save, so a verdict older than
+                    // the file is stale. Here the write IS the keystroke:
+                    // `on_probe_shortcut` runs immediately before
+                    // `on_edit_combo`, so clearing would delete the verdict
+                    // the same gesture just asked for, every time, and the
+                    // window would never show one. `row_condition` already
+                    // drops a verdict whose chord the user has typed past,
+                    // and `reload` re-registers within the second and
+                    // overrides it through `registered`.
+                    None
+                }
+            }
+        }
+    };
+    s.last_not_saved = outcome;
+    outcome
+}
+
+/// The App field's debounce has no timer of its own, so this is what turns
+/// "the field has gone quiet" into a write.
+///
+/// **It is also what makes `edit!` not the only funnel.** `on_add`,
+/// `on_remove` and `on_mark` take two arguments or none and are written out
+/// rather than built by the macro; a tick that fires on any dirty model
+/// covers them, and covers a mutator added later that forgets to save.
+///
+/// Cheap at rest by construction: a clean model returns on the first line
+/// and touches no file. The push is skipped when nothing about the answer
+/// changed, because a refusal that is already on screen must not rebuild the
+/// table under the user's hands several times a second.
+#[cfg(target_os = "macos")]
+fn autosave_tick(state: &Rc<RefCell<ServeState>>) {
+    if !state.borrow().settings.as_ref().is_some_and(|m| m.dirty()) {
+        return;
+    }
+    if autosave_is_deferred() {
+        return;
+    }
+    let (before, after) = {
+        let mut s = state.borrow_mut();
+        let before = s.last_not_saved;
+        (before, autosave(&mut s, false))
+    };
+    let still_dirty = state.borrow().settings.as_ref().is_some_and(|m| m.dirty());
+    if before != after || !still_dirty {
+        refresh_settings(state);
+    }
+}
+
 /// Load the model from disk into the window, discarding in-memory edits.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
@@ -2435,8 +2731,18 @@ fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
         }
     };
     match beckon_core::settings::Model::from_text(&text) {
-        Ok(m) => {
+        Ok(mut m) => {
             let mut s = state.borrow_mut();
+            // **The file wins, but it does not also cost the user their
+            // view** -- four-doors G-b, which is the whole reason
+            // `ViewState` exists. Carried by IDENTITY: this rebuild can
+            // reorder the rows, and a raw index would then point the editor
+            // at a different binding while the user is still typing into it.
+            // Rows the file no longer has drop out silently, which is the
+            // file winning.
+            if let Some(old) = s.settings.as_ref() {
+                m.restore_view_state(&old.view_state());
+            }
             s.settings = Some(m);
             // Keeps the pair's invariant unconditional rather than relying
             // on this path being unreachable from the read-only state (the
@@ -2504,6 +2810,26 @@ fn settings_retry_unreadable(state: &Rc<RefCell<ServeState>>) -> bool {
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
     if settings_retry_unreadable(state) {
+        return;
+    }
+    // **beckon's own write is not an external change, and under auto-save
+    // that distinction is what keeps the banner honest.** `watch_config`
+    // fires on every rename including the one `autosave` just did, and by
+    // the time the 1 Hz tick gets here the user has very likely typed again
+    // -- so the dirty test below would raise `the file changed on disk`
+    // about beckon's own keystroke, once per word. The model's `original` IS
+    // the text auto-save last wrote, so comparing it against the file
+    // settles it: equal means nothing external happened and there is nothing
+    // to follow. It closes the same hole for Save, where the rebuild below
+    // was silently costing the user their selection and their filter.
+    let ours = {
+        let s = state.borrow();
+        match (s.settings.as_ref(), std::fs::read_to_string(&s.config)) {
+            (Some(m), Ok(text)) => text == m.original(),
+            _ => false,
+        }
+    };
+    if ours {
         return;
     }
     let dirty = match state.borrow().settings.as_ref() {
@@ -2579,6 +2905,17 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
         return;
     }
 
+    // **G-h, and before the model is built on purpose**: the copy has to be
+    // of the file as the session found it, not of anything the window has
+    // since done to it.
+    #[cfg(target_os = "macos")]
+    {
+        // Cloned out and the borrow dropped before the copy, like every
+        // other file operation in this module.
+        let cfg = state.borrow().config.clone();
+        backup_config(&cfg);
+    }
+
     // A file that does not parse opens READ ONLY rather than being refused.
     // Only a file that cannot be read at all stops us here.
     if let Err(e) = load_settings_model(state) {
@@ -2600,6 +2937,22 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                     if let Some(m) = s.settings.as_mut() {
                         #[allow(clippy::redundant_closure_call)]
                         ($body)(m, arg);
+                    }
+                    // **Every mutator funnels through here, so a new one
+                    // cannot forget to save** -- and `autosave_tick` covers
+                    // the three callbacks below that are written out rather
+                    // than built by this macro.
+                    //
+                    // macOS only: Windows keeps its command bar and its own
+                    // Save (G-i, out of scope for this branch), so nothing
+                    // there writes without being asked.
+                    //
+                    // An App-field keystroke that has not gone quiet defers
+                    // the write to that tick; it never skips it. See
+                    // `autosave_is_deferred`.
+                    #[cfg(target_os = "macos")]
+                    if !autosave_is_deferred() {
+                        autosave(&mut s, false);
                     }
                 }
                 refresh_settings(&st);
@@ -2745,7 +3098,27 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
         on_keep_mine: Box::new({
             let st = Rc::clone(state);
             move || {
-                st.borrow_mut().external_change = false;
+                {
+                    let mut s = st.borrow_mut();
+                    s.external_change = false;
+                    // **Under auto-save, dismissing the banner is not enough
+                    // -- the button would promise something the guard then
+                    // refuses forever.** The compare-and-swap holds every
+                    // write whose base has moved, so a model left on a stale
+                    // base can never reach disk again and the readout sticks
+                    // on `Not saved - the file changed on disk` with the
+                    // banner gone. `Keep mine` is the user saying the other
+                    // party's text is not their base any more, so the write
+                    // is performed with that said.
+                    //
+                    // It is the one deliberate clobber in the program, and
+                    // it is paid for twice: the other party's text goes onto
+                    // the undo stack first (`autosave`'s rule 1 uses the
+                    // text really on disk, not the model's base), and
+                    // `<config>.bak` still holds where the session started.
+                    #[cfg(target_os = "macos")]
+                    autosave(&mut s, true);
+                }
                 refresh_settings(&st);
             }
         }),
@@ -3105,6 +3478,245 @@ mod tests {
         assert!(
             !dir.path().join("apps.shared.toml.beckon-tmp").exists(),
             "the temp file is consumed by the rename"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The auto-save driver (G-a, G-h)
+    // -----------------------------------------------------------------
+
+    /// A `ServeState` with nothing in it but a config path, so the driver
+    /// can be exercised without a hotkey manager, a tray or a window.
+    ///
+    /// Every field is named rather than spread from a `Default`: a field
+    /// added later is then a compile error here, at the one place that has
+    /// to decide what the driver should see.
+    #[cfg(target_os = "macos")]
+    fn test_state(config: &Path) -> ServeState {
+        ServeState {
+            caps_owner: None,
+            shortcuts: Vec::new(),
+            keyboard: Default::default(),
+            config: config.to_path_buf(),
+            paused: false,
+            log: None,
+            last_phrase: String::new(),
+            registered: Default::default(),
+            autostart: None,
+            settings: None,
+            settings_unreadable: None,
+            catalog: None,
+            external_change: false,
+            probe: None,
+            settings_page: beckon_core::settings::Page::default(),
+            update: beckon_core::update::UpdateState::Idle,
+            pending_update_check: false,
+            menu_rows: Vec::new(),
+            pending_select: None,
+            last_not_saved: None,
+        }
+    }
+
+    /// Open a window over `config` with one edit already made: the shape
+    /// every test below starts from.
+    #[cfg(target_os = "macos")]
+    fn state_with_an_edit(config: &Path, app: &str) -> ServeState {
+        let mut st = test_state(config);
+        let text = std::fs::read_to_string(config).unwrap();
+        let mut m = beckon_core::settings::Model::from_text(&text).unwrap();
+        m.selected = Some(0);
+        m.set_app(0, app);
+        st.settings = Some(m);
+        st
+    }
+
+    /// **The compare-and-swap, end to end.** A model whose base has moved
+    /// must abandon its write -- not report a failure and write anyway, and
+    /// not write a merged guess.
+    ///
+    /// **Asserted on the FILE's bytes, not on the return value**, because
+    /// the whole claim is that nothing was written. A driver that returned
+    /// `FileMoved` and renamed anyway would pass an assertion on the plan
+    /// alone and lose the other party's edit.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_write_is_abandoned_when_the_file_moved_under_us() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        // Somebody else edits the file behind the model's back.
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        let outcome = autosave(&mut st, false);
+
+        // **The bytes first, deliberately.** This is the assertion the whole
+        // guard exists for, and it is the one that has to be reached: a
+        // driver that reported `FileMoved` and renamed anyway would be
+        // caught here and nowhere else.
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            theirs,
+            "the other party's text must still be on disk, byte for byte"
+        );
+        assert_eq!(outcome, Some(beckon_core::settings::NotSaved::FileMoved));
+        assert!(
+            st.external_change,
+            "the banner is what tells the user their edit is not going in"
+        );
+        assert!(
+            !st.settings.as_ref().unwrap().can_undo(),
+            "every undo entry's base is the model's `original`, so restoring \
+             one would clobber the edit the guard just refused to clobber"
+        );
+    }
+
+    /// The control for the test above: with the file where the model left
+    /// it, the same edit reaches disk. Without this, a driver that never
+    /// writes at all would pass.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_edit_over_an_unchanged_file_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        assert_eq!(autosave(&mut st, false), None);
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "the edit has to reach the file"
+        );
+        let m = st.settings.as_ref().unwrap();
+        assert!(!m.dirty(), "the reseed is what clears dirty");
+        assert_eq!(
+            m.original(),
+            std::fs::read_to_string(&config).unwrap(),
+            "the model's new base is the text that was written"
+        );
+        assert!(
+            m.can_undo(),
+            "the text from before the write is what Undo puts back"
+        );
+    }
+
+    /// **The undo entry is pushed BEFORE the write and describes the file as
+    /// it was**, so Undo restores a state that really existed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_undo_entry_is_the_text_from_before_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None);
+
+        assert_eq!(
+            st.settings.as_mut().unwrap().take_undo().as_deref(),
+            Some(before),
+            "Undo has to reach the file as it was, not as it became"
+        );
+    }
+
+    /// The stack survives a reseed. It lives inside the `Model`, and a
+    /// successful write replaces that `Model` -- so without `carry_undo`
+    /// Undo could never reach back further than the last write.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_undo_stack_survives_the_reseed_after_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert_eq!(autosave(&mut st, false), None);
+
+        // A second edit, on the model the first write reseeded.
+        st.settings.as_mut().unwrap().set_app(0, "Anki");
+        assert_eq!(autosave(&mut st, false), None);
+
+        let m = st.settings.as_mut().unwrap();
+        assert!(m.take_undo().unwrap().contains("Brave"), "newest first");
+        assert!(m.take_undo().unwrap().contains("Anki"), "then the original");
+        assert_eq!(m.take_undo(), None);
+    }
+
+    /// `Keep mine` is the one deliberate clobber, and the other party's text
+    /// is on the stack before it happens -- so the press is one Undo away
+    /// from being reversed.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keep_mine_writes_and_leaves_the_other_text_on_the_undo_stack() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        assert_eq!(autosave(&mut st, true), None);
+        assert!(std::fs::read_to_string(&config).unwrap().contains("Brave"));
+        assert_eq!(
+            st.settings.as_mut().unwrap().take_undo().as_deref(),
+            Some(theirs),
+            "the clobbered text is what Undo has to be able to put back"
+        );
+    }
+
+    /// A model that does not render writes nothing and says which of the two
+    /// silences it is.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_half_typed_row_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        let mut st = test_state(&config);
+        let mut m = beckon_core::settings::Model::from_text(before).unwrap();
+        m.selected = Some(0);
+        m.set_combo(0, "not a chord");
+        st.settings = Some(m);
+
+        assert_eq!(
+            autosave(&mut st, false),
+            Some(beckon_core::settings::NotSaved::FinishTheRow)
+        );
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
+    }
+
+    /// **The `.bak` is a copy of the file, not of the resolved-away link.**
+    /// It has to land beside the REAL file for the same reason
+    /// `write_config_text`'s temp file does -- a backup in a different
+    /// directory from the thing it backs up is not a backup anyone will
+    /// find.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_backup_is_written_beside_the_resolved_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("apps.shared.toml");
+        std::fs::write(&real, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
+        let link = dir.path().join("apps.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        backup_config(&link);
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("apps.shared.toml.bak")).unwrap(),
+            "\"ctrl+alt+t\" = \"old\"\n"
+        );
+        assert!(
+            !dir.path().join("apps.toml.bak").exists(),
+            "beside the link is the wrong directory once the link points \
+             into a dotfiles repo"
         );
     }
 
