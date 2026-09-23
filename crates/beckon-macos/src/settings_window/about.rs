@@ -53,7 +53,7 @@
 //! who has not thought to run `doctor` will be standing.
 
 use beckon_core::settings::{
-    accessibility_warning, copy_text, grant_button_shown, AboutState, Field, FlagTone, ImageAge,
+    accessibility_warning, grant_button_shown, AboutState, FlagTone, ImageAge,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -563,15 +563,4 @@ pub(super) fn apply(c: &AboutControls, st: &AboutState, ax_trusted: bool) {
          key, or while you are recording a shortcut. beckon keeps no record of what \
          you type.",
     ));
-}
-
-/// What the clipboard gets for a row.
-///
-/// **The row's bare payload, never the string on screen.** `Location` shows a
-/// path the OS may have shortened for width and, in the row beneath it, a
-/// verdict clause — and a copied path is for pasting into a file manager or
-/// a terminal, where neither belongs. `copy_text` is the one decision and it
-/// lives in core, where a test can read it.
-pub(super) fn clipboard_text(st: &AboutState, f: Field) -> String {
-    copy_text(st, f).to_string()
 }

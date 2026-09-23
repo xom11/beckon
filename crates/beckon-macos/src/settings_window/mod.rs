@@ -93,13 +93,9 @@ use std::cell::RefCell;
 
 // Construction helpers shared by the four doors. Nothing in there decides
 // anything — see its module doc.
-#[allow(dead_code)]
 mod about;
-#[allow(dead_code)]
 mod keyboard;
-#[allow(dead_code)]
 mod system;
-#[allow(dead_code)]
 mod widgets;
 
 /// How many rows the list shows, at every scale. Fixed rather than grown
