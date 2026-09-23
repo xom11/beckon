@@ -38,14 +38,14 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use beckon_core::settings::{control_state, Callbacks, Model, Page, Paths, RuntimeStatus};
+    use beckon_core::settings::{
+        control_state, page_label, Callbacks, Model, Page, PageLabels, Paths, RuntimeStatus,
+    };
     use beckon_macos::settings_window as win;
     use objc2::rc::Retained;
-    use objc2_app_kit::{
-        NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSSegmentedControl, NSView,
-        NSWindow,
-    };
-    use objc2_foundation::{MainThreadMarker, NSPoint};
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSApplication, NSWindow};
+    use objc2_foundation::MainThreadMarker;
     use std::cell::RefCell;
     use std::io::Write;
     use std::rc::Rc;
@@ -55,43 +55,74 @@ mod mac {
         let _ = std::io::stdout().flush();
     }
 
+    /// This probe's own `Paths::config`, below -- and, since `open()` writes
+    /// the file-name half of it into the window's SUBTITLE unchanged, also
+    /// how `our_window` picks the real settings window out of every window
+    /// `app.windows()` returns. **Not the title**: since a real `NSToolbar`
+    /// replaced the tab strip, the title is the open page's own caption and
+    /// changes on every door this probe switches to, where the old
+    /// `starts_with("beckon")` check assumed a fixed literal that no longer
+    /// exists — it would now match nothing, on every window, every tick.
+    const CONFIG_LABEL: &str = "apps.toml";
+
+    /// The four doors, in the same order as `names` below, so an index `i`
+    /// used for one can always be used for the other.
+    const PAGES: [Page; 4] = [Page::Shortcuts, Page::Keyboard, Page::System, Page::About];
+
     fn our_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
         NSApplication::sharedApplication(mtm)
             .windows()
             .iter()
-            .find(|w| w.title().to_string().starts_with("beckon"))
+            .find(|w| w.subtitle().to_string() == CONFIG_LABEL)
     }
 
-    fn walk(v: &NSView, out: &mut Vec<Retained<NSView>>) {
-        for sub in v.subviews().iter() {
-            out.push(sub.clone());
-            walk(&sub, out);
-        }
-    }
-
-    fn segmented(w: &NSWindow) -> Option<Retained<NSSegmentedControl>> {
-        let mut all = Vec::new();
-        if let Some(root) = w.contentView() {
-            walk(&root, &mut all);
-        }
-        all.iter()
-            .find_map(|v| v.downcast_ref::<NSSegmentedControl>().map(Retained::from))
-    }
-
-    fn click_segment(sc: &NSSegmentedControl, i: usize, w: &NSWindow, mtm: MainThreadMarker) {
+    /// Select a door through the toolbar's own dispatch -- see
+    /// `settings_drive.rs`'s `click_toolbar_page`, which this mirrors.
+    /// `NSToolbarItem::view()` is `nil` for every item here (AppKit's
+    /// automatically-generated kind, per the objc2 binding's own doc), so
+    /// there is no view left in `contentView`'s tree to click; the four
+    /// doors used to be equal-width segments of one `NSSegmentedControl`
+    /// there, which a posted click could aim at directly. `sendAction:to:
+    /// from:` is the public API AppKit itself runs for a real click on an
+    /// item, so this raises the exact same call with no view needed.
+    fn click_toolbar_page(w: &NSWindow, label: &str, mtm: MainThreadMarker) {
+        let Some(toolbar) = w.toolbar() else {
+            say("      no toolbar on window");
+            return;
+        };
+        let Some(item) = toolbar
+            .items()
+            .iter()
+            .find(|it| it.label().to_string() == label)
+        else {
+            say(&format!("      no toolbar item labeled {label:?}"));
+            return;
+        };
+        let Some(action) = item.action() else {
+            say(&format!("      toolbar item {label:?} has no action"));
+            return;
+        };
+        let target = item.target();
         let app = NSApplication::sharedApplication(mtm);
-        let b = sc.bounds();
-        let at = sc.convertPoint_toView(
-            NSPoint::new(b.size.width * (i as f64 + 0.5) / 4.0, b.size.height / 2.0),
-            None,
-        );
-        for kind in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp] {
-            if let Some(ev) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                kind, at, NSEventModifierFlags::empty(), 0.0, w.windowNumber(), None, 0, 1, 1.0,
-            ) {
-                app.postEvent_atStart(&ev, false);
-            }
-        }
+        let ok = unsafe {
+            app.sendAction_to_from(action, target.as_deref(), Some(&*item as &AnyObject))
+        };
+        say(&format!("      sendAction({label:?}) -> {ok}"));
+    }
+
+    /// The caption of whichever door the toolbar currently has selected, by
+    /// asking the toolbar for its `selectedItemIdentifier` and reading that
+    /// item's own label back -- there is no `page_identifier` reachable from
+    /// an example (it is not `pub`), so the label read for the click above
+    /// doubles as the read for "which door is actually open".
+    fn open_door_label(w: &NSWindow) -> Option<String> {
+        let toolbar = w.toolbar()?;
+        let sel = toolbar.selectedItemIdentifier()?.to_string();
+        toolbar
+            .items()
+            .iter()
+            .find(|it| it.itemIdentifier().to_string() == sel)
+            .map(|it| it.label().to_string())
     }
 
     /// One PNG of one window, by `CGWindowID`.
@@ -185,7 +216,7 @@ caps_hold = "ctrl+super+alt"
             on_catalog: Box::new(|_| {}),
         };
         let paths = Paths {
-            config: "apps.toml".into(),
+            config: CONFIG_LABEL.into(),
             log: None,
         };
         if let Err(e) = win::open(cb, &paths, Page::Shortcuts) {
@@ -202,7 +233,7 @@ caps_hold = "ctrl+super+alt"
             Box::new(move || {
                 let mtm = MainThreadMarker::new().expect("main thread");
                 let Some(w) = our_window(mtm) else {
-                    say("no beckon window");
+                    say(&format!("no window with subtitle `{CONFIG_LABEL}`"));
                     std::process::exit(1);
                 };
                 // Even steps switch, odd steps shoot: the door has to have
@@ -212,17 +243,17 @@ caps_hold = "ctrl+super+alt"
                 if step.is_multiple_of(2) {
                     let i = step / 2;
                     if i < 4 {
-                        if let Some(sc) = segmented(&w) {
-                            click_segment(&sc, i, &w, mtm);
-                        }
+                        click_toolbar_page(&w, page_label(PAGES[i], PageLabels::MAC), mtm);
                     }
                 } else {
-                    // Raise it only on the SHOOT tick. Doing it on every tick
-                    // -- including the one that posts the door click -- left
-                    // the strip on segment 0 while the probe photographed
-                    // what it believed was the Keyboard door: `makeKey` and
-                    // `activate` re-order the event queue the click was just
-                    // posted into. The `!!` guard is what caught it.
+                    // Raise it only on the SHOOT tick, one full tick after the
+                    // switch. `click_toolbar_page` fires `show_page`
+                    // synchronously -- there is no posted event to reorder
+                    // any more, `sendAction:to:from:` is a direct call -- but
+                    // `show_page` still starts an ANIMATED resize
+                    // (`setFrame:display:animate:`), and photographing before
+                    // it settles captures the window mid-frame. The `!!`
+                    // guard below is what would catch either failure mode.
                     w.makeKeyAndOrderFront(None);
                     NSApplication::sharedApplication(mtm).activate();
                     let i = step / 2;
@@ -233,10 +264,11 @@ caps_hold = "ctrl+super+alt"
                         // only comparing the two files afterwards did. A
                         // capture that cannot name its own subject is not a
                         // measurement.
-                        let open_now = segmented(&w).map(|sc| sc.selectedSegment()).unwrap_or(-1);
-                        if open_now != i as isize {
+                        let want = page_label(PAGES[i], PageLabels::MAC);
+                        let open_now = open_door_label(&w);
+                        if open_now.as_deref() != Some(want) {
                             say(&format!(
-                                "  !! wanted door {i} ({}) but segment {open_now} is lit",
+                                "  !! wanted door {i} ({}) but toolbar shows {open_now:?}",
                                 names[i]
                             ));
                             failures += 1;

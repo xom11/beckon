@@ -49,6 +49,13 @@
 //! and reports the same height as every other non-idle state, not the
 //! tallest one.
 
+/// This probe's own `Paths::config`, below -- and, since `open()` writes the
+/// file-NAME half of it into the window's SUBTITLE unchanged (no `/` in this
+/// literal to split on), also `dump_geometry`'s way of picking the real
+/// settings window out of every window `app.windows()` returns.
+#[cfg(target_os = "macos")]
+const CONFIG_LABEL: &str = "about_update_probe (nothing is written)";
+
 fn main() {
     let manager = std::process::Command::new("launchctl")
         .arg("managername")
@@ -126,7 +133,7 @@ caps_hold = "ctrl+super+alt"
         };
 
         let paths = Paths {
-            config: "about_update_probe (nothing is written)".into(),
+            config: CONFIG_LABEL.into(),
             log: None,
         };
         if let Err(e) = win::open(cb, &paths, Page::About) {
@@ -277,10 +284,18 @@ fn dump_about(tag: &str) {
 ///
 /// The real settings window is identified the same way `geom_probe.rs`
 /// identifies the real shortcuts table among several scroll views: a
-/// property only it has. Here that is an `NSSegmentedControl` (the tab
-/// strip) as a DIRECT child of the content view -- `> 1` direct subviews
-/// would also work but is a coincidence of this window's current child
-/// count, while the tab strip is structural.
+/// property only it has. **That property used to be an `NSSegmentedControl`
+/// (the tab strip) as a DIRECT child of the content view** -- structural,
+/// while `> 1` direct subviews would have worked too but only by coincidence
+/// of this window's child count at the time. A real `NSToolbar` draws the
+/// four doors now, and a toolbar's items live in the window's title bar
+/// chrome, never as a child of the content view, so that check would now
+/// match NOTHING and this function would silently walk zero windows every
+/// time it is called -- the same trap `our_window` in `settings_drive.rs`
+/// hit when the title stopped being the fixed string it once matched. The
+/// window is picked by SUBTITLE instead: `open()` writes the file-name half
+/// of `Paths::config` there exactly once, unlike the title, which is now the
+/// open page's own caption and would not stay `About` for the whole run.
 ///
 /// **Forces the content size first, on `geom_probe.rs`'s own measured
 /// reason**: in the Background namespace the window is never ordered front,
@@ -298,7 +313,7 @@ fn dump_about(tag: &str) {
 /// is what this function exists to catch; a positive gap is normal slack.
 #[cfg(target_os = "macos")]
 fn dump_geometry(tag: &str) {
-    use objc2_app_kit::{NSApplication, NSSegmentedControl};
+    use objc2_app_kit::NSApplication;
     use objc2_foundation::{MainThreadMarker, NSSize};
 
     let mtm = MainThreadMarker::new().unwrap();
@@ -317,15 +332,15 @@ fn dump_geometry(tag: &str) {
         root.layoutSubtreeIfNeeded();
 
         // Skip anything that is not THE settings window -- see the doc
-        // above. `.any` on direct children only: the tab strip is one level
-        // down, never buried, in every build of this window so far.
-        let is_settings_window = root
-            .subviews()
-            .iter()
-            .any(|v| v.downcast_ref::<NSSegmentedControl>().is_some());
+        // above. The subtitle is set exactly once, in `open()`, from this
+        // probe's own `CONFIG_LABEL`, so it is stable for the window's whole
+        // life -- unlike the title, which is now the open page's caption.
+        let is_settings_window = w.subtitle().to_string() == CONFIG_LABEL;
         if !is_settings_window {
             println!(
-                "  (skipping a non-settings window: {} direct subviews, frame h {:.1})",
+                "  (skipping a non-settings window: title {:?} subtitle {:?}, {} direct subviews, frame h {:.1})",
+                w.title().to_string(),
+                w.subtitle().to_string(),
                 root.subviews().len(),
                 root.frame().size.height
             );

@@ -53,10 +53,15 @@
 --     shell command, so `printf '\n"a" = "b"\n'` arrives as
 --     `printf na = bn`. Write the Lua locally and `scp` it; and prefer Lua's
 --     own `io.open(path, "a")` to shelling out at all.
---   * A segment's caption is **`AXDescription`, not `AXTitle`**: an
---     `AXRadioButton` with `AXSubrole = AXSegment` answers nil for AXTitle
---     and `"Shortcuts  1"` for AXDescription. Reading the wrong attribute
---     makes a warning that IS on screen look absent.
+--   * A segment's caption used to be **`AXDescription`, not `AXTitle`**: the
+--     old tab strip was one `NSSegmentedControl`, and each segment answered
+--     nil for AXTitle and `"Shortcuts  1"` for AXDescription. Reading the
+--     wrong attribute made a warning that WAS on screen look absent. RETIRED:
+--     a preference-style `NSToolbar` replaced the strip, and its four items
+--     are plain `AXButton`s under `AXToolbar` whose `AXTitle` IS the door's
+--     caption (`Shortcuts`, `Keyboard`, `General`, `About`) -- `button(...)`
+--     below finds them the same way it finds `Record` and `Save`, and T4 no
+--     longer walks `AXRadioButton`s at all.
 --   * `settings_saw_external_change` sends a CLEAN model to a silent reload
 --     and only a DIRTY one to the banner. A measurement that does not edit
 --     something first is testing the other branch and will conclude the
@@ -208,19 +213,36 @@ if rec2 then
   ok("T3 bare Escape cancels", a3 and button("Record") ~= nil, saw3)
 end
 
+-- T4 used to switch pages by pressing `AXRadioButton`s 3 and 1 of the old
+-- tab strip. A real `NSToolbar` replaced it, so the door is a `button(...)`
+-- by its own caption now -- "General" (macOS's name for `Page::System`,
+-- `beckon_core::settings::page_label`) and back to "Shortcuts" -- exactly
+-- the toolbar buttons `button("Record")`/`button("Save")` already find the
+-- same way.
 local rec3 = button("Record")
-local rads = controls().radio
-if rec3 and #rads >= 3 then
+local general_btn = button("General")
+local shortcuts_btn = button("Shortcuts")
+if rec3 and general_btn and shortcuts_btn then
   rec3:performAction("AXPress")
   hs.timer.usleep(600000)
   local a4 = button("Stop") ~= nil
-  controls().radio[3].el:performAction("AXPress")
+  button("General"):performAction("AXPress")
   hs.timer.usleep(900000)
-  controls().radio[1].el:performAction("AXPress")
+  button("Shortcuts"):performAction("AXPress")
   hs.timer.usleep(900000)
   local saw4 = "never armed"
   if a4 then saw4 = "armed, after switch Record=" .. tostring(button("Record") ~= nil) end
   ok("T4 page switch stops recording", a4 and button("Record") ~= nil, saw4)
+else
+  -- Loud, not a silent skip: a probe that finds no toolbar button and says
+  -- nothing reads exactly like a probe that ran T4 and it passed.
+  ok(
+    "T4 page switch stops recording",
+    false,
+    "missing control: Record=" .. tostring(rec3 ~= nil)
+      .. " General=" .. tostring(general_btn ~= nil)
+      .. " Shortcuts=" .. tostring(shortcuts_btn ~= nil)
+  )
 end
 
 return done()

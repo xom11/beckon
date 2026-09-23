@@ -56,12 +56,14 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use beckon_core::settings::{control_state, Callbacks, Model, Page, Paths, RuntimeStatus};
+    use beckon_core::settings::{
+        control_state, page_label, Callbacks, Model, Page, PageLabels, Paths, RuntimeStatus,
+    };
     use beckon_macos::settings_window as win;
     use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
     use objc2_app_kit::{
-        NSApplication, NSButton, NSEvent, NSEventModifierFlags, NSEventType, NSSegmentedControl,
-        NSView, NSWindow,
+        NSApplication, NSButton, NSEvent, NSEventModifierFlags, NSEventType, NSView, NSWindow,
     };
     use objc2_foundation::{MainThreadMarker, NSPoint};
     use std::cell::RefCell;
@@ -80,6 +82,11 @@ mod mac {
         /// ever learns through the callback.
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         static FAILED: RefCell<u32> = const { RefCell::new(0) };
+        /// The Shortcuts door's own height, recorded once so a later door's
+        /// height can be checked AGAINST it rather than against a literal --
+        /// there is no longer one window height, and this number moved four
+        /// times across this branch's fix rounds.
+        static SHORTCUTS_HEIGHT: RefCell<f64> = const { RefCell::new(0.0) };
     }
 
     fn note(s: String) {
@@ -100,18 +107,32 @@ mod mac {
 
     // --- finding things -----------------------------------------------------
 
-    /// The settings window, found by TITLE.
+    /// The string this driver's own `Paths::config` is set to, below.
+    /// `open()` writes the file-NAME half of `paths.config` into the
+    /// window's SUBTITLE exactly once, and this literal has no `/` in it, so
+    /// the whole thing lands there unsplit -- see `our_window`.
+    const CONFIG_LABEL: &str = "settings_drive (nothing is written)";
+
+    /// The settings window, found by SUBTITLE.
     ///
-    /// **Not `windows().next()`**, which is what the first version did and
-    /// what the control caught: `NSApplication` owns more windows than the
-    /// one this crate made — AppKit creates its own — and the first is not
-    /// ours. That returned a four-view window with no strip and no `Save`,
-    /// which reads exactly like "the settings window is broken".
+    /// **Not by TITLE, and not `windows().next()` either.** `windows().next()`
+    /// is what the first version did and what the control caught:
+    /// `NSApplication` owns more windows than the one this crate made --
+    /// AppKit creates its own -- and the first is not ours. Matching the
+    /// title on a fixed `beckon` prefix worked for as long as the title
+    /// stayed that literal string; since the toolbar replaced the tab strip
+    /// the title is the OPEN PAGE's own caption (`Shortcuts`, `Keyboard`,
+    /// `General`, `About`, from `page_label`) and changes on every door
+    /// switch this driver performs, so a `starts_with("beckon")` check would
+    /// now match nothing, ever -- silently, because a probe that finds no
+    /// window and a probe that finds the wrong one both look like `None`
+    /// until the FAIL line names which. The subtitle is set once, in
+    /// `open()`, and nothing after that rewrites it.
     fn our_window(mtm: MainThreadMarker) -> Option<Retained<NSWindow>> {
         let app = NSApplication::sharedApplication(mtm);
         app.windows()
             .iter()
-            .find(|w| w.title().to_string().starts_with("beckon"))
+            .find(|w| w.subtitle().to_string() == CONFIG_LABEL)
     }
 
     /// Every window this process owns, for the control step to print when it
@@ -123,8 +144,9 @@ mod mac {
             .map(|w| {
                 let f = w.frame();
                 format!(
-                    "[{:?} {:.0}x{:.0} vis={}]",
+                    "[{:?} sub={:?} {:.0}x{:.0} vis={}]",
                     w.title().to_string(),
+                    w.subtitle().to_string(),
                     f.size.width,
                     f.size.height,
                     w.isVisible()
@@ -154,12 +176,6 @@ mod mac {
             let b = v.downcast_ref::<NSButton>()?;
             (b.title().to_string() == title).then(|| Retained::from(b))
         })
-    }
-
-    fn segmented(views: &[Retained<NSView>]) -> Option<Retained<NSSegmentedControl>> {
-        views
-            .iter()
-            .find_map(|v| v.downcast_ref::<NSSegmentedControl>().map(Retained::from))
     }
 
     // --- pressing things ----------------------------------------------------
@@ -246,20 +262,49 @@ mod mac {
         );
     }
 
-    /// Click segment `i` of `n`. `NSSegmentedControl` exposes no per-segment
-    /// rect, so the point is derived from the control's own width — which is
-    /// exact for the equal-width segments this strip uses, and is why the
-    /// Shortcuts segment's width is PINNED rather than left to the badge.
-    fn click_segment(
-        sc: &NSSegmentedControl,
-        i: usize,
-        n: usize,
-        w: &NSWindow,
-        mtm: MainThreadMarker,
-    ) {
-        let b = sc.bounds();
-        let x = b.size.width * (i as f64 + 0.5) / n as f64;
-        click_in(sc, NSPoint::new(x, b.size.height / 2.0), w, mtm);
+    /// Select a door through the toolbar, the way a real click does.
+    ///
+    /// **Not a posted click at a point.** `NSToolbarItem::view()` returns
+    /// `nil` here — the objc2 binding's own doc says so — because every item
+    /// `make_toolbar_item` builds is AppKit's automatically-generated kind,
+    /// with no custom view to hit-test or convert a point against. The four
+    /// doors used to be equal-width segments of one `NSSegmentedControl`
+    /// living in `contentView`'s own tree, which `click_in` could aim at
+    /// directly; a toolbar's items live in the window's title bar chrome, not
+    /// in that tree at all, so nothing here can `downcast_ref` its way to a
+    /// clickable view. `sendAction:to:from:` is the public API AppKit itself
+    /// runs when a real click lands on an item — it calls the item's `target`
+    /// with its `action` and the item as `sender` — so this raises the exact
+    /// same `beckonToolbarPage:` call a click would, with no view needed.
+    ///
+    /// `label` is matched against `NSToolbarItem::label()`, which
+    /// `make_toolbar_item` sets from `page_label(p, PageLabels::MAC)` — the
+    /// same function this probe uses to ask for the label, so the third
+    /// door's macOS caption (`General`, not `System`) never has to be
+    /// spelled out here.
+    fn click_toolbar_page(w: &NSWindow, label: &str, mtm: MainThreadMarker) {
+        let Some(toolbar) = w.toolbar() else {
+            say("      no toolbar on window");
+            return;
+        };
+        let Some(item) = toolbar
+            .items()
+            .iter()
+            .find(|it| it.label().to_string() == label)
+        else {
+            say(&format!("      no toolbar item labeled {label:?}"));
+            return;
+        };
+        let Some(action) = item.action() else {
+            say(&format!("      toolbar item {label:?} has no action"));
+            return;
+        };
+        let target = item.target();
+        let app = NSApplication::sharedApplication(mtm);
+        let ok = unsafe {
+            app.sendAction_to_from(action, target.as_deref(), Some(&*item as &AnyObject))
+        };
+        say(&format!("      sendAction({label:?}) -> {ok}"));
     }
 
     // --- the run ------------------------------------------------------------
@@ -339,7 +384,7 @@ caps_hold = "ctrl+super+alt"
         };
 
         let paths = Paths {
-            config: "settings_drive (nothing is written)".into(),
+            config: CONFIG_LABEL.into(),
             log: None,
         };
         if let Err(e) = win::open(cb, &paths, Page::Shortcuts) {
@@ -356,7 +401,7 @@ caps_hold = "ctrl+super+alt"
                 let mtm = MainThreadMarker::new().expect("main thread");
                 let Some(w) = our_window(mtm) else {
                     say(&format!(
-                        "FAIL  control: no window titled `beckon`. NSApp has: {}",
+                        "FAIL  control: no window with subtitle `{CONFIG_LABEL}`. NSApp has: {}",
                         window_report(mtm)
                     ));
                     std::process::exit(1);
@@ -460,69 +505,100 @@ caps_hold = "ctrl+super+alt"
                                 }
                             }
                         }
-                        let sc = segmented(&views);
+                        // **Not the old strip.** There is no
+                        // `NSSegmentedControl` for the four doors any more --
+                        // a real `NSToolbar` draws them -- so the control
+                        // checks the toolbar carries all four page items
+                        // instead of finding one segmented control. Checking
+                        // a COUNT rather than `is_some()` matters here: this
+                        // window still has a `NSSegmentedControl` of its own,
+                        // the Keyboard door's modifier chips, so a bare
+                        // "found a segmented control" would keep passing
+                        // against the wrong one and never say so.
+                        let toolbar_items =
+                            w.toolbar().map(|t| t.items().iter().count()).unwrap_or(0);
                         let save = button_titled(&views, "Save");
                         check(
                             &format!(
-                                "control: window found, {} views, strip={} Save={}",
+                                "control: window found, {} views, toolbar items={} Save={}",
                                 views.len(),
-                                sc.is_some(),
+                                toolbar_items,
                                 save.is_some()
                             ),
-                            sc.is_some() && save.is_some(),
+                            toolbar_items == 4 && save.is_some(),
                             &[],
                         );
-                        if sc.is_none() || save.is_none() {
+                        if toolbar_items != 4 || save.is_none() {
                             say(&format!("      windows: {}", window_report(mtm)));
                             std::process::exit(1);
                         }
                     }
                     2 => {
-                        // **The window opens at the size it is meant to be.**
-                        // It once opened at 640x1080 because `setContentSize`
-                        // ran while all four doors were still visible and the
-                        // content really did need that much; three doors then
-                        // hid and the window kept the frame. 532 = 500 of
-                        // content plus the title bar.
+                        // **The window opens sized to the Shortcuts door,
+                        // not to one shared constant.** It once opened at
+                        // 640x1080 because `setContentSize` ran while all
+                        // four doors were still visible and the content
+                        // really did need that much; three doors then hid
+                        // and the window kept the frame -- fixed by pinning
+                        // the frame to 640x532. `size_to_page` now corrects
+                        // EVERY door, including the first one shown, to its
+                        // own fitting height, and that number moved four
+                        // times across this branch's later fix rounds, so
+                        // 532 is no longer a fact to assert -- only the width
+                        // is. The height is recorded instead, to be checked
+                        // against General's own height rather than against a
+                        // literal.
                         let f = w.frame();
+                        SHORTCUTS_HEIGHT.with(|h| *h.borrow_mut() = f.size.height);
+                        say(&format!(
+                            "      Shortcuts opens at {:.0}x{:.0}",
+                            f.size.width, f.size.height
+                        ));
                         check(
                             &format!(
-                                "window opens at 640x532, not stretched ({:.0}x{:.0})",
-                                f.size.width, f.size.height
+                                "window opens at width 640, not stretched ({:.0})",
+                                f.size.width
                             ),
-                            (f.size.width - 640.0).abs() < 2.0
-                                && (f.size.height - 532.0).abs() < 2.0,
+                            (f.size.width - 640.0).abs() < 2.0,
                             &[],
                         );
-                        if let Some(sc) = segmented(&views) {
-                            click_segment(&sc, 2, 4, &w, mtm);
-                        }
+                        click_toolbar_page(&w, page_label(Page::System, PageLabels::MAC), mtm);
                     }
                     3 => {
                         let saw = drain();
                         check(
-                            "clicking the System pill raises ShowPage(System)",
+                            "clicking the General item raises ShowPage(System)",
                             saw.iter().any(|s| s.contains("ShowPage(System)")),
                             &saw,
                         );
+                        let f = w.frame();
+                        let shortcuts_h = SHORTCUTS_HEIGHT.with(|h| *h.borrow());
+                        say(&format!(
+                            "      General opens at {:.0}x{:.0} (Shortcuts was {:.0})",
+                            f.size.width, f.size.height, shortcuts_h
+                        ));
+                        check(
+                            &format!(
+                                "General's height ({:.0}) differs from Shortcuts's ({:.0}) -- no shared constant",
+                                f.size.height, shortcuts_h
+                            ),
+                            (f.size.height - shortcuts_h).abs() > 2.0,
+                            &[],
+                        );
                     }
                     4 => {
-                        if let Some(sc) = segmented(&views) {
-                            click_segment(&sc, 3, 4, &w, mtm);
-                        }
+                        click_toolbar_page(&w, page_label(Page::About, PageLabels::MAC), mtm);
                     }
                     5 => {
                         let saw = drain();
                         check(
-                            "clicking the About pill raises ShowPage(About)",
+                            "clicking the About item raises ShowPage(About)",
                             saw.iter().any(|s| s.contains("ShowPage(About)")),
                             &saw,
                         );
                     }
                     6 => {
-                        if let Some(sc) = segmented(&views) {
-                            click_segment(&sc, 0, 4, &w, mtm);
-                        }
+                        click_toolbar_page(&w, page_label(Page::Shortcuts, PageLabels::MAC), mtm);
                     }
                     7 => {
                         let saw = drain();
