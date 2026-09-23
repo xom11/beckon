@@ -1804,8 +1804,16 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                 }
             }
         }
+        // **The flush is C1's sibling and is not optional here.**
+        // `request_quit` is `process::exit(0)` and, as its own comment
+        // says, Quit never reaches a window delegate -- so `close_request`
+        // and the flush it does are not on this path. Without this line, a
+        // keystroke still inside the App field's debounce dies with the
+        // process, exactly as it died on close before C1. The borrow ends
+        // inside `quit_flush`, before the exit below.
         MENU_QUIT => {
             eprintln!("beckon serve: quit requested from the menu bar");
+            quit_flush(&st);
             tray::request_quit();
         }
         // A binding row, in the attention section or the submenu. It opens
@@ -2147,36 +2155,96 @@ fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
     }
 }
 
+/// Write what the debounce is still holding, if anything (C1).
+///
+/// **One body, two session ends.** The App field is the one debounced input:
+/// `edit!` and `autosave_tick` both decline to write while
+/// `autosave_is_deferred()`, so for up to `AUTOSAVE_QUIET_MS` plus one tick
+/// after a keystroke the model is dirty and the file does not have the edit.
+/// Anything that ends the model's session inside that window must run this
+/// first or the keystroke is gone, and there are two such things on macOS:
+/// closing the window (`close_verdict`, which then decides whether to refuse)
+/// and Quit from the menu bar (`quit_flush`, which cannot refuse anything).
+/// They share this function rather than each spelling it, for the reason
+/// `app_lookup` and `base_moved` were extracted: two spellings of a rule are
+/// two chances to change only one of them.
+///
+/// **It ignores the debounce deliberately.** The deadline exists to avoid
+/// writing on every keystroke, not to withhold a write that has nowhere left
+/// to go, so this calls `autosave` directly -- which has no deferral check of
+/// its own. The check lives in the two callers that fire repeatedly; these
+/// two fire once, at the end.
+///
+/// **It is a last chance, not a licence.** `autosave` runs the whole plan, so
+/// a base that moved still holds, an unrenderable row still writes nothing,
+/// and `Keep mine` is still the only clobber. What the caller does with a
+/// hold is the caller's business: the close refuses on `CannotWrite` and
+/// proceeds otherwise (G-j), while Quit always proceeds.
+///
+/// Gated on `dirty`, so a session that ends with a clean model touches no
+/// file at all -- and so a `CannotWrite` recorded over a model the user has
+/// since undone is not re-tried on the way out.
+#[cfg(target_os = "macos")]
+fn flush_pending_write(s: &mut ServeState) {
+    if s.settings.as_ref().is_some_and(|m| m.dirty()) {
+        autosave(s, false);
+    }
+}
+
+/// Everything Quit must do before the process ends (C1's sibling).
+///
+/// **`Quit` never reaches a window delegate** -- `tray::request_quit` says so
+/// in its own comment, and it is `std::process::exit(0)` -- so
+/// `windowShouldClose:` and `close_request` are not on this path, and the
+/// flush they do would never happen. A pending keystroke died here exactly
+/// the way it died on close before C1, and for the same reason: the process
+/// ends while the debounce is still holding the write.
+///
+/// **The write completes before the exit rather than being merely started,
+/// and that is sequencing rather than luck.** `process::exit` runs no
+/// destructors, so it would drop a buffered writer's contents -- but there is
+/// no buffering to lose: `write_config_text` calls `std::fs::write` (which
+/// does `write_all` and closes the file before it returns) and then
+/// `std::fs::rename`, both synchronous syscalls, both complete when they
+/// return. This function returns only after they do, and the menu arm calls
+/// `request_quit()` only after this function returns. Nothing is spawned,
+/// queued or deferred in between. (Durability against a power cut would need
+/// an `fsync` that `write_config_text` has never done -- the same guarantee
+/// every other beckon write has, including the close.)
+///
+/// **Split from the exit so a test can reach it.** `request_quit` is
+/// divergent and would take the test process with it; this half is the same
+/// `&mut ServeState` shape the driver tests already drive, and the one line
+/// left untested is the call from the menu arm -- the same residual
+/// `close_request`'s call to `close_verdict` has.
+///
+/// No `refresh_settings`: the process is about to end, so there is nobody
+/// left to draw for, and the call would touch AppKit for no reason.
+#[cfg(target_os = "macos")]
+fn quit_flush(st: &Rc<RefCell<ServeState>>) {
+    let mut s = st.borrow_mut();
+    flush_pending_write(&mut s);
+}
+
 /// Flush what is still pending, then say whether the window may close
 /// (G-j, and the flush is C1).
 ///
-/// **The flush comes first, and it ignores the debounce deliberately.**
-/// The App field is the one debounced input: `edit!` and `autosave_tick`
-/// both decline to write while `autosave_is_deferred()`, so for up to
-/// `AUTOSAVE_QUIET_MS` plus one tick after a keystroke the model is dirty
-/// and the file does not have the edit. Closing in that window used to
-/// drop the model with `forget_settings` and lose the keystroke silently
-/// -- and because `last_not_saved` is `None` throughout, the footer read
-/// `Saved just now` while it happened. Four-doors design §6's G-i names
-/// exactly this loss, scoped to logoff; on macOS the close ends the
-/// model's session just as finally, and since Task 11 it is the only way
-/// out of the window.
+/// **The flush comes first** -- `flush_pending_write` above, which is where
+/// the reasoning lives and which Quit shares. Closing inside the App
+/// field's debounce used to drop the model with `forget_settings` and lose
+/// the keystroke silently, with the footer reading `Saved just now` because
+/// `last_not_saved` was `None` throughout. Four-doors design §6's G-i names
+/// exactly that loss, scoped to logoff; on macOS the close ends the model's
+/// session just as finally, and since Task 11 it is the only way out of the
+/// window.
 ///
-/// **The deadline exists to avoid writing on every keystroke, not to
-/// withhold a write that has nowhere left to go.** So this calls
-/// `autosave` directly, which has no deferral check of its own -- the
-/// check lives in the two callers that fire repeatedly, and this one
-/// fires once, at the end.
-///
-/// Nothing about the guards is skipped with it: `autosave` runs the whole
-/// plan, so a base that moved still holds, an unrenderable row still
-/// holds, and `Keep mine` is still the only clobber. A flush that HOLDS
-/// leaves `last_not_saved` set with its own footer phrase and the close
-/// then proceeds -- which is G-j's recorded ruling, with its recorded
-/// cost: a user who closes on an `AppWentMissing` hold loses one valid
-/// edit that the footer had been naming the whole time. A flush that
-/// FAILS leaves `CannotWrite`, and the line below reads it back, so the
-/// refusal is about this attempt rather than an older one.
+/// What is decided HERE is what to do with the flush's outcome. A flush
+/// that HOLDS leaves `last_not_saved` set with its own footer phrase and
+/// the close then proceeds -- G-j's recorded ruling, with its recorded
+/// cost: a user who closes on an `AppWentMissing` hold loses one valid edit
+/// that the footer had been naming the whole time. A flush that FAILS
+/// leaves `CannotWrite`, and the line below reads it back, so the refusal
+/// is about this attempt rather than an older one.
 ///
 /// **The decision half of `close_request`, split out so it has somewhere a
 /// test can reach it (I6).** The other half raises an `NSAlert` and drops
@@ -2190,12 +2258,7 @@ fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
 /// `dirty` is false and this answers `true`.
 #[cfg(target_os = "macos")]
 fn close_verdict(s: &mut ServeState) -> bool {
-    // Only a model with something to write, so a clean close still touches
-    // no file -- and so a `CannotWrite` recorded over a model the user has
-    // since undone is not re-tried on the way out.
-    if s.settings.as_ref().is_some_and(|m| m.dirty()) {
-        autosave(s, false);
-    }
+    flush_pending_write(s);
     let dirty = s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false);
     !beckon_core::settings::close_is_refused(dirty, s.last_not_saved)
 }
@@ -4667,6 +4730,94 @@ mod tests {
         assert_eq!(
             st.last_not_saved, None,
             "and `Saved just now` is now true instead of merely displayed"
+        );
+    }
+
+    /// **C1's sibling: Quit is a session end too, and a more final one.**
+    /// `tray::request_quit` is `process::exit(0)` and its own comment
+    /// records that Quit never reaches a window delegate, so
+    /// `close_request`'s flush is not on this path. Without `quit_flush` a
+    /// keystroke still inside the App field's debounce dies with the
+    /// process.
+    ///
+    /// **What stands in for driving the real menu item.** The arm itself
+    /// cannot be reached from a test: it lives in a closure handed to
+    /// `tray::set_menu`, and it ends in a divergent `process::exit(0)` that
+    /// would take the test process with it. So the arm was split, and this
+    /// drives the half that does the work -- leaving exactly one untested
+    /// line, the `quit_flush(&st)` call in the arm, which is the same
+    /// residual as `close_request`'s call to `close_verdict`.
+    ///
+    /// **It also pins the sequencing that `process::exit` makes matter.**
+    /// The file is read back at the point the arm calls `request_quit()`,
+    /// and the bytes are there -- because `write_config_text` uses
+    /// `fs::write` (write_all plus close, before it returns) and
+    /// `fs::rename`, both synchronous, with nothing buffered in this
+    /// process for a skipped destructor to lose.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quitting_writes_an_edit_that_was_still_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        // The debounce state, as in the close test: typed, dirty, nothing
+        // written yet.
+        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "precondition: the edit is only in memory"
+        );
+
+        quit_flush(&st);
+
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "the pending keystroke has to be on disk by the instant \
+             `request_quit` is called -- `process::exit(0)` runs no \
+             destructors and there is no later tick"
+        );
+        assert!(
+            !st.borrow().settings.as_ref().unwrap().dirty(),
+            "the reseed is the write's own receipt"
+        );
+        assert_eq!(st.borrow().last_not_saved, None);
+    }
+
+    /// The flush on Quit is a last chance, not a licence: a stale base still
+    /// refuses. Same claim as the close's own control, asserted through the
+    /// Quit door because that is the door with no refusal behind it -- if
+    /// this one wrote, nothing anywhere would stop it.
+    ///
+    /// Quit then proceeds regardless, which is the cost: the in-memory edit
+    /// goes. What told the user is the footer, which had been reading `Not
+    /// saved - the file changed on disk` for as long as the state lasted,
+    /// and the banner beside it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_flush_on_quit_still_obeys_the_compare_and_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
+
+        // Somebody else edits the file behind the model's back.
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        quit_flush(&st);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            theirs,
+            "a last chance is still not a licence to clobber"
+        );
+        assert_eq!(
+            st.borrow().last_not_saved,
+            Some(beckon_core::settings::NotSaved::FileMoved)
         );
     }
 
