@@ -40,15 +40,15 @@ use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSApplication, NSAttributedStringNSStringDrawing, NSAutoresizingMaskOptions,
     NSBox, NSBoxType, NSButton, NSColor, NSControl, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSImage, NSLayoutAttribute, NSMenu, NSMenuDelegate, NSMenuItem,
-    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStackView, NSStatusBar, NSStatusItem,
-    NSTextAlignment, NSTextField, NSTextTab, NSTitlePosition, NSUserInterfaceLayoutOrientation,
-    NSVariableStatusItemLength, NSView, NSWorkspace,
+    NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStatusBar, NSStatusItem,
+    NSTextAlignment, NSTextField, NSTextTab, NSTitlePosition, NSVariableStatusItemLength, NSView,
+    NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSData, NSDictionary,
-    NSEdgeInsets, NSMutableAttributedString, NSObject, NSObjectProtocol, NSOperatingSystemVersion,
-    NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
+    NSMutableAttributedString, NSObject, NSObjectProtocol, NSOperatingSystemVersion, NSPoint,
+    NSProcessInfo, NSRect, NSSize, NSString,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -463,6 +463,20 @@ fn dot_color(d: Dot) -> Retained<NSColor> {
 }
 
 const HEADER_WIDTH: f64 = 260.0;
+const HEADER_HEIGHT: f64 = 44.0;
+
+/// Hand-set geometry for the header row. Every one of these is a frame
+/// number, not a constraint constant -- `header_item`'s doc comment says why
+/// that distinction is the whole point. Origins are bottom-left: an
+/// `NSView` is unflipped, so `SUBTITLE_Y` below `TITLE_Y` is the lower line.
+const HEADER_PAD_X: f64 = 14.0;
+const DOT_X: f64 = 14.0;
+const DOT_Y: f64 = 15.0;
+const TEXT_X: f64 = 30.0;
+const TITLE_Y: f64 = 22.0;
+const SUBTITLE_Y: f64 = 6.0;
+/// Centres the 20pt toggle in the 44pt row: `(44 - 20) / 2`.
+const TOGGLE_Y: f64 = 12.0;
 
 /// Track/knob geometry for the drawn switch (`header_item`'s doc comment
 /// says why it is drawn rather than an `NSSwitch`).
@@ -494,11 +508,18 @@ fn switch_accessibility_label(on: bool) -> Retained<NSString> {
 /// A borderless, custom-drawn `NSBox`: the shared shape behind the track and
 /// the knob, and the same style `settings_window::widgets::card` uses for
 /// `NSBox`-as-drawn-shape rather than as a titled group box.
+///
+/// **The zero content-view margins are load-bearing**, the same call and for
+/// the same reason `widgets::card` makes it: an `NSBox` insets its content
+/// view by `contentViewMargins`, so a subview's frame is not in the box's own
+/// coordinates unless those margins are zero. The knob is positioned by hand
+/// inside the track, and a non-zero inset moves and clips it.
 fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
     let b = NSBox::new(mtm);
     b.setBoxType(NSBoxType::Custom);
     b.setTitlePosition(NSTitlePosition::NoTitle);
     b.setBorderWidth(0.0);
+    b.setContentViewMargins(NSSize::new(0.0, 0.0));
     b
 }
 
@@ -516,14 +537,32 @@ fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
 /// fall back to), with a transparent `NSButton` carrying the same
 /// target/action/tag an `NSSwitch` would have.
 ///
-/// **The `NSButton`, not the track, is what the row's `NSStackView` holds.**
-/// An `NSBox` with no content view has no intrinsic content size, so on the
-/// first photograph of this (airm3, after the switch above first drew) the
-/// stack could not tell how wide the track should be and stretched it across
-/// the whole header, past the menu's own right edge. A button that has an
-/// explicit width/height constraint and a raised horizontal hugging priority
-/// is something the stack CAN leave alone; the track becomes the button's
-/// own subview instead, sized to always match it.
+/// ## This row is laid out by FRAME. There is no Auto Layout in it, and that
+/// is the fix, not a shortcut
+///
+/// Two photographs on airm3 measured the same failure twice:
+///
+/// - with the track as an `NSStackView`'s arranged view, the blue track
+///   stretched the whole width of the header and past the menu's right edge
+///   -- an `NSBox` has no intrinsic content size, so the stack had nothing to
+///   measure and gave it every point of slack;
+/// - with the hit-target `NSButton` holding `translatesAutoresizingMask...
+///   (false)` plus required-priority `widthAnchor`/`heightAnchor`
+///   `constraintEqualToConstant(34/20)` constraints, the track still measured
+///   about **72 x 25** on screen and the knob was clipped. The constraints
+///   did not win.
+///
+/// A menu item's custom view is a frame world: `item.setView(...)` hands
+/// AppKit a view it positions by frame, and the row already carried an
+/// explicit frame and a width-sizable autoresizing mask. Mixing a constraint
+/// island into that is what produced two different wrong sizes, so the whole
+/// header is now plain frame math: an `NSView` container, four subviews with
+/// hand-set frames, and autoresizing masks for the one thing that does change
+/// (the menu is wider than `HEADER_WIDTH` whenever a binding row is, so the
+/// text pins left and the toggle pins right).
+///
+/// Nothing here calls `setTranslatesAutoresizingMaskIntoConstraints` or
+/// activates a constraint. Re-adding either re-opens the two failures above.
 fn header_item(
     id: u32,
     h: &Header,
@@ -538,31 +577,45 @@ fn header_item(
             &NSString::from_str(""),
         )
     };
+
+    // The container. `HEADER_WIDTH` is only the starting frame: AppKit widens
+    // a menu item's custom view to the menu's width, and the mask is what
+    // lets it (an ordinary binding row -- "Hermes  missing  <caps>H" --
+    // already clears 260pt).
+    let container = NSView::new(mtm);
+    container.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(HEADER_WIDTH, HEADER_HEIGHT),
+    ));
+    container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+
     let dot = NSTextField::labelWithString(&NSString::from_str("\u{25CF}"), mtm);
     dot.setTextColor(Some(&dot_color(h.dot)));
+    dot.sizeToFit();
+    dot.setFrameOrigin(NSPoint::new(DOT_X, DOT_Y));
+    dot.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
+    container.addSubview(&dot);
+
     let title = NSTextField::labelWithString(&NSString::from_str(&h.title), mtm);
     title.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
+    title.sizeToFit();
+    title.setFrameOrigin(NSPoint::new(TEXT_X, TITLE_Y));
+    title.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
+    container.addSubview(&title);
+
     let subtitle = NSTextField::labelWithString(&NSString::from_str(&h.subtitle), mtm);
     subtitle.setFont(Some(&NSFont::systemFontOfSize(11.0)));
     subtitle.setTextColor(Some(&NSColor::secondaryLabelColor()));
-    let text = NSStackView::stackViewWithViews(
-        &NSArray::from_slice(&[title.as_ref() as &NSView, subtitle.as_ref()]),
-        mtm,
-    );
-    text.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-    text.setAlignment(NSLayoutAttribute::Leading);
-    text.setSpacing(1.0);
-    // The text column is what stretches, so the switch sits hard right.
-    text.setContentHuggingPriority_forOrientation(
-        1.0,
-        objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
-    );
+    subtitle.sizeToFit();
+    subtitle.setFrameOrigin(NSPoint::new(TEXT_X, SUBTITLE_Y));
+    subtitle.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
+    container.addSubview(&subtitle);
 
-    // The hit target and the ONE view the row's stack holds. Same
+    // The hit target, and the parent of the two drawn boxes. Same
     // target/action/tag the `NSSwitch` used to carry, so `dispatch` and
-    // `beckon_control_action` are unchanged; the constraints below are what
-    // is new, and what stops the stack from stretching it (`header_item`'s
-    // doc comment says why that matters).
+    // `beckon_control_action` are unchanged. `ViewMinXMargin` -- the LEFT
+    // margin is the flexible one -- is what keeps it hard against the right
+    // edge as the menu widens.
     let button = NSButton::new(mtm);
     button.setTitle(&NSString::from_str(""));
     button.setBordered(false);
@@ -573,25 +626,13 @@ fn header_item(
     }
     button.setTag(id as isize);
     button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
-    button.setTranslatesAutoresizingMaskIntoConstraints(false);
-    button
-        .widthAnchor()
-        .constraintEqualToConstant(TRACK_W)
-        .setActive(true);
-    button
-        .heightAnchor()
-        .constraintEqualToConstant(TRACK_H)
-        .setActive(true);
-    button.setContentHuggingPriority_forOrientation(
-        objc2_app_kit::NSLayoutPriorityRequired,
-        objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
-    );
+    button.setFrame(NSRect::new(
+        NSPoint::new(HEADER_WIDTH - HEADER_PAD_X - TRACK_W, TOGGLE_Y),
+        NSSize::new(TRACK_W, TRACK_H),
+    ));
+    button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+    container.addSubview(&button);
 
-    // The track: a subview of the button, not an arranged view of the stack,
-    // so its geometry is plain frame math rather than something Auto Layout
-    // has an opinion about. The flexible mask keeps it matching the button's
-    // bounds even though `setFrame` below only needs to be right once, since
-    // the button's own size is now fixed by the constraints above.
     let track = plain_box(mtm);
     track.setCornerRadius(TRACK_H / 2.0);
     track.setFillColor(&track_color(h.on));
@@ -613,29 +654,25 @@ fn header_item(
     ));
     track.addSubview(&knob);
 
-    let row = NSStackView::stackViewWithViews(
-        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), button.as_ref()]),
-        mtm,
-    );
-    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    row.setSpacing(8.0);
-    row.setEdgeInsets(NSEdgeInsets {
-        top: 6.0,
-        left: 14.0,
-        bottom: 6.0,
-        right: 14.0,
-    });
-    row.setFrame(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(HEADER_WIDTH, 44.0),
-    ));
-    // HEADER_WIDTH is only the starting frame. AppKit does not widen a menu
-    // item's custom view on its own, so without this mask a menu wider than
-    // 260pt (an ordinary binding row easily is: "Hermes  missing  ⇪H"
-    // already clears it) leaves the switch short of the real right edge
-    // instead of hard against it.
-    row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-    item.setView(Some(&row));
+    item.setView(Some(&container));
+
+    // TEMPORARY, this fix round only: the controller reads these off a real
+    // `serve -v` to settle the geometry without a screenshot. Remove when
+    // told to. `header_item` runs on every menu open, so one line per open.
+    if beckon_core::verbose() {
+        eprintln!(
+            "beckon serve: header container {:?} dot {:?} title {:?} subtitle {:?} \
+             toggle frame {:?} track {:?} knob {:?}",
+            container.frame(),
+            dot.frame(),
+            title.frame(),
+            subtitle.frame(),
+            button.frame(),
+            track.frame(),
+            knob.frame(),
+        );
+    }
+
     TRAY.with(|t| {
         if let Some(x) = t.borrow_mut().as_mut() {
             x.header = Some(HeaderParts {
@@ -677,12 +714,36 @@ fn refresh_header() {
     if let Some((dot, subtitle, track, knob, button)) = parts {
         dot.setTextColor(Some(&dot_color(h.dot)));
         subtitle.setStringValue(&NSString::from_str(&h.subtitle));
+        // The label is frame-sized now, not an arranged view of a stack that
+        // re-lays itself out, so a longer string than the one it was built
+        // with ("Paused - shortcuts are off" against "3 shortcuts") would be
+        // truncated to the old width. `sizeToFit` anchors at `frame.origin`
+        // on an unflipped view, so the origin is re-set only for clarity.
+        subtitle.sizeToFit();
+        subtitle.setFrameOrigin(NSPoint::new(TEXT_X, SUBTITLE_Y));
         track.setFillColor(&track_color(h.on));
         knob.setFrame(NSRect::new(
             NSPoint::new(knob_x(h.on), KNOB_MARGIN),
             NSSize::new(KNOB_SIZE, KNOB_SIZE),
         ));
         button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
+        // TEMPORARY, this fix round only, and the more informative of the two
+        // prints: this one runs AFTER the menu has been displayed and laid
+        // out, so these are the frames as drawn, not the ones just set. It
+        // also proves the click reached the button at all. The toggle's
+        // `origin.x` reports the container's live width too, since the
+        // autoresizing mask keeps it at `width - 14 - 34`. Remove with the
+        // print at the end of `header_item`.
+        if beckon_core::verbose() {
+            eprintln!(
+                "beckon serve: header AFTER LAYOUT on={} toggle frame {:?} \
+                 track {:?} knob {:?}",
+                h.on,
+                button.frame(),
+                track.frame(),
+                knob.frame(),
+            );
+        }
     }
 }
 
