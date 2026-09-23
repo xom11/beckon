@@ -2805,8 +2805,21 @@ fn autosave(s: &mut ServeState, keep_mine: bool) -> Option<beckon_core::settings
                 // to put back.
                 let entry = match disk {
                     Some(t) => t,
-                    // Unreachable: an unreadable file took the `Hold` arm
-                    // above, so a `Write` always has the disk text in hand.
+                    // **Reached, and `Keep mine` is what reaches it (I3).**
+                    // This said "unreachable: an unreadable file took the
+                    // `Hold` arm above", which was true for one commit --
+                    // while `autosave_plan` had a single parameter for both
+                    // of its questions. Task 7's round 2 split them so this
+                    // case could exist: under `keep_mine` the base is
+                    // `model.original()`, so `base_moved` is false however
+                    // unreadable the file is, and a config somebody deleted
+                    // falls through to a `Write` that recreates it --
+                    // `autosave_plan`'s own doc says so in terms.
+                    //
+                    // The model's base is the right entry here because
+                    // there is no disk text to put back: Undo restores the
+                    // file to what this session started from, which is the
+                    // last state that really existed.
                     None => model.original().to_string(),
                 };
                 model.push_undo(entry);
@@ -4132,6 +4145,50 @@ mod tests {
             st.settings.as_mut().unwrap().take_undo().as_deref(),
             Some(theirs),
             "and the clobbered text is still one Undo away"
+        );
+    }
+
+    /// **`Keep mine` over a config that is no longer there recreates it
+    /// (I3 / M3).** The behaviour was ruled correct by reading in Task 7's
+    /// second fix round and nothing pinned it, while the driver's own
+    /// comment two functions away called the branch unreachable.
+    ///
+    /// Both halves are asserted: the file comes back with the model's text,
+    /// and the undo entry is the model's BASE rather than a disk text there
+    /// is none of -- so one press of Undo puts back the state the session
+    /// started from.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keep_mine_recreates_a_config_that_was_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, mine).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        // Somebody deletes the file out from under the open window.
+        std::fs::remove_file(&config).unwrap();
+        assert!(
+            !config.exists(),
+            "precondition: there is no file to write over"
+        );
+
+        assert_eq!(
+            autosave(&mut st, true),
+            None,
+            "`Keep mine` over a deleted file is a write, not a hold"
+        );
+
+        assert!(
+            std::fs::read_to_string(&config).unwrap().contains("Brave"),
+            "the config has to come back, with the user's edit in it"
+        );
+        assert_eq!(
+            st.settings.as_mut().unwrap().take_undo().as_deref(),
+            Some(mine),
+            "with no disk text to record, the entry is the model's base -- \
+             the last state that really existed"
         );
     }
 
