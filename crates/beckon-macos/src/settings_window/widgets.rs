@@ -386,16 +386,35 @@ pub(super) fn labelled(
 /// interleaves `divider()` calls with its rows by hand -- which is how the
 /// Windows twin's `system_plan` ends up owning divider offsets, and is the
 /// same defect in a different spelling.
-pub(super) fn group(rows: &[&NSView], mtm: MainThreadMarker) -> Retained<NSBox> {
-    let mut stacked: Vec<Retained<NSView>> = Vec::new();
+///
+/// **Returns one HANDLE per input row, and a page that hides a row must
+/// hide the handle, not the bare row.** `NSStackView` collapses a hidden
+/// arranged subview and its own adjacent spacing automatically, but the
+/// divider before row *i* (i > 0) is a separate sibling that nobody hides on
+/// its own -- so hiding the bare row left a dangling 1pt hairline sitting
+/// over nothing whenever that row's default state is hidden (`log_row`
+/// without `--log`, `command_row` with no pending update: both are the
+/// COMMON state, not an edge case). Fix round 1 (2026-09-23), the task
+/// reviewer's finding. For row 0 the handle is the row itself, since nothing
+/// sits above it to strand; for every later row it is a fresh
+/// `vstack([divider, row])`, so hiding that one view takes the divider with
+/// it. The card's own body is built from these same handles, not from a
+/// second, parallel divider-and-row list -- one list, one place a divider
+/// is owned, which is the only way "hide the handle" can be the whole fix.
+pub(super) fn group(
+    rows: &[&NSStackView],
+    mtm: MainThreadMarker,
+) -> (Retained<NSBox>, Vec<Retained<NSStackView>>) {
+    let mut handles: Vec<Retained<NSStackView>> = Vec::with_capacity(rows.len());
     for (i, r) in rows.iter().enumerate() {
-        if i > 0 {
-            stacked.push(Retained::into_super(divider(mtm)));
+        if i == 0 {
+            handles.push((*r).retain());
+        } else {
+            handles.push(vstack(&[&*divider(mtm) as &NSView, *r], 10.0, mtm));
         }
-        stacked.push((*r).retain());
     }
-    let refs: Vec<&NSView> = stacked.iter().map(|v| &**v).collect();
-    card(&vstack(&refs, 10.0, mtm), mtm)
+    let refs: Vec<&NSView> = handles.iter().map(|v| &***v).collect();
+    (card(&vstack(&refs, 10.0, mtm), mtm), handles)
 }
 
 /// Pin a view to an exact height.

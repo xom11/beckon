@@ -304,7 +304,7 @@ pub(super) fn build(
     let hook = w::wrapping("", mtm);
     let hook_row = w::form_row(&hook, &w::spring(mtm), mtm);
 
-    let g_perm = w::group(&[&*access_row, &*hook_row], mtm);
+    let (g_perm, _) = w::group(&[&*access_row, &*hook_row], mtm);
 
     // --- group: this copy -------------------------------------------------------
     //
@@ -351,7 +351,13 @@ pub(super) fn build(
     let command_tail = w::hstack(&[&*command_value as &NSView, &command_copy], mtm);
     let command_row = w::form_row(&w::labelled("Command", None, mtm), &command_tail, mtm);
 
-    let g_copy = w::group(&[&*loc_row, &*command_row], mtm);
+    let (g_copy, copy_rows) = w::group(&[&loc_row, &command_row], mtm);
+    // **The stored field is the HANDLE (divider + row), not the bare row.**
+    // `widgets::group`'s own doc has the reason: without it, hiding just
+    // `command_row` (the default state -- no pending update) left the
+    // divider before it stranded above the card's bottom padding, and
+    // `apply`'s `setHidden` call is unchanged either way.
+    let command_row = copy_rows[1].clone();
 
     let github = w::push("GitHub", sel!(beckonGithub:), target, mtm);
     let releases = w::push("Releases", sel!(beckonReleases:), target, mtm);

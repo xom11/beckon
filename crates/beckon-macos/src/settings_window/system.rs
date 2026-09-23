@@ -81,7 +81,7 @@ pub(super) fn build(
     let reload = w::push("Reload", sel!(beckonReloadNow:), target, mtm);
     let reload_row = w::form_row(&w::labelled("Configuration", None, mtm), &reload, mtm);
 
-    let g_service = w::group(&[&*pause_row, &*reload_row], mtm);
+    let (g_service, _) = w::group(&[&*pause_row, &*reload_row], mtm);
 
     // --- group 2: the files ----------------------------------------------------
     let config_value = w::value("", mtm);
@@ -124,14 +124,20 @@ pub(super) fn build(
     );
     let log_tail = w::hstack(&[&*log_value as &NSView, &log_open, &log_reveal], mtm);
     let log_row = w::form_row(&log_name, &log_tail, mtm);
+
+    let (g_files, files_rows) = w::group(&[&config_row, &log_row], mtm);
+    // **The stored field is the HANDLE (divider + row), not the bare row.**
+    // `widgets::group`'s own doc has the reason: without it, hiding just the
+    // row left the divider before it stranded above the card's bottom
+    // padding, and `apply`'s `setHidden` call is unchanged either way, so
+    // this is the only place that has to know a divider exists at all.
+    let log_row = files_rows[1].clone();
     // Hidden until a push says otherwise. `apply` hides it whenever `serve`
     // ran without `--log`, but the window is on screen before the first push
     // — and an empty row carrying `Open` and `Reveal` beside no file name is
     // exactly what that gap looked like. Photographed 2026-08-16,
     // `macos-door-system.png`.
     log_row.setHidden(true);
-
-    let g_files = w::group(&[&*config_row, &*log_row], mtm);
 
     // --- group 3: this window --------------------------------------------------
     // **Built from `OPACITY_DEFAULT`, never spelled.** The literal here was
@@ -161,7 +167,7 @@ pub(super) fn build(
         mtm,
     );
 
-    let g_look = w::group(&[&*opacity_row], mtm);
+    let (g_look, _) = w::group(&[&*opacity_row], mtm);
 
     let page = w::vstack(&[&*g_service, &*g_files, &*g_look], 12.0, mtm);
     // Every direct child of this `Width`-aligned column needs its own pin --

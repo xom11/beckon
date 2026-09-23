@@ -138,7 +138,7 @@ pub(super) fn build(
     }
     let tap_row = w::form_row(&w::labelled("When tapped alone", None, mtm), &tap, mtm);
 
-    let g_caps = w::group(&[&*caps_row, &*hold_row, &*tap_row], mtm);
+    let (g_caps, _) = w::group(&[&*caps_row, &*hold_row, &*tap_row], mtm);
 
     // --- group 2: how the list writes a bound chord -------------------------
     let shorthand = w::switch(sel!(beckonShorthand:), target, mtm);
@@ -147,7 +147,7 @@ pub(super) fn build(
         &shorthand,
         mtm,
     );
-    let g_view = w::group(&[&*shorthand_row], mtm);
+    let (g_view, _) = w::group(&[&*shorthand_row], mtm);
 
     // --- group 3: the grant this page's feature needs -----------------------
     //
@@ -189,7 +189,7 @@ pub(super) fn build(
         mtm,
     );
     let im_row = w::form_row(&im_label, &open_im, mtm);
-    let g_grant = w::group(&[&*im_row], mtm);
+    let (g_grant, _) = w::group(&[&*im_row], mtm);
 
     let page = w::vstack(&[&*g_caps, &*g_view, &*g_grant], 12.0, mtm);
     // **Every direct child of a `Width`-aligned column needs its own pin.**
