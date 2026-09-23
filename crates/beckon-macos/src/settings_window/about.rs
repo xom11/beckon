@@ -385,14 +385,30 @@ pub(super) fn build(
     let github = w::push("GitHub", sel!(beckonGithub:), target, mtm);
     let releases = w::push("Releases", sel!(beckonReleases:), target, mtm);
     let bug = w::push("Report a bug", sel!(beckonBugReport:), target, mtm);
+    // **ONE spring, leading, so the three links are hard right in every
+    // state.** This row used to have a spring at each end. Two springs of
+    // equal (and equally low) priority do not split the slack evenly -- they
+    // hand all of it to one of them, and which one is not determined. That is
+    // the defect `widgets::centred`'s own doc records, and `centred` exists
+    // because saying "these two are the same width" is the only way to mean
+    // centring here.
+    //
+    // It stayed invisible while the arbitrary choice happened to be stable.
+    // Fix round 4 (H2) added constraints two cards above this one and the
+    // solver re-rolled it, so the row changed side WITH A PERMISSION:
+    // measured on `b46c40c`, leading spring `336.5` with Accessibility
+    // granted (buttons right) and `0.0` without it (buttons left). A row
+    // that moves when a grant changes is wrong whichever side it lands on.
+    //
+    // **Not `centred`**, although the two-spring shape says someone once
+    // meant it: centring would visibly move these buttons in the state
+    // every user is actually in, which is a design change rather than a
+    // defect closed. Hard right is what the row already shows there, what
+    // the released 0.15.2 window shows, and what every other control on
+    // these three pages does. One spring cannot be ambiguous -- there is
+    // nothing for the solver to choose between.
     let links = w::hstack(
-        &[
-            &*w::spring(mtm) as &NSView,
-            &github,
-            &releases,
-            &bug,
-            &w::spring(mtm),
-        ],
+        &[&*w::spring(mtm) as &NSView, &github, &releases, &bug],
         mtm,
     );
 
