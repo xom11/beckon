@@ -86,10 +86,6 @@ struct HeaderParts {
     track: Retained<NSBox>,
     knob: Retained<NSBox>,
     button: Retained<NSButton>,
-    /// TEMPORARY (diagnostic round): the row the five above live in, kept
-    /// only so `report_header_geometry` can report its live frame from a
-    /// path that runs after layout. Removed with the diagnostic prints.
-    container: Retained<NSView>,
 }
 
 thread_local! {
@@ -129,12 +125,6 @@ define_class!(
         #[unsafe(method(beckonMenuAction:))]
         fn beckon_menu_action(&self, sender: &NSMenuItem) {
             let id = sender.tag() as u32;
-            // TEMPORARY (diagnostic round): an ordinary row's click is the
-            // one path that runs while the menu is open AND laid out without
-            // depending on the header's own hit target working, which is the
-            // thing under investigation. Before `dispatch`, because
-            // `dispatch` can close the menu.
-            report_header_geometry("row click");
             dispatch(id);
         }
 
@@ -219,53 +209,6 @@ fn built() -> Option<Vec<MenuEntry>> {
 /// re-enter this module. Holding the `RefCell` across the call would panic
 /// on the second borrow, which is the same rule `serve.rs`'s module doc
 /// states for `backend.beckon()`.
-/// TEMPORARY (diagnostic round): the header's LIVE geometry, read from a
-/// path that runs while the menu is open and laid out, so these are the
-/// numbers AppKit resolved rather than the ones `header_item` set.
-///
-/// It also reports the three things a frame cannot: whether the views are
-/// actually in a window, whether anything hid them, and where the track
-/// lands in window coordinates. Removed together with the other two prints.
-fn report_header_geometry(whence: &str) {
-    if !beckon_core::verbose() {
-        return;
-    }
-    // One borrow, released before any AppKit call -- the rule `dispatch`
-    // states, and it holds for a diagnostic too.
-    let parts = TRAY.with(|t| {
-        t.borrow().as_ref().and_then(|x| {
-            x.header.as_ref().map(|p| {
-                (
-                    p.container.clone(),
-                    p.track.clone(),
-                    p.knob.clone(),
-                    p.button.clone(),
-                )
-            })
-        })
-    });
-    let Some((container, track, knob, button)) = parts else {
-        eprintln!("beckon serve: header geometry ({whence}): no header parts stored");
-        return;
-    };
-    eprintln!(
-        "beckon serve: header geometry ({whence}) container {:?} subviews {} flipped {} \
-         in-window {} | track {:?} in window {:?} hidden {} alpha {} | knob {:?} | \
-         button {:?} hidden {}",
-        container.frame(),
-        container.subviews().len(),
-        container.isFlipped(),
-        container.window().is_some(),
-        track.frame(),
-        track.convertRect_toView(track.bounds(), None),
-        track.isHiddenOrHasHiddenAncestor(),
-        track.alphaValue(),
-        knob.frame(),
-        button.frame(),
-        button.isHiddenOrHasHiddenAncestor(),
-    );
-}
-
 fn dispatch(id: u32) {
     let mut handler = match TRAY.with(|t| {
         t.borrow_mut()
@@ -580,19 +523,7 @@ fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
     b
 }
 
-/// The header: dot, title over subtitle, and the switch hard right.
-///
-/// **The switch is drawn, not an `NSSwitch`.** Measured on airm3 (Darwin
-/// 25.6) against the real `serve`: beckon is a `UIElement` accessory app and
-/// is not the active application while its menu is open, so AppKit draws
-/// every `NSControl` inside it in its INACTIVE appearance -- an `NSSwitch`
-/// renders grey in both states there, and only knob position carried the
-/// state, which read as broken. `NSApp.activate()` on open was rejected: it
-/// would leave beckon active after the menu closes, stealing focus from
-/// whatever the user was in. So the track and the knob are two plain
-/// `NSBox`es coloured by hand (which do not have an "inactive" appearance to
-/// fall back to), with a transparent `NSButton` carrying the same
-/// target/action/tag an `NSSwitch` would have.
+/// The header: dot, title over subtitle, and the drawn switch hard right.
 ///
 /// ## This row is laid out by FRAME. There is no Auto Layout in it, and that
 /// is the fix, not a shortcut
@@ -610,34 +541,38 @@ fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
 ///   did not win.
 ///
 /// A menu item's custom view is a frame world: `item.setView(...)` hands
-/// AppKit a view it positions by frame, and the row already carried an
-/// explicit frame and a width-sizable autoresizing mask. Mixing a constraint
-/// island into that is what produced two different wrong sizes, so the whole
-/// header is now plain frame math: an `NSView` container, four subviews with
-/// hand-set frames, and autoresizing masks for the one thing that does change
-/// (the menu is wider than `HEADER_WIDTH` whenever a binding row is, so the
-/// text pins left and the toggle pins right).
+/// AppKit a view it positions AND widens by frame, while
+/// `stackViewWithViews:` sets `translatesAutoresizingMaskIntoConstraints =
+/// NO` on the stack and on every arranged subview. So the row's width came
+/// from the frame world and its contents' sizes came from the layout engine,
+/// with no agreed common parent -- the shape that yields "the constraint is
+/// required, is active, and the view is still the wrong size", with nothing
+/// logged.
 ///
-/// Nothing here calls `setTranslatesAutoresizingMaskIntoConstraints` or
-/// activates a constraint. Re-adding either re-opens the two failures above.
+/// The whole header is therefore plain frame math: an `NSView` container,
+/// five subviews at hand-set origins, and autoresizing masks for the one
+/// thing that does change. **Nothing here calls
+/// `setTranslatesAutoresizingMaskIntoConstraints` or activates a constraint**,
+/// and re-adding either re-opens both failures above.
 ///
-/// ## The transparent hit target is a SIBLING of the track, never its parent
+/// ## CORRECTED 2026-09-23: the toggle was never invisible
 ///
-/// Measured on airm3 with the frames above printed and confirmed correct
-/// (`toggle frame (212, 12, 34, 20)`, `track (0, 0, 34, 20)`): the header
-/// drew the dot, the title and the subtitle, and **nothing at all** where the
-/// toggle was. A `setTransparent(true)` `NSButton` draws nothing, and that
-/// suppressed the drawing of its whole subtree -- the track was its child at
-/// the time. In the two rounds before that the track was a SIBLING of the
-/// button and did draw, blue and visible; becoming the button's child was the
-/// only structural change between them.
+/// Two rounds were spent on a report that the header drew its three labels
+/// and nothing at all on the right, and on one theory -- now **REFUTED** --
+/// that a `setTransparent(true)` `NSButton` suppresses the drawing of its
+/// subtree. The screen capture was 380 pt wide and stopped at 1170 pt while
+/// the row had been widened to 381 pt and the toggle sat near 1175 pt. The
+/// thing that settled it was a control: a red `NSBox` added beside the text
+/// at the same moment as the track, which DID appear, separating "not drawn"
+/// from "not photographed". A click test agreed with the bad reading the
+/// whole time, because it was aimed at the same wrong point.
 ///
-/// So the container holds dot, title, subtitle, **track, then button**, in
-/// that order. The track and the button carry the same frame and the same
-/// `ViewMinXMargin` mask, so they stay on top of each other; the button is
-/// added last, which puts it above the track in z-order and is what makes the
-/// click land on it. The button has no subviews. "Correct frames, nothing
-/// drawn" is the symptom to remember if anything ever re-parents them.
+/// The container holds dot, title, subtitle, **track, then button**, in that
+/// order: the two carry one shared frame and one shared mask, and the button
+/// is added last so it is above the track in z-order and takes the click.
+/// That arrangement is kept because it is the simpler one and it is the one
+/// that has been seen working -- **not** because the other one was shown to
+/// be wrong. Nothing is known against it.
 fn header_item(
     id: u32,
     h: &Header,
@@ -686,10 +621,23 @@ fn header_item(
     subtitle.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
     container.addSubview(&subtitle);
 
-    // The drawn switch. `ViewMinXMargin` -- the LEFT margin is the flexible
-    // one -- is what keeps it hard against the right edge as the menu widens,
-    // and the track and the button below carry the SAME frame and the SAME
-    // mask so they stay on top of each other.
+    // The drawn switch. Two measurements on airm3 (Darwin 25.6, 2026-09-23)
+    // against the real `serve` decide its whole shape:
+    //
+    // - **an `NSSwitch` here renders GREY in both states.** beckon is a
+    //   UIElement app and is not the active application while its menu is
+    //   open, so AppKit draws every `NSControl` in it in its INACTIVE
+    //   appearance; forcing beckon frontmost made the same switch blue, which
+    //   is what settles it. `NSApp.activate()` on open was rejected -- it
+    //   would leave beckon active after the menu closes, stealing focus from
+    //   whatever the user was in -- so the track and the knob are two plain
+    //   `NSBox`es coloured by hand, which have no inactive appearance to fall
+    //   back to.
+    // - **AppKit widens this view to the menu's width**: 260 pt at build,
+    //   381 pt once laid out. That is why the track and the hit target are
+    //   pinned with `ViewMinXMargin` -- the LEFT margin is the flexible one --
+    //   rather than placed at a fixed x, and why they share one
+    //   `toggle_frame` so they cannot drift apart.
     let toggle_frame = NSRect::new(
         NSPoint::new(HEADER_WIDTH - HEADER_PAD_X - TRACK_W, TOGGLE_Y),
         NSSize::new(TRACK_W, TRACK_H),
@@ -731,54 +679,7 @@ fn header_item(
     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
     container.addSubview(&button);
 
-    // TEMPORARY (diagnostic round), and only under `-v`: the CONTROL for
-    // "does an `NSBox` draw in this container at all". It is identical to the
-    // track in every respect except its x and its fill, and it is nowhere
-    // near the button, so exactly one variable separates them.
-    //
-    // - red appears, toggle does not  -> position or clipping at the right
-    //   edge, and the track is fine as an object;
-    // - neither appears               -> an `NSBox` does not draw in a menu
-    //   item's custom view at all, and the switch has to be built from
-    //   something else (an `NSImageView` over a drawn `NSImage` is the next
-    //   candidate).
-    //
-    // `ViewMaxXMargin` rather than the track's `ViewMinXMargin` so it stays
-    // beside the text at x = 100 however wide the menu gets, which is where
-    // the screenshot will be looking for it.
-    if beckon_core::verbose() {
-        let control = plain_box(mtm);
-        control.setCornerRadius(TRACK_H / 2.0);
-        control.setFillColor(&NSColor::systemRedColor());
-        control.setFrame(NSRect::new(
-            NSPoint::new(100.0, TOGGLE_Y),
-            NSSize::new(TRACK_W, TRACK_H),
-        ));
-        control.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
-        container.addSubview(&control);
-    }
-
     item.setView(Some(&container));
-
-    // TEMPORARY, kept for one more round: the controller reads these off a
-    // real `serve -v` to settle the geometry without a screenshot. Remove
-    // when told to. `header_item` runs on every menu open, so one line per
-    // open. `track` is now in CONTAINER coordinates (it is the container's
-    // own subview since the re-parenting above), so it reports the
-    // right-pinning directly rather than the button's bounds.
-    if beckon_core::verbose() {
-        eprintln!(
-            "beckon serve: header container {:?} dot {:?} title {:?} subtitle {:?} \
-             toggle frame {:?} track in container {:?} knob in track {:?}",
-            container.frame(),
-            dot.frame(),
-            title.frame(),
-            subtitle.frame(),
-            button.frame(),
-            track.frame(),
-            knob.frame(),
-        );
-    }
 
     TRAY.with(|t| {
         if let Some(x) = t.borrow_mut().as_mut() {
@@ -788,7 +689,6 @@ fn header_item(
                 track,
                 knob,
                 button,
-                container,
             });
         }
     });
@@ -835,24 +735,6 @@ fn refresh_header() {
             NSSize::new(KNOB_SIZE, KNOB_SIZE),
         ));
         button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
-        // TEMPORARY, kept for one more round, and the more informative of the
-        // two prints: this one runs AFTER the menu has been displayed and
-        // laid out, so these are the frames as drawn, not the ones just set.
-        // It also proves the click reached the button at all. Both
-        // `origin.x`es report the container's live width, since the
-        // autoresizing mask keeps them at `width - 14 - 34`, and they must
-        // AGREE with each other or the track and the hit target have drifted
-        // apart. Remove with the print at the end of `header_item`.
-        if beckon_core::verbose() {
-            eprintln!(
-                "beckon serve: header AFTER LAYOUT on={} toggle frame {:?} \
-                 track in container {:?} knob in track {:?}",
-                h.on,
-                button.frame(),
-                track.frame(),
-                knob.frame(),
-            );
-        }
     }
 }
 
