@@ -2050,32 +2050,126 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 // ---------------------------------------------------------------------------
 
 /// What the user chose when asked about unsaved edits on close.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+///
+/// **Windows only, since Task 10 (G-j).** macOS auto-saves, so its close
+/// question is no longer this one at all -- see `close_request` below,
+/// which never raises this three-way prompt. Windows still gates every
+/// write behind Save (G-i is out of scope this branch), so it keeps asking
+/// exactly what it always asked.
+#[cfg(target_os = "windows")]
 enum SaveChoice {
     Save,
     Discard,
     Cancel,
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(target_os = "windows")]
 fn ask_save_changes() -> SaveChoice {
-    #[cfg(target_os = "windows")]
-    {
-        use beckon_windows::shell;
-        match shell::ask_save("beckon", "Save your changes to the shortcuts file?") {
-            shell::SaveChoice::Save => SaveChoice::Save,
-            shell::SaveChoice::Discard => SaveChoice::Discard,
-            shell::SaveChoice::Cancel => SaveChoice::Cancel,
-        }
+    use beckon_windows::shell;
+    match shell::ask_save("beckon", "Save your changes to the shortcuts file?") {
+        shell::SaveChoice::Save => SaveChoice::Save,
+        shell::SaveChoice::Discard => SaveChoice::Discard,
+        shell::SaveChoice::Cancel => SaveChoice::Cancel,
     }
-    #[cfg(target_os = "macos")]
-    {
-        match swin::ask_save("beckon", "Save your changes to the shortcuts file?") {
-            swin::SaveChoice::Save => SaveChoice::Save,
-            swin::SaveChoice::Discard => SaveChoice::Discard,
-            swin::SaveChoice::Cancel => SaveChoice::Cancel,
-        }
+}
+
+/// Should the window be allowed to close right now? `on_close_request`'s
+/// whole body, moved out so the two platforms can answer a genuinely
+/// different question rather than sharing one closure with a `cfg` cut
+/// through the middle of it.
+///
+/// **Windows: unchanged.** It still gates every write behind Save (G-i is
+/// out of scope this branch), so a dirty model still raises the three-way
+/// `ask_save_changes` prompt, exactly as it did before this branch.
+#[cfg(target_os = "windows")]
+fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
+    // A read-only window has no model, so `dirty` is false and this is the
+    // arm it leaves by: no save prompt for changes that could not have been
+    // made.
+    let dirty = st
+        .borrow()
+        .settings
+        .as_ref()
+        .map(|m| m.dirty())
+        .unwrap_or(false);
+    if !dirty {
+        forget_settings(st);
+        return true;
     }
+    match ask_save_changes() {
+        SaveChoice::Save => {
+            apply_settings(st);
+            // Only leave if the write actually succeeded -- apply_settings
+            // clears `dirty` by reseeding the model, so a still-dirty model
+            // means it failed and the user's edits are only in memory.
+            //
+            // **CORRECTED 2026-08-14: back to one way, not two.** This read
+            // "there are now two ways for it not to have written" -- a
+            // failed write, and a Save refused because the file had moved
+            // while the user was behind a door that hid the announcement
+            // (`save_press`, `aa9fbd6`). That refusal is gone and stayed
+            // gone: the window guarantees the warning is on screen from
+            // every door -- the banner on `BANNER_PAGE`, the Shortcuts
+            // pill's warn dot on the other three -- so there is no door to
+            // be behind and `apply_settings` writes or fails. The test
+            // itself never depended on which, which is why it is unchanged
+            // either time.
+            let still_dirty = st
+                .borrow()
+                .settings
+                .as_ref()
+                .map(|m| m.dirty())
+                .unwrap_or(false);
+            if !still_dirty {
+                forget_settings(st);
+            }
+            !still_dirty
+        }
+        SaveChoice::Discard => {
+            forget_settings(st);
+            true
+        }
+        SaveChoice::Cancel => false,
+    }
+}
+
+/// Should the window be allowed to close right now (G-j)?
+///
+/// **The only prompt auto-save keeps.** Under auto-save a dirty model is
+/// the routine state -- the debounce window before a keystroke's write
+/// lands, and every reason `autosave` holds one (`FileMoved` behind its own
+/// banner, `FinishTheRow` and `AppWentMissing` on the row itself). Gating
+/// the close on `dirty` alone, the way the old three-way Save/Cancel/
+/// Discard prompt did, would raise a save prompt on nearly every close and
+/// train it away -- the exact failure four-doors design 6's G-j names.
+///
+/// The one case nothing else on screen is already saying is
+/// `NotSaved::CannotWrite`: auto-save tried, `write_config_text` refused,
+/// and closing now would discard an edit with no other door offering to
+/// save it. That is the only refusal left, and it is a single ASCII alert
+/// naming the problem -- not a choice, because there is nothing to choose
+/// between here that `Undo` and a second attempt do not already cover.
+#[cfg(target_os = "macos")]
+fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
+    let (dirty, write_failed) = {
+        let s = st.borrow();
+        (
+            s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false),
+            matches!(
+                s.last_not_saved,
+                Some(beckon_core::settings::NotSaved::CannotWrite)
+            ),
+        )
+    };
+    if dirty && write_failed {
+        swin::error(
+            "Cannot close: your last change could not be saved.\n\n\
+             Use Undo, or fix the problem, then close again.",
+        );
+        return false;
+    }
+    forget_settings(st);
+    true
 }
 
 /// Open the config file in the user's editor.
@@ -2432,6 +2526,19 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// all against a prompt that offers Save as the way out of a refusal. So
 /// there IS a guard here again, `#[cfg(target_os = "macos")]`, immediately
 /// before the write. See it for why it is not on both platforms.
+///
+/// **AMENDED 2026-09-23, Task 10 (G-j): macOS's route through the close
+/// prompt is gone, and the paragraph above is now itself a WINDOWS
+/// sentence.** `on_close_request`'s macOS arm (`close_request`, below) no
+/// longer raises a three-way Save/Cancel/Discard question at all -- it
+/// refuses the close outright when the model is dirty and the last write
+/// failed, and closes silently otherwise, in neither case calling this
+/// function. On macOS `on_apply` (the Save press and its `Ctrl+S`
+/// accelerator) is the ONLY door left onto this function, and the guard two
+/// paragraphs up still earns its keep there: a direct Save press can still
+/// race an external change with no close prompt anywhere in the story.
+/// Windows is unchanged -- its close prompt still offers `SaveChoice::Save`,
+/// which is still the second route the opening paragraph names.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let rendered = {
@@ -3325,60 +3432,13 @@ fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager
                 refresh_settings(&st);
             }
         }),
+        // The two platforms answer a genuinely different question here
+        // (G-j) -- see `close_request`'s two `cfg`-gated bodies above,
+        // Windows' unchanged three-way prompt and macOS's single refusal --
+        // so the shim is the whole closure, not a branch inside it.
         on_close_request: Box::new({
             let st = Rc::clone(state);
-            move || {
-                // A read-only window has no model, so `dirty` is false and
-                // this is the arm it leaves by: no save prompt for changes
-                // that could not have been made.
-                let dirty = st
-                    .borrow()
-                    .settings
-                    .as_ref()
-                    .map(|m| m.dirty())
-                    .unwrap_or(false);
-                if !dirty {
-                    forget_settings(&st);
-                    return true;
-                }
-                match ask_save_changes() {
-                    SaveChoice::Save => {
-                        apply_settings(&st);
-                        // Only leave if the write actually succeeded --
-                        // apply_settings clears `dirty` by reseeding the
-                        // model, so a still-dirty model means it failed and
-                        // the user's edits are only in memory.
-                        //
-                        // **CORRECTED 2026-08-14: back to one way, not two.**
-                        // This read "there are now two ways for it not to have
-                        // written" -- a failed write, and a Save refused
-                        // because the file had moved while the user was behind
-                        // a door that hid the announcement (`save_press`,
-                        // `aa9fbd6`). That refusal is gone and stayed gone:
-                        // the window guarantees the warning is on screen from
-                        // every door -- the banner on `BANNER_PAGE`, the
-                        // Shortcuts pill's warn dot on the other three -- so
-                        // there is no door to be behind and `apply_settings`
-                        // writes or fails. The test itself never depended on
-                        // which, which is why it is unchanged either time.
-                        let still_dirty = st
-                            .borrow()
-                            .settings
-                            .as_ref()
-                            .map(|m| m.dirty())
-                            .unwrap_or(false);
-                        if !still_dirty {
-                            forget_settings(&st);
-                        }
-                        !still_dirty
-                    }
-                    SaveChoice::Discard => {
-                        forget_settings(&st);
-                        true
-                    }
-                    SaveChoice::Cancel => false,
-                }
-            }
+            move || close_request(&st)
         }),
         // An exhaustive `match`, not a `_ => {}`: every variant added later
         // is a compile error at this one site, which is the site that has to

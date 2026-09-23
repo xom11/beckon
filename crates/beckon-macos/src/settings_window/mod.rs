@@ -1654,10 +1654,20 @@ pub fn flush_paint() {
 
 /// May the window close now?
 ///
-/// The unsaved-edits prompt lives behind `on_close_request`, and this is the
-/// one place it is asked. Both ways out — the command bar's `Close` and the
-/// title bar's red `X` — call it, so a `Cancel` means the same thing from
+/// The close question lives behind `on_close_request`, and this is the one
+/// place it is asked. Both ways out — the command bar's `Close` and the
+/// title bar's red `X` — call it, so a refusal means the same thing from
 /// either, and neither can be the route that skips the question.
+///
+/// **AMENDED 2026-09-23, Task 10 (G-j): it is no longer an unsaved-edits
+/// prompt.** Under auto-save a dirty model is the routine state -- the
+/// debounce window before a keystroke's write lands, and every reason
+/// `autosave` holds one -- so gating on `dirty` alone, the way the old
+/// three-way Save/Cancel/Discard prompt did, would fire on nearly every
+/// close and be trained away. `serve.rs`'s `on_close_request` now refuses
+/// only when the model is dirty AND the last write actually failed
+/// (`NotSaved::CannotWrite`); everything else closes silently. The refusal
+/// still comes back through this same `bool`, so nothing here changed.
 ///
 /// `true` when no callbacks are installed: there is then no model, so there
 /// are no edits to lose, and refusing would strand a window nobody can shut.
