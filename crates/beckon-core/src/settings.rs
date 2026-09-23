@@ -1055,6 +1055,16 @@ pub const OPACITY_MAX: u8 = 100;
 /// beckon picks when nobody is asked, the other is where the asking starts.
 pub const OPACITY_DEFAULT: u8 = 96;
 
+/// How long the App field stays quiet before its text is written.
+///
+/// Chosen, not measured. It is the only debounced input: every other
+/// gesture in this window is discrete and flushes immediately. macOS has no
+/// `SetTimer`, so the equivalent there is a "last typed at" deadline the
+/// driver checks rather than a scheduled callback; both platforms read this
+/// one number so a keystroke that goes quiet takes the same time to reach
+/// disk on either.
+pub const AUTOSAVE_QUIET_MS: u64 = 600;
+
 /// Bring a stored or typed percentage into range.
 ///
 /// The window clamps before sending `SettingsCommand::SetOpacity`, so the

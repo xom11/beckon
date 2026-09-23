@@ -78,12 +78,13 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate, NSImage,
-    NSLayoutAttribute, NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSScrollView, NSStackView, NSStackViewDistribution, NSTableColumn, NSTableView,
-    NSTableViewDataSource, NSTableViewDelegate, NSTextField, NSToolbar, NSToolbarDelegate,
-    NSToolbarDisplayMode, NSToolbarItem, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSComboBoxDelegate,
+    NSControlTextEditingDelegate, NSImage, NSLayoutAttribute, NSLayoutConstraint, NSPasteboard,
+    NSPasteboardTypeString, NSPopUpButton, NSScrollView, NSStackView, NSStackViewDistribution,
+    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField,
+    NSTextFieldDelegate, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSWindowToolbarStyle,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
@@ -335,6 +336,16 @@ struct Ui {
     /// The combo the fields were last *given*, so an edit can be compared
     /// against what is stored rather than against the previous keystroke.
     shown_combo: Option<String>,
+    /// When `controlTextDidChange:` last fired for the App field, if ever.
+    ///
+    /// Set on every keystroke; read through `app_field_quiet_for` below.
+    /// macOS has no `SetTimer`, so this IS the debounce deadline: the
+    /// driver that acts on it compares the returned `Duration` against
+    /// `beckon_core::settings::AUTOSAVE_QUIET_MS` to decide whether the
+    /// field has gone quiet long enough to write. `None` before the first
+    /// keystroke this session, and reset to `None` on every reopen because
+    /// the field starts with nothing typed and nothing to debounce.
+    app_last_typed: Option<std::time::Instant>,
     /// The selected row the table was last SCROLLED to, which is not the same
     /// question as which row is selected.
     ///
@@ -800,7 +811,52 @@ define_class!(
         }
     }
 
-    unsafe impl NSControlTextEditingDelegate for Target {}
+    unsafe impl NSControlTextEditingDelegate for Target {
+        /// Every keystroke in the App field reaches the model.
+        ///
+        /// **This is what replaces `commit_fields`.** That function is
+        /// called from `beckonSave:` alone, so before auto-save the Save
+        /// button was the thing that rescued text typed and never
+        /// committed -- the combo box's own action fires on Enter or on a
+        /// list pick, not per keystroke. With no Save there is no later
+        /// rescue, so the keystroke is the commit.
+        ///
+        /// Same guard, same read, same callback as `beckonApp:` -- the
+        /// only addition is recording when this fired, under its own
+        /// short `UI` borrow, dropped before `with_cb` runs.
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, _n: &NSNotification) {
+            if suppressed() {
+                return;
+            }
+            let Some(c) = controls() else { return };
+            let t = c.app.stringValue().to_string();
+            // Recorded, not acted on: the write itself waits for
+            // `AUTOSAVE_QUIET_MS` of quiet, which the driver that owns the
+            // deadline (task 7) reads through `app_field_quiet_for` below.
+            // Writing from inside a keystroke handler would fsync on every
+            // character typed.
+            UI.with(|u| {
+                if let Some(x) = u.borrow_mut().as_mut() {
+                    x.app_last_typed = Some(std::time::Instant::now());
+                }
+            });
+            with_cb(|cb| (cb.on_edit_app)(t));
+        }
+    }
+
+    // Both empty: `NSComboBox::setDelegate` below takes
+    // `Option<&ProtocolObject<dyn NSComboBoxDelegate>>`, and objc2's
+    // protocol traits do not coerce along their supertrait chain the way
+    // Objective-C's own `id<Protocol>` does -- `NSComboBoxDelegate:
+    // NSTextFieldDelegate + MainThreadOnly` and `NSTextFieldDelegate:
+    // NSControlTextEditingDelegate + MainThreadOnly` are each a distinct
+    // Rust trait Target has to name. Every method either protocol adds is
+    // `#[optional]`, so there is nothing to implement -- the App combo
+    // box's own delegate method lives on `NSControlTextEditingDelegate`
+    // above, which both of these require.
+    unsafe impl NSTextFieldDelegate for Target {}
+    unsafe impl NSComboBoxDelegate for Target {}
 
     unsafe impl NSTableViewDelegate for Target {
         #[unsafe(method(tableViewSelectionDidChange:))]
@@ -1451,6 +1507,22 @@ pub fn is_open() -> bool {
     UI.with(|u| u.borrow().is_some())
 }
 
+/// How long it has been since a keystroke last changed the App field.
+///
+/// `None` when the window is closed or the field has not been touched this
+/// session -- either way, there is nothing to debounce. The driver that
+/// owns the write compares the `Duration` against
+/// `beckon_core::settings::AUTOSAVE_QUIET_MS`; this function only reports
+/// the fact, it does not decide anything.
+pub fn app_field_quiet_for() -> Option<std::time::Duration> {
+    UI.with(|u| {
+        u.borrow()
+            .as_ref()
+            .and_then(|x| x.app_last_typed)
+            .map(|t| t.elapsed())
+    })
+}
+
 /// Raise the window that is already open. `false` when there is none.
 pub fn open_existing() -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
@@ -1904,6 +1976,12 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     unsafe {
         app.setTarget(Some(&*target));
         app.setAction(Some(sel!(beckonApp:)));
+        // Without this, `controlTextDidChange:` is declared but never
+        // reached: `setAction` fires on Enter or a list pick, not per
+        // keystroke, and only the delegate is told about the ones in
+        // between. This is what makes the keystroke the commit -- see
+        // `control_text_did_change`'s own comment.
+        app.setDelegate(Some(ProtocolObject::from_ref(&*target)));
         app.setCompletes(true);
         // **This is what replaced the `App` label, and it costs no width.** A
         // placeholder lives inside the control's own slot, where a leading label
@@ -2232,6 +2310,9 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             _target: target,
             items: Vec::new(),
             shown_combo: None,
+            // A fresh window session starts with nothing typed and nothing
+            // to debounce.
+            app_last_typed: None,
             // Nothing has been scrolled to yet, so the first push scrolls
             // whenever it carries a selection -- which is exactly the open
             // that came from a menu row.
