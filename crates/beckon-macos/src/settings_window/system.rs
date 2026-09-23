@@ -164,6 +164,15 @@ pub(super) fn build(
     let g_look = w::group(&[&*opacity_row], mtm);
 
     let page = w::vstack(&[&*g_service, &*g_files, &*g_look], 12.0, mtm);
+    // Every direct child of this `Width`-aligned column needs its own pin --
+    // `vstack`'s alignment does not stretch children, see
+    // `widgets::pin_width_to`'s doc. Without this `g_service` and `g_files`
+    // sized themselves to their own content and sat trailing-aligned, so
+    // `g_files`' config path and both its Open/Reveal buttons ran off the
+    // right edge of the window. Photographed 2026-09-23, `General.png`.
+    for grp in [&g_service, &g_files, &g_look] {
+        w::pin_width_to(grp, &page, 0.0);
+    }
     let view: Retained<NSView> = page.into_super();
 
     (

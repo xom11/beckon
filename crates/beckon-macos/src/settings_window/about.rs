@@ -368,6 +368,22 @@ pub(super) fn build(
     );
 
     let page = w::vstack(&[&*header, &*g_perm, &*g_copy, &*links], 12.0, mtm);
+    // Every direct child of this `Width`-aligned column needs its own pin --
+    // `vstack`'s alignment does not stretch children, see
+    // `widgets::pin_width_to`'s doc. `name`'s own pin to `header` above is
+    // not enough on its own: without pinning `header` itself to `page`,
+    // `header` sized to its own content and sat trailing-aligned, so the
+    // mark/name/build line hugged the right edge instead of centring, and
+    // `g_copy` was short and pushed right. Photographed 2026-09-23,
+    // `About.png`.
+    for grp in [
+        &*header as &NSView,
+        &*g_perm as &NSView,
+        &*g_copy as &NSView,
+        &*links as &NSView,
+    ] {
+        w::pin_width_to(grp, &page, 0.0);
+    }
     let view: Retained<NSView> = page.into_super();
 
     (

@@ -192,6 +192,19 @@ pub(super) fn build(
     let g_grant = w::group(&[&*im_row], mtm);
 
     let page = w::vstack(&[&*g_caps, &*g_view, &*g_grant], 12.0, mtm);
+    // **Every direct child of a `Width`-aligned column needs its own pin.**
+    // `vstack`'s `setAlignment(Width)` does not stretch children to the
+    // column's width -- see `widgets::pin_width_to`'s doc, and `mod.rs`'s
+    // own root loop, which pins each door to `root` for the identical
+    // reason. Without this the three cards here came out ragged: `g_caps`
+    // (the one card whose first row is a two-line label) sized itself to
+    // that label's intrinsic width and sat trailing-aligned around x=427 in
+    // a 640pt window, while `g_view` and `g_grant` (whose only rows are one
+    // line) happened to size close enough to full width to look right by
+    // accident. Photographed 2026-09-23, `Keyboard.png`.
+    for grp in [&g_caps, &g_view, &g_grant] {
+        w::pin_width_to(grp, &page, 0.0);
+    }
     let view: Retained<NSView> = page.into_super();
 
     (
