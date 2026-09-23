@@ -947,9 +947,41 @@ define_class!(
             with_cb(|cb| (cb.on_add)());
         }
 
+        /// **Asks first when `remove_needs_confirm` says the press is risky
+        /// (G-f).** Auto-save is what makes this load-bearing -- see that
+        /// function's own doc. `marked` is read from `Ui::items`, which
+        /// mirrors the last-pushed `ControlState::items` (visible rows
+        /// only, exactly what `Model::marked_count` counts); `filter_active`
+        /// is read live off the filter field itself, trimmed the same way
+        /// `Model::visible` trims it. Both reads finish and their borrows
+        /// drop -- the `UI` borrow inside its own closure, `controls()`'s
+        /// internal borrow before it returns -- before `confirm_remove` runs
+        /// its modal loop, which re-enters this module's `with_cb` the
+        /// moment the user answers.
         #[unsafe(method(beckonRemove:))]
         fn on_remove(&self, _s: &AnyObject) {
-            with_cb(|cb| (cb.on_remove)());
+            let proceed = match controls() {
+                Some(c) => {
+                    let marked = UI.with(|u| {
+                        u.borrow()
+                            .as_ref()
+                            .map(|x| x.items.iter().filter(|i| i.marked).count())
+                            .unwrap_or(0)
+                    });
+                    let filter_active = !c.filter.stringValue().to_string().trim().is_empty();
+                    if beckon_core::settings::remove_needs_confirm(marked, filter_active) {
+                        confirm_remove(marked.max(1))
+                    } else {
+                        true
+                    }
+                }
+                // No controls, no view to be surprised by -- proceed, same
+                // as before this guard existed.
+                None => true,
+            };
+            if proceed {
+                with_cb(|cb| (cb.on_remove)());
+            }
         }
 
         /// One button, two captions. `Stop` is `Record` wearing the other
@@ -1773,6 +1805,34 @@ pub fn ask_save(title: &str, body: &str) -> SaveChoice {
         1002 => SaveChoice::Discard,
         _ => SaveChoice::Cancel,
     }
+}
+
+/// Ask before a risky Remove (G-f) -- more than one row ticked, or any
+/// removal while a filter is narrowing the table. Same shape as `ask_save`
+/// above: an `NSAlert`, ASCII strings, and the SAFE choice takes the first
+/// button so it inherits the return key -- here that is `Cancel`, not
+/// `Remove`, which is the one difference from `ask_save`'s own order.
+///
+/// `count` is the number of rows the press will actually remove --
+/// `marked_count`, or `1` for the selection-only fallback `remove_pressed`
+/// takes when nothing is ticked.
+fn confirm_remove(count: usize) -> bool {
+    let Some(mtm) = MainThreadMarker::new() else {
+        // No way to ask, so do not guess in the destructive direction.
+        return false;
+    };
+    let alert = objc2_app_kit::NSAlert::new(mtm);
+    let title = if count == 1 {
+        "Remove this shortcut?".to_string()
+    } else {
+        format!("Remove {count} shortcuts?")
+    };
+    alert.setMessageText(&NSString::from_str(&title));
+    alert.setInformativeText(&NSString::from_str("This writes apps.toml right away."));
+    alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+    alert.addButtonWithTitle(&NSString::from_str("Remove"));
+    // NSAlertFirstButtonReturn is 1000; Cancel is first, so Remove is 1001.
+    alert.runModal() == 1001
 }
 
 /// Open the config file in whatever the user has set for `.toml`.
