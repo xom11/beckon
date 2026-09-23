@@ -2487,18 +2487,35 @@ impl Model {
         self.undo.clear();
     }
 
+    /// Capture what the user is looking at, by identity.
+    ///
+    /// **The identity is `combo`, NOT `orig_key`, and that is the whole
+    /// correctness of this function.** `restore_view_state` matches against
+    /// the reseeded model's `orig_key`, and after a write that key is the
+    /// key the file now carries -- which `render` writes from `combo`, and
+    /// `from_text` reads straight back into both fields. Keying on
+    /// `orig_key` therefore captured what the row USED to be called and
+    /// matched nothing the moment a chord was edited: the selection went to
+    /// `None` on the very keystroke that moved it, which is guard G-b
+    /// failing in exactly the case it was written for. Measured 2026-09-23.
+    ///
+    /// It is right for an unchanged row too, whose `combo` already equals
+    /// its `orig_key` -- `from_text` sets `combo: raw.unwrap_or(canon)`.
+    ///
+    /// A row the user added has no `orig_key` at all and is still captured,
+    /// because after the write it has one.
     pub fn view_state(&self) -> ViewState {
         ViewState {
             filter: self.filter.clone(),
             selected_key: self
                 .selected
                 .and_then(|i| self.rows.get(i))
-                .and_then(|r| r.orig_key.clone()),
+                .map(|r| r.combo.clone()),
             marked_keys: self
                 .rows
                 .iter()
                 .filter(|r| r.marked)
-                .filter_map(|r| r.orig_key.clone())
+                .map(|r| r.combo.clone())
                 .collect(),
         }
     }
@@ -2506,6 +2523,10 @@ impl Model {
     /// **By identity, never by index** -- four-doors design G-b. A write
     /// can reorder the file, and a raw index then points the editor at a
     /// different binding while the user is still typing into it.
+    ///
+    /// The keys are `view_state`'s, i.e. the rows' `combo` spellings; they
+    /// are matched against `orig_key` because that is what a model reseeded
+    /// from the written file carries. See `view_state`.
     pub fn restore_view_state(&mut self, v: &ViewState) {
         self.set_filter(&v.filter);
         self.selected = v.selected_key.as_ref().and_then(|k| {
@@ -2612,6 +2633,65 @@ fn catalog_hit<'a>(names: &'a [String], candidate: &str) -> Option<CatalogHit<'a
         .map(String::as_str)
         .collect();
     (!loose.is_empty()).then_some(CatalogHit::Loose(loose))
+}
+
+/// How this machine's catalog answers for one app VALUE -- a candidate
+/// chain, not a single name.
+///
+/// **The one place that question is asked.** Two callers act on it and they
+/// must not be able to disagree: `row_condition` turns it into the row's
+/// `missing` flag and its note, and `app_resolves` turns it into auto-save's
+/// `AppWentMissing` refusal. Sharing the leaf (`catalog_hit`) and writing
+/// the composition twice made them agree by DISCIPLINE, held by a test;
+/// this makes them agree by CONSTRUCTION, which is the rule `row_condition`
+/// already states about its own cell and note.
+enum AppLookup<'n, 'a> {
+    /// No name at all. Reported as a `Problem`, never as a catalog miss --
+    /// "no installed app has this name" is a strange thing to say about no
+    /// name. Caught BEFORE `candidates::split`, which refuses the empty
+    /// string with a sentence about separators the user never typed.
+    Empty,
+    /// A stray `||`: `candidates::split` refused the value, so the key is
+    /// permanently dead. Carries the parser's own sentence.
+    Malformed(String),
+    /// Every rung missed.
+    Missing,
+    /// The candidate that will WIN at runtime, and how it won.
+    ///
+    /// This mirrors `check_resolution`'s `winner` in `beckon-cli`, and
+    /// `beckon_ladder` under it: the ladder stops at the first candidate
+    /// that is not a miss, so that is the one whose certainty the user
+    /// actually lives with. Grading by the FIRST candidate calls a working
+    /// binding dead; grading by the BEST hides a substring hazard that a
+    /// later exact candidate never gets the chance to beat.
+    Found(&'a str, CatalogHit<'n>),
+}
+
+/// Ask the catalog about one app value. See [`AppLookup`].
+///
+/// The value may be a candidate chain (`"Google Keep || https://keep.google.com/"`),
+/// so what the catalog is asked about is each CANDIDATE, never the whole
+/// string. Comparing the whole string is the defect this was rewritten to
+/// remove: no installed app is called `Gmail || https://mail.google.com/`,
+/// so EVERY chain row in the file said `missing` while `check --resolve` on
+/// the same file on the same machine said every name resolves. Measured on
+/// macmini 2026-08-17; `5a849c8` fixed the same class in `resolve` and could
+/// not reach here.
+fn app_lookup<'n, 'a>(names: &'n [String], app: &'a str) -> AppLookup<'n, 'a> {
+    let app = app.trim();
+    if app.is_empty() {
+        return AppLookup::Empty;
+    }
+    match candidates::split(app) {
+        Err(e) => AppLookup::Malformed(e),
+        Ok(cands) => match cands
+            .iter()
+            .find_map(|c| catalog_hit(names, c).map(|hit| (*c, hit)))
+        {
+            None => AppLookup::Missing,
+            Some((cand, hit)) => AppLookup::Found(cand, hit),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3064,118 +3144,81 @@ fn row_condition(
             mark: Mark::Unknown,
             text: "Checking installed apps...".into(),
         }),
-        Some(names) => {
-            let app = r.app.trim();
-            // An empty app name is reported as a `Problem`, not as a
-            // catalog miss -- "no installed app has this name" is a strange
-            // thing to say about no name at all. It has to be caught BEFORE
-            // `candidates::split`, which refuses the empty string with a
-            // sentence about separators the user never typed.
-            if !app.is_empty() {
-                // The value may be a CANDIDATE CHAIN
-                // (`"Google Keep || https://keep.google.com/"`), so what the
-                // catalog is asked about is each candidate -- never the whole
-                // string. Comparing the whole string is the defect this arm was
-                // rewritten to remove: no installed app is called
-                // `Gmail || https://mail.google.com/`, so EVERY chain row in
-                // the file said `missing` while `check --resolve` on the same
-                // file on the same machine said every name resolves. Measured
-                // on macmini 2026-08-17; `5a849c8` fixed the same class in
-                // `resolve` and could not reach here.
-                match candidates::split(app) {
-                    // A stray `||` makes the key permanently dead:
-                    // `candidates::split` refuses this identical string before
-                    // it reaches any backend. `missing` is the honest word --
-                    // but alone it points the reader at the app catalog, which
-                    // is not what is wrong, so the parser's own sentence rides
-                    // along. Exactly how `check_resolution` grades a malformed
-                    // chain: a miss carrying that sentence as its consequence.
-                    Err(e) => {
-                        conditions.push("missing");
-                        notes.push(Note {
-                            mark: Mark::Bad,
-                            text: e,
-                        });
-                    }
-                    Ok(cands) => {
-                        // The candidate that will WIN at runtime, graded as the
-                        // row's grade. This mirrors `check_resolution`'s
-                        // `winner` in `beckon-cli`, and `beckon_ladder` under
-                        // it: the ladder stops at the first candidate that is
-                        // not a miss, so that is the one whose certainty the
-                        // user actually lives with. Grading by the FIRST
-                        // candidate calls a working binding dead; grading by
-                        // the BEST hides a substring hazard that a later exact
-                        // candidate never gets the chance to beat.
-                        let winner = cands
-                            .iter()
-                            .find_map(|c| catalog_hit(names, c).map(|hit| (*c, hit)));
-                        match winner {
-                            // Every rung missed. No note: `missing` is the
-                            // sentence, in one word, on the row the user is
-                            // already looking at. `flag_mark` keeps the
-                            // `Mark::Bad` the deleted note used to carry -- and
-                            // it is PUSHED rather than inserted-if-absent, so a
-                            // paused row is still `Bad` for an app that is not
-                            // installed even though the cell can only say
-                            // `paused`.
-                            None => conditions.push("missing"),
-                            // Exact. Nothing to say -- design 3.1 deletes
-                            // `Registered and working.` by name, and rule 2 is
-                            // that silence is the report. That holds for a
-                            // chain too: which candidate won is not a hazard,
-                            // so naming it here would put a note on healthy
-                            // rows.
-                            Some((_, CatalogHit::Exact)) => {}
-                            Some((cand, CatalogHit::Loose(loose))) => {
-                                // WHICH candidate matched has to be said when
-                                // the cell shows more than one. On a plain row
-                                // "this name" is unambiguous; on a chain the
-                                // reader cannot otherwise tell which half is
-                                // live. `is_chain` keeps the single-candidate
-                                // sentence byte-identical -- the same reason it
-                                // exists for `beckon -v <one-id>`.
-                                let subject = if candidates::is_chain(app) {
-                                    format!("\"{cand}\" matches")
-                                } else {
-                                    "Matches".to_string()
-                                };
-                                // The two hazards `check --resolve`
-                                // distinguishes, in its own words. One match is
-                                // a name a later install can take; several
-                                // means the winner is already decided by sort
-                                // order rather than by anything the user wrote.
-                                //
-                                // A note rather than a fifth status word:
-                                // design 3.1 fixes the vocabulary at four and
-                                // lists that under *what must never be cut*.
-                                // The severity still reaches the row, because
-                                // `mark` folds the notes.
-                                notes.push(Note {
-                                    mark: Mark::Warn,
-                                    text: match loose.as_slice() {
-                                        // `catalog_hit` never returns an empty
-                                        // `Loose`, so `[]` cannot arise; it is
-                                        // folded into the `many` arm rather
-                                        // than given an unreachable of its own.
-                                        [one] => format!(
-                                            "{subject} \"{one}\" by substring, so an app \
-                                             installed later can quietly take this name."
-                                        ),
-                                        many => format!(
-                                            "{subject} {} installed apps by substring; \
-                                             \"{}\" wins only because it sorts first.",
-                                            many.len(),
-                                            many[0]
-                                        ),
-                                    },
-                                });
-                            }
-                        }
-                    }
-                }
+        // **`app_lookup` is the ONE reader of the catalog**, shared with
+        // auto-save's `app_resolves`, so the `missing` cell here and the
+        // `AppWentMissing` refusal there cannot disagree by construction
+        // rather than by discipline -- the rule stated about this function's
+        // own cell and note, applied to its second reader.
+        Some(names) => match app_lookup(names, &r.app) {
+            // Reported as a `Problem`, not as a catalog miss. See the
+            // variant's own doc.
+            AppLookup::Empty => {}
+            // A stray `||` makes the key permanently dead. `missing` is the
+            // honest word -- but alone it points the reader at the app
+            // catalog, which is not what is wrong, so the parser's own
+            // sentence rides along. Exactly how `check_resolution` grades a
+            // malformed chain: a miss carrying that sentence as its
+            // consequence.
+            AppLookup::Malformed(e) => {
+                conditions.push("missing");
+                notes.push(Note {
+                    mark: Mark::Bad,
+                    text: e,
+                });
             }
-        }
+            // Every rung missed. No note: `missing` is the sentence, in one
+            // word, on the row the user is already looking at. `flag_mark`
+            // keeps the `Mark::Bad` the deleted note used to carry -- and it
+            // is PUSHED rather than inserted-if-absent, so a paused row is
+            // still `Bad` for an app that is not installed even though the
+            // cell can only say `paused`.
+            AppLookup::Missing => conditions.push("missing"),
+            // Exact. Nothing to say -- design 3.1 deletes `Registered and
+            // working.` by name, and rule 2 is that silence is the report.
+            // That holds for a chain too: which candidate won is not a
+            // hazard, so naming it here would put a note on healthy rows.
+            AppLookup::Found(_, CatalogHit::Exact) => {}
+            AppLookup::Found(cand, CatalogHit::Loose(loose)) => {
+                // WHICH candidate matched has to be said when the cell shows
+                // more than one. On a plain row "this name" is unambiguous;
+                // on a chain the reader cannot otherwise tell which half is
+                // live. `is_chain` keeps the single-candidate sentence
+                // byte-identical -- the same reason it exists for
+                // `beckon -v <one-id>`.
+                let subject = if candidates::is_chain(r.app.trim()) {
+                    format!("\"{cand}\" matches")
+                } else {
+                    "Matches".to_string()
+                };
+                // The two hazards `check --resolve` distinguishes, in its own
+                // words. One match is a name a later install can take;
+                // several means the winner is already decided by sort order
+                // rather than by anything the user wrote.
+                //
+                // A note rather than a fifth status word: design 3.1 fixes
+                // the vocabulary at four and lists that under *what must
+                // never be cut*. The severity still reaches the row, because
+                // `mark` folds the notes.
+                notes.push(Note {
+                    mark: Mark::Warn,
+                    text: match loose.as_slice() {
+                        // `catalog_hit` never returns an empty `Loose`, so
+                        // `[]` cannot arise; it is folded into the `many` arm
+                        // rather than given an unreachable of its own.
+                        [one] => format!(
+                            "{subject} \"{one}\" by substring, so an app \
+                             installed later can quietly take this name."
+                        ),
+                        many => format!(
+                            "{subject} {} installed apps by substring; \
+                             \"{}\" wins only because it sorts first.",
+                            many.len(),
+                            many[0]
+                        ),
+                    },
+                });
+            }
+        },
     }
 
     // 3. Reachable by holding Caps? Compared against `keyboard.caps_hold`
@@ -3360,6 +3403,24 @@ pub enum SavedReadout {
 /// to offer the file. `AppWentMissing` is last because it is the only one
 /// that refuses a write that WOULD have succeeded -- it is a judgement
 /// about the live hotkey, not about the text.
+///
+/// **`dirty` is not the same question as "the file would change", and
+/// answering only the first one loses rows.** `add_row` dirties the model
+/// and `render` correctly drops the unfinished row it added, so the rendered
+/// text is byte-identical to what is already on disk -- and the write that
+/// followed cost the user the row they had just added, within one tick:
+/// the reseed threw it away, the selection went to `None`, an `orig_key`
+/// was gratuitously respelled and a no-op entry went on the undo stack.
+/// Measured 2026-09-23, `rows 2 -> 1`, `selected Some(1) -> None`.
+///
+/// The second `Nothing` below is that fix, and it belongs HERE rather than
+/// in the driver: "would this write change the file" is a decision, and a
+/// driver owning it is the shape this phase's constraints forbid. It sits
+/// after `render` because it needs the rendered text, and before
+/// `AppWentMissing` because a write that changes nothing is not a write to
+/// refuse -- putting `Not saved - that app name matches nothing` on screen
+/// for a no-op would be a complaint about something that was not going to
+/// happen.
 pub fn autosave_plan(model: &Model, on_disk: &str, selected_app_missing: bool) -> AutosavePlan {
     if !model.dirty() {
         return AutosavePlan::Nothing;
@@ -3370,6 +3431,9 @@ pub fn autosave_plan(model: &Model, on_disk: &str, selected_app_missing: bool) -
     let Ok(text) = model.render() else {
         return AutosavePlan::Hold(NotSaved::FinishTheRow);
     };
+    if text == on_disk {
+        return AutosavePlan::Nothing;
+    }
     if selected_app_missing {
         return AutosavePlan::Hold(NotSaved::AppWentMissing);
     }
@@ -3424,27 +3488,21 @@ pub fn selected_app_went_missing(m: &Model, catalog: Option<&[String]>) -> bool 
 
 /// Does `app` match anything in the installed-app catalog?
 ///
-/// **The same two calls `row_condition` makes, in the same order** --
-/// `candidates::split`, then `catalog_hit` per candidate with the first hit
-/// winning -- so the footer's `Not saved` sentence and the row's `missing`
-/// flag answer one question one way. `the_autosave_guard_agrees_with_the_
-/// row_flag_about_missing` is what holds the two together.
+/// **A projection of [`app_lookup`], not a second reading of it** --
+/// `row_condition`'s `missing` cell is the other projection of the same
+/// call, so the footer's `Not saved` sentence and the row's flag cannot
+/// disagree. That is by construction; it used to be by discipline, held by
+/// a test.
 ///
-/// An EMPTY name resolves here. `row_condition` guards it the same way: an
-/// empty app is reported as a `Problem`, not as a catalog miss, and a model
-/// carrying one does not render -- so `FinishTheRow` has already refused the
-/// write before this argument is looked at.
+/// An EMPTY name resolves here, because `AppLookup::Empty` is not a catalog
+/// miss: it is reported as a `Problem`, and a model carrying one does not
+/// render -- so `FinishTheRow` has already refused the write before this
+/// answer is looked at.
 fn app_resolves(names: &[String], app: &str) -> bool {
-    let app = app.trim();
-    if app.is_empty() {
-        return true;
-    }
-    match candidates::split(app) {
-        // A stray `||` makes the key permanently dead: no candidate can be
-        // formed, so nothing can resolve.
-        Err(_) => false,
-        Ok(cands) => cands.iter().any(|c| catalog_hit(names, c).is_some()),
-    }
+    matches!(
+        app_lookup(names, app),
+        AppLookup::Empty | AppLookup::Found(..)
+    )
 }
 
 pub fn saved_readout(parsed: bool, last: Option<NotSaved>, can_undo: bool) -> SavedReadout {
@@ -8432,6 +8490,92 @@ mod tests {
         );
     }
 
+    /// **`Add` used to cost the user the row they had just added.**
+    /// `add_row` dirties the model; `render` correctly drops the unfinished
+    /// row; the rendered text is therefore byte-identical to the file, and
+    /// the write that followed reseeded the new row out of existence within
+    /// one tick. The plan has to answer `Nothing` when the bytes would not
+    /// move -- dirty is not the same question as "the file would change".
+    ///
+    /// This also kills the two lesser harms measured beside it: a
+    /// gratuitous `orig_key` respelling, and a no-op entry on the undo
+    /// stack. Neither can happen if there is no write.
+    #[test]
+    fn adding_a_row_plans_no_write_until_it_is_filled_in() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let mut m = Model::from_text(text).unwrap();
+        m.add_row();
+        assert!(m.dirty(), "the precondition: Add really does dirty it");
+        assert_eq!(m.rows.len(), 2, "and the row really is in the model");
+        assert_eq!(autosave_plan(&m, text, false), AutosavePlan::Nothing);
+    }
+
+    /// The control for the test above: once the row says something, the
+    /// bytes do move and it is written.
+    #[test]
+    fn a_filled_in_new_row_is_written() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n";
+        let mut m = Model::from_text(text).unwrap();
+        m.add_row();
+        let i = m.rows.len() - 1;
+        m.set_combo(i, "ctrl+alt+b");
+        m.set_app(i, "Brave");
+        match autosave_plan(&m, text, false) {
+            AutosavePlan::Write(t) => assert!(t.contains("Brave"), "{t}"),
+            other => panic!("expected a write, got {other:?}"),
+        }
+    }
+
+    /// **G-b, in the case it was written for: the identity moves because
+    /// the write moves it.** Editing a chord rewrites the row's key, so a
+    /// `ViewState` keyed on the PRE-write `orig_key` matched nothing in the
+    /// reseeded model and the selection vanished on the keystroke that
+    /// moved it. Keying on `combo` -- what the row will be called after the
+    /// write -- is what makes the identity survive.
+    #[test]
+    fn a_reseed_keeps_the_selection_on_a_row_whose_chord_was_just_edited() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n";
+        let mut m = Model::from_text(text).unwrap();
+        m.selected = Some(1);
+        m.set_marked(1, true);
+        m.set_combo(1, "ctrl+alt+c");
+
+        let AutosavePlan::Write(written) = autosave_plan(&m, text, false) else {
+            panic!("expected a write");
+        };
+        let view = m.view_state();
+
+        // What the driver does after `write_config_text` returns.
+        let mut fresh = Model::from_text(&written).unwrap();
+        fresh.restore_view_state(&view);
+
+        let i = fresh
+            .selected
+            .expect("the selection must survive its own edit");
+        assert_eq!(fresh.rows[i].app, "Brave", "and land on the SAME binding");
+        assert!(fresh.rows[i].marked, "the tick travels the same way");
+    }
+
+    /// The other half: an untouched row's `combo` already equals its
+    /// `orig_key`, so keying on `combo` is right for it too.
+    #[test]
+    fn a_reseed_keeps_the_selection_on_an_untouched_row() {
+        let text = "\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n";
+        let mut m = Model::from_text(text).unwrap();
+        m.selected = Some(0);
+        m.set_app(1, "Zed");
+
+        let AutosavePlan::Write(written) = autosave_plan(&m, text, false) else {
+            panic!("expected a write");
+        };
+        let view = m.view_state();
+        let mut fresh = Model::from_text(&written).unwrap();
+        fresh.restore_view_state(&view);
+
+        assert_eq!(fresh.selected, Some(0));
+        assert_eq!(fresh.rows[0].app, "Anki");
+    }
+
     #[test]
     fn a_selected_row_whose_app_went_missing_holds_the_write() {
         let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
@@ -8509,14 +8653,19 @@ mod tests {
         assert!(!selected_app_went_missing(&m, None));
     }
 
-    /// **The two readers of the catalog must not disagree.** `row_condition`
-    /// flags the row `missing`; this guard refuses the write. They are two
-    /// call sites of `candidates::split` + `catalog_hit`, so this is the
-    /// test that keeps them one rule -- including the substring tier, which
-    /// an equality comparison would get wrong in exactly the way measured on
-    /// airm3 2026-08-16.
+    /// **The agreement is now structural, so this pins the VERDICTS rather
+    /// than the agreement.** Both readers are projections of one
+    /// `app_lookup` call, so they can no longer differ; what is still worth
+    /// asserting is what `missing` actually MEANS for six inputs, because
+    /// four of the six are counter-intuitive and each was a measured defect
+    /// once: the substring tier (`Settings`, `B`), and a candidate chain
+    /// resolving from either rung.
+    ///
+    /// Kept rather than deleted for that reason. If `app_lookup` ever grows
+    /// a second caller that re-reads the catalog instead of projecting it,
+    /// this is also the place the drift shows up first.
     #[test]
-    fn the_autosave_guard_agrees_with_the_row_flag_about_missing() {
+    fn what_the_missing_flag_means_for_six_app_values() {
         for (app, want_missing) in [
             ("Brave", false),
             ("Settings", false), // substring of `System Settings`

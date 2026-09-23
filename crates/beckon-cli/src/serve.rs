@@ -2413,6 +2413,18 @@ fn forget_settings(state: &Rc<RefCell<ServeState>>) {
 /// on any door and never neither. `settings::the_warning_is_on_screen_from_
 /// every_door` is the assertion, and it is the reason this function still needs
 /// no guard.
+///
+/// **NARROWED 2026-09-23, auto-save: the two paragraphs above are now a
+/// WINDOWS sentence.** They are still exactly right there, and nothing about
+/// them changed. What changed is that macOS grew a second writer: `autosave`
+/// refuses a write whose base has moved and leaves the model DIRTY, so the
+/// close prompt's `Save` reaches this function with an edit auto-save has
+/// already declined to make -- and without a guard it makes it anyway, over
+/// the top of whoever moved the file. "The warning is on screen" is a real
+/// protection against a person pressing Save blind; it is no protection at
+/// all against a prompt that offers Save as the way out of a refusal. So
+/// there IS a guard here again, `#[cfg(target_os = "macos")]`, immediately
+/// before the write. See it for why it is not on both platforms.
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn apply_settings(state: &Rc<RefCell<ServeState>>) {
     let rendered = {
@@ -2429,6 +2441,47 @@ fn apply_settings(state: &Rc<RefCell<ServeState>>) {
             return;
         }
     };
+    // **The same compare-and-swap `autosave` runs, immediately before the
+    // same write (I3).** Without it this function is a second door onto the
+    // file with no guard on it: `autosave` holds a write because the base
+    // moved, the model stays dirty, and the close prompt's `Save` then calls
+    // straight through here and clobbers the external edit auto-save had
+    // just refused to clobber. The read is here rather than at the top of
+    // the function for the reason `autosave` states: the pairing IS the
+    // guard.
+    //
+    // **macOS only, and that is not timidity.** On Windows `Keep mine` only
+    // dismisses the banner -- it has no write behind it there -- so a
+    // refusal here would leave no way at all to save over an external edit,
+    // which is a regression in the Save workflow this branch is required to
+    // leave alone. Windows keeps its documented protection instead: the
+    // banner or the warn dot is on screen from every door, so no Save is
+    // pressed without the warning having been visible.
+    #[cfg(target_os = "macos")]
+    {
+        let base = state
+            .borrow()
+            .settings
+            .as_ref()
+            .map(|m| m.original().to_string());
+        let moved = match (base, std::fs::read_to_string(&path)) {
+            (Some(base), Ok(disk)) => disk != base,
+            // Unreadable is the stale-base case by another name, exactly as
+            // `autosave` treats it.
+            (Some(_), Err(_)) => true,
+            (None, _) => false,
+        };
+        if moved {
+            state.borrow_mut().external_change = true;
+            refresh_settings(state);
+            swin::error(
+                "Not saved - the file changed on disk.\n\nYour edits are still here. \
+                 Use Reload to take the file's version, or Keep mine to write yours \
+                 over it.",
+            );
+            return;
+        }
+    }
     if let Err(e) = write_config_text(&path, &text) {
         swin::error(&format!("Cannot write {}:\n\n{e}", path.display()));
         return;
@@ -3645,6 +3698,128 @@ mod tests {
         assert!(m.take_undo().unwrap().contains("Brave"), "newest first");
         assert!(m.take_undo().unwrap().contains("Anki"), "then the original");
         assert_eq!(m.take_undo(), None);
+    }
+
+    /// **C1, at the level the defect was found: `Add` must survive the next
+    /// tick.** `add_row` dirties the model and `render` drops the
+    /// unfinished row, so the plan used to answer `Write` with bytes
+    /// identical to the file -- and the reseed then threw the new row away.
+    /// Probed before the fix: `rows 2 -> 1`, `selected Some(1) -> None`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn adding_a_row_survives_the_autosave_that_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        let mut st = test_state(&config);
+        let mut m = beckon_core::settings::Model::from_text(before).unwrap();
+        m.add_row();
+        let added = m.rows.len() - 1;
+        m.selected = Some(added);
+        st.settings = Some(m);
+
+        assert_eq!(autosave(&mut st, false), None);
+
+        let m = st.settings.as_ref().unwrap();
+        assert_eq!(
+            m.rows.len(),
+            2,
+            "the row the user just added is still there"
+        );
+        assert_eq!(m.selected, Some(added), "and is still the row being edited");
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "and nothing was written, because nothing would have changed"
+        );
+        assert!(
+            !m.can_undo(),
+            "a no-op write must not leave a no-op entry on the stack"
+        );
+    }
+
+    /// **C2, at the level the defect was found.** Editing a chord rewrites
+    /// the row's key; a `ViewState` keyed on the pre-write `orig_key`
+    /// matched nothing afterwards and the selection vanished on the
+    /// keystroke that moved it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn editing_a_chord_keeps_the_selection_through_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(
+            &config,
+            "\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n",
+        )
+        .unwrap();
+
+        let mut st = test_state(&config);
+        let text = std::fs::read_to_string(&config).unwrap();
+        let mut m = beckon_core::settings::Model::from_text(&text).unwrap();
+        m.selected = Some(1);
+        m.set_combo(1, "ctrl+alt+c");
+        st.settings = Some(m);
+
+        assert_eq!(autosave(&mut st, false), None);
+
+        let m = st.settings.as_ref().unwrap();
+        let i = m
+            .selected
+            .expect("the selection must survive its own keystroke");
+        assert_eq!(m.rows[i].app, "Brave", "and stay on the SAME binding");
+        assert!(std::fs::read_to_string(&config).unwrap().contains("alt+c"));
+    }
+
+    /// **Rule 1's other half: a write that FAILED must leave no undo entry**
+    /// (I2). The entry is pushed before the rename, so if the rename never
+    /// happens the entry describes a file state that never existed -- and
+    /// Undo would then write that state over a file nobody asked it to
+    /// touch.
+    ///
+    /// The failure is made by taking write permission off the directory, so
+    /// `fs::write` of the temp file cannot succeed. Restored afterwards or
+    /// `TempDir`'s own cleanup fails.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_failed_write_leaves_no_undo_entry() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
+        std::fs::write(&config, before).unwrap();
+
+        let mut st = state_with_an_edit(&config, "Brave");
+
+        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = autosave(&mut st, false);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        // The control: the write really did fail, so this test is about a
+        // failed write and not about a write that quietly worked.
+        assert_eq!(
+            outcome,
+            Some(beckon_core::settings::NotSaved::CannotWrite),
+            "precondition: the directory must really have refused the write"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            before,
+            "and nothing reached the file"
+        );
+
+        assert!(
+            !st.settings.as_ref().unwrap().can_undo(),
+            "an entry left behind here describes a file state that never \
+             existed, and Undo would write it over a file nobody touched"
+        );
+        assert!(
+            st.settings.as_ref().unwrap().dirty(),
+            "the edit is still only in memory, so the model must still say so"
+        );
     }
 
     /// `Keep mine` is the one deliberate clobber, and the other party's text
