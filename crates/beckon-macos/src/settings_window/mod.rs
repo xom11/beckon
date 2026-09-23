@@ -155,12 +155,17 @@ mod widgets;
 /// Shortcuts is the tallest by 54 pt over About and by 216 pt over System --
 /// the 216 pt is the empty band this task removes. The table stays here as
 /// the record of why a shared height was wrong, not as a live derivation:
-/// `WINDOW_WIDTH` / `WINDOW_HEIGHT` below no longer come from it.
+/// `WINDOW_WIDTH` / `WINDOW_HEIGHT` below no longer come from it. Their only
+/// job now is the window's as-constructed content rect, below -- `size_to_page`
+/// corrects it to the open door's own height before the user ever sees that
+/// rect (`show_page_sized`).
 const WINDOW_WIDTH: f64 = 640.0;
-/// The window's first-open height. Still the Shortcuts number above --
-/// Shortcuts is still the tallest door -- but no longer a shared floor:
-/// `show_page` corrects every door, including the first one shown, to its
-/// own fitting height via `size_to_page`.
+/// The window's first-open height, and nothing else -- the literal content
+/// rect passed to `initWithContentRect:`, below. Still the Shortcuts number
+/// above, because Shortcuts is still the tallest door, but no longer a
+/// shared floor: `show_page_sized` corrects every door, including the first
+/// one `open()` shows, to its own fitting height via `size_to_page` --
+/// animated for a later switch (`show_page`), unanimated for that first one.
 const WINDOW_HEIGHT: f64 = 500.0;
 
 /// The shortest content height the window will take, whatever the page asks
@@ -610,6 +615,28 @@ fn on_capture(outcome: beckon_core::capture::Outcome) {
 ///    empty bar is indistinguishable from the window ground, and reserving
 ///    it keeps one meaning for the content's bottom edge.
 fn show_page(p: Page) {
+    show_page_sized(p, true);
+}
+
+/// `show_page`'s full body, parameterized on whether the resize at the end
+/// animates.
+///
+/// **`show_page` itself is the animated entry point** — the toolbar, the
+/// menu and `Add` all want the switch to be seen moving — so it hard-codes
+/// `true` and stays what every one of those callers reaches. `open()` is
+/// the one caller that must not animate: it calls this directly, with
+/// `false`, for its first page. Fix round 1 (2026-09-23): `open()` used to
+/// call `show_page(page)` (animated), then reset the window to
+/// `WINDOW_WIDTH` x `WINDOW_HEIGHT`, then call `size_to_page(&c, page,
+/// false)` a second time — three writes to the frame before the user ever
+/// sees one, the middle write undoing the first and the third undoing the
+/// second, which is a worse bug than the one either half was written to
+/// fix: `raise(&window)` (below, in `open()`) has already put the window on
+/// screen at its as-constructed size, so an ANIMATED first resize is
+/// visible. There is exactly one call to `size_to_page` on `open()`'s path
+/// now, `false`, and this function is what makes that possible without
+/// duplicating everything else `show_page` does.
+fn show_page_sized(p: Page, animate: bool) {
     // **Before the unchanged-door guard would have been wrong**: a recording
     // must end even when `show_page` is called for the door already open,
     // because `Add` and the toolbar both route through here.
@@ -639,7 +666,7 @@ fn show_page(p: Page) {
     if now != Some(p) {
         cmd(SettingsCommand::ShowPage(p));
     }
-    size_to_page(&c, p, true);
+    size_to_page(&c, p, animate);
 }
 
 /// Size the window to the page it is showing, keeping the title bar where
@@ -1950,10 +1977,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // i.e. the card's bottom border would move while the user typed in it. It
     // also buys nothing at the floor: `size_to_page` (retired `MIN_HEIGHT`,
     // 2026-09-23) recomputes the Shortcuts door's own drag-floor from its
-    // CURRENT fitting size on every push, so a note that pops in and out
-    // would drag that floor with it -- the same card-bottom-moves problem
-    // one level lower. The 48 pt that was worth reclaiming was under the
-    // command bar, and `ROWS` spends it.
+    // CURRENT fitting size on every page switch, so a note that pops in and
+    // out would drag that floor with it -- the same card-bottom-moves
+    // problem one level lower. The 48 pt that was worth reclaiming was
+    // under the command bar, and `ROWS` spends it.
     let notes = widgets::wrapping("", mtm);
 
     // --- command bar ------------------------------------------------------
@@ -2088,7 +2115,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 500.0)),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+            ),
             NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
                 | NSWindowStyleMask::Miniaturizable
@@ -2217,41 +2247,30 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         });
     });
     CB.with(|c| *c.borrow_mut() = Some(cb));
-    // Open on the door the caller remembered. `page` is no longer accepted
-    // and discarded — that line (`let _ = page;`) was this window's whole
-    // relationship with the four-door design.
-    show_page(page);
-
-    // **Size the window AFTER `show_page`, never before, and this ordering is
-    // the whole bug.** Until `show_page` runs, all four doors are visible and
-    // the content genuinely needs about 1048 points of height; a
-    // `setContentSize` there is fought by the constraints and loses. Three
-    // doors then hide, `fittingSize` drops to about 430 — and the window does
-    // NOT shrink back on its own, so it sat at 640x1080 with every row inside
-    // stretched to fill it.
+    // Open on the door the caller remembered, through `show_page_sized`
+    // directly rather than through `show_page` -- `open()` is the one
+    // caller that must not animate the switch, and `show_page_sized`'s own
+    // doc has the fix-round-1 account of why a `show_page` call followed by
+    // a separate reset-and-resize was wrong here. `page` is no longer
+    // accepted and discarded — that line (`let _ = page;`) was this
+    // window's whole relationship with the four-door design.
     //
-    // Nothing reported anything. The window was on screen at a plausible
-    // size, the root stack was laid out correctly for the size it had, and
-    // `fittingSize` said 506x430 while the frame said 640x1080 — the two
-    // numbers that had to be compared were never printed side by side until
-    // `examples/settings_drive.rs` printed them. It is now an assertion
-    // there.
+    // **Sizing still has to happen AFTER the door-hiding, never before —
+    // that ordering is the one thing this comment has always protected, and
+    // it still holds.** Until the doors that are not `page` are hidden, all
+    // four are visible and the content genuinely needs about 1048 points of
+    // height; a size taken there is fought by the constraints and loses.
+    // Measured 2026-08-16 with `examples/settings_drive.rs`: a window sized
+    // before the other three doors hid sat at 640x1080 while
+    // `root.fittingSize()` already answered 506x430 for the state it was
+    // ABOUT to be in and did not shrink back on its own — the two numbers
+    // that had to be compared were never printed side by side until that
+    // example printed them. `show_page_sized` hides the doors and sizes the
+    // window in that order, inside one call, so the two cannot be pulled
+    // apart again by a future edit.
+    show_page_sized(page, false);
+
     if let Some(c) = controls() {
-        c.window
-            .setContentSize(NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT));
-        // **Then correct to the door actually being opened, unanimated.**
-        // `show_page`, just above, already ran `size_to_page(&c, p, true)`
-        // for `page` -- but animated, and against whatever frame the window
-        // happened to have while under construction, which is not
-        // `WINDOW_WIDTH` x `WINDOW_HEIGHT`. A caller can open straight onto
-        // any of the four doors (a broken-shortcut tray row lands on
-        // Shortcuts; a settings-window shortcut can land elsewhere), so the
-        // door here is not always the tallest one `WINDOW_HEIGHT` was
-        // measured for. This second, unanimated call is what makes the
-        // FIRST frame on screen the right one rather than a briefly-wrong
-        // one corrected a moment later -- see `size_to_page`'s own doc on
-        // why `animate` is false here.
-        size_to_page(&c, page, false);
         c.window.center();
 
         // **Reading the stored opacity into `Ui` is only half of honouring
