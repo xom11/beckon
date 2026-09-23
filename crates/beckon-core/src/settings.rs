@@ -43,6 +43,19 @@ pub struct Model {
     /// row whatever the filter says, and `Model::visible` exempts it so the
     /// filter can never hide the row the user is working on.
     filter: String,
+    /// File texts from before each of the last `UNDO_DEPTH` writes, oldest
+    /// first. Pushed by the driver before every write and popped by Undo.
+    ///
+    /// **Undo does not push.** Popping and then recording the restore would
+    /// make the control a two-state toggle rather than a stack. Redo is
+    /// deliberately not built.
+    ///
+    /// **An external change clears this.** Every entry's base is this
+    /// model's `original`; once the file has moved under us, restoring one
+    /// would clobber whatever the other writer did -- the loss the
+    /// compare-and-swap guard exists to prevent, arriving through the Undo
+    /// button instead of through a stale write.
+    undo: Vec<String>,
 }
 
 /// How much a `Problem` costs. `Error` refuses the write; `Warning` is
@@ -2030,6 +2043,7 @@ impl Model {
             original: text.to_string(),
             dirty: false,
             filter: String::new(),
+            undo: Vec::new(),
         })
     }
 
@@ -2408,6 +2422,32 @@ impl Model {
                 .map(|c| c.canonical() == canonical)
                 .unwrap_or(false)
         })
+    }
+
+    /// How many writes back Undo can reach.
+    ///
+    /// Chosen, not measured: deep enough that a session of editing stays
+    /// recoverable, shallow enough that the whole history is a handful of
+    /// file-sized strings.
+    pub const UNDO_DEPTH: usize = 20;
+
+    pub fn push_undo(&mut self, text: String) {
+        self.undo.push(text);
+        if self.undo.len() > Self::UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn take_undo(&mut self) -> Option<String> {
+        self.undo.pop()
+    }
+
+    pub fn clear_undo(&mut self) {
+        self.undo.clear();
     }
 }
 
@@ -8031,5 +8071,47 @@ mod tests {
                 assert!(page_label(p, l).is_ascii());
             }
         }
+    }
+
+    // ---------- the bounded undo history (G-g) ----------
+
+    #[test]
+    fn undo_returns_the_text_from_before_the_last_write() {
+        let mut m = Model::from_text("\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+        m.push_undo("first".into());
+        m.push_undo("second".into());
+        assert!(m.can_undo());
+        assert_eq!(m.take_undo().as_deref(), Some("second"));
+        assert_eq!(m.take_undo().as_deref(), Some("first"));
+        assert_eq!(m.take_undo(), None);
+        assert!(!m.can_undo());
+    }
+
+    #[test]
+    fn the_undo_stack_is_bounded_and_drops_the_oldest() {
+        let mut m = Model::from_text("").unwrap();
+        for i in 0..(Model::UNDO_DEPTH + 5) {
+            m.push_undo(format!("{i}"));
+        }
+        // The newest survives.
+        assert_eq!(
+            m.take_undo().as_deref(),
+            Some(format!("{}", Model::UNDO_DEPTH + 4).as_str())
+        );
+        // Exactly UNDO_DEPTH entries were kept, so the oldest five are gone.
+        let mut left = 1; // one already taken
+        while m.take_undo().is_some() {
+            left += 1;
+        }
+        assert_eq!(left, Model::UNDO_DEPTH);
+    }
+
+    #[test]
+    fn clearing_the_undo_stack_leaves_nothing_to_restore() {
+        let mut m = Model::from_text("").unwrap();
+        m.push_undo("a".into());
+        m.clear_undo();
+        assert!(!m.can_undo());
+        assert_eq!(m.take_undo(), None);
     }
 }
