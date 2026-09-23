@@ -2977,9 +2977,8 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
     // -- so the dirty test below would raise `the file changed on disk`
     // about beckon's own keystroke, once per word. The model's `original` IS
     // the text auto-save last wrote, so comparing it against the file
-    // settles it: equal means nothing external happened and there is nothing
-    // to follow. It closes the same hole for Save, where the rebuild below
-    // was silently costing the user their selection and their filter.
+    // settles it: equal means nothing external happened, and there is no
+    // BANNER to raise and no reload-from-disk to run.
     let ours = {
         let s = state.borrow();
         match (s.settings.as_ref(), std::fs::read_to_string(&s.config)) {
@@ -2988,6 +2987,34 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
         }
     };
     if ours {
+        // **There is still something to follow, and this is it.** `reload`
+        // called this AFTER re-registering and writing the fresh outcome
+        // into `ServeState::registered` -- which is the one thing that made
+        // the write worth catching in the first place, and the window has
+        // not heard about it yet. `refresh_settings` was already called once
+        // this edit, synchronously, right after the write, by the callback
+        // that made it -- against the OLD `registered`, because the OS
+        // hadn't finished re-registering yet. Skipping this push leaves the
+        // service line reading whatever that first push drew (`19 of 20`
+        // for a chord edit -- the old chord's entry is gone from the row's
+        // lookup key and the new one is not in the map yet) until the window
+        // is closed and reopened, GLOBS a `Saved just now` readout right
+        // beside a count that looks like the edit broke a binding it did
+        // not. Measured 2026-09-23: `serve.log` said `reloaded - 20
+        // shortcuts registered` three times over while the open window kept
+        // showing `19 of 20`.
+        //
+        // Safe unconditionally: `ours` is only ever `true` when
+        // `s.settings` is `Some` (the `_ => false` arm above covers every
+        // other case), and the model here always mirrors the file -- that
+        // is the whole definition of `ours` -- so there is no "stale model
+        // against a fresh registration map" to redraw, only a stale MAP
+        // against a model that already caught up. Predates auto-save: this
+        // branch existed on the Save path alone from 2026-08-16
+        // (`2340641`) onward and has always had the same gap; auto-save
+        // only made the write, and therefore the gap, land on every
+        // keystroke instead of once per explicit Save.
+        refresh_settings(state);
         return;
     }
     let dirty = match state.borrow().settings.as_ref() {
