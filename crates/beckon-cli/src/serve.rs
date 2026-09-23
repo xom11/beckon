@@ -2998,22 +2998,40 @@ fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
         // service line reading whatever that first push drew (`19 of 20`
         // for a chord edit -- the old chord's entry is gone from the row's
         // lookup key and the new one is not in the map yet) until the window
-        // is closed and reopened, GLOBS a `Saved just now` readout right
+        // is closed and reopened, sitting a `Saved just now` readout right
         // beside a count that looks like the edit broke a binding it did
         // not. Measured 2026-09-23: `serve.log` said `reloaded - 20
         // shortcuts registered` three times over while the open window kept
         // showing `19 of 20`.
         //
-        // Safe unconditionally: `ours` is only ever `true` when
-        // `s.settings` is `Some` (the `_ => false` arm above covers every
-        // other case), and the model here always mirrors the file -- that
-        // is the whole definition of `ours` -- so there is no "stale model
-        // against a fresh registration map" to redraw, only a stale MAP
-        // against a model that already caught up. Predates auto-save: this
-        // branch existed on the Save path alone from 2026-08-16
-        // (`2340641`) onward and has always had the same gap; auto-save
-        // only made the write, and therefore the gap, land on every
-        // keystroke instead of once per explicit Save.
+        // **CORRECTED 2026-09-23: this is a regression `67ab70c` introduced,
+        // not a gap that predates auto-save.** Before that commit `ours`
+        // did not exist here: a clean model -- exactly the state right
+        // after Save reseeds -- took the `else` branch below
+        // unconditionally and called `reload_settings_from_disk`, which
+        // always ends in `refresh_settings`. `67ab70c` added the self-write
+        // suppression this branch IS (a banner firing about beckon's own
+        // write on every keystroke would have been worse, and that
+        // acceptance still stands), and in doing so dropped the refresh the
+        // old path had. This line is the missing half of that trade.
+        //
+        // Save shows the same stale count TODAY, present tense, for a
+        // separate and simpler reason: `apply_settings` (`:2436`) never
+        // touches `s.registered` at all -- only `reload()` does -- so a
+        // chord edit followed by Save reaches this same branch with the
+        // same stale map, on both platforms (this function is
+        // `any(windows, macos)`).
+        //
+        // Safe regardless of whether the model is dirty by the time this
+        // runs. `original()` is a fixed base and `dirty()` is an independent
+        // flag, so `ours == true` (disk text still equals the base) can
+        // coexist with the user having typed again during the debounce --
+        // "the model always mirrors the file" is not literally true here.
+        // The push is safe anyway: `refresh_settings` redraws from whatever
+        // `s.settings` CURRENTLY holds, dirty or not, which is exactly what
+        // `autosave_tick` already does on a dirty model several times a
+        // second. Nothing about this call site makes a dirty model unsafe
+        // to redraw.
         refresh_settings(state);
         return;
     }
