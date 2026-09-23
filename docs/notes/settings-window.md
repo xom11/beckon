@@ -664,6 +664,45 @@ pages and is the arm's only reader.
 hidden per page. Then the builder asks, and the arm stops being
 documentation.
 
+### `pub` inside a `pub mod` is outside the dead-code lint, in both window crates
+
+2026-09-23. `crates/beckon-macos/src/lib.rs:31` and
+`crates/beckon-windows/src/lib.rs:76` both spell `pub mod settings_window;`, so
+every `pub fn` inside is reachable from outside the crate and `dead_code` can
+never fire for one — however many doors have stopped calling it. **This is how
+an orphaned `ask_save` / `SaveChoice` pair survived two tasks on the macOS side
+of the auto-save branch**, with the gate green the whole time.
+
+Re-verified at the end of that branch and the hole is currently **empty**: all
+12 top-level `pub` items in `beckon-macos/src/settings_window/mod.rs` have live
+`swin::` call sites (`app_field_quiet_for` 2, `apply_about_state` 1,
+`apply_state` 1, `apply_system_state` 1, `error` 8, `flush_paint` 2, `is_open`
+1, `open` 4, `open_existing` 1, `open_path` 1, `post_catalog` 2,
+`set_update_state` 1). The four submodules are private `mod`, so they do not
+share the hole.
+
+**The structural close was attempted and left undone, deliberately.** Make the
+module private and re-export a curated facade —
+`mod settings_window; pub mod swin { pub use super::settings_window::{..}; }` —
+after which anything added and not added to the list is flagged by the existing
+gate, by construction. Measured cost before writing it: it is **not** the
+one-line change it looks like.
+
+- It renames a crate's public path (`beckon_macos::settings_window` →
+  `beckon_macos::swin`), so every importer moves: `beckon-cli/src/serve.rs` and
+  **five `beckon-macos/examples/`** (`about_update_probe`, `geom_probe`,
+  `settings_drive`, `settings_probe`, `settings_shots`), which `--all-targets`
+  compiles. Seven files, eight sites, plus the prose references.
+- The same move on `beckon-windows` is what makes it a rule rather than a
+  local habit, and that crate was off limits for the branch that found this.
+  A "by construction" guarantee that holds for one of two twins, while the
+  other needs the note anyway, is worse than one rule both are held to.
+
+So the rule is recorded here instead: **a new `pub fn` in either
+`settings_window` is invisible to the dead-code gate, and nothing but a reader
+will notice when its last caller goes.** When the facade is done, do both
+crates in one change and delete this paragraph.
+
 ## The status vocabulary is four words, and a healthy row says nothing
 
 `paused` > `in use` > `missing` > `other chord`, and that order IS the
