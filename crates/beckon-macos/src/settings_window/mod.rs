@@ -37,17 +37,20 @@
 //!   a string compare would make `"super+ctrl+alt+t"` look like an edit and
 //!   mark a file dirty that nobody touched.
 //!
-//! ## There are two ways out, and neither may be the cheap one
+//! ## The close route, and the bug that made it one function
 //!
-//! The command bar's `Close` and the title bar's red `X` are different
-//! machinery — a button action and the window's own close path — and until
-//! the `NSWindowDelegate` below existed only the first ran any of the code
-//! that matters. The `X` skipped `on_close_request` (so the unsaved-edits
-//! prompt could be bypassed by clicking three pixels away from it) and
-//! skipped the teardown (so `UI` kept a closed window and `is_open()` stayed
-//! wedged `true`, which makes `open_settings` raise a dead window forever
-//! rather than build a new one). Both routes now meet in `may_close` and
-//! `teardown`, which are the only two places either decision is written.
+//! Until Task 11 there were two ways out: the command bar's `Close` button
+//! and the title bar's red `X` — a button action and the window's own close
+//! path. Auto-save retired the button along with `Save` and `Open config
+//! file`, so the `X` is the only route left. It did not used to be enough on
+//! its own: before the `NSWindowDelegate` below existed, only the button ran
+//! any of the code that mattered. The `X` skipped `on_close_request` (so the
+//! unsaved-edits prompt could be bypassed by clicking three pixels away from
+//! it) and skipped the teardown (so `UI` kept a closed window and
+//! `is_open()` stayed wedged `true`, which makes `open_settings` raise a
+//! dead window forever rather than build a new one). `may_close` and
+//! `teardown` are what fixed that, and they stay the single answer now that
+//! only one route reaches them.
 //!
 //! An `NSWindow` built with `initWithContentRect:` is `releasedWhenClosed`
 //! by default, and `Controls::window` is a `Retained` — a strong reference.
@@ -65,8 +68,8 @@
 //! answer that, and it has to run in an Aqua session.
 
 use beckon_core::settings::{
-    command_bar_shown, copy_text, not_saved_phrase, page_label, Bar, Callbacks, ControlState,
-    Field, Mark, Page, PageLabels, Paths, SavedReadout, SettingsCommand,
+    copy_text, not_saved_phrase, page_label, Callbacks, ControlState, Field, Mark, Page,
+    PageLabels, Paths, SavedReadout, SettingsCommand,
 };
 // `beckon_core::settings::Target` names a link destination; `Target` in this
 // file is the Objective-C class every control sends its action to. Aliasing
@@ -235,18 +238,22 @@ struct Controls {
     /// that is not open contributes no height — the AppKit spelling of
     /// `compute_card_rects` being page-dependent.
     pages: [Retained<NSView>; 4],
-    /// The command band itself, one row: `service`, a spring, and the three
-    /// buttons `show_page` shows or hides. Held here (not just stacked into
-    /// `root`) because `size_to_page` needs its `fittingSize().height` --
-    /// the band's own chrome is not a constant, and guessing it is exactly
-    /// the "three spellings of how tall is this door" `content_height`'s
-    /// doc warns against.
+    /// The command band itself, one row: `service`, a spring, and the
+    /// readout/`Undo` pair. Held here (not just stacked into `root`) because
+    /// `size_to_page` needs its `fittingSize().height` -- the band's own
+    /// chrome is not a constant, and guessing it is exactly the "three
+    /// spellings of how tall is this door" `content_height`'s doc warns
+    /// against.
+    ///
+    /// **Used to also hold `Save` / `Close` / `Open config file`.** Task 11
+    /// retired all three along with the visibility loop that hid them on two
+    /// of the four doors; the band's content is now the same on every page.
     bar: Retained<NSStackView>,
     /// `Serving · N of M` / `Paused` / `Not serving`.
     ///
-    /// Lives in the command bar and is drawn on **all four** doors, which is
-    /// the whole reason `show_page` hides the three BUTTONS rather than the
-    /// band that holds them.
+    /// Lives in the command bar and is drawn on **all four** doors, same as
+    /// `readout` and `undo` beside it -- the band's content no longer
+    /// depends on which door is open.
     service: Retained<NSTextField>,
     /// The command bar's right half (four-doors §6.4): what the last
     /// auto-save did. Also on all four doors, like `service` -- `apply_state`
@@ -285,9 +292,6 @@ struct Controls {
     banner: Retained<NSTextField>,
     banner_reload: Retained<NSButton>,
     banner_keep: Retained<NSButton>,
-    save: Retained<NSButton>,
-    close_btn: Retained<NSButton>,
-    open_file: Retained<NSButton>,
     remove: Retained<NSButton>,
     add: Retained<NSButton>,
 }
@@ -627,10 +631,11 @@ fn on_capture(outcome: beckon_core::capture::Outcome) {
 ///    (spec §5.1) rather than the file name;
 /// 3. exactly one container is unhidden, and a hidden arranged subview
 ///    contributes no height, so the door that is shut costs nothing;
-/// 4. the command bar appears only on the doors that WRITE the config
-///    (`command_bar_shown`), while the band itself stays on all four — an
-///    empty bar is indistinguishable from the window ground, and reserving
-///    it keeps one meaning for the content's bottom edge.
+/// 4. the band stays on all four doors, unconditionally — `service`, the
+///    readout and `Undo` are chrome, not a per-page button row. Until Task
+///    11 this line gated `Save` / `Close` / `Open config file` on the doors
+///    that WRITE the config (`command_bar_shown`); those views are gone and
+///    nothing here decides visibility by page any more.
 fn show_page(p: Page) {
     show_page_sized(p, true);
 }
@@ -676,22 +681,13 @@ fn show_page_sized(p: Page, animate: bool) {
     for (i, v) in c.pages.iter().enumerate() {
         v.setHidden(i != page_index(p));
     }
-    // **The buttons, not the band.** The band carries the service line on
-    // every door; hiding it would take a status that belongs on all four off
-    // three of them. `command_bar_shown` answers only "does this door write
-    // the config", which is what decides the buttons.
-    //
-    // **Still `Bar::Buttons`, not `Bar::Readout`, until Task 11.** The net
-    // goes up before the button comes down (global constraints): this branch
-    // auto-saves nothing yet, so asking for the macOS readout here would
-    // hide Save/Close/Open config file with no replacement on screen. Task 5
-    // only makes the predicate platform-aware; Task 11 is where this call
-    // site switches to `Bar::Readout` alongside the readout/Undo control
-    // that replaces the row.
-    let buttons = command_bar_shown(p, Bar::Buttons);
-    for b in [&c.save, &c.close_btn, &c.open_file] {
-        b.setHidden(!buttons);
-    }
+    // **No per-page button row left to gate.** Until Task 11 this is where
+    // `Save` / `Close` / `Open config file` were shown or hidden by
+    // `command_bar_shown(p, Bar::Buttons)` -- `beckon_core::settings::Bar`'s
+    // own doc now answers `Bar::Readout` `false` on every page for exactly
+    // this reason: auto-save replaced the row with the readout/`Undo` pair,
+    // which is chrome and stays on screen on all four doors, like `service`
+    // beside it. There is nothing left for this function to hide.
     if now != Some(p) {
         cmd(SettingsCommand::ShowPage(p));
     }
@@ -1007,12 +1003,6 @@ define_class!(
             }
         }
 
-        #[unsafe(method(beckonSave:))]
-        fn on_save(&self, _s: &AnyObject) {
-            commit_fields();
-            with_cb(|cb| (cb.on_apply)());
-        }
-
         #[unsafe(method(beckonReload:))]
         fn on_reload(&self, _s: &AnyObject) {
             with_cb(|cb| (cb.on_reload_from_disk)());
@@ -1021,18 +1011,6 @@ define_class!(
         #[unsafe(method(beckonKeepMine:))]
         fn on_keep_mine(&self, _s: &AnyObject) {
             with_cb(|cb| (cb.on_keep_mine)());
-        }
-
-        #[unsafe(method(beckonClose:))]
-        fn on_close(&self, _s: &AnyObject) {
-            if may_close() {
-                close();
-            }
-        }
-
-        #[unsafe(method(beckonOpenFile:))]
-        fn on_open_file(&self, _s: &AnyObject) {
-            with_cb(|cb| (cb.on_open_file)());
         }
 
         /// The command bar's `Undo` (four-doors §6.4, G-g). Raised as a
@@ -1491,23 +1469,6 @@ fn combo_view_of() -> ComboView {
     }
 }
 
-/// Push whatever the fields hold into the model, before an action that
-/// depends on it (Save).
-///
-/// Sends nothing when the controls already agree with what is stored,
-/// compared as `ComboView`s rather than as strings — see the module doc.
-fn commit_fields() {
-    let Some(c) = controls() else { return };
-    let stored = UI.with(|u| u.borrow().as_ref().and_then(|x| x.shown_combo.clone()));
-    let app_text = c.app.stringValue().to_string();
-    if Some(combo_view_of()) != stored.as_deref().map(combo_view) {
-        if let Some(c) = shortcut_shown() {
-            with_cb(|cb| (cb.on_edit_combo)(c));
-        }
-    }
-    with_cb(|cb| (cb.on_edit_app)(app_text));
-}
-
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -1726,10 +1687,13 @@ fn teardown() -> Option<Ui> {
 ///
 /// Dropping that pair inline would deallocate them from inside a frame that
 /// is still using them: `windowWillClose:` is a method ON the delegate, sent
-/// from inside `-[NSWindow close]`, and the `Close` button that starts the
-/// other route is a subview of the content view the window owns — so the
-/// button's own action would return into freed memory. Handing both to the
-/// autorelease pool costs two slots and removes the whole class of failure.
+/// synchronously from inside `-[NSWindow close]` — the title bar's red `X`'s
+/// own route, and, since Task 11 retired the command bar's `Close` button,
+/// the only route left. Freeing `_target` while AppKit is still running a
+/// method on it, or freeing `window` before `-[NSWindow close]` has returned
+/// to ITS caller, is exactly the reentrancy this guards against. Handing
+/// both to the autorelease pool costs two slots and removes the whole class
+/// of failure.
 ///
 /// **`Ui::_toolbar_target` is NOT in that pair, and `drop(ui)` frees it
 /// inline, on this same call.** That is deliberately narrower than "every
@@ -1737,8 +1701,8 @@ fn teardown() -> Option<Ui> {
 /// reasons together, and losing either one reopens the same class of bug
 /// this function exists to close:
 ///
-/// - **No toolbar route reaches `close()` or `teardown()` at all.** Nothing
-///   here is symmetric with `windowWillClose:` — no `ToolbarTarget` method
+/// - **No toolbar route reaches `teardown()` at all.** Nothing here is
+///   symmetric with `windowWillClose:` — no `ToolbarTarget` method
 ///   (`item_for_identifier`, `default_identifiers`, `beckonToolbarPage:`, …)
 ///   is anywhere on the call stack that leads to this function, so freeing
 ///   `_toolbar_target` here does not free an object whose own method is
@@ -1752,10 +1716,10 @@ fn teardown() -> Option<Ui> {
 ///   hold on its own.
 ///
 /// **If a future change adds a route from inside a `ToolbarTarget` method
-/// to `close()`** — a toolbar item that could itself trigger a window close,
-/// say — this inline `drop` becomes exactly the bug `release_later` was
-/// written to close, and `_toolbar_target` needs to move into the
-/// `autorelease_ptr` pair above rather than staying here.
+/// to `windowWillClose:`** — a toolbar item that could itself trigger a
+/// window close, say — this inline `drop` becomes exactly the bug
+/// `release_later` was written to close, and `_toolbar_target` needs to move
+/// into the `autorelease_ptr` pair above rather than staying here.
 ///
 /// The pool is `[NSApp run]`'s, one per event; see the `serve` note in
 /// `CLAUDE.md` for why that loop and not Carbon's.
@@ -1763,23 +1727,6 @@ fn release_later(ui: Ui) {
     let _ = Retained::autorelease_ptr(ui.c.window.clone());
     let _ = Retained::autorelease_ptr(ui._target.clone());
     drop(ui);
-}
-
-/// Close the window from our side — the command bar's `Close`, and nothing
-/// else.
-///
-/// **`may_close` is the caller's job**, because AppKit asks that question
-/// itself on the routes it owns (`windowShouldClose:`) and asking twice
-/// would prompt twice.
-fn close() {
-    // Take the state out FIRST, then close. `NSWindow::close` runs
-    // `windowWillClose:` synchronously, and that handler must find the slot
-    // empty rather than borrowed — with the slot already empty it becomes a
-    // no-op and this function stays the single owner of the teardown.
-    if let Some(ui) = teardown() {
-        ui.c.window.close();
-        release_later(ui);
-    }
 }
 
 /// Hand the installed-app catalog to the window.
@@ -2182,15 +2129,18 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let notes = widgets::wrapping("", mtm);
 
     // --- command bar ------------------------------------------------------
-    let save = push("Save", sel!(beckonSave:), &target, mtm);
-    let open_file = push("Open config file", sel!(beckonOpenFile:), &target, mtm);
-    let close_btn = push("Close", sel!(beckonClose:), &target, mtm);
+    // **`Save` / `Open config file` / `Close` used to be built here, and are
+    // not any more.** Task 11 deleted the views along with `beckonSave:`,
+    // `beckonOpenFile:` and `beckonClose:` -- `command_bar_shown(page,
+    // Bar::Readout)` (`beckon_core::settings`) already answered `false` on
+    // every page, so there was no door left that showed them.
+    //
     // **The service line leads the bar, and it is on ALL FOUR doors.**
     // Design §6.4: it is chrome, not a page control. That is also why the
-    // BAND survives on the two doors that draw no buttons — `compute_card_rects`
-    // reserves it whatever the page says, so the content's bottom edge has one
-    // meaning, and an empty bar is indistinguishable from the window ground it
-    // is painted on.
+    // BAND survives on the two doors that used to draw no buttons —
+    // `compute_card_rects` reserves it whatever the page says, so the
+    // content's bottom edge has one meaning, and an empty bar is
+    // indistinguishable from the window ground it is painted on.
     let service = widgets::secondary("", mtm);
     // **The right half of the same line (design §6.4): what the last
     // auto-save did, and the one control beside it.** `readout` is a plain
@@ -2200,20 +2150,14 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // a local read of the model: see `apply_state`.
     let readout = widgets::secondary("", mtm);
     let undo = push("Undo", sel!(beckonUndo:), &target, mtm);
-    // `Open config file` then `Close` and `Save`: the pair that ends the
-    // session sits where the eye finishes. `Reload` is NOT here — the System
-    // door owns it now, and the banner owns the other one. `readout` and
-    // `undo` sit between the spring and that trio, which is what makes them
-    // the RIGHT half of the bar rather than a fourth button crowding Save.
+    // `readout` and `undo` are the whole right half now -- there is no
+    // trailing trio of buttons for them to sit between the spring and.
     let bar = hstack(
         &[
             &*service as &NSView,
             &*widgets::spring(mtm),
             &*readout,
             &undo,
-            &*open_file,
-            &close_btn,
-            &save,
         ],
         mtm,
     );
@@ -2395,10 +2339,12 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // push (`size_to_page`); this is only what a window has before that
         // first push runs.
         window.setContentMinSize(NSSize::new(MIN_WIDTH, MIN_CONTENT_HEIGHT));
-        // Save rests here, but the ring migrates to whichever push button
-        // has focus, so Enter on a tabbed-to Close closes.
-        let save_cell = save.cell().unwrap();
-        let _: () = msg_send![&*window, setDefaultButtonCell: &*save_cell];
+        // No default button cell to set: `Save` was the ring's resting
+        // point, migrating to whichever push button had focus, and Task 11
+        // deleted it along with `Close` and `Open config file`. Enter now
+        // does nothing until the user tabs onto a button, the same answer
+        // `DefaultButton::home` already gives Windows' System and About
+        // doors, which have no primary action either.
     }
     raise(&window);
 
@@ -2427,9 +2373,6 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 banner,
                 banner_reload,
                 banner_keep,
-                save,
-                close_btn,
-                open_file,
                 remove,
                 add,
             },
@@ -3010,7 +2953,6 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // `editable` is ANDed at every enable site rather than branched on:
         // the window is not allowed to know WHY it is read only.
         let edit = st.editable;
-        x.save.setEnabled(st.apply_enabled && edit);
         x.remove.setEnabled(st.remove_enabled && edit);
         x.add.setEnabled(edit);
         // `SavedReadout::Saved { undo }` is the one place this is decided --
@@ -3297,15 +3239,18 @@ mod tests {
 
     /// The window is not open in a test process, and `may_close` must still
     /// answer — otherwise a window that lost its callbacks could never be
-    /// shut by either route.
+    /// shut by the title bar's red `X`, the one route left since Task 11
+    /// retired the command bar's `Close`.
     #[test]
     fn a_close_request_with_no_callbacks_is_allowed() {
         assert!(!is_open());
         assert!(may_close());
     }
 
-    /// The point of the whole change: the red `X` and the `Close` button run
-    /// this one function, so `Cancel` means the same thing from either.
+    /// `windowShouldClose:` runs this one function, so `Cancel` means the
+    /// same thing on every call -- it used to also be the point where the
+    /// command bar's `Close` button agreed with the red `X`; Task 11 removed
+    /// the button, not the guarantee.
     #[test]
     fn cancel_refuses_the_close_and_the_callbacks_survive_it() {
         let seen = std::rc::Rc::new(std::cell::Cell::new(0));
