@@ -1424,10 +1424,18 @@ branch existed) that is kept as a record rather than a floor.
 - Core's service line uses a middle dot (`Serving · 20 of 20`) — non-ASCII in
   a GUI string, pre-existing and out of scope for this branch, but worth a
   line so a reader finds it deliberately rather than by surprise.
-- Both permission cards — About's Accessibility row and the Keyboard page's
-  Input Monitoring row — reserve a blank band in the granted state, because
-  `apply()` writes an empty string rather than hiding the field. Known and
-  deliberate; `apply()` was out of scope for this phase.
+- **The two permission cards behave differently in the granted state, and
+  only one of them reserves a blank band.** `keyboard.rs`'s `apply` writes an
+  empty string into the Input Monitoring row's note and never hides it
+  (`keyboard.rs:277`), so that card keeps a blank line where the warning
+  used to be. `about.rs`'s `apply` instead hides the field outright
+  (`about.rs:518`, `c.access.setHidden(warning.is_none())`), so the
+  Accessibility card collapses — measured as a 16 pt shrink, 109 to 93, with
+  the window following, 477 to 461. What About still shows in the granted
+  state is a row holding only the word "Accessibility" and no control, a
+  milder and different cosmetic item from the Keyboard page's blank line.
+  Both are known and deliberate; `apply()` was out of scope for this phase in
+  either file.
 - A `hstack` with two unconstrained springs is ambiguous, and AppKit's choice
   is not stable across unrelated constraint changes: About's links row sat
   hard right for both permission states before this branch, and hard LEFT in
