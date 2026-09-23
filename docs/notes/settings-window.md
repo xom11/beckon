@@ -598,9 +598,35 @@ the external-change warning is now an appended clause — `service_line`,
 line's mark to `Warn` unless it is already `Bad`. Neither reaches the tray's
 own `Needs attention` section: that lists rows whose BINDING is broken, is
 unrelated to a config file moving on disk, and predates this branch. The
-smoke test this guard motivated is retired with its surface:
-`the_warn_dot_is_the_complement_of_the_banner` now pins only core's
-`banner_shown` / `warn_dot_shown` partition, not a caption on this platform.
+smoke test this guard motivated is retired with its surface.
+
+**CORRECTED 2026-09-23: this paragraph used to end by saying the macOS test
+that replaced it "now pins only core's `banner_shown` / `warn_dot_shown`
+partition". It pinned nothing at all.** That test asserted `banner ^ dot`,
+and core DEFINES `warn_dot_shown` as `external_change && !banner_shown(..)`
+-- so with `external_change` true the assertion is `B ^ !B`, true for every
+input, a `banner_shown` returning `false` on every door included. Measured by
+mutation, with both tests in ONE test binary so the build cannot be what
+differs: replace `banner_shown`'s body with `false` and the old macOS test
+PASSES while core's `the_warning_is_on_screen_from_every_door` FAILS. It is
+the same shape core carries a dated `REWRITTEN 2026-08-14: it could not fail`
+marker about, reintroduced one crate over -- and two documents, this one and
+the test's own doc, stated the broken property as established fact.
+
+The macOS test is now `the_moved_file_reaches_every_door_of_this_shell`, and
+it asserts the two surfaces THIS shell draws rather than a relation between
+two core functions: the Shortcuts door's banner row, and the service line on
+all four doors. Every oracle is a constant written in the test. Under the
+same mutation it goes red, in the same run in which the retired one stayed
+green.
+
+**The correction turned up a second fact worth recording: the macOS shell
+never calls `banner_shown` at all.** `apply_state` hides `banner_row` on
+`!external_change` alone (`mod.rs:2794`), and the row is a child of the
+Shortcuts door's own view, so the per-door restriction is structural -- the
+other three doors are hidden views. Core's projection and this window's
+construction therefore agree by construction rather than by a call, which is
+free to drift and is exactly what the new test's first half checks.
 
 ## The status vocabulary is four words, and a healthy row says nothing
 

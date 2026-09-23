@@ -2904,33 +2904,102 @@ mod tests {
         assert_eq!(page_label(Page::Shortcuts, PageLabels::MAC), "Shortcuts");
     }
 
+    /// The moved-file fact reaches the screen from every door of THIS shell.
+    ///
     /// **`warn_dot_shown` had no implementation on this platform**, and the
-    /// whole design rested on it having one.
+    /// whole design rested on it having one. `apply_settings` keeps NO
+    /// external-change guard, and the note there argues the protection is
+    /// paid "in the WINDOW, by there being no door from which Save can be
+    /// pressed with nothing on screen saying the file moved." Measured on
+    /// airm3 2026-08-17, that premise was false here: with the file edited
+    /// underneath a dirty model -- `serve` logging `reloaded - 2 shortcuts
+    /// registered`, so beckon plainly knew -- nothing on any door said so,
+    /// and Save destroyed the external edit silently.
     ///
-    /// `banner_shown` and `warn_dot_shown` partition `external_change` so
-    /// that exactly one of them is up on any door and never neither
-    /// (`settings::the_warning_is_on_screen_from_every_door`). That partition
-    /// is what lets `apply_settings` keep NO external-change guard: the note
-    /// there argues the protection is paid "in the WINDOW, by there being no
-    /// door from which Save can be pressed with nothing on screen saying the
-    /// file moved."
+    /// **CORRECTED 2026-09-23: the version of this test that replaced the
+    /// retired tab caption could not fail.** It asserted `banner ^ dot` over
+    /// a `dot` that core DEFINES as `!banner_shown(..)` -- `B ^ !B`, true for
+    /// every input, a `banner_shown` answering `false` on every door
+    /// included. Proved by mutation: with that body replaced by `false` the
+    /// old test passed while core's
+    /// `the_warning_is_on_screen_from_every_door` failed. Its own doc and
+    /// `docs/notes/settings-window.md` both said it "pins core's partition";
+    /// it pinned nothing. That is the shape core carries its own dated
+    /// "REWRITTEN 2026-08-14: it could not fail" marker about, and this crate
+    /// reintroduced it.
     ///
-    /// Measured on airm3 2026-08-17, that premise was false here. With the
-    /// file edited underneath a dirty model -- `serve` logging
-    /// `reloaded - 2 shortcuts registered`, so beckon plainly knew -- nothing
-    /// on any door said so, and Save destroyed the external edit silently.
+    /// **So this asserts the two surfaces a door of this shell actually
+    /// shows, each against a constant written here.**
     ///
-    /// **The macOS shell no longer draws the dot at all** -- a toolbar item
-    /// cannot carry a caption that changes with the data the way the old
-    /// segment could (spec §5.1) -- so this test now pins only core's
-    /// partition, not a caption on this platform.
+    /// - The banner. Its row is a child of the Shortcuts door's own view
+    ///   (`open()`, `page_shortcuts`) and `apply_state` hides it on
+    ///   `!external_change` alone -- **this shell never calls
+    ///   `banner_shown`**, so core's projection and this window's
+    ///   construction are free to drift apart with nothing to say so. The
+    ///   door below is spelled out as the one whose view holds the row, not
+    ///   derived from the function being checked.
+    /// - The service line, on all four doors, which is where the retired
+    ///   strip's warn dot went (spec §5.1): `apply_state` layers the flag on
+    ///   with `service_line`, so the three doors with no banner are covered
+    ///   by the clause it appends and by the mark it raises.
+    ///
+    /// `warn_dot_shown` is deliberately absent: this shell draws no dot, and
+    /// asserting a value against its own complement is exactly how the last
+    /// version of this test stopped being able to fail.
     #[test]
-    fn the_warn_dot_is_the_complement_of_the_banner() {
-        use beckon_core::settings::{banner_shown, warn_dot_shown, Page};
+    fn the_moved_file_reaches_every_door_of_this_shell() {
+        use beckon_core::settings::{banner_shown, service_line, Mark, Page, ServiceLine};
+
+        // The door whose view holds `banner_row`. A constant, not an
+        // expression over anything this test checks.
+        const BANNER_DOOR: Page = Page::Shortcuts;
+
+        // The footer as it reads with nothing wrong, written out so the
+        // comparison below is against a literal rather than against a second
+        // call to the function under test.
+        let quiet = ServiceLine {
+            mark: Mark::Ok,
+            text: "Serving 1 of 1".to_string(),
+        };
+
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
             let banner = banner_shown(true, page);
-            let dot = warn_dot_shown(true, page);
-            assert!(banner ^ dot, "exactly one of the two is up on {page:?}");
+            assert_eq!(
+                banner,
+                page == BANNER_DOOR,
+                "the file has moved: core says the banner is {} on {page:?}, \
+                 while this shell builds `banner_row` into {BANNER_DOOR:?}'s view",
+                if banner { "drawn" } else { "missing" }
+            );
+            assert!(
+                !banner_shown(false, page),
+                "nothing has moved, so {page:?} must announce nothing"
+            );
+
+            let moved = service_line(quiet.clone(), true);
+            assert!(
+                moved.text.starts_with(&quiet.text) && moved.text.len() > quiet.text.len(),
+                "the service line on {page:?} must KEEP its text and add to it: {:?}",
+                moved.text
+            );
+            assert_eq!(
+                moved.mark,
+                Mark::Warn,
+                "the service line on {page:?} still reads as healthy"
+            );
+            assert_eq!(
+                service_line(quiet.clone(), false),
+                quiet,
+                "nothing has moved, so the {page:?} footer must be untouched"
+            );
+
+            // The claim the test is named for, and the only one that is
+            // about the door rather than about one surface of it.
+            let carriers = [banner, moved != quiet].iter().filter(|c| **c).count();
+            assert!(
+                carriers > 0,
+                "nothing this shell draws on {page:?} says the file moved"
+            );
         }
     }
 
