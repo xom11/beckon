@@ -62,27 +62,78 @@ pub(super) struct SystemControls {
     pub(super) log_reveal: Retained<NSButton>,
 }
 
-/// A row whose name sits left and whose control sits hard right.
-fn row(name: &NSView, tail: &[&NSView], mtm: MainThreadMarker) -> Retained<NSStackView> {
-    let mut v: Vec<&NSView> = vec![name];
-    let spring = w::spring(mtm);
-    v.push(&spring);
-    v.extend_from_slice(tail);
-    w::hstack(&v, mtm)
-}
-
 pub(super) fn build(
     target: &AnyObject,
     mtm: MainThreadMarker,
 ) -> (Retained<NSView>, SystemControls) {
-    // --- the service ------------------------------------------------------
+    // --- group 1: the service ------------------------------------------------
     let pause = w::switch(sel!(beckonPause:), target, mtm);
-    let pause_row = row(&w::label("Pause shortcuts", mtm), &[&pause], mtm);
+    let pause_row = w::form_row(
+        &w::labelled(
+            "Shortcuts on",
+            Some("Option-click the menu bar icon to toggle."),
+            mtm,
+        ),
+        &pause,
+        mtm,
+    );
 
     let reload = w::push("Reload", sel!(beckonReloadNow:), target, mtm);
-    let reload_row = row(&w::label("", mtm), &[&reload], mtm);
+    let reload_row = w::form_row(&w::labelled("Configuration", None, mtm), &reload, mtm);
 
-    // --- this window ------------------------------------------------------
+    let g_service = w::group(&[&*pause_row, &*reload_row], mtm);
+
+    // --- group 2: the files ----------------------------------------------------
+    let config_value = w::value("", mtm);
+    let config_open = w::glyph(
+        "Open",
+        "Open this file",
+        sel!(beckonOpenConfig:),
+        target,
+        mtm,
+    );
+    let config_reveal = w::glyph(
+        "Reveal",
+        "Show in Finder",
+        sel!(beckonRevealConfig:),
+        target,
+        mtm,
+    );
+    let config_tail = w::hstack(
+        &[&*config_value as &NSView, &config_open, &config_reveal],
+        mtm,
+    );
+    let config_row = w::form_row(&w::labelled("Config file", None, mtm), &config_tail, mtm);
+
+    // **The row's title stays the live filename, not a static caption.**
+    // `beckon_core::settings::FileRow`'s own doc says "the name IS the
+    // label" -- design §3.3 -- so unlike `Config file` above (which was
+    // already a fixed `"apps.toml"` on this platform, never `st.config`),
+    // this title is `log_name`, the same field `apply` has always pushed
+    // `st.log.name` into. Wrapping it in a static `Log` caption would orphan
+    // that push onto a field the window no longer draws.
+    let log_name = w::label("", mtm);
+    let log_value = w::value("", mtm);
+    let log_open = w::glyph("Open", "Open this file", sel!(beckonOpenLog:), target, mtm);
+    let log_reveal = w::glyph(
+        "Reveal",
+        "Show in Finder",
+        sel!(beckonRevealLog:),
+        target,
+        mtm,
+    );
+    let log_tail = w::hstack(&[&*log_value as &NSView, &log_open, &log_reveal], mtm);
+    let log_row = w::form_row(&log_name, &log_tail, mtm);
+    // Hidden until a push says otherwise. `apply` hides it whenever `serve`
+    // ran without `--log`, but the window is on screen before the first push
+    // — and an empty row carrying `Open` and `Reveal` beside no file name is
+    // exactly what that gap looked like. Photographed 2026-08-16,
+    // `macos-door-system.png`.
+    log_row.setHidden(true);
+
+    let g_files = w::group(&[&*config_row, &*log_row], mtm);
+
+    // --- group 3: this window --------------------------------------------------
     // **Built from `OPACITY_DEFAULT`, never spelled.** The literal here was
     // `"100%"`, and it is the string a row that never got a push keeps —
     // which is how "beckon defaults to 100%" became a thing two readers
@@ -103,68 +154,17 @@ pub(super) fn build(
         mtm,
     );
     w::pin_min_width(&opacity, 160.0);
-    let opacity_row = row(
-        &w::label("Window transparency", mtm),
-        &[&opacity_value, &opacity],
+    let opacity_tail = w::hstack(&[&*opacity_value as &NSView, &opacity], mtm);
+    let opacity_row = w::form_row(
+        &w::labelled("Window transparency", None, mtm),
+        &opacity_tail,
         mtm,
     );
 
-    // --- the files --------------------------------------------------------
-    let config_value = w::value("", mtm);
-    let config_open = w::glyph(
-        "Open",
-        "Open this file",
-        sel!(beckonOpenConfig:),
-        target,
-        mtm,
-    );
-    let config_reveal = w::glyph(
-        "Reveal",
-        "Show in Finder",
-        sel!(beckonRevealConfig:),
-        target,
-        mtm,
-    );
-    let config_row = row(
-        &w::label("apps.toml", mtm),
-        &[&config_value, &config_open, &config_reveal],
-        mtm,
-    );
+    let g_look = w::group(&[&*opacity_row], mtm);
 
-    let log_name = w::label("", mtm);
-    let log_value = w::value("", mtm);
-    let log_open = w::glyph("Open", "Open this file", sel!(beckonOpenLog:), target, mtm);
-    let log_reveal = w::glyph(
-        "Reveal",
-        "Show in Finder",
-        sel!(beckonRevealLog:),
-        target,
-        mtm,
-    );
-    let log_row = row(&log_name, &[&log_value, &log_open, &log_reveal], mtm);
-    // Hidden until a push says otherwise. `apply` hides it whenever `serve`
-    // ran without `--log`, but the window is on screen before the first push
-    // — and an empty row carrying `Open` and `Reveal` beside no file name is
-    // exactly what that gap looked like. Photographed 2026-08-16,
-    // `macos-door-system.png`.
-    log_row.setHidden(true);
-
-    let inner = w::vstack(
-        &[
-            &*pause_row as &NSView,
-            &reload_row,
-            &w::divider(mtm),
-            &opacity_row,
-            &w::divider(mtm),
-            &config_row,
-            &log_row,
-        ],
-        10.0,
-        mtm,
-    );
-
-    let card = w::card(&inner, mtm);
-    let view: Retained<NSView> = card.into_super();
+    let page = w::vstack(&[&*g_service, &*g_files, &*g_look], 12.0, mtm);
+    let view: Retained<NSView> = page.into_super();
 
     (
         view,
