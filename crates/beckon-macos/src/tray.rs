@@ -39,10 +39,10 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AnyThread, MainThreadOnly};
 use objc2_app_kit::{
     NSAccessibility, NSApplication, NSAttributedStringNSStringDrawing, NSAutoresizingMaskOptions,
-    NSColor, NSControl, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage,
-    NSLayoutAttribute, NSMenu, NSMenuDelegate, NSMenuItem, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSStackView, NSStatusBar, NSStatusItem, NSSwitch,
-    NSTextAlignment, NSTextField, NSTextTab, NSUserInterfaceLayoutOrientation,
+    NSBox, NSBoxType, NSButton, NSColor, NSControl, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSLayoutAttribute, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSStackView, NSStatusBar, NSStatusItem,
+    NSTextAlignment, NSTextField, NSTextTab, NSTitlePosition, NSUserInterfaceLayoutOrientation,
     NSVariableStatusItemLength, NSView, NSWorkspace,
 };
 use objc2_foundation::{
@@ -81,7 +81,11 @@ struct Tray {
 struct HeaderParts {
     dot: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
-    switch: Retained<NSSwitch>,
+    /// The drawn track, knob and hit target that replace `NSSwitch` --
+    /// `header_item`'s doc comment says why.
+    track: Retained<NSBox>,
+    knob: Retained<NSBox>,
+    button: Retained<NSButton>,
 }
 
 thread_local! {
@@ -460,7 +464,57 @@ fn dot_color(d: Dot) -> Retained<NSColor> {
 
 const HEADER_WIDTH: f64 = 260.0;
 
+/// Track/knob geometry for the drawn switch (`header_item`'s doc comment
+/// says why it is drawn rather than an `NSSwitch`).
+const TRACK_W: f64 = 34.0;
+const TRACK_H: f64 = 20.0;
+const KNOB_SIZE: f64 = 16.0;
+const KNOB_MARGIN: f64 = 2.0;
+
+fn track_color(on: bool) -> Retained<NSColor> {
+    if on {
+        NSColor::controlAccentColor()
+    } else {
+        NSColor::tertiaryLabelColor()
+    }
+}
+
+fn knob_x(on: bool) -> f64 {
+    if on {
+        TRACK_W - KNOB_SIZE - KNOB_MARGIN
+    } else {
+        KNOB_MARGIN
+    }
+}
+
+fn switch_accessibility_label(on: bool) -> Retained<NSString> {
+    NSString::from_str(if on { "Shortcuts on" } else { "Shortcuts off" })
+}
+
+/// A borderless, custom-drawn `NSBox`: the shared shape behind the track and
+/// the knob, and the same style `settings_window::widgets::card` uses for
+/// `NSBox`-as-drawn-shape rather than as a titled group box.
+fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
+    let b = NSBox::new(mtm);
+    b.setBoxType(NSBoxType::Custom);
+    b.setTitlePosition(NSTitlePosition::NoTitle);
+    b.setBorderWidth(0.0);
+    b
+}
+
 /// The header: dot, title over subtitle, and the switch hard right.
+///
+/// **The switch is drawn, not an `NSSwitch`.** Measured on airm3 (Darwin
+/// 25.6) against the real `serve`: beckon is a `UIElement` accessory app and
+/// is not the active application while its menu is open, so AppKit draws
+/// every `NSControl` inside it in its INACTIVE appearance -- an `NSSwitch`
+/// renders grey in both states there, and only knob position carried the
+/// state, which read as broken. `NSApp.activate()` on open was rejected: it
+/// would leave beckon active after the menu closes, stealing focus from
+/// whatever the user was in. So the track and the knob are two plain
+/// `NSBox`es coloured by hand (which do not have an "inactive" appearance to
+/// fall back to), with a transparent `NSButton` on top carrying the same
+/// target/action/tag an `NSSwitch` would have.
 fn header_item(
     id: u32,
     h: &Header,
@@ -494,16 +548,46 @@ fn header_item(
         1.0,
         objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
     );
-    let switch = NSSwitch::new(mtm);
-    switch.setState(if h.on { 1 } else { 0 });
+
+    let track = plain_box(mtm);
+    track.setCornerRadius(TRACK_H / 2.0);
+    track.setFillColor(&track_color(h.on));
+    track.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(TRACK_W, TRACK_H),
+    ));
+
+    let knob = plain_box(mtm);
+    knob.setCornerRadius(KNOB_SIZE / 2.0);
+    knob.setFillColor(&NSColor::whiteColor());
+    knob.setFrame(NSRect::new(
+        NSPoint::new(knob_x(h.on), KNOB_MARGIN),
+        NSSize::new(KNOB_SIZE, KNOB_SIZE),
+    ));
+    track.addSubview(&knob);
+
+    // The hit target, over the whole track and on top of the knob (added
+    // last) so it -- not the knob -- receives the click. Same
+    // target/action/tag the `NSSwitch` used to carry, so `dispatch` and
+    // `beckon_control_action` are unchanged.
+    let button = NSButton::new(mtm);
+    button.setTitle(&NSString::from_str(""));
+    button.setBordered(false);
+    button.setTransparent(true);
     unsafe {
-        switch.setTarget(Some(target as &AnyObject));
-        switch.setAction(Some(sel!(beckonControlAction:)));
+        button.setTarget(Some(target as &AnyObject));
+        button.setAction(Some(sel!(beckonControlAction:)));
     }
-    switch.setTag(id as isize);
-    switch.setAccessibilityLabel(Some(&NSString::from_str("Shortcuts on")));
+    button.setTag(id as isize);
+    button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
+    button.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(TRACK_W, TRACK_H),
+    ));
+    track.addSubview(&button);
+
     let row = NSStackView::stackViewWithViews(
-        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), switch.as_ref()]),
+        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), track.as_ref()]),
         mtm,
     );
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -530,15 +614,17 @@ fn header_item(
             x.header = Some(HeaderParts {
                 dot,
                 subtitle,
-                switch,
+                track,
+                knob,
+                button,
             });
         }
     });
     item
 }
 
-/// After the switch was flipped: rebuild, and move the header's three parts
-/// to what the rebuilt header says. The rest of the open menu stays as drawn
+/// After the switch was flipped: rebuild, and move the header's parts to
+/// what the rebuilt header says. The rest of the open menu stays as drawn
 /// until the next open, which is when `menuNeedsUpdate:` rebuilds it anyway.
 fn refresh_header() {
     let Some(entries) = built() else { return };
@@ -550,15 +636,26 @@ fn refresh_header() {
     };
     let parts = TRAY.with(|t| {
         t.borrow().as_ref().and_then(|x| {
-            x.header
-                .as_ref()
-                .map(|p| (p.dot.clone(), p.subtitle.clone(), p.switch.clone()))
+            x.header.as_ref().map(|p| {
+                (
+                    p.dot.clone(),
+                    p.subtitle.clone(),
+                    p.track.clone(),
+                    p.knob.clone(),
+                    p.button.clone(),
+                )
+            })
         })
     });
-    if let Some((dot, subtitle, switch)) = parts {
+    if let Some((dot, subtitle, track, knob, button)) = parts {
         dot.setTextColor(Some(&dot_color(h.dot)));
         subtitle.setStringValue(&NSString::from_str(&h.subtitle));
-        switch.setState(if h.on { 1 } else { 0 });
+        track.setFillColor(&track_color(h.on));
+        knob.setFrame(NSRect::new(
+            NSPoint::new(knob_x(h.on), KNOB_MARGIN),
+            NSSize::new(KNOB_SIZE, KNOB_SIZE),
+        ));
+        button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
     }
 }
 
