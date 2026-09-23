@@ -348,12 +348,34 @@ pub(super) fn build(
     // The stale-image verdict, as `Running from`'s secondary line rather than
     // inside its value slot -- `AboutValue` still splits `shown` from `copy`
     // precisely so the clipboard never receives a sentence.
+    //
+    // **The title carries its own pin, exactly as `w::labelled`'s `Some`
+    // arm does.** `vstack`'s `Width` alignment does not stretch a child, so
+    // whichever of the two is narrower is left at its intrinsic width and
+    // TRAILING-aligned -- the H1 defect, here in the one column of this
+    // shape the five fix rounds never reached. It was invisible to every
+    // screen pass because `apply` hides `image` while the running image is
+    // current, which is the state none of this row is about.
+    //
+    // Measured 2026-09-23 with a temporary probe (not part of this commit)
+    // that `touch`es the binary it is itself running from, so the real
+    // `apply_about_state` reaches `ImageAge::Replaced` rather than a faked
+    // state: before, the column was `x=28.0 w=336.0` with the title at
+    // `x=280.5 w=85.5` -- title and verdict both ending at 366.0, the
+    // signature of the defect -- and after, the title reads `x=26.0
+    // w=340.0`, the verdict's own left edge and width. The control is the
+    // current-image dump in the same run: unchanged either way (column
+    // `w=81.5`, title `x=26.0 w=85.5`), which is why this cost nothing on
+    // screen and also why nothing on screen could catch it.
+    //
+    // `pin_width_at_least`, not `pin_width_to`, for the priority reason
+    // that function's own doc records; after the `vstack` call, because the
+    // two views must already share a parent -- see `w::labelled`'s doc for
+    // the exception that rule was bought with.
     let image = w::secondary("", mtm);
-    let loc_label = w::vstack(
-        &[&*w::label("Running from", mtm) as &NSView, &*image],
-        2.0,
-        mtm,
-    );
+    let loc_title = w::label("Running from", mtm);
+    let loc_label = w::vstack(&[&*loc_title as &NSView, &*image], 2.0, mtm);
+    w::pin_width_at_least(&loc_title, &image, 0.0);
     let loc_row = w::form_row(&loc_label, &loc_tail, mtm);
 
     // The upgrade command, shown only once a check finds one. `cmd.shown`
