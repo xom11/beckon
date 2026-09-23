@@ -513,8 +513,17 @@ fn plain_box(mtm: MainThreadMarker) -> Retained<NSBox> {
 /// would leave beckon active after the menu closes, stealing focus from
 /// whatever the user was in. So the track and the knob are two plain
 /// `NSBox`es coloured by hand (which do not have an "inactive" appearance to
-/// fall back to), with a transparent `NSButton` on top carrying the same
+/// fall back to), with a transparent `NSButton` carrying the same
 /// target/action/tag an `NSSwitch` would have.
+///
+/// **The `NSButton`, not the track, is what the row's `NSStackView` holds.**
+/// An `NSBox` with no content view has no intrinsic content size, so on the
+/// first photograph of this (airm3, after the switch above first drew) the
+/// stack could not tell how wide the track should be and stretched it across
+/// the whole header, past the menu's own right edge. A button that has an
+/// explicit width/height constraint and a raised horizontal hugging priority
+/// is something the stack CAN leave alone; the track becomes the button's
+/// own subview instead, sized to always match it.
 fn header_item(
     id: u32,
     h: &Header,
@@ -549,27 +558,11 @@ fn header_item(
         objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
     );
 
-    let track = plain_box(mtm);
-    track.setCornerRadius(TRACK_H / 2.0);
-    track.setFillColor(&track_color(h.on));
-    track.setFrame(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(TRACK_W, TRACK_H),
-    ));
-
-    let knob = plain_box(mtm);
-    knob.setCornerRadius(KNOB_SIZE / 2.0);
-    knob.setFillColor(&NSColor::whiteColor());
-    knob.setFrame(NSRect::new(
-        NSPoint::new(knob_x(h.on), KNOB_MARGIN),
-        NSSize::new(KNOB_SIZE, KNOB_SIZE),
-    ));
-    track.addSubview(&knob);
-
-    // The hit target, over the whole track and on top of the knob (added
-    // last) so it -- not the knob -- receives the click. Same
+    // The hit target and the ONE view the row's stack holds. Same
     // target/action/tag the `NSSwitch` used to carry, so `dispatch` and
-    // `beckon_control_action` are unchanged.
+    // `beckon_control_action` are unchanged; the constraints below are what
+    // is new, and what stops the stack from stretching it (`header_item`'s
+    // doc comment says why that matters).
     let button = NSButton::new(mtm);
     button.setTitle(&NSString::from_str(""));
     button.setBordered(false);
@@ -580,14 +573,48 @@ fn header_item(
     }
     button.setTag(id as isize);
     button.setAccessibilityLabel(Some(&switch_accessibility_label(h.on)));
-    button.setFrame(NSRect::new(
+    button.setTranslatesAutoresizingMaskIntoConstraints(false);
+    button
+        .widthAnchor()
+        .constraintEqualToConstant(TRACK_W)
+        .setActive(true);
+    button
+        .heightAnchor()
+        .constraintEqualToConstant(TRACK_H)
+        .setActive(true);
+    button.setContentHuggingPriority_forOrientation(
+        objc2_app_kit::NSLayoutPriorityRequired,
+        objc2_app_kit::NSLayoutConstraintOrientation::Horizontal,
+    );
+
+    // The track: a subview of the button, not an arranged view of the stack,
+    // so its geometry is plain frame math rather than something Auto Layout
+    // has an opinion about. The flexible mask keeps it matching the button's
+    // bounds even though `setFrame` below only needs to be right once, since
+    // the button's own size is now fixed by the constraints above.
+    let track = plain_box(mtm);
+    track.setCornerRadius(TRACK_H / 2.0);
+    track.setFillColor(&track_color(h.on));
+    track.setFrame(NSRect::new(
         NSPoint::new(0.0, 0.0),
         NSSize::new(TRACK_W, TRACK_H),
     ));
-    track.addSubview(&button);
+    track.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    button.addSubview(&track);
+
+    let knob = plain_box(mtm);
+    knob.setCornerRadius(KNOB_SIZE / 2.0);
+    knob.setFillColor(&NSColor::whiteColor());
+    knob.setFrame(NSRect::new(
+        NSPoint::new(knob_x(h.on), KNOB_MARGIN),
+        NSSize::new(KNOB_SIZE, KNOB_SIZE),
+    ));
+    track.addSubview(&knob);
 
     let row = NSStackView::stackViewWithViews(
-        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), track.as_ref()]),
+        &NSArray::from_slice(&[dot.as_ref() as &NSView, text.as_ref(), button.as_ref()]),
         mtm,
     );
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
