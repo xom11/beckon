@@ -128,29 +128,6 @@ pub(super) struct AboutControls {
     pub(super) command_value: Retained<NSTextField>,
 }
 
-/// A dimmed name, the value, a copy button.
-///
-/// **One caller left.** `Build` was folded into the identity block above the
-/// divider (no label -- see `AboutControls::build`) and `Licence` was removed
-/// with the page's compaction, so this now serves `Location` alone. It stays a
-/// helper rather than being inlined because the row it builds is the shape any
-/// future labelled value would want, and because inlining it would bury the
-/// 68 pt label pin that keeps the value column aligned.
-fn value_row(
-    name: &str,
-    action: objc2::runtime::Sel,
-    target: &AnyObject,
-    mtm: MainThreadMarker,
-) -> (Retained<NSStackView>, Retained<NSTextField>) {
-    let label = w::secondary(name, mtm);
-    w::pin_min_width(&label, 68.0);
-    let value = w::label("", mtm);
-    let copy = w::glyph("Copy", "Copy to clipboard", action, target, mtm);
-    let spring = w::spring(mtm);
-    let row = w::hstack(&[&*label as &NSView, &value, &spring, &copy], mtm);
-    (row, value)
-}
-
 pub(super) fn build(
     target: &AnyObject,
     mtm: MainThreadMarker,
@@ -243,7 +220,6 @@ pub(super) fn build(
     }
     w::pin_height(&mark, 34.0);
     w::pin_exact_width(&mark, 34.0);
-    let mark_row = w::centred(&mark, mtm);
 
     let name = w::heading("beckon", mtm);
     name.setAlignment(objc2_app_kit::NSTextAlignment::Center);
@@ -253,9 +229,9 @@ pub(super) fn build(
     // and the licence text ships beside the binary; restating it here cost a
     // label, a value and a copy button that nobody came to About to press.
     //
-    // No `Build` label either. `value_row`'s dimmed name earns its place
-    // beside a path, where `Location` says what the string IS; beside a
-    // target triple and a date it named nothing the triple did not.
+    // No `Build` label either. A dimmed name would earn its place beside a
+    // path, where `Location` says what the string IS; beside a target triple
+    // and a date it named nothing the triple did not.
     let build = w::label("", mtm);
     let build_copy = w::glyph(
         "Copy",
@@ -265,7 +241,6 @@ pub(super) fn build(
         mtm,
     );
     let build_row = w::hstack(&[&*build as &NSView, &*w::spring(mtm), &build_copy], mtm);
-    let (loc_row, location) = value_row("Location", sel!(beckonCopyLocation:), target, mtm);
 
     // The update check's own row, beside the `Build` row it is a verdict
     // about: the status line (tone-coloured in `apply`) and `Check now`.
@@ -275,6 +250,88 @@ pub(super) fn build(
         &[&*update_status as &NSView, &*w::spring(mtm), &check_now],
         mtm,
     );
+
+    // The header stays free-standing: a mark, the name, the version line and
+    // the update button are not a form.
+    let header = w::vstack(
+        &[
+            &*w::centred(&mark, mtm) as &NSView,
+            &*name,
+            &*build_row,
+            &*update_row,
+        ],
+        6.0,
+        mtm,
+    );
+    // The name is centred by its own text alignment, which only means
+    // anything once the label is as wide as the header column — a label
+    // sized to its text has no room to centre in, and an unpinned one came
+    // out hard right (the same `Width`-alignment defect `pin_width_to`'s own
+    // doc records).
+    w::pin_width_to(&name, &header, 0.0);
+
+    // --- group: the permission this page exists for ---------------------------
+    //
+    // **An Accessibility row is drawn instead** of the Win32 twin's hook
+    // disclosure paragraph alone, and it is not a substitute chosen for
+    // symmetry -- see the module doc.
+    //
+    // **Built by hand rather than through `widgets::labelled`.** Same reason
+    // as the Keyboard door's Input Monitoring row: `labelled` hands back only
+    // the assembled stack, never the secondary field it built, and `apply`
+    // has to keep re-writing this exact sentence every render
+    // (`accessibility_warning` can flip while the window is open); `labelled`'s
+    // secondary line is also a plain non-wrapping `secondary()`, and this
+    // sentence runs past 250 characters uncollapsed. So the row is built with
+    // `w::wrapping`, in the same title-then-note shape `labelled` uses.
+    let access = w::wrapping("", mtm);
+    let access_label = w::vstack(
+        &[&*w::label("Accessibility", mtm) as &NSView, &*access],
+        2.0,
+        mtm,
+    );
+    let grant = w::push(
+        "Grant Accessibility…",
+        sel!(beckonGrantAccess:),
+        target,
+        mtm,
+    );
+    let access_row = w::form_row(&access_label, &grant, mtm);
+
+    // **The keyboard-tap disclosure keeps its own row, with no control.**
+    // Still drawn in both permission states -- see `apply` and the module
+    // doc for why it does not fold into `access`.
+    let hook = w::wrapping("", mtm);
+    let hook_row = w::form_row(&hook, &w::spring(mtm), mtm);
+
+    let g_perm = w::group(&[&*access_row, &*hook_row], mtm);
+
+    // --- group: this copy -------------------------------------------------------
+    //
+    // **No `Open releases page` row.** It went to the same destination as the
+    // `Releases` button in the links row below -- `sel!(beckonReleases:)`,
+    // the same selector -- so a reader with a failed check had two controls
+    // for one place. The links row is always on screen, including for every
+    // failure state, which is the reason the extra row existed.
+    let location = w::label("", mtm);
+    let location_copy = w::glyph(
+        "Copy",
+        "Copy to clipboard",
+        sel!(beckonCopyLocation:),
+        target,
+        mtm,
+    );
+    let loc_tail = w::hstack(&[&*location as &NSView, &location_copy], mtm);
+    // The stale-image verdict, as `Running from`'s secondary line rather than
+    // inside its value slot -- `AboutValue` still splits `shown` from `copy`
+    // precisely so the clipboard never receives a sentence.
+    let image = w::secondary("", mtm);
+    let loc_label = w::vstack(
+        &[&*w::label("Running from", mtm) as &NSView, &*image],
+        2.0,
+        mtm,
+    );
+    let loc_row = w::form_row(&loc_label, &loc_tail, mtm);
 
     // The upgrade command, shown only once a check finds one. `cmd.shown`
     // is drawn here, by `apply` below; the Copy button puts `cmd.copy` on
@@ -291,26 +348,10 @@ pub(super) fn build(
         target,
         mtm,
     );
-    let command_row = w::hstack(
-        &[&*command_value as &NSView, &*w::spring(mtm), &command_copy],
-        mtm,
-    );
+    let command_tail = w::hstack(&[&*command_value as &NSView, &command_copy], mtm);
+    let command_row = w::form_row(&w::labelled("Command", None, mtm), &command_tail, mtm);
 
-    // **No `Open releases page` row.** It went to the same destination as the
-    // `Releases` button in the links row below -- `sel!(beckonReleases:)`,
-    // the same selector -- so a reader with a failed check had two controls
-    // for one place. The links row is always on screen, including for every
-    // failure state, which is the reason the extra row existed.
-    let image = w::secondary("", mtm);
-    let access = w::wrapping("", mtm);
-    let hook = w::wrapping("", mtm);
-    let grant = w::push(
-        "Grant Accessibility…",
-        sel!(beckonGrantAccess:),
-        target,
-        mtm,
-    );
-    let grant_row = w::hstack(&[&*grant as &NSView, &*w::spring(mtm)], mtm);
+    let g_copy = w::group(&[&*loc_row, &*command_row], mtm);
 
     let github = w::push("GitHub", sel!(beckonGithub:), target, mtm);
     let releases = w::push("Releases", sel!(beckonReleases:), target, mtm);
@@ -326,45 +367,8 @@ pub(super) fn build(
         mtm,
     );
 
-    let inner = w::vstack(
-        &[
-            &*mark_row as &NSView,
-            &name,
-            // The build line joins the identity block above the divider
-            // rather than sitting in the detail group below it: it is the
-            // rest of the answer to "which beckon is this", which the name
-            // starts and `Location` finishes.
-            &build_row,
-            &w::divider(mtm),
-            &update_row,
-            &command_row,
-            &loc_row,
-            &image,
-            &w::divider(mtm),
-            &access,
-            &grant_row,
-            &hook,
-            &links,
-        ],
-        10.0,
-        mtm,
-    );
-
-    // The disclosure is the one child a `Width`-aligned column does not
-    // stretch on its own -- it came out indented a third of the way across
-    // the card. Pinned to the column instead of argued with.
-    w::pin_width_to(&access, &inner, 0.0);
-    // Same reason for the hook line: a `Width`-aligned column does not
-    // stretch a wrapping label on its own, and an unpinned one came out
-    // indented a third of the way across the card.
-    w::pin_width_to(&hook, &inner, 0.0);
-    // The name is centred by its own text alignment, which only means
-    // anything once the label is as wide as the card — a label sized to its
-    // text has no room to centre in, and the column put it hard right.
-    w::pin_width_to(&name, &inner, 0.0);
-
-    let card = w::card(&inner, mtm);
-    let view: Retained<NSView> = card.into_super();
+    let page = w::vstack(&[&*header, &*g_perm, &*g_copy, &*links], 12.0, mtm);
+    let view: Retained<NSView> = page.into_super();
 
     (
         view,
