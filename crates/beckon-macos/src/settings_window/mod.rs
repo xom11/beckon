@@ -65,8 +65,8 @@
 //! answer that, and it has to run in an Aqua session.
 
 use beckon_core::settings::{
-    command_bar_shown, copy_text, Callbacks, ControlState, Field, Mark, Page, Paths,
-    SettingsCommand,
+    command_bar_shown, copy_text, page_label, Callbacks, ControlState, Field, Mark, Page,
+    PageLabels, Paths, SettingsCommand,
 };
 // `beckon_core::settings::Target` names a link destination; `Target` in this
 // file is the Objective-C class every control sends its action to. Aliasing
@@ -78,14 +78,16 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{define_class, msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate,
+    NSBackingStoreType, NSBezelStyle, NSButton, NSComboBox, NSControlTextEditingDelegate, NSImage,
     NSLayoutAttribute, NSLayoutConstraint, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSScrollView, NSSegmentedControl, NSStackView, NSStackViewDistribution, NSTableColumn,
-    NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSScrollView, NSStackView, NSStackViewDistribution, NSTableColumn, NSTableView,
+    NSTableViewDataSource, NSTableViewDelegate, NSTextField, NSToolbar, NSToolbarDelegate,
+    NSToolbarDisplayMode, NSToolbarItem, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString,
 };
 use std::cell::RefCell;
 
@@ -181,25 +183,24 @@ const COL_STATUS: &str = "status";
 struct Controls {
     window: Retained<NSWindow>,
 
-    /// The four doors' pill strip.
+    /// The four doors' toolbar, in `.preference` style (spec §5.1).
     ///
-    /// **`NSSegmentedControl`, not four hand-drawn pills.** The Win32 twin
-    /// draws its own because Win32 has no such control, and it pays for it:
-    /// three `(fill, ink)` pairs, a hover ink swap that exists because
-    /// `text_muted` on `strip_hover` measures 3.700 and fails WCAG, a focus
-    /// ring drawn OUTSIDE the pill in a 3 px margin because the borrowed
-    /// `accent_on` measured 1.360 on the lit pill and was invisible, and a
-    /// fixed four-digit badge slot so the strip's width never becomes a
-    /// function of the data. Every one of those is contrast or geometry
-    /// AppKit already gets right, in both appearances, with a keyboard story
-    /// and a focus ring included.
+    /// **A real `NSToolbar`, not an `NSSegmentedControl`.** AppKit already
+    /// draws the centred pill group, the selection highlight and the SF
+    /// Symbol + caption layout this window wants, in both appearances, with
+    /// a keyboard story and a focus ring included -- the same case the
+    /// segmented control used to make against the Win32 twin's hand-drawn
+    /// strip, one level up.
+    toolbar: Retained<NSToolbar>,
+    /// Keeps `toolbar`'s delegate alive.
     ///
-    /// It also closes a deviation rather than inheriting one: the design's
-    /// own drawing shrink-wraps the trough around the four pills — the
-    /// segmented-control look — and Windows fills the whole band instead,
-    /// recorded as a deferred difference, because hugging needs a width only
-    /// its layout pass computes.
-    tabs: Retained<NSSegmentedControl>,
+    /// **`NSToolbar::setDelegate` is a weak property**, exactly like
+    /// `NSMenu`'s delegate in `tray.rs`'s `Tray::_target`. Dropping this
+    /// after `open()` returns would free `ToolbarTarget` out from under the
+    /// toolbar, and every `toolbar:itemForItemIdentifier:...` call
+    /// afterwards would simply stop arriving -- an empty, frozen strip with
+    /// no error anywhere.
+    _toolbar_target: Retained<ToolbarTarget>,
     /// One container per door, in `Page` order. Exactly one is unhidden.
     /// Hidden arranged subviews collapse in an `NSStackView`, so the door
     /// that is not open contributes no height — the AppKit spelling of
@@ -250,29 +251,6 @@ struct Controls {
 /// `Page` is an exhaustive enum in core and `Page::next` / `Page::prev`
 /// already spell the cycle, so this is only the index — never a second
 /// spelling of the order.
-/// The Shortcuts segment's caption: the binding count, and the
-/// external-change warning.
-///
-/// **This is `warn_dot_shown`'s implementation on macOS.** Windows draws a
-/// dot in `paint::tab_pill`; an `NSSegmentedControl` is not owner-drawn, so
-/// the mark rides in the caption instead. Three reasons it goes here rather
-/// than anywhere else:
-///
-/// - segment 0's width is already pinned (`setWidth_forSegment(120.0, 0)`)
-///   for the count, so the mark cannot make the strip's geometry a function
-///   of state -- the rule the Win32 twin spends a measured slot on;
-/// - the Shortcuts pill is the door the announcement is ABOUT, which is what
-///   `BANNER_PAGE` says and what keeps the mark off a lit pill; and
-/// - AX reads a caption, so the harness can assert the warning is on screen
-///   -- a drawn dot is invisible to every check we can automate.
-fn shortcuts_tab_label(binding_count: usize, warn: bool) -> String {
-    if warn {
-        format!("Shortcuts  {binding_count} \u{2022}")
-    } else {
-        format!("Shortcuts  {binding_count}")
-    }
-}
-
 fn page_index(p: Page) -> usize {
     match p {
         Page::Shortcuts => 0,
@@ -282,12 +260,33 @@ fn page_index(p: Page) -> usize {
     }
 }
 
-fn page_at(i: usize) -> Page {
-    match i {
-        1 => Page::Keyboard,
-        2 => Page::System,
-        3 => Page::About,
-        _ => Page::Shortcuts,
+/// The toolbar item identifier for a door. Namespaced because an
+/// `NSToolbar`'s identifiers share a space with AppKit's own
+/// (`NSToolbarFlexibleSpaceItem` and friends).
+fn page_identifier(p: Page) -> &'static str {
+    match p {
+        Page::Shortcuts => "beckon.shortcuts",
+        Page::Keyboard => "beckon.keyboard",
+        Page::System => "beckon.general",
+        Page::About => "beckon.about",
+    }
+}
+
+/// The inverse. `None` for anything AppKit added on its own.
+fn page_from_identifier(s: &str) -> Option<Page> {
+    [Page::Shortcuts, Page::Keyboard, Page::System, Page::About]
+        .into_iter()
+        .find(|p| page_identifier(*p) == s)
+}
+
+/// The SF Symbol each door wears. All four ship in macOS 11, which is
+/// `LSMinimumSystemVersion` (`assets/macos/Info.plist`).
+fn page_symbol(p: Page) -> &'static str {
+    match p {
+        Page::Shortcuts => "command",
+        Page::Keyboard => "keyboard",
+        Page::System => "gearshape",
+        Page::About => "info.circle",
     }
 }
 
@@ -427,17 +426,6 @@ fn controls() -> Option<Controls> {
     UI.with(|u| u.borrow().as_ref().map(|x| x.c.clone()))
 }
 
-/// The open door, read the same way `controls` reads the widgets: a short
-/// immutable borrow that is released before any AppKit call.
-///
-/// `Page::Shortcuts` when there is no window is the safe answer rather than a
-/// convenient one -- it is `BANNER_PAGE`, so a caller asking `warn_dot_shown`
-/// gets `false` and no mark is drawn for a window nobody is looking at.
-fn current_page() -> Page {
-    UI.with(|u| u.borrow().as_ref().map(|x| x.page))
-        .unwrap_or(Page::Shortcuts)
-}
-
 /// Is this notification a programmatic push rather than a human edit?
 fn suppressed() -> bool {
     UI.with(|u| u.borrow().as_ref().map(|x| x.pushing).unwrap_or(true))
@@ -575,20 +563,22 @@ fn on_capture(outcome: beckon_core::capture::Outcome) {
 
 /// Open a door.
 ///
-/// Three things happen and none is optional:
+/// Four things happen and none is optional:
 ///
-/// 1. the strip's selection follows, so a page opened from anywhere else —
-///    the caller's stored page, a keyboard shortcut — lights the right pill;
-/// 2. exactly one container is unhidden, and a hidden arranged subview
+/// 1. the toolbar's selection follows, so a page opened from anywhere else —
+///    the caller's stored page, a keyboard shortcut — lights the right item;
+/// 2. the window title follows too, since the title IS the page name now
+///    (spec §5.1) rather than the file name;
+/// 3. exactly one container is unhidden, and a hidden arranged subview
 ///    contributes no height, so the door that is shut costs nothing;
-/// 3. the command bar appears only on the doors that WRITE the config
+/// 4. the command bar appears only on the doors that WRITE the config
 ///    (`command_bar_shown`), while the band itself stays on all four — an
 ///    empty bar is indistinguishable from the window ground, and reserving
 ///    it keeps one meaning for the content's bottom edge.
 fn show_page(p: Page) {
     // **Before the unchanged-door guard would have been wrong**: a recording
     // must end even when `show_page` is called for the door already open,
-    // because `Add` and the tab strip both route through here.
+    // because `Add` and the toolbar both route through here.
     stop_recording();
     let Some(c) = controls() else { return };
     let now = UI.with(|u| u.borrow().as_ref().map(|x| x.page));
@@ -597,7 +587,10 @@ fn show_page(p: Page) {
             x.page = p;
         }
     });
-    c.tabs.setSelectedSegment(page_index(p) as isize);
+    c.toolbar
+        .setSelectedItemIdentifier(Some(&NSString::from_str(page_identifier(p))));
+    c.window
+        .setTitle(&NSString::from_str(page_label(p, PageLabels::MAC)));
     for (i, v) in c.pages.iter().enumerate() {
         v.setHidden(i != page_index(p));
     }
@@ -841,8 +834,6 @@ define_class!(
             with_cb(|cb| (cb.on_open_file)());
         }
 
-        // --- the tab strip -------------------------------------------------
-
         /// Group 3 of the Keyboard door.
         ///
         /// A view preference: it changes what the Shortcuts list CELL says
@@ -869,16 +860,6 @@ define_class!(
             // machines. See the field's own doc.
             crate::prefs::set_caps_view(on);
             cmd(SettingsCommand::SetCapsShorthand(on));
-        }
-
-        #[unsafe(method(beckonPage:))]
-        fn on_page(&self, _s: &AnyObject) {
-            let Some(c) = controls() else { return };
-            let i = { c.tabs.selectedSegment() };
-            if i < 0 {
-                return;
-            }
-            show_page(page_at(i as usize));
         }
 
         // --- door 3, System ------------------------------------------------
@@ -1154,6 +1135,101 @@ define_class!(
         }
     }
 );
+
+define_class!(
+    // SAFETY:
+    // - NSObject has no subclassing requirements.
+    // - ToolbarTarget does not implement Drop.
+    #[unsafe(super(NSObject))]
+    // NSToolbarDelegate is main-thread-only, and so is everything this
+    // class reaches for through `controls()`.
+    #[thread_kind = MainThreadOnly]
+    #[name = "BeckonToolbarTarget"]
+    struct ToolbarTarget;
+
+    unsafe impl NSObjectProtocol for ToolbarTarget {}
+
+    unsafe impl NSToolbarDelegate for ToolbarTarget {
+        /// Build one item. AppKit asks once per identifier and keeps it.
+        ///
+        /// **A single call, no `return` or `?` in this body.**
+        /// `#[unsafe(method_id(...))]` rewrites this function's real return
+        /// type to the crate's own `RetainedReturnValue` so it can carry the
+        /// autorelease machinery -- that type has no `FromResidual` and
+        /// nothing coerces a bare `None` against it, so an early `return` or
+        /// `?` here fails to type-check even though the signature reads
+        /// `Option<Retained<_>>`. `make_toolbar_item` is a plain function,
+        /// unseen by the macro, where both work normally; this method is
+        /// only its one call.
+        #[unsafe(method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:))]
+        fn item_for_identifier(
+            &self,
+            _toolbar: &NSToolbar,
+            id: &NSString,
+            _inserted: bool,
+        ) -> Option<Retained<NSToolbarItem>> {
+            make_toolbar_item(self, id)
+        }
+
+        #[unsafe(method_id(toolbarDefaultItemIdentifiers:))]
+        fn default_identifiers(&self, _t: &NSToolbar) -> Retained<NSArray<NSString>> {
+            page_identifier_array()
+        }
+
+        #[unsafe(method_id(toolbarAllowedItemIdentifiers:))]
+        fn allowed_identifiers(&self, _t: &NSToolbar) -> Retained<NSArray<NSString>> {
+            page_identifier_array()
+        }
+
+        /// Without this the preference style draws no selection pill at all.
+        #[unsafe(method_id(toolbarSelectableItemIdentifiers:))]
+        fn selectable_identifiers(&self, _t: &NSToolbar) -> Retained<NSArray<NSString>> {
+            page_identifier_array()
+        }
+    }
+
+    impl ToolbarTarget {
+        /// A door was clicked. The identifier IS the door.
+        #[unsafe(method(beckonToolbarPage:))]
+        fn on_toolbar_page(&self, sender: &NSToolbarItem) {
+            let id = sender.itemIdentifier();
+            if let Some(p) = page_from_identifier(&id.to_string()) {
+                show_page(p);
+            }
+        }
+    }
+);
+
+/// The actual construction behind `item_for_identifier` -- see that
+/// method's doc for why it lives in a plain function rather than inline.
+fn make_toolbar_item(target: &ToolbarTarget, id: &NSString) -> Option<Retained<NSToolbarItem>> {
+    let mtm = MainThreadMarker::new()?;
+    let p = page_from_identifier(&id.to_string())?;
+    let item = NSToolbarItem::initWithItemIdentifier(NSToolbarItem::alloc(mtm), id);
+    let caption = NSString::from_str(page_label(p, PageLabels::MAC));
+    item.setLabel(&caption);
+    item.setPaletteLabel(&caption);
+    let sym = NSString::from_str(page_symbol(p));
+    if let Some(img) =
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(&sym, Some(&caption))
+    {
+        item.setImage(Some(&img));
+    }
+    unsafe {
+        item.setTarget(Some(target as &AnyObject));
+        item.setAction(Some(sel!(beckonToolbarPage:)));
+    }
+    Some(item)
+}
+
+/// The four identifiers, in door order, as AppKit wants them.
+fn page_identifier_array() -> Retained<NSArray<NSString>> {
+    let ids: Vec<Retained<NSString>> = [Page::Shortcuts, Page::Keyboard, Page::System, Page::About]
+        .into_iter()
+        .map(|p| NSString::from_str(page_identifier(p)))
+        .collect();
+    NSArray::from_retained_slice(&ids)
+}
 
 /// Ask macOS for Input Monitoring, and say on the Keyboard page's note line
 /// what happened. **A no-op when the grant is already there** — the ask is
@@ -1740,9 +1816,11 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // Three changes, and the row needs all three:
     //
     // 1. **The four check boxes became one `NSSegmentedControl`.** `SelectAny`
-    //    is AppKit's control for exactly this -- a set of independent toggles --
-    //    and the tab strip in this same file already uses `NSSegmentedControl`
-    //    with `SelectOne`. One control also removes three inter-view gaps.
+    //    is AppKit's control for exactly this -- a set of independent toggles.
+    //    One control also removes three inter-view gaps.
+    //    (This door's own tab strip used `NSSegmentedControl` with
+    //    `SelectOne` too, when this was written; it is an `NSToolbar` now --
+    //    spec §5.1 -- so this `mods` control is the only one left.)
     // 2. **The chips read the glyphs, not the words.** A macOS-native choice
     //    rather than a width trick: the four are printed on the keys and appear
     //    in every menu in the OS. The Windows font hazard that keeps `key_label`
@@ -1861,26 +1939,22 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     let (page_system, sys) = system::build(&target, mtm);
     let (page_about, abt) = about::build(&target, mtm);
 
-    // --- the strip ---------------------------------------------------------
-    let tabs = NSSegmentedControl::new(mtm);
-    unsafe {
-        tabs.setSegmentCount(4);
-        tabs.setTrackingMode(objc2_app_kit::NSSegmentSwitchTracking::SelectOne);
-        tabs.setTarget(Some(&*target));
-        tabs.setAction(Some(sel!(beckonPage:)));
-        for (i, cap) in ["Shortcuts", "Keyboard", "System", "About"]
-            .iter()
-            .enumerate()
-        {
-            tabs.setLabel_forSegment(&NSString::from_str(cap), i as isize);
-        }
-        // The Shortcuts segment carries the binding count and therefore has
-        // text whose width changes with the data. Pinning its width is the
-        // rule the Win32 twin spends a measured four-digit slot on: **the
-        // badge must never make the strip's geometry a function of the
-        // config**, or the other three pills move when a binding is added.
-        tabs.setWidth_forSegment(120.0, 0);
-    }
+    // --- the toolbar ---------------------------------------------------------
+    //
+    // An `NSToolbar` in `.preference` style (spec §5.1), not the
+    // `NSSegmentedControl` this window used to stack as its first arranged
+    // subview. AppKit owns the toolbar separately from `contentView` --
+    // `NSWindow::setToolbar`, below -- so it no longer occupies a slot in
+    // `root` at all.
+    let toolbar_target: Retained<ToolbarTarget> =
+        unsafe { msg_send![ToolbarTarget::alloc(mtm), init] };
+    let toolbar = NSToolbar::initWithIdentifier(
+        NSToolbar::alloc(mtm),
+        &NSString::from_str("beckon.settings"),
+    );
+    toolbar.setDelegate(Some(ProtocolObject::from_ref(&*toolbar_target)));
+    toolbar.setAllowsUserCustomization(false);
+    toolbar.setDisplayMode(NSToolbarDisplayMode::IconAndLabel);
 
     // --- stack them -------------------------------------------------------
     let root = NSStackView::new(mtm);
@@ -1911,8 +1985,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             right: 12.0,
         });
         for v in [
-            &*tabs as &NSView,
-            &page_shortcuts,
+            &*page_shortcuts as &NSView,
             &page_keyboard,
             &page_system,
             &page_about,
@@ -1948,8 +2021,18 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| paths.config.display().to_string());
-        window.setTitle(&NSString::from_str(&format!("beckon - {name}")));
+        // **The title is the open page's name now** (spec §5.1), set by
+        // `show_page` below once construction finishes -- never here. The
+        // file name moves to the SUBTITLE, set exactly once: nothing after
+        // this rewrites it, unlike the old title's " *" dirty-mark rewrite in
+        // `apply_state`, which `setDocumentEdited` (native, on the close
+        // button) already made redundant.
+        window.setSubtitle(&NSString::from_str(&name));
         window.setContentView(Some(&root));
+        // The toolbar is set on the WINDOW, not stacked into `root` -- see
+        // the toolbar's own construction comment above.
+        window.setToolbar(Some(&toolbar));
+        window.setToolbarStyle(NSWindowToolbarStyle::Preference);
         // **The single highest-value line in this function.** A window built
         // with `initWithContentRect:` defaults to `releasedWhenClosed = YES`,
         // so AppKit releases it on close — while `Controls::window` is a
@@ -1992,7 +2075,8 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         *u.borrow_mut() = Some(Ui {
             c: Controls {
                 window,
-                tabs,
+                toolbar,
+                _toolbar_target: toolbar_target,
                 pages: [page_shortcuts, page_keyboard, page_system, page_about],
                 service,
                 kbd,
@@ -2470,35 +2554,14 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     // — the rule `controls()` exists to make structural.
     let caps_view = UI.with(|u| u.borrow().as_ref().map(|y| y.caps_view).unwrap_or(false));
     {
-        // The count badge, on the Shortcuts pill and nowhere else.
+        // **No toolbar item carries the binding count or the
+        // external-change warning any more** (spec §5.1) -- a toolbar item
+        // cannot hold a caption that changes with the data the way the old
+        // segment could. The service line below reports the same file-moved
+        // condition, and the menu's *Needs attention* section carries it too
+        // (phase 1), so nothing observable is lost -- see
+        // `the_warn_dot_is_the_complement_of_the_banner`.
         //
-        // **`binding_count`, never `items.len()`.** The two differ on purpose:
-        // `items` is what is on SCREEN, which is filter-dependent and
-        // additionally exempts the selected row from the filter — and this
-        // badge is read from three doors that have no filter box at all,
-        // where "the rows matching a filter you cannot see" is not a number
-        // that means anything. It is also the only count in the window; a
-        // second one beside the heading was retired precisely because the two
-        // could disagree under a filter while both were right.
-        //
-        // Shown at `0` as well. `unreadable_state` sets it to zero, and zero
-        // is true of a file beckon cannot read: it has no bindings beckon can
-        // act on. A row added and not yet saved counts, for the same reason
-        // the title bar's dirty mark follows the model rather than the disk.
-        //
-        // It also carries the external-change warning, because
-        // `warn_dot_shown` has no other implementation on this platform --
-        // see `shortcuts_tab_label`. Reading `x.page` rather than taking a
-        // parameter keeps the two facts from drifting: the caption is pushed
-        // on every `apply_state`, and `show_page` sets `x.page` before any
-        // of them.
-        {
-            let warn = beckon_core::settings::warn_dot_shown(external_change, current_page());
-            x.tabs.setLabel_forSegment(
-                &NSString::from_str(&shortcuts_tab_label(st.binding_count, warn)),
-                0,
-            );
-        }
         // The dirty mark. `setDocumentEdited:` is AppKit's own — it puts a
         // dot in the close button — so the Win32 twin's `*` title prefix does
         // NOT port: both at once would be two marks for one fact.
@@ -2608,15 +2671,10 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
                 }
             }
         }
-
-        // The dirty marker rides on every push because the title has to
-        // follow every keystroke.
-        let t = x.window.title().to_string();
-        let base = t.trim_end_matches(" *").to_string();
-        let want = if st.dirty { format!("{base} *") } else { base };
-        if want != t {
-            x.window.setTitle(&NSString::from_str(&want));
-        }
+        // No more title rewriting here: the title is the open page's name
+        // now, set by `show_page`, and `setDocumentEdited` above -- native,
+        // on the close button -- is the dirty marker. The old `" *"` suffix
+        // would have been a second mark for the same fact.
     }
 
     // PHASE 3 -- reopen the gate. Until this runs, every notification the
@@ -2670,8 +2728,51 @@ fn caps_hold_now() -> Chord {
 mod tests {
     use super::*;
 
+    /// Identifiers are a closed round trip: the toolbar hands back the
+    /// identifier it was given, and the action turns it into a Page again.
+    /// A typo in either direction would silently select nothing.
+    #[test]
+    fn every_page_identifier_round_trips() {
+        for p in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
+            assert_eq!(page_from_identifier(page_identifier(p)), Some(p));
+        }
+        assert_eq!(page_from_identifier("beckon.nope"), None);
+    }
+
+    /// Four distinct identifiers and four distinct symbols: a duplicate
+    /// would make two doors one item.
+    #[test]
+    fn the_four_items_are_distinct() {
+        let ids: Vec<&str> = [Page::Shortcuts, Page::Keyboard, Page::System, Page::About]
+            .iter()
+            .map(|p| page_identifier(*p))
+            .collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4, "identifiers must be distinct: {ids:?}");
+
+        let syms: Vec<&str> = [Page::Shortcuts, Page::Keyboard, Page::System, Page::About]
+            .iter()
+            .map(|p| page_symbol(*p))
+            .collect();
+        let mut s2 = syms.clone();
+        s2.sort_unstable();
+        s2.dedup();
+        assert_eq!(s2.len(), 4, "symbols must be distinct: {syms:?}");
+    }
+
+    /// The captions come from core's table, not from literals here -- the
+    /// third door reads `General` on this platform.
+    #[test]
+    fn the_toolbar_captions_come_from_the_mac_table() {
+        use beckon_core::settings::{page_label, PageLabels};
+        assert_eq!(page_label(Page::System, PageLabels::MAC), "General");
+        assert_eq!(page_label(Page::Shortcuts, PageLabels::MAC), "Shortcuts");
+    }
+
     /// **`warn_dot_shown` had no implementation on this platform**, and the
-    /// whole design rests on it having one.
+    /// whole design rested on it having one.
     ///
     /// `banner_shown` and `warn_dot_shown` partition `external_change` so
     /// that exactly one of them is up on any door and never neither
@@ -2686,32 +2787,17 @@ mod tests {
     /// `reloaded - 2 shortcuts registered`, so beckon plainly knew -- nothing
     /// on any door said so, and Save destroyed the external edit silently.
     ///
-    /// The caption is where it goes because segment 0's width is already
-    /// pinned (`setWidth_forSegment(120.0, 0)`) for the binding count, so the
-    /// mark cannot make the strip's geometry a function of state. It is also
-    /// readable by AX, which is what lets the harness assert it.
+    /// **The macOS shell no longer draws the dot at all** -- a toolbar item
+    /// cannot carry a caption that changes with the data the way the old
+    /// segment could (spec §5.1) -- so this test now pins only core's
+    /// partition, not a caption on this platform.
     #[test]
-    fn the_shortcuts_tab_carries_the_warning_when_the_file_moved() {
-        assert_eq!(shortcuts_tab_label(20, false), "Shortcuts  20");
-        assert_eq!(shortcuts_tab_label(20, true), "Shortcuts  20 \u{2022}");
-        assert_eq!(shortcuts_tab_label(0, true), "Shortcuts  0 \u{2022}");
-    }
-
-    /// The mark follows `warn_dot_shown`, not `external_change` -- so it is
-    /// absent on the one door where the banner itself is on screen, and the
-    /// window never says the same thing twice.
-    #[test]
-    fn the_tab_mark_is_the_complement_of_the_banner() {
+    fn the_warn_dot_is_the_complement_of_the_banner() {
         use beckon_core::settings::{banner_shown, warn_dot_shown, Page};
         for page in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {
             let banner = banner_shown(true, page);
             let dot = warn_dot_shown(true, page);
             assert!(banner ^ dot, "exactly one of the two is up on {page:?}");
-            assert_eq!(
-                shortcuts_tab_label(3, dot).contains('\u{2022}'),
-                dot,
-                "the caption follows warn_dot_shown on {page:?}"
-            );
         }
     }
 
