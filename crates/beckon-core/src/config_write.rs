@@ -21,12 +21,43 @@ pub struct RowWrite {
 }
 
 /// Apply `rows` and `keyboard` to `original`, returning the new file text.
+///
+/// **Precondition, not enforced by the type system: every row's `combo` in
+/// `rows` must be unique.** This function trusts that; it does not check
+/// it on its own. The sole caller, `Model::render` (`settings.rs:2390-2417`),
+/// guarantees it by refusing on `Severity::Error` before it ever builds the
+/// `RowWrite`s it passes down here -- a duplicate combo is one of the
+/// errors `problems()` reports, so `render` is never reached with two rows
+/// claiming the same chord.
+///
+/// A second caller that skipped that check would not get a clean error
+/// here. Two rows sharing a `combo` collapse into one entry in the `keep`
+/// set (step 2 below), so a doc key that belongs to neither row's original
+/// spelling can be silently rescued from deletion and then have its value
+/// overwritten by whichever row is later in `rows` -- a data-loss shape,
+/// reached entirely through a precondition this function used to leave
+/// unstated. The `debug_assert!` just inside catches this in every debug
+/// build (which is every `cargo test` run, this one included) at no cost to
+/// a release build; it is a tripwire for a future caller, not a substitute
+/// for `Model::problems()`'s Error-level check, which is what actually
+/// keeps a bad Save off disk today.
 pub fn render(
     original: &str,
     rows: &[RowWrite],
     keyboard: &KeyboardConfig,
 ) -> Result<String, String> {
     use toml_edit::{DocumentMut, Item, Key, Table};
+
+    debug_assert!(
+        {
+            let mut seen = std::collections::HashSet::new();
+            rows.iter().all(|r| seen.insert(r.combo.as_str()))
+        },
+        "config_write::render requires every row's combo to be unique -- see \
+         the precondition documented on this function. `Model::render` \
+         already enforces it via `problems()`; a new caller must too, or an \
+         unrelated key can be silently rescued from deletion and overwritten."
+    );
 
     let mut doc: DocumentMut = if original.trim().is_empty() {
         DocumentMut::new()
@@ -436,6 +467,77 @@ mod tests {
         );
         // The old spelling is gone.
         assert!(!out.contains("ctrl+alt+a"), "old key still present:\n{out}");
+    }
+
+    /// F1 (round 1 review of G-c): the byte-for-byte proof, not just a
+    /// substring check. A rename in the MIDDLE of the table, with a
+    /// decorated neighbour on each side, a `version = 2`, a `[defaults]`
+    /// block and a `keyboard` item all present -- everything the rebuild
+    /// pass in step 1 walks over besides the renamed row itself. Position
+    /// and decor are the property under test, so a substring assertion
+    /// cannot stand in for the whole string: it would pass even if the
+    /// rebuild silently dropped `version` or `[defaults]`, which is exactly
+    /// what an earlier, unrelated defect in step 2 did (see that step's own
+    /// comment) when the removal filter was too broad.
+    ///
+    /// The renamed row carries its OWN leading comment (`# rename me,
+    /// please`), not just a trailing one, so the KEY's decor -- not only the
+    /// VALUE's -- is under test: a rename that dropped the leaf-decor
+    /// carry-over would lose that line while leaving the trailing comments
+    /// on every other row untouched, which a test built only from trailing
+    /// comments could not catch. Confirmed by mutation: deleting the
+    /// `.with_leaf_decor(..).with_dotted_decor(..)` calls in step 1 and
+    /// substituting a bare `Key::new(*new)` turns this test red -- the
+    /// leading comment line disappears from the output while every other
+    /// assertion in this file still passes. Reverted after confirming.
+    #[test]
+    fn a_middle_rename_leaves_every_other_line_byte_for_byte() {
+        let original = "\
+version = 2
+
+\"ctrl+alt+a\" = \"Anki\"  # the flashcards one
+# rename me, please
+\"ctrl+alt+m\" = \"Middle\"
+\"ctrl+alt+b\" = \"Brave\"  # keep me below
+
+keyboard.caps = true
+
+[defaults]
+match = \"exact\"
+";
+        let rows = vec![
+            row("ctrl+alt+a", "Anki"),
+            RowWrite {
+                orig_key: Some("ctrl+alt+m".into()),
+                combo: "ctrl+alt+z".into(),
+                app: "Middle".into(),
+            },
+            row("ctrl+alt+b", "Brave"),
+        ];
+        let kb = KeyboardConfig {
+            caps: true,
+            ..KeyboardConfig::default()
+        };
+        let out = render(original, &rows, &kb).unwrap();
+
+        let expected = "\
+version = 2
+
+\"ctrl+alt+a\" = \"Anki\"  # the flashcards one
+# rename me, please
+\"ctrl+alt+z\" = \"Middle\"
+\"ctrl+alt+b\" = \"Brave\"  # keep me below
+
+keyboard.caps = true
+
+[defaults]
+match = \"exact\"
+";
+        assert_eq!(
+            out, expected,
+            "a rename must change only the renamed key's spelling -- \
+             everything else, in its own place, byte for byte"
+        );
     }
 
     #[test]
