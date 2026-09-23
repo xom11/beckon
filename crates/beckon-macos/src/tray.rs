@@ -86,6 +86,10 @@ struct HeaderParts {
     track: Retained<NSBox>,
     knob: Retained<NSBox>,
     button: Retained<NSButton>,
+    /// TEMPORARY (diagnostic round): the row the five above live in, kept
+    /// only so `report_header_geometry` can report its live frame from a
+    /// path that runs after layout. Removed with the diagnostic prints.
+    container: Retained<NSView>,
 }
 
 thread_local! {
@@ -125,6 +129,12 @@ define_class!(
         #[unsafe(method(beckonMenuAction:))]
         fn beckon_menu_action(&self, sender: &NSMenuItem) {
             let id = sender.tag() as u32;
+            // TEMPORARY (diagnostic round): an ordinary row's click is the
+            // one path that runs while the menu is open AND laid out without
+            // depending on the header's own hit target working, which is the
+            // thing under investigation. Before `dispatch`, because
+            // `dispatch` can close the menu.
+            report_header_geometry("row click");
             dispatch(id);
         }
 
@@ -209,6 +219,53 @@ fn built() -> Option<Vec<MenuEntry>> {
 /// re-enter this module. Holding the `RefCell` across the call would panic
 /// on the second borrow, which is the same rule `serve.rs`'s module doc
 /// states for `backend.beckon()`.
+/// TEMPORARY (diagnostic round): the header's LIVE geometry, read from a
+/// path that runs while the menu is open and laid out, so these are the
+/// numbers AppKit resolved rather than the ones `header_item` set.
+///
+/// It also reports the three things a frame cannot: whether the views are
+/// actually in a window, whether anything hid them, and where the track
+/// lands in window coordinates. Removed together with the other two prints.
+fn report_header_geometry(whence: &str) {
+    if !beckon_core::verbose() {
+        return;
+    }
+    // One borrow, released before any AppKit call -- the rule `dispatch`
+    // states, and it holds for a diagnostic too.
+    let parts = TRAY.with(|t| {
+        t.borrow().as_ref().and_then(|x| {
+            x.header.as_ref().map(|p| {
+                (
+                    p.container.clone(),
+                    p.track.clone(),
+                    p.knob.clone(),
+                    p.button.clone(),
+                )
+            })
+        })
+    });
+    let Some((container, track, knob, button)) = parts else {
+        eprintln!("beckon serve: header geometry ({whence}): no header parts stored");
+        return;
+    };
+    eprintln!(
+        "beckon serve: header geometry ({whence}) container {:?} subviews {} flipped {} \
+         in-window {} | track {:?} in window {:?} hidden {} alpha {} | knob {:?} | \
+         button {:?} hidden {}",
+        container.frame(),
+        container.subviews().len(),
+        container.isFlipped(),
+        container.window().is_some(),
+        track.frame(),
+        track.convertRect_toView(track.bounds(), None),
+        track.isHiddenOrHasHiddenAncestor(),
+        track.alphaValue(),
+        knob.frame(),
+        button.frame(),
+        button.isHiddenOrHasHiddenAncestor(),
+    );
+}
+
 fn dispatch(id: u32) {
     let mut handler = match TRAY.with(|t| {
         t.borrow_mut()
@@ -674,6 +731,33 @@ fn header_item(
     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
     container.addSubview(&button);
 
+    // TEMPORARY (diagnostic round), and only under `-v`: the CONTROL for
+    // "does an `NSBox` draw in this container at all". It is identical to the
+    // track in every respect except its x and its fill, and it is nowhere
+    // near the button, so exactly one variable separates them.
+    //
+    // - red appears, toggle does not  -> position or clipping at the right
+    //   edge, and the track is fine as an object;
+    // - neither appears               -> an `NSBox` does not draw in a menu
+    //   item's custom view at all, and the switch has to be built from
+    //   something else (an `NSImageView` over a drawn `NSImage` is the next
+    //   candidate).
+    //
+    // `ViewMaxXMargin` rather than the track's `ViewMinXMargin` so it stays
+    // beside the text at x = 100 however wide the menu gets, which is where
+    // the screenshot will be looking for it.
+    if beckon_core::verbose() {
+        let control = plain_box(mtm);
+        control.setCornerRadius(TRACK_H / 2.0);
+        control.setFillColor(&NSColor::systemRedColor());
+        control.setFrame(NSRect::new(
+            NSPoint::new(100.0, TOGGLE_Y),
+            NSSize::new(TRACK_W, TRACK_H),
+        ));
+        control.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
+        container.addSubview(&control);
+    }
+
     item.setView(Some(&container));
 
     // TEMPORARY, kept for one more round: the controller reads these off a
@@ -704,6 +788,7 @@ fn header_item(
                 track,
                 knob,
                 button,
+                container,
             });
         }
     });
