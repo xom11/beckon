@@ -283,26 +283,43 @@ pub(super) fn build(
     // (`accessibility_warning` can flip while the window is open); `labelled`'s
     // secondary line is also a plain non-wrapping `secondary()`, and this
     // sentence runs past 250 characters uncollapsed. So the row is built with
-    // `w::wrapping`, in the same title-then-note shape `labelled` uses.
+    // `w::wrapping`.
+    //
+    // **The paragraph is NOT in the row's label position, and that is fix
+    // round 4's H2** -- the Keyboard door's Input Monitoring row is the same
+    // defect in the same shape, and its comment carries the full account.
+    // In short: `form_row` hands the label whatever width the control has
+    // left, which is no place for a 250-character sentence. Measured at
+    // `d603910` with `examples/fix4_probe.rs` (not part of this commit),
+    // with the grant forced absent: label column `76.0x60.0`, title
+    // `80.0x16.0` -- and on the real untrusted bundle the title was not
+    // drawn at all -- note `80.0x42.0` against its own `fittingSize` ask of
+    // `581.5x42.0`. Photographed in `untrusted-About.png`; the released
+    // 0.15.2 window renders the same sentence across the whole card
+    // (`control-released-About.png`), so this was a regression.
+    //
+    // So the card's content is `vstack([form_row(title, button), note])`,
+    // with each child pinned to the column's width because `vstack`'s
+    // `Width` alignment does not stretch them. Fix round 3's
+    // `pin_width_at_least(&access_title, &access, ...)` is gone with the
+    // shape it corrected: the title no longer shares a column with the
+    // paragraph.
+    //
+    // The hidden-when-granted behaviour is unchanged and is why THIS door
+    // has no blank band: `apply` hides `access` outright, and a hidden
+    // arranged subview takes the stack's spacing with it.
     let access = w::wrapping("", mtm);
     let access_title = w::label("Accessibility", mtm);
-    let access_label = w::vstack(&[&*access_title as &NSView, &*access], 2.0, mtm);
-    // Same fix as `widgets::labelled`'s `Some` arm, and for the identical
-    // reason -- see its own doc for the full account, including two things
-    // that went wrong first: pinning before both views shared a parent
-    // crashed the process, and pinning with `pin_width_to` (an equality)
-    // let `access` collapse toward `access_title`'s narrower width instead
-    // of the reverse, because `access`'s `w::wrapping` compression
-    // resistance is deliberately low. `pin_width_at_least` (a `>=`) leaves
-    // `access` as free as it always was. Fix round 3, H1.
-    w::pin_width_at_least(&access_title, &access, 0.0);
     let grant = w::push(
         "Grant Accessibility…",
         sel!(beckonGrantAccess:),
         target,
         mtm,
     );
-    let access_row = w::form_row(&access_label, &grant, mtm);
+    let access_head = w::form_row(&access_title, &grant, mtm);
+    let access_row = w::vstack(&[&*access_head as &NSView, &*access], 6.0, mtm);
+    w::pin_width_to(&access_head, &access_row, 0.0);
+    w::pin_width_to(&access, &access_row, 0.0);
 
     // **The keyboard-tap disclosure keeps its own row, with no control.**
     // Still drawn in both permission states -- see `apply` and the module

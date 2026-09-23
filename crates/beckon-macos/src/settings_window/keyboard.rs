@@ -11,8 +11,14 @@
 //! ┌ Show shortcuts as Caps ─────────────────────────────── ( ●══) ┐
 //! └──────────────────────────────────────────────────────────────┘
 //! ┌ Input Monitoring ──────────────── [ Open Input Monitoring    ] │
+//! │ Needs Input Monitoring, in System Settings > Privacy & ...     │
 //! └──────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! **The last card is the one shape that is not a form row.** Its paragraph
+//! runs past 250 characters, so it sits UNDER the row rather than in the
+//! row's label position -- fix round 4, H2, and `build`'s own comment has
+//! the measurement.
 //!
 //! **No card heading.** The Win32 twin's `Keyboard` group label was deleted
 //! and its id retired: it drew the word `Keyboard` directly beneath a tab
@@ -173,28 +179,47 @@ pub(super) fn build(
     // label; this sentence runs past 250 characters, and a non-wrapping field
     // that long either clips at the card edge or drags the window wide --
     // the same class of defect `widgets::wrapping`'s own doc records on the
-    // other axis. So this row keeps building its note with `w::wrapping`,
-    // arranged in the same title-then-note shape `labelled` uses, instead of
-    // calling `labelled` itself.
+    // other axis. So this row keeps building its note with `w::wrapping`.
+    //
+    // **The paragraph is NOT in the row's label position, and that is fix
+    // round 4's H2.** Every other row on this page is
+    // `form_row(labelled(title, note), control)`, where the whole left half
+    // is one column beside the control. A 250-character paragraph cannot be
+    // that column: `form_row` gives the label whatever width is left once
+    // the control has taken its own, which for a 160pt button is a column
+    // ~100pt wide, and the sentence was squeezed into it and clipped.
+    // Measured at `d603910` with `examples/fix4_probe.rs` (not part of this
+    // commit), with the grant forced absent so the sentence is non-empty:
+    // label column `100.0x60.0`, title `104.0x16.0`, note `104.0x42.0`
+    // while its own `fittingSize` asked for `569.5x42.0`. On this machine
+    // the grant is present, `caps_note()` is empty and the row looks
+    // perfect -- the broken state is the one every new install starts in,
+    // photographed in `untrusted-Keyboard.png`. The released 0.15.2 window
+    // renders the same sentence across the whole card, so this was a
+    // regression, not a pre-existing defect.
+    //
+    // So the card's content is `vstack([form_row(title, button), note])`:
+    // the title keeps the row shape with its button hard right, and the
+    // paragraph gets the full card width on a line of its own underneath.
+    // Both children need their own pin to the column's width -- `vstack`'s
+    // `Width` alignment does not stretch them, the same defect
+    // `widgets::pin_width_to`'s doc records and `widgets::group` already
+    // fixes one level out. `w::pin_width_at_least(&im_title, &note, ...)`
+    // (fix round 3, H1) is gone with the shape it was correcting: the title
+    // no longer shares a column with the paragraph, so there is no shorter
+    // sibling to stretch.
     let note = w::wrapping(caps_note(), mtm);
     let im_title = w::label("Input Monitoring", mtm);
-    let im_label = w::vstack(&[&*im_title as &NSView, &*note], 2.0, mtm);
-    // Same fix as `widgets::labelled`'s `Some` arm, and for the identical
-    // reason -- see its own doc for the full account, including two things
-    // that went wrong first: pinning before both views shared a parent
-    // crashed the process, and pinning with `pin_width_to` (an equality)
-    // let `note` collapse toward `im_title`'s narrower width instead of
-    // the reverse, because `note`'s `w::wrapping` compression resistance
-    // is deliberately low. `pin_width_at_least` (a `>=`) leaves `note` as
-    // free as it always was. Fix round 3, H1.
-    w::pin_width_at_least(&im_title, &note, 0.0);
     let open_im = w::push(
         "Open Input Monitoring",
         sel!(beckonOpenInputMonitoring:),
         target,
         mtm,
     );
-    let im_row = w::form_row(&im_label, &open_im, mtm);
+    let im_head = w::form_row(&im_title, &open_im, mtm);
+    let im_row = w::vstack(&[&*im_head as &NSView, &*note], 6.0, mtm);
+    w::pin_width_to(&im_head, &im_row, 0.0);
+    w::pin_width_to(&note, &im_row, 0.0);
     let (g_grant, _) = w::group(&[&*im_row], mtm);
 
     let page = w::vstack(&[&*g_caps, &*g_view, &*g_grant], 12.0, mtm);
