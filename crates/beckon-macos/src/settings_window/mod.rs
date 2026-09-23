@@ -617,11 +617,15 @@ fn show_page(p: Page) {
 /// `show_page`'s full body, parameterized on whether the resize at the end
 /// animates.
 ///
-/// **`show_page` itself is the animated entry point** — the toolbar, the
-/// menu and `Add` all want the switch to be seen moving — so it hard-codes
-/// `true` and stays what every one of those callers reaches. `open()` is
-/// the one caller that must not animate: it calls this directly, with
-/// `false`, for its first page. Fix round 1 (2026-09-23): `open()` used to
+/// **`show_page` itself is the animated entry point** — a door the user
+/// clicked should be seen to switch — so it hard-codes `true`. Its one
+/// caller is the toolbar's `beckonToolbarPage:`; `Add` does not change
+/// doors and the tray menu reaches an open window through `open_existing`,
+/// which only raises it, so neither is a caller here and the doc used to
+/// say otherwise. `open()` is the caller that must NOT animate: it calls
+/// this directly, with `false`, for its first page.
+///
+/// Fix round 1 (2026-09-23): `open()` used to
 /// call `show_page(page)` (animated), then reset the window to
 /// `WINDOW_WIDTH` x `WINDOW_HEIGHT`, then call `size_to_page(&c, page,
 /// false)` a second time — three writes to the frame before the user ever
@@ -634,8 +638,8 @@ fn show_page(p: Page) {
 /// duplicating everything else `show_page` does.
 fn show_page_sized(p: Page, animate: bool) {
     // **Before the unchanged-door guard would have been wrong**: a recording
-    // must end even when `show_page` is called for the door already open,
-    // because `Add` and the toolbar both route through here.
+    // must end even when this is called for the door ALREADY open, which the
+    // toolbar does every time its selected item is clicked again.
     stop_recording();
     let Some(c) = controls() else { return };
     let now = UI.with(|u| u.borrow().as_ref().map(|x| x.page));

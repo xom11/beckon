@@ -406,10 +406,18 @@ pub struct ControlState {
     ///
     /// **Here rather than in a push of its own**, which settles design §12's
     /// open question 4 in the direction that question points: every input
-    /// `service_line` needs is already in this projection's two arguments, so
-    /// a fourth push would be a second route to state this one already
-    /// carries — and it would have to be `cfg`-gated per platform, where this
-    /// is free on all three.
+    /// `base_service_line` needs is already in this projection's two
+    /// arguments, so a fourth push would be a second route to state this one
+    /// already carries — and it would have to be `cfg`-gated per platform,
+    /// where this is free on all three.
+    ///
+    /// **`base_service_line`, not `service_line`, and after the macOS
+    /// redesign those are two different functions.** The one input that is
+    /// NOT in this projection's two arguments — whether the file changed
+    /// under an open window — is layered onto the finished line by
+    /// `service_line`, at the window that already receives it; that
+    /// function's own doc argues the case at length, and this sentence named
+    /// it by mistake while describing the other one.
     pub service: ServiceLine,
 }
 
