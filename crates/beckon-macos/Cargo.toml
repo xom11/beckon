@@ -11,7 +11,7 @@ thiserror   = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2            = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSDictionary", "NSError", "NSObject", "NSEnumerator", "NSValue", "NSAttributedString", "NSProcessInfo"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSURL", "NSDictionary", "NSError", "NSObject", "NSEnumerator", "NSValue"] }
 objc2-app-kit    = { version = "0.3", features = [
     "NSWorkspace", "NSRunningApplication",
     # The menu bar item (src/tray.rs). NSStatusBarButton is what
@@ -31,17 +31,6 @@ objc2-app-kit    = { version = "0.3", features = [
     "NSPopUpButtonCell", "NSSecureTextField", "NSBox", "NSFont", "NSColor",
     "NSAlert", "NSUserInterfaceItemIdentification", "NSAccessibilityProtocols",
     "NSLayoutAnchor", "NSAnimation", "NSDragging", "NSPasteboard",
-    # The new menu row kinds (src/tray.rs): the header's switch, the
-    # right-aligned chord column (NSTextTab lives in the NSParagraphStyle
-    # module) and its measurement (`size()`, gated on the app-kit crate's
-    # own `objc2-core-foundation` feature, which none of the rows above
-    # happen to imply).
-    "NSSwitch", "NSParagraphStyle", "NSStringDrawing", "objc2-core-foundation",
-    # ⌥-click on the status item (src/tray.rs): reading the current event's
-    # modifier flags and type, and `NSControl::sendActionOn`, are both gated
-    # behind this feature -- `performClick` and the rest of NSControl are
-    # not, which is why it was not already on.
-    "NSEvent",
 ] }
 core-foundation  = "0.10"
 plist            = "1"

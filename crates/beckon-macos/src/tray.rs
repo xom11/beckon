@@ -3,8 +3,11 @@
 //!
 //! It deliberately exposes the same four things that module does —
 //! `set_menu`, `set_status`, `request_quit`, and `beckon_core::menu`'s
-//! `MenuEntry` — so `serve::build_entries` composes one menu for both
-//! platforms and neither side owns a private notion of what a row is.
+//! `MenuEntry` — so neither side owns a private notion of what a row is.
+//! The two menus are no longer the same menu, though: since the redesign
+//! `serve::build_mac_entries` composes this one and `serve::build_entries`
+//! (`#[cfg(any(target_os = "windows", test))]`) composes the Windows one.
+//! `MenuEntry` is the shared vocabulary, not a shared composition.
 //!
 //! **Nothing here proves an icon appeared, and no API in this process can.**
 //! Two things were measured on macmini, and both are load-bearing:
@@ -300,7 +303,8 @@ fn plain_item(
 ///
 /// **The label carries no colour attribute on purpose**, so AppKit still
 /// inverts it on the highlighted row. The flag and the chord are coloured and
-/// will NOT invert -- that is Probe P2 below.
+/// will NOT invert; the live session of 2026-09-22 read a highlighted row and
+/// found it legible anyway (`docs/notes/macos-backend.md`).
 fn row_title(e: &MenuEntry, tab: f64) -> Retained<NSAttributedString> {
     let font = NSFont::menuFontOfSize(0.0);
     let para = NSMutableParagraphStyle::new();
