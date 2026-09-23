@@ -1130,15 +1130,18 @@ controller, chasing the header's toggle). Read `docs/superpowers/specs/
 `beckon_macos::resolve_reports` — the same LaunchServices/`NSWorkspace`
 catalog scan the settings window already pays for — is run **once per config
 load or reload**, cached into `ServeState::menu_rows`, and never run again
-while the menu is open. Measured across four rebuilds, 19 bindings each:
-93.4 ms, 77.2 ms, 69.7 ms, 60.3 ms. The spread is rebuild-to-rebuild noise
-(disk cache, thermal state), not a trend; no run came close to opening on the
-hot path.
+while the menu is open. Measured on `airm3`, same 19 bindings, across four
+successive rebuild-and-restart cycles: 93.4 ms, 77.2 ms, 69.7 ms, 60.3 ms —
+monotonically decreasing, not scattered. No cause was measured for the trend
+(a warming disk cache across restarts is one candidate consistent with the
+direction; it was not isolated as the mechanism), so treat this as one
+machine's band, roughly **60-95 ms**, rather than reading either end as the
+number. No run came close to the cost of the hot path.
 
 The reason this is a load-time cost and not an open-time one (spec §3.5) is
 structural, not a preference: the scan is synchronous on macOS, and a menu
 bar's `menuNeedsUpdate:` is expected to return the same tick the click lands
-in — a person clicking the icon and waiting 60-90 ms for the catalog to
+in — a person clicking the icon and waiting 60-95 ms for the catalog to
 re-scan before the menu even draws is the wrong trade for something that only
 changes when the file itself changes. `beckon <id>` — the hot path — never
 calls this function at all.
@@ -1159,16 +1162,38 @@ green dot and `19 shortcuts, 2 missing` instead).
   (the system idiom, not a beckon-drawn label).
 - **`Shortcuts ▸`** held all 19 bindings in file order, chord column aligned,
   a highlighted row staying legible. Chords drew unfolded (`⌃⌥⌘H`, not `⇪H`)
-  because `keyboard.caps` / `CapsView` are both off on this machine — this
-  says nothing about the fold path itself, only that it was not exercised.
+  because `keyboard.caps` / `CapsView` are both off on this machine —
+  `~/.config/beckon/apps.toml` here carries no `keyboard.*` key at all, so
+  `keyboard.caps` defaults to `false`, and `caps_view_fold` (`want &&
+  caps_on`) is off **twice over**, `CapsView` being the other unset half.
+  This says nothing about the fold path itself, only that it was not
+  exercised — and it does not conflict with ⇪C working, below: see that
+  bullet for why.
 - Real 16 pt app icons drew for resolved rows; both `missing` rows drew the
   dashed `app.dashed` placeholder — the control for the placeholder path
   (something has to draw when there is no bundle to fetch an icon from, and
   this is what it looked like).
-- Pause/resume: ⇪C did nothing while paused, worked again after resuming.
+- **Pause/resume: ⇪C did nothing while paused, worked again after resuming —
+  and this does not mean beckon's Caps tap was armed.** `keyboard.caps` is
+  `false` on this machine (above), so `sync_caps_hook` never installs
+  `caps_tap`; beckon saw no Caps press at all. `apps.toml`'s own header
+  comment says where the chord actually comes from: "Cap held =
+  ctrl+super+alt, produced by kanata". kanata remaps a held Caps to the
+  `ctrl+super+alt` modifiers as real key events, outside beckon entirely,
+  and `RegisterEventHotKey` fires on the resulting `ctrl+super+alt+C` the
+  same as it would for a hand-typed chord. Pausing still stops it, because
+  pausing clears the registration map regardless of which physical key
+  produced the chord.
 - Click behavior: a plain click opened the menu at the system's own
   placement; a right-click opened it too; ⌥-click toggled pause and opened
-  no menu.
+  no menu. **The mechanism that shipped is `beckonStatusClick:` reading
+  `NSEvent.modifierFlags` off `currentEvent()` and branching before ever
+  touching the menu**: on Option-without-right-click it dispatches
+  `MENU_ID_ALT_CLICK` and returns; every other click falls through to
+  `pop_menu` (`item.setMenu`, `button.performClick`, `item.setMenu(None)`).
+  This is the status button's own click action, not the plan's fallback of
+  a `menuWillOpen:`-plus-`cancelTracking()` pair — that fallback was not
+  needed and is not what shipped.
 - **Clicking `Claude` in the submenu opened Settings on the Shortcuts page
   with that row selected, and did not launch or focus Claude** — checked
   with Claude not frontmost beforehand, so a launch or focus would have been
