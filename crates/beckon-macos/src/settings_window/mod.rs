@@ -301,6 +301,18 @@ struct Ui {
     /// The combo the fields were last *given*, so an edit can be compared
     /// against what is stored rather than against the previous keystroke.
     shown_combo: Option<String>,
+    /// The selected row the table was last SCROLLED to, which is not the same
+    /// question as which row is selected.
+    ///
+    /// The table shows `ROWS` rows and the author's file has 19 bindings, so
+    /// selecting row 12 from the menu's `Shortcuts` submenu highlights
+    /// something nobody can see — `selectRowIndexes:` does not scroll.
+    /// Scrolling on every push is the other wrong answer: `apply_state` runs
+    /// on every keystroke in the filter box and on every watcher tick, so a
+    /// user who deliberately scrolled away from the selected row would be
+    /// yanked back each time. Comparing against this field makes the scroll
+    /// happen once, when the selection actually moves.
+    scrolled_selection: Option<usize>,
     /// True while `apply_state` is writing controls. Every notification
     /// consults it: AppKit raises the same actions for a programmatic write
     /// as for a human one, and a push that came back as an edit would make
@@ -2006,6 +2018,10 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
             _target: target,
             items: Vec::new(),
             shown_combo: None,
+            // Nothing has been scrolled to yet, so the first push scrolls
+            // whenever it carries a selection -- which is exactly the open
+            // that came from a menu row.
+            scrolled_selection: None,
             pushing: false,
             // Set below by `show_page`, which is also what tells the caller.
             page: Page::Shortcuts,
@@ -2419,14 +2435,18 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
     // PHASE 1 -- model-side fields, under a borrow released before any
     // AppKit call. `items` must be in place BEFORE `reloadData`, because
     // that call asks the data source for them synchronously.
-    let ok = UI.with(|u| {
+    // `Some(moved)` when the window is alive; the bool is whether the
+    // selection changed since the last push, which PHASE 2 needs to decide
+    // whether to scroll. Read here because this is the only place the two
+    // values exist at once, and PHASE 2 holds no borrow.
+    let selection_moved = UI.with(|u| {
         let mut b = u.borrow_mut();
-        let Some(x) = b.as_mut() else {
-            return false;
-        };
+        let x = b.as_mut()?;
         x.pushing = true;
         x.items = st.items.clone();
         x.shown_combo = st.detail.as_ref().map(|d| d.combo.clone());
+        let moved = x.scrolled_selection != st.selected;
+        x.scrolled_selection = st.selected;
         // Kept for the DATA SOURCE, which needs them while `reloadData` is
         // running and cannot be handed arguments: the list cell folds a
         // bound chord into `Caps` only when the preference is on AND Caps is
@@ -2434,11 +2454,11 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         // that AND lives.
         x.caps_checked = st.caps_checked;
         x.caps_hold = st.caps_hold;
-        true
+        Some(moved)
     });
-    if !ok {
+    let Some(selection_moved) = selection_moved else {
         return;
-    }
+    };
 
     // PHASE 2 -- every AppKit call, with no borrow outstanding. This is the
     // whole point of the split: `reloadData` re-enters the data source and
@@ -2507,6 +2527,15 @@ pub fn apply_state(st: &ControlState, external_change: bool, catalog: Option<&[S
         if let Some(i) = st.selected {
             let set = objc2_foundation::NSIndexSet::indexSetWithIndex(i);
             x.table.selectRowIndexes_byExtendingSelection(&set, false);
+            // **Only when the selection actually moved** -- see
+            // `Ui::scrolled_selection`. Selecting does not scroll, so a row
+            // past the `ROWS`th is highlighted off screen and the menu's
+            // "click a binding, land on it" gesture appears to do nothing;
+            // scrolling unconditionally would instead drag the user back
+            // here on every filter keystroke and every watcher tick.
+            if selection_moved {
+                x.table.scrollRowToVisible(i as isize);
+            }
         } else {
             unsafe { x.table.deselectAll(None) };
         }
