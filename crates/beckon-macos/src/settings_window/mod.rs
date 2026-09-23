@@ -131,37 +131,64 @@ mod widgets;
 /// then the content drives the window instead of the other way round.
 /// The design's window, in points.
 ///
-/// **`MIN_HEIGHT` is what the TALLEST DOOR asks for, and that door is
-/// Shortcuts.** This used to be the Win32 twin's derivation carried over
-/// unchanged, and it named About as its subject on the reasoning that card 1's
-/// list gives room up before anything else moves. Measured with
-/// `examples/geom_probe.rs` on macmini 2026-08-17, asking every door including
-/// the three that are hidden:
+/// **RETIRED as of phase 2 (2026-09-23): one shared `MIN_HEIGHT` for all
+/// four doors is gone.** This constant used to read `MIN_HEIGHT is what the
+/// TALLEST DOOR asks for, and that door is Shortcuts` and derive `480` /
+/// `500` from it. That was correct for a window that showed all four doors
+/// at one height and wrong the moment the toolbar (spec §5.1) let three of
+/// them be smaller than the fourth: with the toolbar installed the window
+/// opened at the Shortcuts height and STAYED there on every other door,
+/// leaving a band of empty window below a General or Keyboard card that
+/// ends less than halfway down. The window now takes each page's own
+/// height (`size_to_page`), so the floor is `MIN_CONTENT_HEIGHT` -- a
+/// number no door's content is allowed to shrink the window below -- rather
+/// than the tallest door's content.
+///
+/// The measured table that made one shared height wrong, from
+/// `examples/geom_probe.rs` on macmini 2026-08-17, asking every door
+/// including the three that were then hidden:
 ///
 /// ```text
 /// Shortcuts 360    About 306    Keyboard 190    System 144
 /// ```
 ///
-/// Shortcuts is the tallest by 54 pt, so About was never the binding
-/// constraint. The carried-over 480 happened to be safe only because it sat
-/// 28 pt ABOVE what any door needed; spending that slack on rows makes it the
-/// real floor, so it has to be derived rather than inherited.
-///
-/// It is `setContentMinSize`, i.e. the height the user can drag DOWN to -- so
-/// content must fit at this number, not merely at `WINDOW_HEIGHT`. Growing the
-/// list without moving this is the trap: at the minimum the stack pays the
-/// shortfall out of its top inset and nowhere else, which is the hardest kind of
-/// layout bug to notice.
-///
-/// **It is now `WINDOW_HEIGHT` itself, spelled as that rather than repeated as a
-/// number.** Once `ROWS` spends the last of the slack the two ARE the same
-/// quantity -- the window is exactly as tall as its tallest door -- and writing
-/// `480` beside a 500 that had grown to meet it is how the pair silently drifts
-/// apart again. The window stays resizable UPWARDS; the slack simply goes under
-/// the bar as before.
+/// Shortcuts is the tallest by 54 pt over About and by 216 pt over System --
+/// the 216 pt is the empty band this task removes. The table stays here as
+/// the record of why a shared height was wrong, not as a live derivation:
+/// `WINDOW_WIDTH` / `WINDOW_HEIGHT` below no longer come from it.
 const WINDOW_WIDTH: f64 = 640.0;
+/// The window's first-open height. Still the Shortcuts number above --
+/// Shortcuts is still the tallest door -- but no longer a shared floor:
+/// `show_page` corrects every door, including the first one shown, to its
+/// own fitting height via `size_to_page`.
 const WINDOW_HEIGHT: f64 = 500.0;
-const MIN_HEIGHT: f64 = WINDOW_HEIGHT;
+
+/// The shortest content height the window will take, whatever the page asks
+/// for. Below this a titled window with a preference toolbar is mostly
+/// chrome, and `setContentMinSize` would let the user drag into that.
+const MIN_CONTENT_HEIGHT: f64 = 200.0;
+
+/// The root stack's top plus bottom `NSEdgeInsets` (`root.setEdgeInsets`,
+/// below) and its one inter-arranged-subview spacing
+/// (`root.setSpacing`, below). Named so `size_to_page`'s arithmetic and
+/// `open()`'s stack construction cannot drift apart the way `480` and `500`
+/// did above.
+const ROOT_INSET_Y: f64 = 12.0;
+const ROOT_SPACING: f64 = 10.0;
+/// `setContentMinSize`'s width floor -- the width the user can drag IN to.
+const MIN_WIDTH: f64 = 560.0;
+
+/// What the window's CONTENT height must be to show one page whole.
+///
+/// `page_fitting` is the page view's `fittingSize().height`, `bar` the
+/// command band's, `insets` the root stack's top plus bottom, and `spacing`
+/// the one gap between the page and the band. One expression with one
+/// meaning, for the reason `page_plan`'s `content_h` exists on Windows: three
+/// spellings of "how tall is this door" drift, and the drift reads as a
+/// rendering fault.
+fn content_height(page_fitting: f64, bar: f64, insets: f64, spacing: f64) -> f64 {
+    (page_fitting + bar + insets + spacing).max(MIN_CONTENT_HEIGHT)
+}
 
 const ROWS: f64 = 12.0;
 const ROW_HEIGHT: f64 = 20.0;
@@ -206,6 +233,13 @@ struct Controls {
     /// that is not open contributes no height — the AppKit spelling of
     /// `compute_card_rects` being page-dependent.
     pages: [Retained<NSView>; 4],
+    /// The command band itself, one row: `service`, a spring, and the three
+    /// buttons `show_page` shows or hides. Held here (not just stacked into
+    /// `root`) because `size_to_page` needs its `fittingSize().height` --
+    /// the band's own chrome is not a constant, and guessing it is exactly
+    /// the "three spellings of how tall is this door" `content_height`'s
+    /// doc warns against.
+    bar: Retained<NSStackView>,
     /// `Serving · N of M` / `Paused` / `Not serving`.
     ///
     /// Lives in the command bar and is drawn on **all four** doors, which is
@@ -605,6 +639,29 @@ fn show_page(p: Page) {
     if now != Some(p) {
         cmd(SettingsCommand::ShowPage(p));
     }
+    size_to_page(&c, p, true);
+}
+
+/// Size the window to the page it is showing, keeping the title bar where
+/// it is (AppKit frames grow DOWNWARD from the origin, so the origin must
+/// move by the same amount the height does).
+///
+/// `animate` is false for the first layout -- a window that resizes while it
+/// is being shown reads as a glitch, not as a transition.
+fn size_to_page(c: &Controls, p: Page, animate: bool) {
+    let page = c.pages[page_index(p)].fittingSize().height;
+    let bar = c.bar.fittingSize().height;
+    let want = content_height(page, bar, ROOT_INSET_Y * 2.0, ROOT_SPACING);
+    c.window.setContentMinSize(NSSize::new(MIN_WIDTH, want));
+    let frame = c.window.frame();
+    let chrome = frame.size.height - c.window.contentRectForFrameRect(frame).size.height;
+    let height = want + chrome;
+    let top = frame.origin.y + frame.size.height;
+    let new = NSRect::new(
+        NSPoint::new(frame.origin.x, top - height),
+        NSSize::new(frame.size.width, height),
+    );
+    c.window.setFrame_display_animate(new, true, animate);
 }
 
 define_class!(
@@ -1891,8 +1948,11 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     // the measurement rather than on taste: this stack detaches hidden views,
     // so the card would shrink 14 pt and grow back the moment a note appeared,
     // i.e. the card's bottom border would move while the user typed in it. It
-    // also buys nothing at the floor, because `MIN_HEIGHT` still has to fit the
-    // note-SHOWN case. The 48 pt that was worth reclaiming was under the
+    // also buys nothing at the floor: `size_to_page` (retired `MIN_HEIGHT`,
+    // 2026-09-23) recomputes the Shortcuts door's own drag-floor from its
+    // CURRENT fitting size on every push, so a note that pops in and out
+    // would drag that floor with it -- the same card-bottom-moves problem
+    // one level lower. The 48 pt that was worth reclaiming was under the
     // command bar, and `ROWS` spends it.
     let notes = widgets::wrapping("", mtm);
 
@@ -1991,7 +2051,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // The default is already true, but this stack is the one place where
         // the whole four-door illusion rests on it.
         root.setDetachesHiddenViews(true);
-        root.setSpacing(10.0);
+        root.setSpacing(ROOT_SPACING);
         // **Before the children are added, not after.** Setting `alignment`
         // on an `NSStackView` that already has arranged subviews does not
         // re-apply to them: the strip, every door and the command bar came out
@@ -2006,9 +2066,9 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // outermost column was wrong and the cards inside each door were not.
         root.setAlignment(NSLayoutAttribute::Width);
         root.setEdgeInsets(objc2_foundation::NSEdgeInsets {
-            top: 12.0,
+            top: ROOT_INSET_Y,
             left: 12.0,
-            bottom: 12.0,
+            bottom: ROOT_INSET_Y,
             right: 12.0,
         });
         for v in [
@@ -2090,7 +2150,11 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
         // restoration and can inherit a bad frame from any single bad build,
         // which is a defect that survives the fix that caused it.
         window.setRestorable(false);
-        window.setContentMinSize(NSSize::new(560.0, MIN_HEIGHT));
+        // The floor before any door has been shown. `show_page`, below,
+        // tightens this to the open door's own fitting height on every
+        // push (`size_to_page`); this is only what a window has before that
+        // first push runs.
+        window.setContentMinSize(NSSize::new(MIN_WIDTH, MIN_CONTENT_HEIGHT));
         // Save rests here, but the ring migrates to whichever push button
         // has focus, so Enter on a tabbed-to Close closes.
         let save_cell = save.cell().unwrap();
@@ -2105,6 +2169,7 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
                 toolbar,
                 _toolbar_target: toolbar_target,
                 pages: [page_shortcuts, page_keyboard, page_system, page_about],
+                bar,
                 service,
                 kbd,
                 sys,
@@ -2174,6 +2239,19 @@ pub fn open(cb: Callbacks, paths: &Paths, page: Page) -> Result<(), String> {
     if let Some(c) = controls() {
         c.window
             .setContentSize(NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT));
+        // **Then correct to the door actually being opened, unanimated.**
+        // `show_page`, just above, already ran `size_to_page(&c, p, true)`
+        // for `page` -- but animated, and against whatever frame the window
+        // happened to have while under construction, which is not
+        // `WINDOW_WIDTH` x `WINDOW_HEIGHT`. A caller can open straight onto
+        // any of the four doors (a broken-shortcut tray row lands on
+        // Shortcuts; a settings-window shortcut can land elsewhere), so the
+        // door here is not always the tallest one `WINDOW_HEIGHT` was
+        // measured for. This second, unanimated call is what makes the
+        // FIRST frame on screen the right one rather than a briefly-wrong
+        // one corrected a moment later -- see `size_to_page`'s own doc on
+        // why `animate` is false here.
+        size_to_page(&c, page, false);
         c.window.center();
 
         // **Reading the stored opacity into `Ui` is only half of honouring
@@ -2917,5 +2995,28 @@ mod tests {
         // ran a second time.
         assert!(may_close());
         assert_eq!(seen.get(), 0);
+    }
+
+    /// The window's content height is the page plus the command band plus
+    /// the root stack's own chrome -- one expression, so a page that grows
+    /// cannot be clipped by a constant somebody forgot to move.
+    #[test]
+    fn content_height_is_the_page_plus_the_band_and_the_chrome() {
+        // root insets are 12 top + 12 bottom, and one 10 pt gap between the
+        // page and the band.
+        assert_eq!(content_height(360.0, 24.0, 24.0, 10.0), 418.0);
+        assert_eq!(content_height(144.0, 24.0, 24.0, 10.0), 202.0);
+    }
+
+    /// A page shorter than the floor still gets the floor: a 150 pt window
+    /// with a title bar and a toolbar is not a window.
+    #[test]
+    fn no_page_shrinks_the_window_below_the_floor() {
+        // `const { }`, not a bare `assert!`, because clippy's
+        // `assertions_on_constants` (CI's stable, 1.98.x) rejects comparing
+        // two compile-time constants at runtime -- the same check clippy
+        // itself suggests moving here.
+        const { assert!(MIN_CONTENT_HEIGHT >= 200.0) };
+        assert_eq!(content_height(10.0, 24.0, 24.0, 10.0), MIN_CONTENT_HEIGHT);
     }
 }
