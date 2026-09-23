@@ -410,11 +410,35 @@ pub(super) fn group(
         if i == 0 {
             handles.push((*r).retain());
         } else {
-            handles.push(vstack(&[&*divider(mtm) as &NSView, *r], 10.0, mtm));
+            // Same defect `pin_width_to`'s own doc records, one level
+            // further in: `vstack`'s `Width` alignment does not stretch
+            // ITS children either, so the divider and the row inside this
+            // wrapper need their own pins to the wrapper's width -- without
+            // them the row sits at its own intrinsic width (a wrapped row
+            // narrower than the card hugs its control instead of sitting at
+            // the card's left inset) and the divider, with no intrinsic
+            // width of its own, draws at whatever sliver AppKit gives an
+            // unconstrained `NSBoxType::Separator` (measured: 5pt, tucked
+            // against the row's right edge -- invisible at this scale).
+            // Fix round 2, G2 and G3.
+            let d = divider(mtm);
+            let wrapper = vstack(&[&*d as &NSView, *r], 10.0, mtm);
+            pin_width_to(&d, &wrapper, 0.0);
+            pin_width_to(r, &wrapper, 0.0);
+            handles.push(wrapper);
         }
     }
     let refs: Vec<&NSView> = handles.iter().map(|v| &***v).collect();
-    (card(&vstack(&refs, 10.0, mtm), mtm), handles)
+    let body = vstack(&refs, 10.0, mtm);
+    // And the handle itself needs the SAME pin to `body`'s width, one level
+    // further out still -- pinning the row to its own wrapper (above) fixes
+    // nothing if the wrapper itself is left at its own intrinsic width by
+    // `body`'s `Width` alignment. Row 0's handle (the bare row, no wrapper)
+    // needs it too: nothing upstream of `group` was pinning it either.
+    for h in &handles {
+        pin_width_to(h, &body, 0.0);
+    }
+    (card(&body, mtm), handles)
 }
 
 /// Pin a view to an exact height.
