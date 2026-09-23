@@ -769,10 +769,30 @@ pub enum Bar {
 /// `Saved` readout and `Undo` -- both of which belong to §6's auto-save.
 ///
 /// **Platform-aware since Task 5.** `Bar::Buttons` is the predicate above,
-/// unchanged. `Bar::Readout` always answers `false`: macOS auto-saves, so
-/// there is no button row to gate -- the band's right half carries a `Saved`
-/// readout and `Undo` instead (design §6's auto-save), which this predicate
-/// does not decide.
+/// unchanged, and every caller in the program passes it -- four in
+/// `beckon-windows`, two in this file.
+///
+/// **`Bar::Readout` has no caller, and that is a decision rather than an
+/// oversight (I5).** Task 5 added the parameter so macOS could ask whether
+/// its button row was on screen; Task 11 then deleted the row itself
+/// instead of gating it, so the question has no asker left. What the arm
+/// still does is keep the answer from being gettable by accident: a macOS
+/// reader cannot call `command_bar_shown(page)` and be told `true` on
+/// Shortcuts, because there is no such call to make -- they have to name a
+/// `Bar`, and the one macOS names answers `false` on every door. It is the
+/// same fact the two comments in `beckon-macos/src/settings_window/mod.rs`
+/// state in prose, in a form the compiler carries.
+///
+/// **Not wired, deliberately.** The alternative was a call from the macOS
+/// bar builder whose result nothing uses, which is a fake caller rather
+/// than a real one: macOS builds no button row on any page, so there is
+/// nothing for an answer to gate. That is the one respect in which this is
+/// NOT the `warn_dot_shown` shape `CLAUDE.md` records -- there, three doors
+/// out of four had something to draw and did not ask; here no door has
+/// anything to draw. Recorded in `docs/notes/settings-window.md` so the
+/// next reader meets it outside this phase's ledger, and pinned by
+/// `the_button_row_is_windows_only_now`, which asserts the arm on all four
+/// pages.
 pub fn command_bar_shown(page: Page, bar: Bar) -> bool {
     match bar {
         // **macOS lost the row, not the band.** Auto-save replaced the
@@ -6699,6 +6719,13 @@ mod tests {
     /// macOS auto-saves (Task 5): every door answers `false` for
     /// `Bar::Readout`, regardless of `Page::writes_config`. Windows is
     /// unchanged -- `Bar::Buttons` still follows the page that writes.
+    ///
+    /// **This is the arm's only reader, and the decision to leave it that
+    /// way is recorded (I5)** -- in `command_bar_shown`'s own doc and in
+    /// `docs/notes/settings-window.md`. Task 11 deleted the macOS button
+    /// row rather than gating it, so there is no production caller and no
+    /// honest way to add one; what the arm buys is that the wrong answer
+    /// cannot be reached by calling the function without naming a `Bar`.
     #[test]
     fn the_button_row_is_windows_only_now() {
         for p in [Page::Shortcuts, Page::Keyboard, Page::System, Page::About] {

@@ -628,6 +628,42 @@ other three doors are hidden views. Core's projection and this window's
 construction therefore agree by construction rather than by a call, which is
 free to drift and is exactly what the new test's first half checks.
 
+### `Bar::Readout` has zero production callers, and it KEEPS the arm
+
+2026-09-23, decided rather than discovered — the whole-branch review found it
+and asked for a ruling either way.
+
+`command_bar_shown(page, Bar)` gained its second parameter in the auto-save
+phase's Task 5 so macOS could ask whether its button row was on screen. Task 11
+then **deleted the row** instead of gating it, and with it `beckonSave:`, the
+`Save` / `Close` / `Open config file` views and every door that could have
+asked. What is left naming `Bar::Readout` is core's own match arm, one core
+test, and two comments in `beckon-macos/src/settings_window/mod.rs`.
+
+That is the `warn_dot_shown` shape `CLAUDE.md` records, one crate over — and
+the ruling is still to keep it, for two reasons that do not apply there:
+
+- **There is no honest caller to add.** `warn_dot_shown` had three doors that
+  each had something to draw and did not ask. Here macOS builds **no button
+  row on any page**, so a call from the bar builder would have its answer
+  discarded — a fake caller, which is the papering-over shape this repository
+  already refuses elsewhere.
+- **Retiring the variant would mean editing `beckon-windows` again.** Its four
+  call sites pass `Bar::Buttons`; removing the parameter touches all four, and
+  "Windows is untouched except the one call-site change Task 5 names" is a
+  constraint of this branch.
+
+What the arm buys, concretely: a macOS reader **cannot** call
+`command_bar_shown(page)` and be told `true` on Shortcuts, because there is no
+such call to make. They must name a `Bar`, and the one macOS names answers
+`false` on every door. It is the two prose comments' fact in a form the
+compiler carries. `the_button_row_is_windows_only_now` asserts it on all four
+pages and is the arm's only reader.
+
+**What would change the ruling**: a macOS command bar that is again built or
+hidden per page. Then the builder asks, and the arm stops being
+documentation.
+
 ## The status vocabulary is four words, and a healthy row says nothing
 
 `paused` > `in use` > `missing` > `other chord`, and that order IS the
