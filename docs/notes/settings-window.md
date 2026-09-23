@@ -1374,3 +1374,334 @@ The typed path stays primary — capture is an accelerator, not a replacement.
 Someone who cannot physically produce a chord still has the four check boxes
 and the key list, and keys capture can never see (bare `escape`, bare `tab`)
 remain selectable there.
+
+## Auto-save replaces Save, Close, and Open config file
+
+`Save`, `Close` and `Open config file` are gone from the macOS window as of
+Task 11, and **deleted, not hidden** — a hidden button with a live selector
+is still reachable through the responder chain. `command_bar_shown` answers
+per platform now, rather than one shared literal; Windows still draws all
+three and still gates every write behind Save. In their place, every edit
+in the model runs `beckon_core::settings::autosave_plan` behind eleven
+guards from four-doors design §6 (G-a through G-k, disposed below), and a
+bounded Undo (`Model::UNDO_DEPTH = 20`) replaces the discard half of the old
+three-way close prompt.
+
+### `controlTextDidChange:` replaced `commit_fields`, and that is why the button came down last
+
+`commit_fields()` was the only thing that rescued text typed into the App
+field but never committed to the model — the combo box's own action fires
+on Enter or on a list pick, not per keystroke — and it was called from
+`beckonSave:` alone. Removing Save before that rescue had a replacement
+would have silently lost every partially-typed app name, which is the
+reason the button came down last: only after
+`NSControlTextEditingDelegate::controlTextDidChange:` was wired to the same
+guard, the same read and the same `on_edit_app` callback `beckonApp:`
+already used. The only thing it adds is recording `app_last_typed`, which
+`autosave_is_deferred` reads for the 600 ms (`AUTOSAVE_QUIET_MS`) debounce
+that keeps the write off the hot path of a keystroke — without that record,
+someone who picks a name from the dropdown and never types a character
+would leave the model dirty with nothing to wait for, a gap no test that
+types could ever see.
+
+Wiring it needed two marker impls that look deletable and are not.
+`NSComboBox` is an `NSTextField` subclass and the delegate protocol chain is
+`NSComboBoxDelegate: NSTextFieldDelegate: NSControlTextEditingDelegate`, but
+objc2's protocol traits do not coerce along their supertrait chain the way
+Objective-C's own `id<Protocol>` does — `setDelegate` wants
+`Option<&ProtocolObject<dyn NSComboBoxDelegate>>`, and `Target` has to name
+every protocol in that chain as its own Rust trait. `unsafe impl
+NSTextFieldDelegate for Target {}` and `unsafe impl NSComboBoxDelegate for
+Target {}` are both empty — every method either protocol adds is
+`#[optional]`, and the one method that matters lives on
+`NSControlTextEditingDelegate` above — but deleting either one fails to
+compile at the `setDelegate` call site. The App combo box had never had a
+delegate at all before this phase.
+
+### Escape has never closed this window, so removing Close disarmed nothing
+
+Verified with a control: at the commit before the command bar's buttons came
+down, with `Close` still present, Escape did not close the window either —
+no `keyEquivalent`, no `cancelOperation:` override, the window is not
+modal, and there is no menu bar to route an Escape through. The title bar's
+red `X` (`windowShouldClose:` → `may_close()`) was already the only way
+out, so retiring `Close` removed a redundant route, not the only one.
+
+### Two AX traps a live-driving session found, both worth knowing before scripting this window again
+
+Setting a text field's value through the Accessibility API does not fire
+its action, so the model never sees it: a filter set that way stays empty
+in `Model` and the window behaves exactly as if unfiltered, which reads
+like a guard failing to fire rather than like the wrong tool having been
+used to type.
+
+And `button 1 of window 1` is not a stable address. Deleting the three
+command-bar buttons shifted every AX index after them — `Undo` is now
+index 1, `AXCloseButton` is index 2 — so a script written against the old
+layout that presses index 1 expecting the close button presses Undo
+instead, and reports that nothing closed.
+
+## The eleven guards, and three that are not what four-doors design says
+
+Design §6 lists G-a through G-k as preconditions, not polish. Their
+disposition after this phase:
+
+| guard | what it does | status |
+|---|---|---|
+| G-a | compare-and-swap: refuse a write whose base moved | built |
+| G-b | reseed the view by identity, not index | built — first attempt was wrong in the case it exists for |
+| G-c | in-place key rename, not delete-and-append | built |
+| G-d | never inject a bare `keyboard.caps` / `keyboard.caps_tap` line | **already built before this phase** |
+| G-e | hold a write when the selected app just went missing | built — **design's own worked example does not fire** |
+| G-f | confirm a risky Remove | built |
+| G-g | bounded Undo, depth 20 | built |
+| G-h | `<config>.bak` written once at window open | built |
+| G-i | flush a pending write on session end | **out of scope this branch** |
+| G-j | one close prompt | built — **fires only on `NotSaved::CannotWrite`** |
+| G-k | carry the filter/selection/marks across a reload | built, same identity rule as G-b |
+
+Three of these read as omissions if the design document is taken as the
+whole story, and are not — each is recorded below rather than left to be
+"fixed" back toward the design's own wording.
+
+### G-d was already built before this phase started
+
+`write_caps` / `write_tap` in `crates/beckon-core/src/config_write.rs`
+already computed whether to emit a `keyboard.caps` / `keyboard.caps_tap`
+line from `spelled(..) || value != default`, and the doc comment already
+named the nix-config-in-git case that rule exists for. Nothing in this
+phase changed that logic. The one addition is a regression test,
+`a_file_that_never_spelled_caps_does_not_gain_it`, pinning it against a
+later change that reaches for the field-exists shortcut this guard was
+already refusing. **Do not rebuild it.**
+
+### G-e: four-doors design's own worked example does not fire on this machine
+
+The design illustrates G-e with `"ctrl+super+alt+c" = "B"` reaching disk
+while the user is mid-word on "Brave". Measured against
+`selected_app_went_missing` with a catalog of `Brave`, `Anki`, `System
+Settings`: it does not fire. `B` is a substring of `Brave`, every beckon
+resolver ends in a case-insensitive substring tier, so the name still
+resolves and the row is not `missing`. Pinned by
+`a_prefix_of_the_intended_name_still_resolves_and_is_not_held` in
+`crates/beckon-core/src/settings.rs`, next to the test that shows what the
+guard actually catches: a name edited into something that matches nothing
+in the catalog at all (`an_app_edited_into_a_name_nothing_matches_holds_the_write`).
+
+The guard is right; the illustration is not. It is a TRANSITION guard, not
+a broken-row guard — a row the file already has broken is deliberately NOT
+held, because holding it would mean that chord could never be edited again
+once Save is gone, every keystroke refused, with the remedy being to fix an
+app name the user may have no intention of fixing. Do not "fix" this by
+comparing whole strings instead of resolving through the catalog tiers —
+that is the defect measured on macmini 2026-08-17 (see "`missing` has now
+been wrong twice" above) that made every candidate-chain row say `missing`.
+
+### G-j: the design's own wording covers four refusals, and the build reads it as covering one
+
+Design §6.2's G-j row says: "Keep exactly one prompt: refuse the close when
+the model is dirty AND **the last write failed**", against "a dismissed
+write-failure dialog turning a whole session of edits into a silent loss."
+`autosave_plan` can leave the model dirty for four different reasons —
+`FinishTheRow`, `FileMoved`, `AppWentMissing`, `CannotWrite` — and only the
+last of those is a write that was attempted and errored; the other three
+never tried to write at all. "The last write failed" reads naturally as
+covering all four (nothing got saved, in each), and the build instead reads
+it as the narrow sense — an attempted write that came back an error — so
+only `NotSaved::CannotWrite` prompts on close. `AMENDED 2026-09-23, Task 10`
+in `windowShouldClose:`'s doc comment
+(`crates/beckon-macos/src/settings_window/mod.rs`) states the reading
+directly: this replaces gating on `dirty` alone, the way the old three-way
+Save/Cancel/Discard prompt did, because under auto-save a dirty model is
+the ROUTINE state — the debounce window before a keystroke's write lands,
+and every one of the four hold reasons leaves the model dirty too — so
+prompting on the broad reading would fire on nearly every close and be
+trained away, which is exactly the failure G-j's own "Prevents" column
+names.
+
+The other three refusals are never silent regardless: the footer readout is
+drawn on all four doors, unconditionally, with its own phrase per refusal.
+`AppWentMissing` is the closest case — it holds a write that WOULD have
+rendered — and it still does not prompt, for a reason stronger than
+visibility: writing it would put a broken hotkey live, which is the exact
+harm the guard exists to prevent in the first place. `FinishTheRow` in
+particular must not prompt: it is true during every half-typed row, and a
+prompt that fires constantly is one people dismiss reflexively — the same
+training-away failure G-j was written against, arriving from the opposite
+direction.
+
+### G-a: the compare-and-swap, and why the read sits immediately before the write
+
+`autosave`'s own doc comment (`crates/beckon-cli/src/serve.rs`) states it
+plainly: **the read is immediately before the write** — that pairing IS the
+compare-and-swap guard, and anything inserted between `read_to_string` and
+`write_config_text` widens the window in which somebody else's edit lands
+unseen and gets silently overwritten. Do not "simplify" by moving a log
+line, a notification, or a UI refresh between them.
+
+Two more orderings sit beside it and are equally load-bearing: the undo
+entry is pushed BEFORE the write, never after (an entry pushed after a
+half-failed write describes a file state that never existed, and Undo
+would restore it over a good file — the failure arm takes the entry
+straight back off, the same rule from the other side); and the reseed comes
+from the text that was WRITTEN, never from a second read of the file
+(re-reading invites exactly the race the guard just closed — a write
+landing between our rename and our re-read would be adopted as our own
+base and silently overwritten by the next keystroke).
+
+### The second `Nothing` arm: dirty is not "the file would change"
+
+`autosave_plan` answers two different questions and used to conflate them
+into one. `add_row` marks the model dirty, and `render` correctly drops
+the unfinished row it just added — so the rendered text came back
+byte-identical to what was already on disk, and the write that followed
+cost the user the row they had just added, within one tick: the reseed
+threw it away, the selection went to `None`, an `orig_key` was gratuitously
+respelled, and a no-op entry landed on the undo stack. Measured 2026-09-23:
+`rows 2 -> 1`, `selected Some(1) -> None`.
+
+The fix is the second `Nothing` arm in `autosave_plan`, sitting after
+`render` (it needs the rendered text) and before the `AppWentMissing`
+check (a write that changes nothing is not a write to refuse — putting
+"Not saved - that app name matches nothing" on screen for a no-op would be
+a complaint about something that was never going to happen): if the
+rendered text equals what is already on disk, answer `Nothing` rather than
+`Write`. It belongs in `autosave_plan` rather than in the driver, because
+"would this write change the file" is a decision, and a driver owning it is
+the shape this phase's constraints forbid.
+
+### G-b: reseed by identity, and the first implementation was wrong in the case it exists for
+
+`Model::view_state` captures what the user is looking at so a reseed can
+restore it, and its whole correctness is keying on `combo`, not
+`orig_key`. The first implementation keyed on `orig_key`, and
+`restore_view_state` matches the reseeded model's `orig_key` — which,
+after a write, IS the key the file now carries, the very thing `render`
+wrote from `combo` a moment before. Keying capture on `orig_key` therefore
+recorded what the row used to be called, which matches nothing the moment
+a chord is edited: the selection went to `None` on the exact keystroke
+that moved it — G-b failing in precisely the case it was written for.
+Measured 2026-09-23, fixed the same day.
+
+### G-c: `toml_edit` 0.22 has no key-rename accessor, and this is why the rename matters
+
+A `Key`'s string IS its identity in the backing `IndexMap`: `Hash`, `Eq`
+and `Borrow<str>` all resolve through it, `KeyMut` exposes only decor
+accessors, and `Table::insert_formatted` on a spelling not already present
+always lands in indexmap's `Vacant` arm — i.e. appends. There is no public
+index-aware insert. So a retyped chord is rendered as a rename by capturing
+the top-level key order, emptying the table in that order with
+order-preserving `remove_entry`, and replaying each pair with
+`insert_formatted`, substituting a fresh `Key` (carrying the old key's leaf
+and dotted decor) only for the renamed row. Because the table is emptied
+first, every append lands back at the walk's current position, reproducing
+the original order with the rename substituted in; the trailing `# comment`
+lives on the VALUE's decor, never touched, so it survives regardless.
+
+Measured end to end on the real window, airm3, 2026-09-23: changing one
+binding's key rewrote a 97-line config with a one-line diff, the binding
+still on line 41. Before this guard, the same gesture deleted line 41 and
+appended the new spelling at the end of the file — destroying that line's
+trailing comment and producing a large diff in a config that, on this
+machine, lives inside a git repository.
+
+`config_write::render` documents a precondition it always relied on and
+never stated until now: `Model::render` enforces unique combos and filters
+unfinished rows before building the `RowWrite`s it passes down. A second
+caller that skipped that filtering would get an unrelated key rescued from
+deletion and its value overwritten by the wrong row — pinned by a
+`debug_assert!` at the top of `render` rather than left to be discovered
+by a second caller.
+
+### `autosave_plan` takes `base` and `on_disk` separately, and `Keep mine` is why
+
+"Has the base moved under me?" and "would this write change the file?"
+look like one question and are not — `Keep mine` is the gesture that
+separates them, overriding the first while leaving the second untouched.
+With one shared parameter this happened: the user edits, then undoes the
+edits by hand so the render nets back to the model's own `original()`,
+while the file on disk holds another party's text. `Keep mine` substituted
+the base, the plan saw text equal to THAT base, answered `Nothing`, and the
+other party's text was never overwritten — the opposite of what the button
+promises — while `external_change` was cleared regardless, so nothing on
+screen said so.
+
+The plan now takes `base` and `on_disk` as two separate `Option<&str>`
+arguments and the no-op arm compares only against the real file. **Do not
+re-merge them.** The old test,
+`keep_mine_writes_and_leaves_the_other_text_on_the_undo_stack`, could not
+have caught this: under the mutation that reinstates the conflation it
+stays green, because its own model never nets back to its own base. A new
+test, `keep_mine_writes_when_the_edits_net_back_to_the_base`, was needed —
+not a stronger assertion on the old one.
+
+### G-g: Undo pops without pushing, and an external change clears the stack
+
+Both look like omissions and are settled decisions. **Undo pops and does
+not push** — recording the restore itself would make the control a
+two-state toggle rather than a stack, and Redo is deliberately absent for
+the same reason.
+
+**An external change clears the undo stack.** Every entry's base is the
+model's `original`; once another writer has touched the file, restoring an
+entry would clobber that edit — the exact loss G-a exists to prevent,
+arriving through the Undo button instead of a stale write. This is
+distinct from a successful auto-save reseed, which does NOT clear the
+stack: `carry_undo` moves it, oldest-entry-first, from the model being
+replaced onto its replacement, because a reseed is what clears `dirty` and
+gives every row a fresh `orig_key`, and without carrying the stack across
+that boundary every successful write would empty the history it had just
+added to.
+
+### Two guards that need no separate story: G-f and G-i
+
+G-f (`remove_needs_confirm`) asks before a Remove when more than one row is
+ticked, or when any deletion happens while the view is filtered — the
+filter arm is the sharper one, because "I am looking at a subset" is the
+state in which a multi-delete surprises somebody, per four-doors design
+6.3's own measurement of a filter that looked complete while it was not.
+Auto-save is what makes this load-bearing at all: the old reasoning for a
+silent multi-row delete rested on Save still being a gate, and auto-save
+falsifies that — the delete reaches the file before the user has looked.
+
+G-i (flush on session end) is a Win32 message, and Windows still keeps its
+Save button in this phase, so there is nothing for it to flush ahead of.
+Revisit when Windows consumes this auto-save layer.
+
+## CORRECTED 2026-09-23: the service line lagging the registration map was blamed on the wrong commit
+
+After an auto-save write the footer showed `Serving - 19 of 20` in warning
+orange and stayed there — including after Undo restored the file — while
+`serve.log` said `reloaded - 20 shortcuts registered` three times over.
+Closing and reopening the window showed `20 of 20`.
+
+**The first diagnosis blamed a commit from 2026-08-16. That account is
+wrong, and is kept here rather than deleted because that is what a CORRECTED
+marker is for.** `git log -S "let ours" -- crates/beckon-cli/src/serve.rs`
+finds exactly one commit that ever introduced that string: `67ab70c`,
+`feat(serve): every edit runs the autosave plan (G-a, G-h)` — this phase's
+own auto-save commit, not anything from a month earlier. Before `67ab70c`,
+`settings_saw_external_change`'s self-write suppression (the `ours` check
+comparing `model.original()` against the file's live bytes) did not exist:
+a clean model — exactly the state right after a successful write reseeds —
+fell through unconditionally to `reload_settings_from_disk`, which always
+ends in a full `refresh_settings`. `67ab70c` added `ours` to stop the
+banner firing about beckon's own write on every keystroke, a real fix that
+still stands, and in the same change dropped the refresh the old
+unconditional path had carried. **The gap arrived with the self-write
+suppression and was fixed the same day**, not months later.
+
+The fix keeps the suppression exactly as it was — by content equality, not
+a timer or a flag, because if the file's bytes already equal what the model
+holds there is genuinely nothing external to report — and adds back a
+`refresh_settings(state)` call inside the `ours` branch. `reload()` calls
+`settings_saw_external_change` AFTER re-registering and writing the fresh
+outcome into `ServeState::registered`, which is the one thing that made the
+write worth catching in the first place, and the open window had not been
+told about it.
+
+One present-tense fact survives from the wrong account unchanged: **Save
+shows the same stale count today**, because `apply_settings` never touches
+`s.registered` at all — only `reload()` does — so a chord edit followed by
+Save reaches the same stale map on both platforms, this function being
+`any(windows, macos)`.
