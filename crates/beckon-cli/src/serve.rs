@@ -4380,6 +4380,14 @@ mod tests {
     /// and the button's own `apply_enabled`-style gating already keep this
     /// from being reachable from the UI, but a stray `SettingsCommand::Undo`
     /// must still do nothing rather than touch the file or panic.
+    ///
+    /// **Its kill radius is smaller than its name, which is why the test
+    /// below exists (M2).** Gutting `undo_pressed`'s top-level `can_undo()`
+    /// guard does not redden this one: the file here has not moved, so the
+    /// `base_moved` arm falls through and `take_undo()`'s own let-else
+    /// catches the empty stack one line later. What the top-level guard
+    /// actually protects is the case this test cannot reach -- an empty
+    /// stack AND a moved base.
     #[cfg(target_os = "macos")]
     #[test]
     fn undo_with_an_empty_stack_does_nothing() {
@@ -4404,6 +4412,53 @@ mod tests {
         assert!(
             st.settings.as_ref().unwrap().dirty(),
             "the in-memory edit survives too -- Undo did nothing at all"
+        );
+    }
+
+    /// **The empty stack AND a moved base: what the top-level `can_undo()`
+    /// guard is really for (M2).** Without it, pressing a greyed-out `Undo`
+    /// over a file somebody else has edited takes the `base_moved` arm --
+    /// which sets `external_change`, clears the (empty) stack and records
+    /// `FileMoved`. That is a banner, and a `Not saved` footer, raised by a
+    /// button the window has disabled, about a press that had nothing to
+    /// put back.
+    ///
+    /// The sibling above cannot reach this: its file has not moved, so
+    /// `take_undo()`'s let-else catches the empty stack whether or not the
+    /// guard is there.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn undo_with_an_empty_stack_is_silent_even_when_the_file_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("apps.toml");
+        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
+
+        // Dirty, but never autosaved -- so there is no entry yet.
+        let mut st = state_with_an_edit(&config, "Brave");
+        assert!(
+            !st.settings.as_ref().unwrap().can_undo(),
+            "precondition: nothing to pop"
+        );
+
+        // And somebody else owns the file now.
+        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
+        std::fs::write(&config, theirs).unwrap();
+
+        undo_pressed(&mut st);
+
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            theirs,
+            "untouched, as in the sibling above"
+        );
+        assert!(
+            !st.external_change,
+            "a press with nothing to undo must not raise the banner"
+        );
+        assert_eq!(
+            st.last_not_saved, None,
+            "nor put `Not saved - the file changed on disk` in the footer \
+             for a button that is greyed out"
         );
     }
 
