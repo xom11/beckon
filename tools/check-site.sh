@@ -370,7 +370,7 @@ fi
 # `og:image` used to be icon-512.png, so every paste of this URL into Facebook,
 # Zalo, X or Slack rendered as a small square of the letter `b`. The card that
 # replaced it is a PNG, which is the one artifact in site/ that no other check
-# can read — and CLAUDE.md already records what an unchecked generated image
+# can read — and AGENTS.md already records what an unchecked generated image
 # does: assets/five-answers.gif is "a PHOTOGRAPH of that page, and it goes stale
 # in silence". This block is that missing comparison, for the card.
 #

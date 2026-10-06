@@ -86,7 +86,7 @@ impl GnomeBackend {
     /// The fallback is not defensive programming, it is the normal state for
     /// a real window of time: the extension only reaches a running
     /// gnome-shell after the user logs out and back in (Wayland cannot
-    /// reload the shell live -- CLAUDE.md says so under "Installing /
+    /// reload the shell live -- AGENTS.md says so under "Installing /
     /// updating the extension"), so a freshly-switched machine runs a NEW
     /// beckon against an OLD extension until the next login. Without this
     /// arm every keypress in that window would fail with UnknownMethod and

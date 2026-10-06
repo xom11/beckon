@@ -164,7 +164,7 @@ impl Backend for WindowsBackend {
 /// key is pressed. `beckon-linux` shipped the same defect, measured it live
 /// (three `foot` windows on sway, seven presses) and answered it in
 /// `algorithm::decide` by rotating over the compositor's own window ids
-/// instead of over recency; see CLAUDE.md "Step 5a cycles over a ring ordered
+/// instead of over recency; see AGENTS.md "Step 5a cycles over a ring ordered
 /// by address, not by recency". The `HWND` is this platform's version of that
 /// address — the window manager mints it once and it does not move for the
 /// window's lifetime — so a lap visits every window exactly once.

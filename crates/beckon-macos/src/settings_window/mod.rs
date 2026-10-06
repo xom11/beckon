@@ -1603,7 +1603,7 @@ pub fn open_existing() -> bool {
 /// **What none of this establishes: what happens in a real Aqua session, or
 /// whether a frame reaches the display before the block.** The measurement
 /// above describes THIS namespace's behaviour, not necessarily an Aqua
-/// session's — the whole reason `CLAUDE.md` warns that a measurement on one
+/// session's — the whole reason `AGENTS.md` warns that a measurement on one
 /// environment is data about that environment, not about the design. The
 /// call kept below is Apple's documented, textbook API for "redraw this
 /// window now" and nothing measured here contradicts using it; what remains
@@ -1737,7 +1737,7 @@ fn teardown() -> Option<Ui> {
 /// into the `autorelease_ptr` pair above rather than staying here.
 ///
 /// The pool is `[NSApp run]`'s, one per event; see the `serve` note in
-/// `CLAUDE.md` for why that loop and not Carbon's.
+/// `AGENTS.md` for why that loop and not Carbon's.
 fn release_later(ui: Ui) {
     let _ = Retained::autorelease_ptr(ui.c.window.clone());
     let _ = Retained::autorelease_ptr(ui._target.clone());
@@ -2532,7 +2532,7 @@ const TARGET_TRIPLE: &str = env!("BECKON_TARGET");
 ///
 /// The About door's stale-image verdict is the comparison of this against the
 /// modification time of the file at `current_exe()`, and without it the row
-/// can only print a path. The incident it exists for is in `CLAUDE.md`: a
+/// can only print a path. The incident it exists for is in `AGENTS.md`: a
 /// beckon on a14 ran a three-hour-old image while `--version`, the package
 /// manager's `current` junction and the install directory all agreed on a
 /// newer one.
@@ -3033,7 +3033,7 @@ fn caps_hold_now() -> Chord {
 /// **Almost nothing in this file is testable here, and that is a fact about
 /// the platform rather than an omission.** Every function above touches an
 /// `NSWindow`, an `NSTableView` or a `Retained`, and this crate's tests run
-/// in a process with no window server and — measured, see `CLAUDE.md` — no
+/// in a process with no window server and — measured, see `AGENTS.md` — no
 /// Aqua session to put one in. `examples/settings_drive.rs` and
 /// `examples/settings_probe.rs` are the layer that can answer anything about
 /// what is on screen, and they have to be run by a person in a real session.

@@ -1,6 +1,6 @@
 # Distribution, packaging and the nix integration
 
-Extracted from `CLAUDE.md` 2026-08-17. The install commands and the channel
+Extracted from `AGENTS.md` 2026-08-17. The install commands and the channel
 list live there; this file is the detail behind each one.
 
 ## `beckon --version` carries the short sha, and the nix path is why
@@ -229,7 +229,7 @@ out is already the established pattern here: `beckon_macos::shell` invokes
 
 `beckon_core::update::detect_channel` reads `current_exe()` — unresolved,
 for the same reason the About page's `Location` row is (see "What beckon
-reads and writes" in `CLAUDE.md`): a resolved nix store path or a resolved
+reads and writes" in `AGENTS.md`): a resolved nix store path or a resolved
 scoop `current` junction reports today's target, not how the binary got
 there. Matching is on the lowercased string with `\` folded to `/`, so the
 same needles work on all three CI platforms.
@@ -282,7 +282,7 @@ lines are inlined below rather than pointed at.
 
 **The naive version of this probe found nothing in EITHER arm**, which is
 the false-negative shape this project's own testing note warns about
-(`CLAUDE.md`, "Always run a control"):
+(`AGENTS.md`, "Always run a control"):
 
 ```text
 CONTROL(no-flag):              new_console_windows=0 details=[]

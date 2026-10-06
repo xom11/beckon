@@ -58,7 +58,7 @@ struct ProcessInfo {
 /// virtual desktop and no suspended UWP apps it therefore costs nothing at
 /// all. The hot path (`beckon <id>`) is budgeted at 50 ms and already
 /// measured at ~57 ms, so a per-window `CoCreateInstance` is not affordable —
-/// see the *Hot-path catalog cost* note in `CLAUDE.md`, which this is the
+/// see the *Hot-path catalog cost* note in `AGENTS.md`, which this is the
 /// same class of mistake as.
 ///
 /// The failure is memoised alongside the success (`Some(None)`): a machine
@@ -325,7 +325,7 @@ fn get_window_aumid(hwnd: HWND) -> Option<String> {
 /// deliberately left out. A UWP app that is not hosted by
 /// ApplicationFrameHost presents one as its own top-level window, so denying
 /// it would make beckon launch a second copy on every keypress — the more
-/// expensive of the two failures, and the one CLAUDE.md records Hyprland's
+/// expensive of the two failures, and the one AGENTS.md records Hyprland's
 /// `visible` filter causing.
 fn is_shell_window(class_name: &str) -> bool {
     ["Progman", "WorkerW", "Shell_TrayWnd"]

@@ -445,7 +445,7 @@ const MISS_CONSEQUENCE: &str =
 /// `.desktop` ids, other than the winner's, of entries whose `Name=` IS this
 /// id. Empty for every tier that matched an id or a WM class, both unique.
 ///
-/// The scenario CLAUDE.md already names: a deb beside a snap, a user override
+/// The scenario AGENTS.md already names: a deb beside a snap, a user override
 /// beside the system entry, two PWAs with one display name. `scan()` sorts,
 /// so the winner is stable — but stable is not the same as stated, and
 /// nothing told the user there was a second entry at all.
@@ -936,7 +936,7 @@ mod tests {
     /// they pin "the first element wins" and say nothing about the order the
     /// scan produces. Delete the sort and `by_id.into_values()` hands the
     /// tiers HashMap order, reseeded per process — the 12/8-out-of-20 split
-    /// CLAUDE.md records under "Scanning rules that the tiers depend on".
+    /// AGENTS.md records under "Scanning rules that the tiers depend on".
     #[test]
     fn scan_dirs_returns_entries_sorted_by_id() {
         let root = scratch_root("sorted");
@@ -1142,7 +1142,7 @@ mod tests {
         assert_eq!(r.suggestions, vec!["Brave Web Browser Beta".to_string()]);
     }
 
-    /// The scenario CLAUDE.md already names — a deb beside a snap, a user
+    /// The scenario AGENTS.md already names — a deb beside a snap, a user
     /// override beside the system entry, two PWAs sharing a display name.
     /// `scan()` sorts, so `firefox` beats `firefox_firefox` every time; what
     /// was missing is that the user was never told there were two.

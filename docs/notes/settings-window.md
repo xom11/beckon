@@ -1,7 +1,7 @@
 # The settings window — decisions, corrections, and what must not be simplified
 
-Extracted from `CLAUDE.md` 2026-08-17 (it lived under *Out of scope → GUI/TUI*
-and had grown to ~560 lines there). The one-line rule in CLAUDE.md is still the
+Extracted from `AGENTS.md` 2026-08-17 (it lived under *Out of scope → GUI/TUI*
+and had grown to ~560 lines there). The one-line rule in AGENTS.md is still the
 contract; this file is why each clause is worded the way it is.
 
 Design specs: `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`,
@@ -640,7 +640,7 @@ then **deleted the row** instead of gating it, and with it `beckonSave:`, the
 asked. What is left naming `Bar::Readout` is core's own match arm, one core
 test, and two comments in `beckon-macos/src/settings_window/mod.rs`.
 
-That is the `warn_dot_shown` shape `CLAUDE.md` records, one crate over — and
+That is the `warn_dot_shown` shape `AGENTS.md` records, one crate over — and
 the ruling is still to keep it, for two reasons that do not apply there:
 
 - **There is no honest caller to add.** `warn_dot_shown` had three doors that
@@ -1810,7 +1810,7 @@ arrived through the phase's own new front door, with the footer reading
 
 The fix is in `serve.rs`'s `close_verdict` (C1): flush through `autosave`
 before deciding, guards and all. The lesson generalises past this one
-guard, and it is the same one `CLAUDE.md` records about carrying a measured
+guard, and it is the same one `AGENTS.md` records about carrying a measured
 sentence across a platform boundary: **a disposition written about one
 mechanism does not dispose of the hazard.** When a guard is scoped out,
 name the hazard and ask which gestures on THIS platform produce it, rather

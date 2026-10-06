@@ -787,7 +787,7 @@ pub enum Bar {
 /// bar builder whose result nothing uses, which is a fake caller rather
 /// than a real one: macOS builds no button row on any page, so there is
 /// nothing for an answer to gate. That is the one respect in which this is
-/// NOT the `warn_dot_shown` shape `CLAUDE.md` records -- there, three doors
+/// NOT the `warn_dot_shown` shape `AGENTS.md` records -- there, three doors
 /// out of four had something to draw and did not ask; here no door has
 /// anything to draw. Recorded in `docs/notes/settings-window.md` so the
 /// next reader meets it outside this phase's ledger, and pinned by
@@ -2652,7 +2652,7 @@ enum CatalogHit<'a> {
 /// `candidate` is never empty, because `candidates::split` refuses an empty
 /// segment and `row_condition` guards the whole-string case before calling it.
 /// That is load-bearing rather than incidental: an empty `want` is a substring
-/// of every name, which is the tier-4 hazard CLAUDE.md records for
+/// of every name, which is the tier-4 hazard AGENTS.md records for
 /// `beckon "$APP"` with `$APP` unset.
 fn catalog_hit<'a>(names: &'a [String], candidate: &str) -> Option<CatalogHit<'a>> {
     let want = candidate.to_lowercase();
@@ -4525,7 +4525,7 @@ pub const RETIRED_IDS: &[i32] = &[
 /// negative sends the next session hunting a control that was never lost, and
 /// the hardware to check it against is scarce -- an SSH shell on a14 lands in
 /// session 0 with no desktop, so every probe run costs a scheduled task in
-/// session 1 (see the live-Windows-tests note in `CLAUDE.md`).
+/// session 1 (see the live-Windows-tests note in `AGENTS.md`).
 pub const PROBE_PINNED_IDS: &[(&str, i32)] = &[
     ("LIST", 1001),
     ("COMBO", 1002),

@@ -230,7 +230,7 @@ app called one of them, put it after a double dash — `beckon -- search`.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. `CLAUDE.md` carries the full design
+Bug reports and pull requests are welcome. `AGENTS.md` carries the full design
 rationale and the measurements behind most decisions, if you want the long
 version.
 

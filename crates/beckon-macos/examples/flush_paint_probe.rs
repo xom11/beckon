@@ -23,7 +23,7 @@
 //! Each has a CONTROL: the identical setup with the `displayIfNeeded` call
 //! removed. A probe that only reports the test side and never runs the
 //! control cannot distinguish "it worked" from "nothing happened" — this
-//! repository has lost sessions to exactly that shape (see `CLAUDE.md`,
+//! repository has lost sessions to exactly that shape (see `AGENTS.md`,
 //! "A measurement on one OS is data about that OS, not about the design").
 //!
 //! **What this does NOT and cannot answer: whether the frame reaches a

@@ -1,7 +1,7 @@
 /* The landing page's claim about beckon's algorithm, checked by a machine.
  *
  * Every assertion here mirrors one row of the table in #how, which mirrors one
- * branch of CLAUDE.md's *Focus algorithm*. If a row of that table is ever
+ * branch of AGENTS.md's *Focus algorithm*. If a row of that table is ever
  * reworded into something the code does not do, this fails.
  *
  * Run by tools/check-site.sh:  node --test site/desk.test.mjs

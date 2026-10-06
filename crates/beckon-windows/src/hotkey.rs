@@ -697,7 +697,7 @@ const PROBE_HOTKEY_ID: i32 = 0xBEC0;
 ///    thread -- the same one that runs the wndproc this is reached from.
 /// 4. **Never from inside a hook callback.** The only caller is a settings
 ///    window notification; `caps_hook`'s `WH_KEYBOARD_LL` callback must stay
-///    at a hash lookup plus one `SendInput` (see CLAUDE.md), and a global
+///    at a hash lookup plus one `SendInput` (see AGENTS.md), and a global
 ///    registration round trip has no business there.
 ///
 /// It deliberately pumps NOTHING -- no `PeekMessageW` drain of a `WM_HOTKEY`

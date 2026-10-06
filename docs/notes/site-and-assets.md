@@ -1,6 +1,6 @@
 # The landing page, the share card and the README animation
 
-Extracted from `CLAUDE.md` 2026-08-17.
+Extracted from `AGENTS.md` 2026-08-17.
 
 ## `site/`
 

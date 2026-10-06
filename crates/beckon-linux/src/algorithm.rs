@@ -8,7 +8,7 @@
 //! IPC plumbing.
 //!
 //! Algorithm steps mirror what the i3ipc / Hyprland modules used to
-//! implement inline; see CLAUDE.md "Focus algorithm" for the full spec:
+//! implement inline; see AGENTS.md "Focus algorithm" for the full spec:
 //!   3.  no window of `target` exists                    → `Launch`
 //!   4.  exists, focus is on a different app             → `Focus(addr)`
 //!   5a. exists & focused, more windows of same app      → `Cycle(addr)`

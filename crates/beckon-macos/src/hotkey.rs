@@ -350,7 +350,7 @@ impl HotkeyManager {
     /// repository's rule is that a claim is not re-added without re-running
     /// the probe that settled it. Deleting this function would make the
     /// finding in `run_forever`'s doc unfalsifiable, which is the failure
-    /// mode three separate entries in `CLAUDE.md` are about.
+    /// mode three separate entries in `AGENTS.md` are about.
     ///
     /// Nothing in beckon proper calls it, and nothing should.
     #[doc(hidden)]

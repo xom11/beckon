@@ -1,6 +1,6 @@
 # macOS backend — measurements and maintenance notes
 
-Extracted from `CLAUDE.md` 2026-08-17. Read this before changing anything in
+Extracted from `AGENTS.md` 2026-08-17. Read this before changing anything in
 `crates/beckon-macos/`. Every "measured on airm3 / macmini" claim here is
 scoped to **that machine's OS** — re-run the probe rather than the reasoning
 before carrying any of it to another platform.
@@ -728,7 +728,7 @@ was measured rather than assumed; see the next section.
 ### `auth_value = 0` is DENIED, and it burns the ability to ask
 
 The 0.9.15 row was written `0` at the exact second a `brew services restart`
-produced the new process. `0` is denied, not "not yet asked" — and CLAUDE.md
+produced the new process. `0` is denied, not "not yet asked" — and AGENTS.md
 already records that **macOS raises the panel only when no answer is recorded**.
 So `request_accessibility()` will never prompt again for that cdhash: the ask
 consumed its own future.

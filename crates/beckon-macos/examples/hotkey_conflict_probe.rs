@@ -69,7 +69,7 @@
 //! ```
 //!
 //! Whatever the answer, write it into `serve.rs`'s `AskTheOs` arm and into
-//! CLAUDE.md. An unmeasured comment that stays unmeasured becomes folklore.
+//! AGENTS.md. An unmeasured comment that stays unmeasured becomes folklore.
 
 fn main() {
     #[cfg(not(target_os = "macos"))]

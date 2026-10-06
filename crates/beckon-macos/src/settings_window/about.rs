@@ -18,7 +18,7 @@
 //!
 //! It shows the RUNNING IMAGE's path and, when there is one worth printing,
 //! a verdict about its age. The incident behind it is recorded in
-//! `CLAUDE.md`: on a14 a watchdog-started beckon ran the 0.8.0 image for
+//! `AGENTS.md`: on a14 a watchdog-started beckon ran the 0.8.0 image for
 //! three hours while `beckon --version` said 0.9.0 and scoop's `current`
 //! junction pointed at 0.9.0 — every obvious surface agreed, and every one
 //! of them was wrong. The path is deliberately not resolved through the

@@ -2,7 +2,7 @@
 //! the same IPC protocol. `swayipc` transparently picks `SWAYSOCK` or
 //! `I3SOCK` from the environment.
 //!
-//! Algorithm steps (see `CLAUDE.md` "Focus algorithm"):
+//! Algorithm steps (see `AGENTS.md` "Focus algorithm"):
 //!   3. not running                 → exec via the WM
 //!   4. running, not focused        → focus first window
 //!   5a. focused, app has more wins → cycle to next window of same app

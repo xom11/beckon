@@ -17,7 +17,7 @@
 //! the whole-tree form on the hardware pass is `cargo build --workspace
 //! --all-targets`. It is `--examples` (plural, no target name) that must be
 //! avoided -- it skips `[[bin]]`, which is how a stale `beckon-serve.exe`
-//! gets tested. See CLAUDE.md.
+//! gets tested. See AGENTS.md.
 //! Run from **session 1** (an SSH shell is session 0 and has no desktop).
 
 fn main() {
@@ -46,7 +46,7 @@ mod win {
 
     /// `WM_GETTEXT`, never `GetWindowText`. `GetWindowText` returns the
     /// kernel-side caption and reads back EMPTY for an EDIT or COMBOBOX -- the
-    /// trap recorded in CLAUDE.md.
+    /// trap recorded in AGENTS.md.
     unsafe fn text_of(h: HWND) -> String {
         let mut buf = [0u16; 512];
         let n = SendMessageW(

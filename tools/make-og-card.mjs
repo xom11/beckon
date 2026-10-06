@@ -15,7 +15,7 @@
  * WHY A GENERATOR AND NOT A HAND-DRAWN PNG. The card repeats three strings that
  * live elsewhere in the repo — the `<h1>`, the `beckon Chrome` example, and the
  * three OS names. A binary blob cannot be diffed against them, so it goes stale
- * in silence, which is exactly what CLAUDE.md records about
+ * in silence, which is exactly what AGENTS.md records about
  * `assets/five-answers.gif`. Here the strings are constants in this file and
  * tools/check-site.sh compares HEADLINE against index.html's own `<h1>`, so a
  * reworded headline fails CI instead of shipping a card that contradicts the
@@ -215,7 +215,7 @@ function cardHtml() {
 
 <div class="brand">
   <!-- Same artwork as assets/beckon.ico and site/favicon.png: the #3B82F6 ->
-       #2563EB tile with a LOWER-CASE b. Upper case is wrong here — CLAUDE.md
+       #2563EB tile with a LOWER-CASE b. Upper case is wrong here — AGENTS.md
        records a capital B shipping to the macOS menu bar for exactly as long as
        nobody looked at it. -->
   <svg class="mark" viewBox="0 0 34 34" aria-hidden="true">

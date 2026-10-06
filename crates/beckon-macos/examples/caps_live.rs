@@ -123,7 +123,7 @@ mod mac {
     /// Press `ctrl+cmd+opt+T` the way a hand does — the positive control.
     ///
     /// **The modifiers are pressed as REAL KEYS, not as flags on `T`.**
-    /// Measured 2026-08-16 and written up in CLAUDE.md: a single event
+    /// Measured 2026-08-16 and written up in AGENTS.md: a single event
     /// carrying `CGEventSetFlags(ctrl|opt|shift)` posts successfully and fires
     /// no `RegisterEventHotKey` chord under EITHER loop. The system tracks
     /// modifier state from the modifier keys' own events; the flags field

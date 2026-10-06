@@ -8,7 +8,7 @@
  * check. `press` is a pure function, so `site/desk.test.mjs` can walk all five
  * branches on every CI run.
  *
- * `press` is CLAUDE.md's *Focus algorithm* transcribed, in the order that
+ * `press` is AGENTS.md's *Focus algorithm* transcribed, in the order that
  * document tests its branches, and it is deliberately the same shape as
  * `beckon-linux`'s `algorithm::decide` — one entry point returning a decision,
  * with the caller responsible for drawing the result.
@@ -150,7 +150,7 @@ function deskRaise(d, id) {
 }
 
 /* The algorithm. Returns the new desk and the step that fired, using the step
- * numbers CLAUDE.md itself uses — which is why the page prints them: they are a
+ * numbers AGENTS.md itself uses — which is why the page prints them: they are a
  * citation, not decoration.
  *
  * Returns step `null` for a letter that is not bound to anything, so the caller
@@ -222,7 +222,7 @@ function deskPress(desk, letter) {
  *
  * NONE OF THIS IS BECKON, and that is the point of saying so here. beckon
  * focuses and launches; it never minimises, never maximises, never closes and
- * never moves a window — CLAUDE.md's *Out of scope* is explicit about the last
+ * never moves a window — AGENTS.md's *Out of scope* is explicit about the last
  * one. These four exist because the demo is a picture of the reader's own
  * desktop, and a desktop whose title-bar buttons do nothing is a screenshot.
  *
@@ -284,7 +284,7 @@ function deskToggleMax(desk, id) {
 
 /* The name each branch goes by, and THESE REPLACED THE STEP NUMBERS ON THE PAGE.
  *
- * The table in #how used to print `4`, `5`, `5a`, `5b`, `5c` — CLAUDE.md's own
+ * The table in #how used to print `4`, `5`, `5a`, `5b`, `5c` — AGENTS.md's own
  * numbering, carried over as a citation. It cited nothing a reader could reach:
  * they do not have that document open, and the numbering starts at 4 because
  * steps 1-3 are read-the-id, resolve-the-name and scan-the-windows, none of

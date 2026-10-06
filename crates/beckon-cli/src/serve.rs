@@ -1818,7 +1818,7 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
         }
         // A binding row, in the attention section or the submenu. It opens
         // Settings on that binding and NEVER launches it -- "Nothing in the
-        // shortcut table focuses or launches anything" (CLAUDE.md).
+        // shortcut table focuses or launches anything" (AGENTS.md).
         id if (MENU_BINDING_BASE..beckon_core::menu::MENU_ID_ALT_CLICK).contains(&id) => {
             st.borrow_mut().pending_select = Some((id - MENU_BINDING_BASE) as usize);
             open_settings(&st, &mg);

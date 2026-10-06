@@ -1,6 +1,6 @@
 # Linux backends — per-compositor implementation notes
 
-Extracted from `CLAUDE.md` 2026-08-17. The dispatch table and the shared
+Extracted from `AGENTS.md` 2026-08-17. The dispatch table and the shared
 algorithm's contract live there; this file is the per-backend detail.
 
 All five backends pass `testing/linux_live_test.py` 19/19.

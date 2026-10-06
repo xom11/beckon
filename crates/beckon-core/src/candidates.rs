@@ -14,7 +14,7 @@
 //!
 //! # This is not an alias table
 //!
-//! CLAUDE.md puts *"config for the hot path / app aliases"* out of scope, and
+//! AGENTS.md puts *"config for the hot path / app aliases"* out of scope, and
 //! that entry stands — a chain is not what it forbids. The one-line test: an
 //! alias cannot be typed at a shell prompt without its table, and a chain can.
 //! `beckon "Google Keep || https://keep.google.com/"` works with no file in
@@ -68,7 +68,7 @@
 ///
 /// An empty segment (`"A || "`, `"|| B"`, `"A |||| B"`) is refused rather than
 /// skipped. Skipping would make a trailing separator invisible, and the empty
-/// id is already rejected at the CLI boundary for a reason CLAUDE.md records:
+/// id is already rejected at the CLI boundary for a reason AGENTS.md records:
 /// it is a substring of every `Name`, so a dotfile doing `beckon "$APP"` with
 /// `$APP` unset used to launch whatever sorted first.
 pub fn split(id: &str) -> Result<Vec<&str>, String> {

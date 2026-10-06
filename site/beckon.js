@@ -627,7 +627,7 @@
   /* --- the desk as a desk: drag, resize, and the three title-bar buttons ----
    *
    * NONE OF THIS IS BECKON. beckon focuses and launches; it never minimises,
-   * never maximises, never closes and never moves a window — CLAUDE.md's *Out
+   * never maximises, never closes and never moves a window — AGENTS.md's *Out
    * of scope* says so outright. It is here because the demo claims to be the
    * machine the reader is sitting at, and a desktop whose title bar does
    * nothing is a screenshot with a caption. Every mouse gesture answers with a

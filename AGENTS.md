@@ -1,7 +1,7 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with
-code in this repository.
+This file provides guidance to coding agents (Claude Code, Codex, pi...)
+when working with code in this repository.
 
 **Long-form measurements live in `docs/notes/`, not here.** This file holds the
 rules and the shape of the thing; each note carries the evidence behind a rule,

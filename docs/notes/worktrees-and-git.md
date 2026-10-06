@@ -1,14 +1,14 @@
 # Worktrees, and the git traps that made them a rule
 
-Extracted from `CLAUDE.md` 2026-08-17. The rule and the checklist live there;
+Extracted from `AGENTS.md` 2026-08-17. The rule and the checklist live there;
 this file holds the measurements behind them. Nothing here was deleted — if a
-sentence contradicts CLAUDE.md, this file is the older one and CLAUDE.md wins.
+sentence contradicts AGENTS.md, this file is the older one and AGENTS.md wins.
 
 ## Why one worktree per session is a rule and not a preference
 
 Measured on 2026-08-14: the primary checkout held **970 uncommitted lines
 belonging to two unrelated workstreams at once** — a Hyprland-parity change
-(`hyprland.rs`, `CLAUDE.md`, `testing/linux_live_test.py`) and a
+(`hyprland.rs`, `AGENTS.md`, `testing/linux_live_test.py`) and a
 `check --resolve` implementation (`beckon-cli/src/lib.rs`, two test files) —
 while `ListAgents` showed three Claude sessions with that directory open. The
 failure modes are not hypothetical and not visible from inside any one session:
@@ -36,7 +36,7 @@ failure modes are not hypothetical and not visible from inside any one session:
     `git branch -vv` (it prints `[origin/<branch>: ahead N]`) or
     `git ls-remote --heads origin <branch>` against your local SHA **after**
     pushing.
-- A `CLAUDE.md` edit from either session lands on top of the other's
+- A `AGENTS.md` edit from either session lands on top of the other's
   uncommitted text and is swept into whichever commit is made first.
 - **Two sessions independently designed the *same* flag with *opposite*
   semantics** — `--resolve` exiting non-zero versus never changing the exit

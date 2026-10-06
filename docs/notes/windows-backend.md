@@ -1,6 +1,6 @@
 # Windows backend — measurements and maintenance notes
 
-Extracted from `CLAUDE.md` 2026-08-17. Read before changing anything in
+Extracted from `AGENTS.md` 2026-08-17. Read before changing anything in
 `crates/beckon-windows/` or `logfile.rs`. Every "measured on a14" claim is
 scoped to that machine's OS — re-run the probe rather than the reasoning before
 carrying it elsewhere.

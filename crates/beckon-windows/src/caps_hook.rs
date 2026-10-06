@@ -489,7 +489,7 @@ pub fn arm_capture() -> bool {
     if let Err(e) = install_for(HookReason::Capture) {
         // The caller shows the user one fixed sentence; this is the only
         // place the actual failure is ever named. ASCII, like every other
-        // `serve` log line -- see the `--log` notes in CLAUDE.md.
+        // `serve` log line -- see the `--log` notes in AGENTS.md.
         eprintln!("beckon serve: capture: cannot record: {e}");
         return false;
     }

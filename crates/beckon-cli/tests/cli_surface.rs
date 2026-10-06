@@ -102,7 +102,7 @@ fn bare_positional_hot_path_survives() {
 ///
 /// clap enforces an operand's *presence*, never its *non-emptiness*, so
 /// making `search`/`resolve` take `String` instead of `Option<String>` does
-/// not subsume this check. Losing it reinstates the bug CLAUDE.md records
+/// not subsume this check. Losing it reinstates the bug AGENTS.md records
 /// under "Resolution priority": an empty id is a substring of every `Name`,
 /// so a dotfile running `beckon "$APP"` with `$APP` unset launches whatever
 /// sorts first.

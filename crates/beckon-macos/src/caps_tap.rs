@@ -25,7 +25,7 @@
 //!   **CORRECTED 2026-08-17: the explanation that used to follow it was
 //!   unmeasured.** It read *"because suppression stops the lock from moving
 //!   and the flag reports the lock"* — which is the "suppression stops the
-//!   lock" claim CLAUDE.md now marks WITHDRAWN, restated as a cause, so the
+//!   lock" claim AGENTS.md now marks WITHDRAWN, restated as a cause, so the
 //!   effect appeared to prove it. It also said `CGEventSourceKeyState`
 //!   reports the LOCK for a lock key; `caps_probe`'s withdrawal measured the
 //!   opposite (it answers *is that KEY down*, and Caps is momentary, which is
@@ -849,7 +849,7 @@ fn post(code: u16, down: bool, flags: u64) {
 /// **`CGEventPost` of `kVK_CapsLock` does not move the lock on macOS, at
 /// either tap.** Measured on airm3 2026-08-17 with `hs.hid.capslock.get()` as
 /// an INDEPENDENT reader — IOKit, so it shares nothing with the event path or
-/// with `CGEventSourceKeyState`, which this file and CLAUDE.md have
+/// with `CGEventSourceKeyState`, which this file and AGENTS.md have
 /// disagreed about:
 ///
 /// ```text
@@ -866,7 +866,7 @@ fn post(code: u16, down: bool, flags: u64) {
 ///
 /// So `TapAction::CapsLock` used to be a **dead option**: the user ticked
 /// "Caps Lock", beckon swallowed the key, injected a replacement the system
-/// ignored, and the lock never toggled. The Windows entry in CLAUDE.md says
+/// ignored, and the lock never toggled. The Windows entry in AGENTS.md says
 /// an injected `VK_CAPITAL` flips the toggle — measured, and true there. The
 /// macOS port inherited the shape without re-measuring it.
 ///
