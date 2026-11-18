@@ -92,3 +92,23 @@ fn resolve_still_fails_on_a_name_this_machine_cannot_find() {
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
     assert!(stdout.contains("ctrl+super+alt+t"), "stdout: {stdout}");
 }
+
+#[test]
+fn check_accepts_launch_modes_and_rejects_bad_table_shapes() {
+    let valid = run_check(
+        "launch = \"confirm\"\n\
+         \"ctrl+super+alt+t\" = { app = \"Terminal\", launch = \"always\" }\n\
+         \"ctrl+super+alt+d\" = \"Discord\"\n\
+         \"ctrl+super+alt+s\" = { app = \"Steam\", launch = false }\n",
+    );
+    assert!(
+        valid.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+    assert!(String::from_utf8_lossy(&valid.stdout).contains("ok: 3 shortcuts"));
+
+    let bad = run_check("\"ctrl+super+alt+d\" = { app = \"Discord\", launch = \"twice\" }\n");
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("unknown `launch` mode `twice`"));
+}

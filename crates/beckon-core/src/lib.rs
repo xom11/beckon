@@ -39,6 +39,24 @@ pub enum BeckonAction {
     Cycled,
     ToggledBack,
     Hidden,
+    /// Cold-launch guarded by `LaunchMode::Confirm`: first press armed the
+    /// confirmation window without starting the app or moving focus.
+    LaunchPending,
+    /// Cold-launch suppressed by `LaunchMode::Never`: app is installed on this
+    /// machine with no running window, and launching was disabled.
+    LaunchSkipped,
+}
+
+impl BeckonAction {
+    /// Did this press actually start an app, move focus, or hide a window?
+    ///
+    /// `LaunchPending` and `LaunchSkipped` leave the currently active window
+    /// untouched, so backends must not overwrite `beckon-mru` on either
+    /// outcome — doing so would clobber the previous-app record that step 5b
+    /// (toggle-back) on the still-focused app relies on.
+    pub fn acted(self) -> bool {
+        !matches!(self, Self::LaunchPending | Self::LaunchSkipped)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -86,7 +104,12 @@ pub trait Backend {
 
     /// Single entry point — implements the full algorithm:
     /// launch / focus / cycle-same-app / toggle-other-app / hide.
-    fn beckon(&self, id: &str) -> Result<BeckonAction>;
+    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+        self.beckon_with(id, launch::LaunchMode::Always)
+    }
+
+    /// As [`Backend::beckon`], with an explicit cold-launch policy.
+    fn beckon_with(&self, id: &str, launch: launch::LaunchMode) -> Result<BeckonAction>;
 }
 
 pub mod candidates;
@@ -94,6 +117,7 @@ pub mod caps;
 pub mod certainty;
 pub mod cloak;
 pub mod grant;
+pub mod launch;
 pub mod menu;
 pub mod paths;
 pub mod shortcuts;

@@ -183,7 +183,11 @@ fn persist_previous(app: Option<&str>) {
 }
 
 impl Backend for MangoBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let reply: ClientsReply = call_env(req_all_clients())?;
         let clients = reply.0;
 
@@ -220,8 +224,9 @@ impl Backend for MangoBackend {
                          or `beckon search {id}` to search.",
                     ),
                 })?;
-                launch_exec(id, &entry.exec)?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || {
+                    launch_exec(id, &entry.exec)
+                })?
             }
             Decision::Focus(addr) => {
                 let _: Value = call_env(&req_focusid(parse_client_id(&addr)?))?;
@@ -247,7 +252,10 @@ impl Backend for MangoBackend {
             }
         };
 
-        persist_previous(pre_focused_app.as_deref());
+        let action = beckon_core::launch::complete_action(action);
+        if action.acted() {
+            persist_previous(pre_focused_app.as_deref());
+        }
         Ok(action)
     }
 

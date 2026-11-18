@@ -272,7 +272,11 @@ fn hide_target_index() -> Result<u64> {
 }
 
 impl Backend for NiriBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let reply: WindowsReply = call_env(req_windows())?;
         let windows = reply.windows;
 
@@ -312,8 +316,9 @@ impl Backend for NiriBackend {
                         id, id
                     ),
                 })?;
-                launch_exec(id, &entry.exec)?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || {
+                    launch_exec(id, &entry.exec)
+                })?
             }
             // The Handled reply is NOT proof of focus for a stale id (measured:
             // unknown ids answer Ok too). Snapshots were read in the same
@@ -337,7 +342,10 @@ impl Backend for NiriBackend {
             }
         };
 
-        persist_previous(pre_focused_app.as_deref());
+        let action = beckon_core::launch::complete_action(action);
+        if action.acted() {
+            persist_previous(pre_focused_app.as_deref());
+        }
         Ok(action)
     }
 

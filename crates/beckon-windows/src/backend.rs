@@ -19,90 +19,13 @@ pub struct WindowsBackend;
 const FILE_EXPLORER_AUMID: &str = "Microsoft.Windows.Explorer";
 
 impl Backend for WindowsBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
-        // A Start Menu shortcut's display name is its filename, so the common
-        // case — a hotkey aimed at an app that has a Start Menu entry — is
-        // settled by one directory walk plus a single `.lnk` parse, instead of
-        // COM-parsing every shortcut on the machine. Run it alongside window
-        // enumeration; the hot path needs both and neither depends on the other.
-        let fast_id = id.to_string();
-        let scan_handle = std::thread::spawn(move || apps::resolve_start_menu_by_name(&fast_id));
-        let all_windows = window_ops::enum_visible_windows()
-            .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
-        let fg_hwnd = window_ops::get_foreground_hwnd();
-
-        // Miss: fall back to the full catalog. The name tier has already been
-        // ruled out above, so `resolve_lazy` is guaranteed to call its loader
-        // here — which means the AppsFolder enumeration can be started eagerly
-        // and overlapped with the Start Menu parse instead of running after it.
-        // The closure just joins the thread that is already doing the work.
-        let resolved = scan_handle.join().unwrap_or(None).or_else(|| {
-            let shell_handle = std::thread::spawn(apps::scan_shell_apps);
-            let start_menu = apps::scan_start_menu();
-            apps::resolve_lazy(id, &start_menu, move || {
-                shell_handle.join().unwrap_or_default()
-            })
-        });
-
-        // Find running windows that match the target.
-        let matching: Vec<&WindowInfo> = match &resolved {
-            Some(m) => windows_for_resolved(m, &all_windows),
-            None => windows_by_literal_id(id, &all_windows),
-        };
-
-        // Step 3: not running -> launch.
-        if matching.is_empty() {
-            let m = resolved.ok_or_else(|| BackendError::NoMatch {
-                id: id.to_string(),
-                hint: format!(
-                    "no running window and no installed Windows app matches `{}`. \
-                     Run `beckon installed` to list installed apps, or `beckon search {}` \
-                     to search.",
-                    id, id
-                ),
-            })?;
-            launch(&m).map_err(|e| BackendError::LaunchFailed {
-                id: id.to_string(),
-                reason: e,
-            })?;
-            return Ok(BeckonAction::Launched);
-        }
-
-        // Is the current foreground window one of ours?
-        let fg_is_target = matching.iter().any(|w| w.hwnd == fg_hwnd);
-
-        // Step 4: running but not focused -> focus.
-        if !fg_is_target {
-            window_ops::focus_window(matching[0].hwnd)
-                .map_err(|e| BackendError::Other(format!("focus_window: {}", e)))?;
-            return Ok(BeckonAction::Focused);
-        }
-
-        // Step 5a: focused, multiple windows -> cycle to next.
-        if let Some(next) = next_in_cycle(&matching, fg_hwnd) {
-            window_ops::focus_window(next)
-                .map_err(|e| BackendError::Other(format!("cycle: {}", e)))?;
-            return Ok(BeckonAction::Cycled);
-        }
-
-        // Step 5b: single window -> toggle to most-recent OTHER app.
-        // `all_windows` is in z-order (front-to-back); first window NOT in our
-        // matching set is the most recently used other app. Using HWND set
-        // (not exe name) so PWAs sharing chrome_proxy.exe toggle correctly.
-        let matching_hwnds: HashSet<isize> = matching.iter().map(|w| w.hwnd.0 as isize).collect();
-        if let Some(other) = all_windows
-            .iter()
-            .find(|w| !matching_hwnds.contains(&(w.hwnd.0 as isize)))
-        {
-            window_ops::focus_window(other.hwnd)
-                .map_err(|e| BackendError::Other(format!("toggle-back: {}", e)))?;
-            return Ok(BeckonAction::ToggledBack);
-        }
-
-        // Step 5c: nothing else -> minimize.
-        window_ops::minimize_window(fg_hwnd)
-            .map_err(|e| BackendError::Other(format!("minimize: {}", e)))?;
-        Ok(BeckonAction::Hidden)
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch_mode: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
+        self.beckon_inner(id, launch_mode)
+            .map(beckon_core::launch::complete_action)
     }
 
     fn list_running(&self) -> Result<Vec<RunningApp>> {
@@ -150,6 +73,104 @@ impl Backend for WindowsBackend {
         // which needs a window, so it has a backend-free entry point and
         // `beckon installed` uses that one instead of taking a backend.
         crate::list_installed()
+    }
+}
+
+impl WindowsBackend {
+    fn beckon_inner(
+        &self,
+        id: &str,
+        launch_mode: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
+        // A Start Menu shortcut's display name is its filename, so the common
+        // case — a hotkey aimed at an app that has a Start Menu entry — is
+        // settled by one directory walk plus a single `.lnk` parse, instead of
+        // COM-parsing every shortcut on the machine. Run it alongside window
+        // enumeration; the hot path needs both and neither depends on the other.
+        let fast_id = id.to_string();
+        let scan_handle = std::thread::spawn(move || apps::resolve_start_menu_by_name(&fast_id));
+        let all_windows = window_ops::enum_visible_windows()
+            .map_err(|e| BackendError::Other(format!("EnumWindows failed: {}", e)))?;
+        let fg_hwnd = window_ops::get_foreground_hwnd();
+
+        // Miss: fall back to the full catalog. The name tier has already been
+        // ruled out above, so `resolve_lazy` is guaranteed to call its loader
+        // here — which means the AppsFolder enumeration can be started eagerly
+        // and overlapped with the Start Menu parse instead of running after it.
+        // The closure just joins the thread that is already doing the work.
+        let resolved = scan_handle.join().unwrap_or(None).or_else(|| {
+            let shell_handle = std::thread::spawn(apps::scan_shell_apps);
+            let start_menu = apps::scan_start_menu();
+            apps::resolve_lazy(id, &start_menu, move || {
+                shell_handle.join().unwrap_or_default()
+            })
+        });
+
+        // Find running windows that match the target.
+        let matching: Vec<&WindowInfo> = match &resolved {
+            Some(m) => windows_for_resolved(m, &all_windows),
+            None => windows_by_literal_id(id, &all_windows),
+        };
+
+        // Step 3: not running -> launch.
+        if matching.is_empty() {
+            let m = resolved.ok_or_else(|| BackendError::NoMatch {
+                id: id.to_string(),
+                hint: format!(
+                    "no running window and no installed Windows app matches `{}`. \
+                     Run `beckon installed` to list installed apps, or `beckon search {}` \
+                     to search.",
+                    id, id
+                ),
+            })?;
+            let target_key = m
+                .aumid
+                .as_deref()
+                .unwrap_or(&m.exe_path)
+                .to_ascii_lowercase();
+            return beckon_core::launch::cold_launch(launch_mode, &target_key, || {
+                launch(&m).map_err(|e| BackendError::LaunchFailed {
+                    id: id.to_string(),
+                    reason: e,
+                })
+            });
+        }
+
+        // Is the current foreground window one of ours?
+        let fg_is_target = matching.iter().any(|w| w.hwnd == fg_hwnd);
+
+        // Step 4: running but not focused -> focus.
+        if !fg_is_target {
+            window_ops::focus_window(matching[0].hwnd)
+                .map_err(|e| BackendError::Other(format!("focus_window: {}", e)))?;
+            return Ok(BeckonAction::Focused);
+        }
+
+        // Step 5a: focused, multiple windows -> cycle to next.
+        if let Some(next) = next_in_cycle(&matching, fg_hwnd) {
+            window_ops::focus_window(next)
+                .map_err(|e| BackendError::Other(format!("cycle: {}", e)))?;
+            return Ok(BeckonAction::Cycled);
+        }
+
+        // Step 5b: single window -> toggle to most-recent OTHER app.
+        // `all_windows` is in z-order (front-to-back); first window NOT in our
+        // matching set is the most recently used other app. Using HWND set
+        // (not exe name) so PWAs sharing chrome_proxy.exe toggle correctly.
+        let matching_hwnds: HashSet<isize> = matching.iter().map(|w| w.hwnd.0 as isize).collect();
+        if let Some(other) = all_windows
+            .iter()
+            .find(|w| !matching_hwnds.contains(&(w.hwnd.0 as isize)))
+        {
+            window_ops::focus_window(other.hwnd)
+                .map_err(|e| BackendError::Other(format!("toggle-back: {}", e)))?;
+            return Ok(BeckonAction::ToggledBack);
+        }
+
+        // Step 5c: nothing else -> minimize.
+        window_ops::minimize_window(fg_hwnd)
+            .map_err(|e| BackendError::Other(format!("minimize: {}", e)))?;
+        Ok(BeckonAction::Hidden)
     }
 }
 

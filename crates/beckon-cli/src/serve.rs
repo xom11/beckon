@@ -314,17 +314,33 @@ pub fn cmd_serve_app(
 
 fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id: u32) {
     // Short borrow only: cloned out and dropped BEFORE calling the backend.
-    let (app, canonical) = {
+    let (app, canonical, launch) = {
         let st = state.borrow();
         match st.shortcuts.get(id as usize) {
-            Some(sc) => (sc.app.clone(), sc.combo.canonical()),
+            Some(sc) => (sc.app.clone(), sc.combo.canonical(), sc.launch),
             None => return,
         }
     };
-    if let Err(e) = crate::beckon_ladder(backend.as_ref().as_ref(), &app, false) {
-        let msg = format!("{app} ({canonical}): {e}");
-        eprintln!("beckon serve: {msg}");
-        crate::notify::report(&msg, crate::notify::Cause::HumanAction);
+    match crate::beckon_ladder_with(
+        backend.as_ref().as_ref(),
+        &app,
+        launch,
+        beckon_core::verbose(),
+    ) {
+        Ok(beckon_core::BeckonAction::LaunchPending) => {
+            set_tray_status(&format!("beckon - press {canonical} again to launch {app}"));
+        }
+        Ok(_) => {
+            let phrase = state.borrow().last_phrase.clone();
+            if !phrase.is_empty() {
+                set_tray_status(&format!("beckon - {phrase}"));
+            }
+        }
+        Err(e) => {
+            let msg = format!("{app} ({canonical}): {e}");
+            eprintln!("beckon serve: {msg}");
+            crate::notify::report(&msg, crate::notify::Cause::HumanAction);
+        }
     }
 }
 

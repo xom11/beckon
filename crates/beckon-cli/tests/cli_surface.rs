@@ -301,3 +301,54 @@ fn resolve_belongs_to_check_and_nowhere_else() {
         );
     }
 }
+
+#[test]
+fn launch_mode_flags_accept_an_id_and_reject_subcommands_or_each_other() {
+    // Accepted on the `<ID>` hot path in any flag position, including `--` for
+    // a shadowed app name: fails through beckon's handler (exit 1), never clap
+    // (exit 2).
+    for argv in [
+        vec!["--confirm-launch", "definitely-not-installed-zzz"],
+        vec!["definitely-not-installed-zzz", "--confirm-launch"],
+        vec!["-v", "--confirm-launch", "definitely-not-installed-zzz"],
+        vec!["--confirm-launch", "--", "definitely-not-installed-zzz"],
+        vec!["--no-launch", "definitely-not-installed-zzz"],
+        vec!["definitely-not-installed-zzz", "--no-launch"],
+        vec!["-v", "--no-launch", "definitely-not-installed-zzz"],
+        vec!["--no-launch", "--", "definitely-not-installed-zzz"],
+    ] {
+        let out = beckon().args(&argv).output().expect("run beckon");
+        let stderr = stderr_of(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "`beckon {}` must reach the id handler (exit 1), not clap (exit 2)\nstderr: {stderr}",
+            argv.join(" "),
+        );
+    }
+
+    // Mutually exclusive with each other, with an omitted `<ID>`, and with
+    // every subcommand.
+    with_valid_config(|cfg| {
+        let cfg = cfg.to_str().unwrap();
+        for argv in [
+            vec!["--confirm-launch", "--no-launch", "Claude"],
+            vec!["--confirm-launch"],
+            vec!["--no-launch"],
+            vec!["--confirm-launch", "list"],
+            vec!["list", "--confirm-launch"],
+            vec!["--no-launch", "list"],
+            vec!["--confirm-launch", "check", cfg],
+            vec!["check", cfg, "--no-launch"],
+        ] {
+            let out = beckon().args(&argv).output().expect("run beckon");
+            let stderr = stderr_of(&out);
+            assert_eq!(
+                out.status.code(),
+                Some(2),
+                "`beckon {}` must be a usage error (exit 2)\nstderr: {stderr}",
+                argv.join(" "),
+            );
+        }
+    });
+}

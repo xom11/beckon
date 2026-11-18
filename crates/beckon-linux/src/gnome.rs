@@ -177,7 +177,11 @@ fn persist_previous(class: Option<&str>) {
 }
 
 impl Backend for GnomeBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let rows = self.list_windows()?;
 
         let active_addr = rows
@@ -224,8 +228,7 @@ impl Backend for GnomeBackend {
                         id
                     ),
                 })?;
-                launch_exec(&entry.exec)?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || launch_exec(&entry.exec))?
             }
             Decision::Focus(addr) => {
                 self.activate(parse_window_id(&addr)?)?;
@@ -245,7 +248,10 @@ impl Backend for GnomeBackend {
             }
         };
 
-        persist_previous(pre_focused_class.as_deref());
+        let action = beckon_core::launch::complete_action(action);
+        if action.acted() {
+            persist_previous(pre_focused_class.as_deref());
+        }
         Ok(action)
     }
 

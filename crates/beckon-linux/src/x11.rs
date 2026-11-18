@@ -488,7 +488,11 @@ fn persist_previous(class: Option<&str>) {
 }
 
 impl Backend for X11Backend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let windows = collect_windows(&self.conn, self.root, &self.atoms, false)?;
         let active = active_window(&self.conn, self.root, &self.atoms)?;
         let active_addr = active.map(|w| w.to_string());
@@ -540,8 +544,7 @@ impl Backend for X11Backend {
                         id, id, id
                     ),
                 })?;
-                launch_exec(&entry.exec)?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || launch_exec(&entry.exec))?
             }
             Decision::Focus(addr) => {
                 request_focus(
@@ -579,7 +582,10 @@ impl Backend for X11Backend {
             }
         };
 
-        persist_previous(pre_focused_class.as_deref());
+        let action = beckon_core::launch::complete_action(action);
+        if action.acted() {
+            persist_previous(pre_focused_class.as_deref());
+        }
         Ok(action)
     }
 

@@ -37,7 +37,11 @@ fn pick_mru_toggle_back(
 }
 
 impl Backend for MacBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         // Snapshot running apps once and reuse it for resolve, the target
         // filter, and the MRU lookup — saves repeated
         // NSWorkspace.runningApplications round-trips on the hot path.
@@ -51,13 +55,19 @@ impl Backend for MacBackend {
             .and_then(|p| running.iter().find(|a| a.pid == p))
             .map(|a| a.bundle_id.clone());
 
-        let action = self.beckon_inner(id, &running);
+        let action = self
+            .beckon_inner(id, &running, launch)
+            .map(beckon_core::launch::complete_action);
 
-        // Persist the app we came from on every successful action. Best-effort:
-        // a missing MRU only degrades toggle-back, never fails the hot path.
-        if action.is_ok() {
-            if let Some(prev) = pre_frontmost {
-                state::write_previous(&prev);
+        // Persist the app we came from only when focus or running state
+        // actually moved (`LaunchPending` and `LaunchSkipped` leave the
+        // frontmost window untouched). Best-effort: a missing MRU only
+        // degrades toggle-back, never fails the hot path.
+        if let Ok(a) = action {
+            if a.acted() {
+                if let Some(prev) = pre_frontmost {
+                    state::write_previous(&prev);
+                }
             }
         }
         action
@@ -92,7 +102,12 @@ impl Backend for MacBackend {
 impl MacBackend {
     /// Core algorithm. Takes the pre-snapshotted `running` list so the outer
     /// `beckon` can also use it for MRU bookkeeping without re-querying.
-    fn beckon_inner(&self, id: &str, running: &[RunningAppInfo]) -> Result<BeckonAction> {
+    fn beckon_inner(
+        &self,
+        id: &str,
+        running: &[RunningAppInfo],
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         // Resolve to bundle id. Match by Name first (cross-OS portable),
         // bundle id second, installed-name fallback last (see apps::resolve).
         let resolved = apps::resolve_with_running(id, running);
@@ -116,11 +131,12 @@ impl MacBackend {
                      `beckon search {id}` to search."
                 ),
             })?;
-            launch_bundle(&m).map_err(|e| BackendError::LaunchFailed {
-                id: id.to_string(),
-                reason: e,
-            })?;
-            return Ok(BeckonAction::Launched);
+            return beckon_core::launch::cold_launch(launch, &m.bundle_id, || {
+                launch_bundle(&m).map_err(|e| BackendError::LaunchFailed {
+                    id: id.to_string(),
+                    reason: e,
+                })
+            });
         }
 
         // Pick the canonical running entry (first PID — `activate` and `hide`

@@ -241,6 +241,8 @@ history).
 
 ```
 beckon <id>                          # focus-or-launch (default, hot path)
+beckon --confirm-launch <id>         # press twice within 2s to launch if closed
+beckon --no-launch <id>              # focus/cycle/hide only; never launch
 beckon list                          # list running apps with their ids
 beckon installed                     # list installed apps with launch ids
 beckon search <NAME>                 # fuzzy search across running + installed

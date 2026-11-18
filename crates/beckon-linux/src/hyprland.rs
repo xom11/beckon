@@ -406,7 +406,11 @@ fn snapshots_from(clients: &[Client]) -> Vec<WindowSnapshot> {
 }
 
 impl Backend for HyprlandBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let clients = list_clients()?;
         let active = active_address()?;
 
@@ -434,13 +438,14 @@ impl Backend for HyprlandBackend {
                         id, id, id
                     ),
                 })?;
-                dispatch(&exec_command(dialect(), &entry.exec)).map_err(|e| {
-                    BackendError::LaunchFailed {
-                        id: id.to_string(),
-                        reason: e.to_string(),
-                    }
-                })?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || {
+                    dispatch(&exec_command(dialect(), &entry.exec)).map_err(|e| {
+                        BackendError::LaunchFailed {
+                            id: id.to_string(),
+                            reason: e.to_string(),
+                        }
+                    })
+                })?
             }
             Decision::Focus(addr) => {
                 focus_window(&clients, &addr)?;
@@ -460,7 +465,7 @@ impl Backend for HyprlandBackend {
             }
         };
 
-        Ok(action)
+        Ok(beckon_core::launch::complete_action(action))
     }
 
     fn list_running(&self) -> Result<Vec<RunningApp>> {

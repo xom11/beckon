@@ -578,3 +578,24 @@ fn name_resolution_routes_through_desktop_entry() {
     let snap = srv.snapshot();
     assert_eq!(snap.focused_id(), Some(4));
 }
+
+#[test]
+fn non_acting_launch_modes_do_not_clobber_mru_file() {
+    let mut state = State::default();
+    state.windows = vec![FakeWindow::new(1, "kitty", 5)];
+    state.windows[0].is_focused = true;
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+    fs::write(srv.runtime_dir.join("beckon-mru"), "firefox").unwrap();
+
+    // First press of `--confirm-launch` leaves focus on kitty; `beckon-mru`
+    // must keep `firefox` rather than overwriting it with `kitty`.
+    let pending = srv.run_beckon(&["--confirm-launch", "Claude"]);
+    ok_output(&pending, "niri confirm-launch 1st press");
+    assert_eq!(srv.read_mru().as_deref(), Some("firefox"));
+
+    // `--no-launch` on a closed app likewise leaves focus and MRU untouched.
+    let skipped = srv.run_beckon(&["--no-launch", "Claude"]);
+    ok_output(&skipped, "niri no-launch closed");
+    assert_eq!(srv.read_mru().as_deref(), Some("firefox"));
+}

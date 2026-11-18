@@ -156,7 +156,11 @@ fn parse_con_id(addr: &str) -> Result<i64> {
 }
 
 impl Backend for I3IpcBackend {
-    fn beckon(&self, id: &str) -> Result<BeckonAction> {
+    fn beckon_with(
+        &self,
+        id: &str,
+        launch: beckon_core::launch::LaunchMode,
+    ) -> Result<BeckonAction> {
         let mut conn = self.connect()?;
         let tree = conn
             .get_tree()
@@ -208,13 +212,14 @@ impl Backend for I3IpcBackend {
                         id, id
                     ),
                 })?;
-                run_sway(&mut conn, &format!("exec {}", entry.exec)).map_err(|e| {
-                    BackendError::LaunchFailed {
-                        id: id.to_string(),
-                        reason: e.to_string(),
-                    }
-                })?;
-                BeckonAction::Launched
+                beckon_core::launch::cold_launch(launch, &entry.id, || {
+                    run_sway(&mut conn, &format!("exec {}", entry.exec)).map_err(|e| {
+                        BackendError::LaunchFailed {
+                            id: id.to_string(),
+                            reason: e.to_string(),
+                        }
+                    })
+                })?
             }
             Decision::Focus(addr) => {
                 focus_con(&mut conn, parse_con_id(&addr)?)?;
@@ -234,7 +239,10 @@ impl Backend for I3IpcBackend {
             }
         };
 
-        persist_previous(pre_focused_app.as_deref());
+        let action = beckon_core::launch::complete_action(action);
+        if action.acted() {
+            persist_previous(pre_focused_app.as_deref());
+        }
         Ok(action)
     }
 

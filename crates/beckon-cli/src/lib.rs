@@ -85,6 +85,15 @@ struct Args {
     #[arg(value_name = "ID")]
     id: Option<String>,
 
+    /// Require two consecutive presses within 2 seconds before launching a
+    /// closed app (running apps still focus / cycle on the first press).
+    #[arg(long)]
+    confirm_launch: bool,
+
+    /// Never launch the app when it is not running (focus / cycle / hide only).
+    #[arg(long)]
+    no_launch: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 
@@ -196,6 +205,23 @@ impl Args {
                 e.exit()
             }
         };
+        if args.confirm_launch && args.no_launch {
+            Self::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "`--confirm-launch` cannot be combined with `--no-launch`",
+                )
+                .exit();
+        }
+        if args.command.is_some() && (args.confirm_launch || args.no_launch) {
+            Self::command()
+                .error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "`--confirm-launch` and `--no-launch` cannot be combined with a subcommand; \
+                     use `beckon --confirm-launch -- <ID>` if the app is literally named like one",
+                )
+                .exit();
+        }
         match (&args.id, &args.command) {
             (None, None) => Self::command()
                 .error(
@@ -211,6 +237,16 @@ impl Args {
                 )
                 .exit(),
             _ => args,
+        }
+    }
+
+    fn launch_mode(&self) -> beckon_core::launch::LaunchMode {
+        if self.no_launch {
+            beckon_core::launch::LaunchMode::Never
+        } else if self.confirm_launch {
+            beckon_core::launch::LaunchMode::Confirm
+        } else {
+            beckon_core::launch::LaunchMode::Always
         }
     }
 }
@@ -350,7 +386,7 @@ fn run(args: &Args) -> Result<()> {
         Some(Command::Search { name }) => cmd_search(require_id(name, "search NAME")?),
         Some(Command::Resolve { id }) => cmd_resolve(require_id(id, "resolve ID")?),
         None => match args.id.as_deref() {
-            Some(id) => cmd_beckon(require_id(id, "id")?, args.verbose),
+            Some(id) => cmd_beckon(require_id(id, "id")?, args.launch_mode(), args.verbose),
             // `parse_checked` rejects (None, None) before we get here.
             None => Err(anyhow!("no command given (use -h for help)")),
         },
@@ -414,17 +450,18 @@ fn pick_backend() -> Result<Box<dyn Backend>> {
 ///    `cli_main`'s reporting path only once every rung has failed. On Windows
 ///    that is the difference between the ~245 ms scan and the ~945 ms figure,
 ///    of which ~700 ms is the toast itself.
-pub(crate) fn beckon_ladder(
+pub(crate) fn beckon_ladder_with(
     backend: &dyn beckon_core::Backend,
     id: &str,
+    launch: beckon_core::launch::LaunchMode,
     verbose: bool,
-) -> Result<()> {
+) -> Result<beckon_core::BeckonAction> {
     let candidates = beckon_core::candidates::split(id).map_err(|e| anyhow!("{e}"))?;
     let chain = candidates.len() > 1;
     let mut misses: Vec<String> = Vec::new();
 
     for (i, cand) in candidates.iter().enumerate() {
-        match backend.beckon(cand) {
+        match backend.beckon_with(cand, launch) {
             Ok(action) => {
                 // Single-id output stays byte-identical: the extra line is
                 // printed only for a chain, because
@@ -436,7 +473,7 @@ pub(crate) fn beckon_ladder(
                     }
                     eprintln!("action: {action:?}");
                 }
-                return Ok(());
+                return Ok(action);
             }
             Err(beckon_core::BackendError::NoMatch { hint, .. }) if chain => {
                 if verbose {
@@ -463,9 +500,20 @@ pub(crate) fn beckon_ladder(
     ))
 }
 
-fn cmd_beckon(id: &str, verbose: bool) -> Result<()> {
+#[cfg(test)]
+fn beckon_ladder(backend: &dyn beckon_core::Backend, id: &str, verbose: bool) -> Result<()> {
+    beckon_ladder_with(
+        backend,
+        id,
+        beckon_core::launch::LaunchMode::Always,
+        verbose,
+    )
+    .map(|_| ())
+}
+
+fn cmd_beckon(id: &str, launch: beckon_core::launch::LaunchMode, verbose: bool) -> Result<()> {
     let backend = pick_backend()?;
-    beckon_ladder(backend.as_ref(), id, verbose)
+    beckon_ladder_with(backend.as_ref(), id, launch, verbose).map(|_| ())
 }
 
 fn cmd_list() -> Result<()> {
@@ -1697,6 +1745,7 @@ mod tests {
     struct FakeBackend {
         answers: std::cell::RefCell<Vec<beckon_core::Result<beckon_core::BeckonAction>>>,
         asked: std::cell::RefCell<Vec<String>>,
+        modes: std::cell::RefCell<Vec<beckon_core::launch::LaunchMode>>,
     }
 
     impl FakeBackend {
@@ -1704,6 +1753,7 @@ mod tests {
             Self {
                 answers: std::cell::RefCell::new(answers),
                 asked: std::cell::RefCell::new(Vec::new()),
+                modes: std::cell::RefCell::new(Vec::new()),
             }
         }
     }
@@ -1715,8 +1765,13 @@ mod tests {
         fn list_installed(&self) -> beckon_core::Result<Vec<beckon_core::InstalledApp>> {
             Ok(Vec::new())
         }
-        fn beckon(&self, id: &str) -> beckon_core::Result<beckon_core::BeckonAction> {
+        fn beckon_with(
+            &self,
+            id: &str,
+            launch: beckon_core::launch::LaunchMode,
+        ) -> beckon_core::Result<beckon_core::BeckonAction> {
             self.asked.borrow_mut().push(id.to_string());
+            self.modes.borrow_mut().push(launch);
             self.answers.borrow_mut().remove(0)
         }
     }
@@ -1796,6 +1851,30 @@ mod tests {
         let e = beckon_ladder(&b, "Google Keep || ", false).unwrap_err();
         assert!(b.asked.borrow().is_empty(), "{:?}", b.asked.borrow());
         assert!(format!("{e:#}").contains("empty candidate"), "{e:#}");
+    }
+
+    #[test]
+    fn beckon_ladder_with_threads_launch_mode_through_every_candidate_rung() {
+        use beckon_core::launch::LaunchMode;
+
+        let b = FakeBackend::new(vec![
+            Err(no_match("Discord Canary")),
+            Ok(beckon_core::BeckonAction::LaunchPending),
+        ]);
+        let action =
+            beckon_ladder_with(&b, "Discord Canary || Discord", LaunchMode::Confirm, false)
+                .unwrap();
+        assert_eq!(action, beckon_core::BeckonAction::LaunchPending);
+        assert_eq!(*b.asked.borrow(), ["Discord Canary", "Discord"]);
+        assert_eq!(
+            *b.modes.borrow(),
+            [LaunchMode::Confirm, LaunchMode::Confirm]
+        );
+
+        let b_never = FakeBackend::new(vec![Ok(beckon_core::BeckonAction::LaunchSkipped)]);
+        let skipped = beckon_ladder_with(&b_never, "Steam", LaunchMode::Never, false).unwrap();
+        assert_eq!(skipped, beckon_core::BeckonAction::LaunchSkipped);
+        assert_eq!(*b_never.modes.borrow(), [LaunchMode::Never]);
     }
 
     // ---- search ----

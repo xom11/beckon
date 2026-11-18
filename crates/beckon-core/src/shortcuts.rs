@@ -1,6 +1,7 @@
 //! Shortcut-config model shared by `check` and `serve`: canonical key
 //! table (name → Carbon virtual keycode / Win32 VK) and combo parsing.
 
+use crate::launch::LaunchMode;
 use std::sync::OnceLock;
 
 /// One canonical key: the name used in shortcut files, plus its Carbon
@@ -715,11 +716,13 @@ impl Chord {
 /// The dotted key name, used in every error message about it.
 pub const KEYBOARD_CAPS_HOLD: &str = "keyboard.caps_hold";
 
-/// One line of a shortcuts file: a combo bound to exactly one app name.
-#[derive(Debug, Clone, PartialEq)]
+/// One line of a shortcuts file: a combo bound to one app name and its
+/// cold-launch policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shortcut {
     pub combo: Combo,
     pub app: String,
+    pub launch: LaunchMode,
 }
 
 /// What a bare Caps Lock tap does when `keyboard.caps` is on. The hook must
@@ -782,23 +785,87 @@ pub struct Config {
     /// Whether `serve` shows the menu bar / system tray icon. Defaults to
     /// `true`; setting `tray = false` runs headless like `skhd` / `kanata`.
     pub tray: bool,
+    /// File-wide cold-launch policy inherited by bindings that do not override
+    /// `launch` on their own inline table.
+    pub launch: LaunchMode,
 }
 
 /// Top-level keys that configure `serve` rather than binding a combo.
 pub const KEYBOARD_KEY: &str = "keyboard";
 pub const TRAY_KEY: &str = "tray";
+pub const LAUNCH_KEY: &str = "launch";
 
-/// Parse a shortcuts TOML file: every top-level key is a combo bound to one
-/// app-name string, except `keyboard` (the Caps Lock settings block) and
-/// `tray` (whether `serve` shows its menu bar / tray icon). First error wins.
-/// Iteration order follows `toml::Table` (BTreeMap, sorted by key) —
-/// registration order is irrelevant to hotkey behavior.
+fn parse_launch_mode(value: &toml::Value, where_: &str) -> Result<LaunchMode, String> {
+    match value {
+        toml::Value::String(s) => LaunchMode::parse_str(s).map_err(|e| format!("{where_}: {e}")),
+        toml::Value::Boolean(b) => Ok(LaunchMode::from_bool(*b)),
+        other => Err(format!(
+            "{where_} must be \"always\", \"confirm\", \"never\", true or false, got {}",
+            other.type_str()
+        )),
+    }
+}
+
+fn parse_shortcut_table(
+    raw_key: &str,
+    t: &toml::Table,
+    default_launch: LaunchMode,
+) -> Result<(String, LaunchMode), String> {
+    let mut app: Option<String> = None;
+    let mut launch = default_launch;
+    for (k, v) in t {
+        match k.as_str() {
+            "app" => match v {
+                toml::Value::String(s) if !s.trim().is_empty() => app = Some(s.clone()),
+                toml::Value::String(_) => return Err(format!("empty app name for `{raw_key}`")),
+                toml::Value::Array(_) => {
+                    return Err(format!(
+                        "`app` for `{raw_key}` is an array -- write the alternatives \
+                         inside the string instead, separated by `||`: \
+                         \"Google Keep || https://keep.google.com/\""
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "`app` for `{raw_key}` must be a string, got {}",
+                        other.type_str()
+                    ));
+                }
+            },
+            "launch" => {
+                launch = parse_launch_mode(v, &format!("`launch` for `{raw_key}`"))?;
+            }
+            other => {
+                return Err(format!(
+                    "unknown key `{other}` in `{raw_key}` \
+                     (expected `app` and optional `launch`)"
+                ));
+            }
+        }
+    }
+    let app = app.ok_or_else(|| format!("missing `app` in table for `{raw_key}`"))?;
+    Ok((app, launch))
+}
+
+/// Parse a shortcuts TOML file: every top-level key is a combo bound to an
+/// app-name string or `{ app = "...", launch = ... }` inline table, except
+/// `keyboard` (the Caps Lock settings block), `tray` (whether `serve` shows its
+/// menu bar / tray icon), and `launch` (file-wide cold-launch policy). First
+/// error wins. Iteration order follows `toml::Table` (BTreeMap, sorted by key)
+/// — registration order is irrelevant to hotkey behavior.
 pub fn parse_config(text: &str) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(table.len());
     let mut keyboard = KeyboardConfig::default();
     let mut tray = true;
+    // Read `launch` before walking `table`: `toml::Table` is sorted
+    // lexicographically, so a combo like `"alt+a"` visits before `"launch"` and
+    // would miss the file-wide default if `launch` were discovered mid-loop.
+    let default_launch = match table.get(LAUNCH_KEY) {
+        Some(v) => parse_launch_mode(v, "`launch`")?,
+        None => LaunchMode::Always,
+    };
     for (raw_key, value) in &table {
         if raw_key == KEYBOARD_KEY {
             keyboard = parse_keyboard(value)?;
@@ -813,6 +880,9 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             })?;
             continue;
         }
+        if raw_key == LAUNCH_KEY {
+            continue;
+        }
         let combo = Combo::parse(raw_key)?;
         let canon = combo.canonical();
         if let Some(prev) = seen.get(&canon) {
@@ -821,9 +891,10 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             ));
         }
         seen.insert(canon, raw_key.clone());
-        let app = match value {
-            toml::Value::String(s) if !s.trim().is_empty() => s.clone(),
+        let (app, launch) = match value {
+            toml::Value::String(s) if !s.trim().is_empty() => (s.clone(), default_launch),
             toml::Value::String(_) => return Err(format!("empty app name for `{raw_key}`")),
+            toml::Value::Table(t) => parse_shortcut_table(raw_key, t, default_launch)?,
             toml::Value::Array(_) => {
                 return Err(format!(
                     // ASCII hyphens, not an em-dash: since the settings
@@ -840,17 +911,19 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             }
             other => {
                 return Err(format!(
-                    "value for `{raw_key}` must be a string (one app name), got {}",
+                    "value for `{raw_key}` must be a string (app name) or inline table \
+                     (`{{ app = \"...\", launch = ... }}`), got {}",
                     other.type_str()
                 ))
             }
         };
-        out.push(Shortcut { combo, app });
+        out.push(Shortcut { combo, app, launch });
     }
     Ok(Config {
         shortcuts: out,
         keyboard,
         tray,
+        launch: default_launch,
     })
 }
 
@@ -892,11 +965,12 @@ fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
                 // `[keyboard]` header INSIDE that table. A shortcut or
                 // top-level setting appended to the bottom of such a file is
                 // silently nested here unless named explicitly.
-                if other == TRAY_KEY {
-                    return Err("`tray` is a top-level setting, not under `[keyboard]`. \
-                         Move `tray = ...` above the `[keyboard]` header, or write the \
+                if other == TRAY_KEY || other == LAUNCH_KEY {
+                    return Err(format!(
+                        "`{other}` is a top-level setting, not under `[keyboard]`. \
+                         Move `{other} = ...` above the `[keyboard]` header, or write the \
                          settings as `keyboard.caps = ...` instead of a `[keyboard]` section."
-                        .to_string());
+                    ));
                 }
                 if Combo::parse(other).is_ok() {
                     return Err(format!(
@@ -1339,6 +1413,88 @@ mod tests {
     fn parse_shortcuts_ignores_tray() {
         let s = parse_shortcuts("tray = false\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
         assert_eq!(s.len(), 1);
+    }
+
+    // ---------- launch mode settings ----------
+
+    #[test]
+    fn launch_defaults_to_always_on_plain_strings() {
+        let c = parse_config("\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert_eq!(c.launch, super::LaunchMode::Always);
+        assert_eq!(c.shortcuts[0].launch, super::LaunchMode::Always);
+    }
+
+    #[test]
+    fn inline_table_sets_per_shortcut_launch_mode() {
+        let c = parse_config(
+            "\"ctrl+alt+t\" = \"Terminal\"\n\
+             \"ctrl+alt+d\" = { app = \"Discord\", launch = \"confirm\" }\n\
+             \"ctrl+alt+s\" = { app = \"Steam\", launch = false }\n\
+             \"ctrl+alt+z\" = { app = \"Zoom\", launch = \"never\" }\n\
+             \"ctrl+alt+c\" = { app = \"Chrome || Chromium\", launch = true }\n",
+        )
+        .unwrap();
+        let by_key: std::collections::HashMap<_, _> = c
+            .shortcuts
+            .iter()
+            .map(|s| (s.combo.canonical(), (s.app.as_str(), s.launch)))
+            .collect();
+        assert_eq!(
+            by_key["ctrl+alt+t"],
+            ("Terminal", super::LaunchMode::Always)
+        );
+        assert_eq!(
+            by_key["ctrl+alt+d"],
+            ("Discord", super::LaunchMode::Confirm)
+        );
+        assert_eq!(by_key["ctrl+alt+s"], ("Steam", super::LaunchMode::Never));
+        assert_eq!(by_key["ctrl+alt+z"], ("Zoom", super::LaunchMode::Never));
+        assert_eq!(
+            by_key["ctrl+alt+c"],
+            ("Chrome || Chromium", super::LaunchMode::Always)
+        );
+    }
+
+    /// `toml::Table` iterates keys lexicographically, and `"alt+a"` sorts ahead
+    /// of `"launch"`. Reading `launch` before the shortcut loop ensures early
+    /// keys still inherit the file-wide default, while an explicit per-row
+    /// `launch = "always"` can override it back.
+    #[test]
+    fn top_level_launch_applies_even_to_combos_sorting_before_it() {
+        let c = parse_config(
+            "launch = \"confirm\"\n\
+             \"alt+a\" = \"Discord\"\n\
+             \"super+t\" = { app = \"Terminal\", launch = \"always\" }\n\
+             \"super+s\" = { app = \"Steam\", launch = false }\n",
+        )
+        .unwrap();
+        assert_eq!(c.launch, super::LaunchMode::Confirm);
+        let by_key: std::collections::HashMap<_, _> = c
+            .shortcuts
+            .iter()
+            .map(|s| (s.combo.canonical(), s.launch))
+            .collect();
+        assert_eq!(by_key["alt+a"], super::LaunchMode::Confirm);
+        assert_eq!(by_key["super+t"], super::LaunchMode::Always);
+        assert_eq!(by_key["super+s"], super::LaunchMode::Never);
+    }
+
+    #[test]
+    fn malformed_inline_tables_and_launch_modes_are_rejected_cleanly() {
+        for bad in [
+            "\"ctrl+alt+d\" = { launch = \"confirm\" }\n",
+            "\"ctrl+alt+d\" = { app = \"  \", launch = \"confirm\" }\n",
+            "\"ctrl+alt+d\" = { app = 42 }\n",
+            "\"ctrl+alt+d\" = { app = [\"A\", \"B\"] }\n",
+            "\"ctrl+alt+d\" = { app = \"Discord\", launch = \"maybe\" }\n",
+            "\"ctrl+alt+d\" = { app = \"Discord\", launch = 2 }\n",
+            "\"ctrl+alt+d\" = { app = \"Discord\", typo = true }\n",
+            "launch = \"twice\"\n",
+            "launch = 123\n",
+            "[keyboard]\ncaps = true\nlaunch = \"confirm\"\n",
+        ] {
+            assert!(parse_config(bad).is_err(), "expected error for:\n{bad}");
+        }
     }
 
     #[test]

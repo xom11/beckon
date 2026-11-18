@@ -24,3 +24,7 @@
 "ctrl+super+alt+v"     = "Visual Studio Code"
 "ctrl+super+alt+f"     = "File Explorer"
 "ctrl+super+alt+s"     = "Spotify"
+
+# Optional cold-launch guards (focus / cycle when open stays single-press):
+# "ctrl+super+alt+d"   = { app = "Discord", launch = "confirm" }  # press twice within 2s to start
+# "ctrl+super+alt+g"   = { app = "Steam", launch = false }        # focus only, never start

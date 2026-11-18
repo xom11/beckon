@@ -972,3 +972,88 @@ fn the_probe_is_never_recorded_as_an_action() {
         snap.dispatches
     );
 }
+
+#[test]
+fn confirm_launch_waits_for_second_press_and_disarms_on_other_focus() {
+    let mut state = State::default();
+    state.clients = vec![FakeClient::new("0xA", "kitty", 0)];
+    state.active = Some("0xA".into());
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+    srv.write_desktop(
+        "discord.desktop",
+        "[Desktop Entry]\nType=Application\nName=Discord\nExec=/bin/true\n",
+    );
+
+    // 1st press on closed Discord: arms, dispatches nothing.
+    let out1 = srv.run_beckon(&["-v", "--confirm-launch", "Discord"]);
+    ok_output(&out1, "confirm-launch 1st press");
+    assert!(
+        String::from_utf8_lossy(&out1.stderr).contains("action: LaunchPending"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out1.stderr)
+    );
+    assert!(srv.snapshot().dispatches.is_empty());
+
+    // Intervening press on running kitty (hide, since it's the lone window):
+    // disarms Discord's pending confirmation.
+    let inter = srv.run_beckon(&["kitty"]);
+    ok_output(&inter, "intervening kitty press");
+
+    // Next press on Discord must therefore treat itself as a fresh 1st press.
+    let out_rearm = srv.run_beckon(&["-v", "--confirm-launch", "Discord"]);
+    ok_output(
+        &out_rearm,
+        "confirm-launch re-armed after intervening action",
+    );
+    assert!(String::from_utf8_lossy(&out_rearm.stderr).contains("action: LaunchPending"));
+    assert!(
+        !srv.snapshot()
+            .dispatches
+            .iter()
+            .any(|d| d.contains("exec ")),
+        "intervening focus failed to disarm pending launch: {:?}",
+        srv.snapshot().dispatches
+    );
+
+    // Consecutive 2nd press on Discord launches it.
+    let out2 = srv.run_beckon(&["-v", "--confirm-launch", "discord"]);
+    ok_output(
+        &out2,
+        "confirm-launch 2nd press (case-insensitive canonical id)",
+    );
+    assert!(String::from_utf8_lossy(&out2.stderr).contains("action: Launched"));
+    assert!(srv
+        .snapshot()
+        .dispatches
+        .iter()
+        .any(|d| d == "dispatch exec /bin/true"));
+}
+
+#[test]
+fn no_launch_skips_closed_app_silently_and_focuses_when_running() {
+    let mut state = State::default();
+    state.clients = vec![
+        FakeClient::new("0xA", "kitty", 0),
+        FakeClient::new("0xB", "claude", 1),
+    ];
+    state.active = Some("0xA".into());
+    let srv = FakeServer::start(state);
+    write_claude_desktop(&srv, "/bin/true");
+    srv.write_desktop(
+        "steam.desktop",
+        "[Desktop Entry]\nType=Application\nName=Steam\nExec=/bin/true\n",
+    );
+
+    // Closed Steam with `--no-launch`: exits 0, launches nothing.
+    let closed = srv.run_beckon(&["-v", "--no-launch", "Steam"]);
+    ok_output(&closed, "no-launch closed");
+    assert!(String::from_utf8_lossy(&closed.stderr).contains("action: LaunchSkipped"));
+    assert!(srv.snapshot().dispatches.is_empty());
+
+    // Running Claude with `--no-launch`: focuses on the first press.
+    let open = srv.run_beckon(&["-v", "--no-launch", "Claude"]);
+    ok_output(&open, "no-launch running");
+    assert!(String::from_utf8_lossy(&open.stderr).contains("action: Focused"));
+    assert_eq!(srv.snapshot().active.as_deref(), Some("0xB"));
+}

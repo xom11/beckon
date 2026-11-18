@@ -215,6 +215,31 @@ elevated window has focus (type the full chord there instead), and on either OS
 it should not be combined with another remapper that already claims Caps Lock,
 such as kanata, Karabiner, or PowerToys.
 
+## Guarding heavy apps against misclicks (optional)
+
+When twenty single-letter keys sit next to each other, fat-fingering a running
+app costs nothing, while fat-fingering a closed heavyweight (Xcode, Docker,
+Steam, Discord) starts a multi-second launch and steals focus later. You can
+gate cold launches per app — or across the whole file — without slowing down
+focus, cycling, or toggle-back once the app is open:
+
+```toml
+# Optional file-wide default: "always" (default), "confirm", or "never" / false
+# launch = "confirm"
+
+"ctrl+super+alt+t" = "Terminal"
+"ctrl+super+alt+d" = { app = "Discord", launch = "confirm" }   # press twice within 2s to launch
+"ctrl+super+alt+g" = { app = "Steam", launch = false }         # focus only when already running
+```
+
+The same two guards exist as flags on the CLI hot path for Linux, Hammerspoon,
+and AutoHotkey bindings:
+
+```sh
+beckon --confirm-launch Discord
+beckon --no-launch Steam
+```
+
 ## Good to know
 
 **Use names, not ids.** `Claude`, `Spotify`, `Google Chrome` — these are stable
