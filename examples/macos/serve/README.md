@@ -64,10 +64,11 @@ Two ways this ships broken, both silent:
   domain for the same reason. Start it from a terminal in the desktop
   session.
 
-Confirm you got the right domain:
+Confirm you got the right domain (`sh.brew.beckon` on current Homebrew,
+`homebrew.mxcl.beckon` on older installs):
 
 ```sh
-launchctl print gui/$(id -u)/homebrew.mxcl.beckon | head -20
+launchctl print gui/$(id -u)/sh.brew.beckon | head -20
 ```
 
 The hand-written plist below is the fallback for non-Homebrew installs,
@@ -101,12 +102,26 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.github.xom11.beckon.
 > A launchd-spawned process has no window-server application identity,
 > and without one `RegisterEventHotKey` returns success while silently
 > never delivering a press. beckon handles this by transforming itself
-> into a UIElement app at startup (no Dock icon, no menu bar). Nothing
+> into a UIElement app at startup (no Dock icon, no app menu bar). Nothing
 > for you to configure — but it's why `serve` under launchd works at
 > all, and why the log line to trust is the registration count, not the
 > absence of errors.
 
-## Grant Accessibility permission
+## The menu bar icon
+
+`serve` puts a small template mark in the right-hand menu bar (set
+`tray = false` at the top of `apps.toml` if you want a completely
+invisible daemon). Clicking it opens a native `NSMenu` with:
+
+- Status line (`22 shortcuts` or `paused · 22 shortcuts`), plus any
+  **Needs attention** rows (`in use` when another app owns the chord,
+  `missing` when no installed app matches)
+- **Shortcuts** submenu listing every configured binding (clicking any
+  binding opens `apps.toml`, never launches the app)
+- **Open Config** (`⌘,`), **Reload**, **Open Log** (when `--log` was
+  passed), **Pause** / **Resume**, and **Quit** (`⌘Q`)
+
+## Grant Accessibility (and optional Input Monitoring) permission
 
 Same requirement as the Hammerspoon path, and for the same reason:
 cycling between windows of one app (step 5a) goes through the
@@ -114,10 +129,13 @@ Accessibility API.
 
 1. **System Settings → Privacy & Security → Accessibility**
 2. **+** → the binary `which beckon` prints (typically
-   `~/.cargo/bin/beckon`) → toggle on.
+   `~/.cargo/bin/beckon`, or `/opt/homebrew/opt/beckon/beckon.app` on
+   Homebrew) → toggle on.
 
 Without it, launch / focus / toggle / hide still work; only same-app
-window cycling degrades. `beckon doctor` reports the trust state.
+window cycling degrades. If you also enable `keyboard.caps = true` in
+`apps.toml`, macOS additionally requires **Input Monitoring** permission.
+`beckon doctor` reports the status of both permissions.
 
 > macOS binds the grant to the binary's code signature, so a fresh
 > `cargo build` invalidates it. Nix users get a stable

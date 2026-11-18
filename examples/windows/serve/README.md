@@ -3,7 +3,7 @@
 **Most people don't need this file.** `scoop install xom11/beckon` ships
 `beckon-serve.exe`, a tray app with no console window at any point — install
 it, launch **beckon serve** from the Start Menu, and tick **Start with
-Windows** in its tray menu. See the top-level README's *Resident mode*
+Windows** in its tray menu. See the top-level README's *Set up your keys*
 section.
 
 What's below is the **supervised path**: running `beckon.exe serve` under a

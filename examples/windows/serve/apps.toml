@@ -3,8 +3,9 @@
 # Validate before installing:  beckon check apps.toml
 # Run in the foreground:       beckon serve apps.toml
 #
-# Format: flat TOML. Every key is a hotkey combo, every value is exactly
-# one app Name. Edits apply live — beckon watches this file.
+# Format: flat TOML. Every key is a hotkey combo, every value is an app
+# Name (or `"App A || App B"` fallback chain). Edits apply live — beckon
+# watches this file. Set `tray = false` at the top to hide the tray icon.
 #
 # Modifiers: ctrl, super (= the Windows key), alt, shift. Order is free.
 # Keys must be lowercase: a-z, 0-9, f1-f20, and the named specials
