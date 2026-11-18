@@ -6,8 +6,7 @@ use std::path::Path;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, IDNO, IDYES, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
-    MB_YESNOCANCEL, SW_SHOWNORMAL,
+    MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK, SW_SHOWNORMAL,
 };
 
 /// Open `path` with whatever the user has registered for it — the editor for
@@ -36,88 +35,6 @@ pub fn open_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Open a URL in the user's default browser.
-///
-/// The About page's three links (design §3.4). Separate from `open_path`
-/// rather than a `&str` overload of it, because the two take different kinds
-/// of argument and only one of them can be checked: a `Path` comes from
-/// `serve`'s own `Paths`, while this takes whatever `Target::url` says --
-/// which is why the guard below exists at all.
-///
-/// **The scheme is checked here, and it is not ceremony.** `ShellExecuteW`
-/// with the `open` verb runs whatever the string names: `file:///`,
-/// a UNC path, or a bare `.exe`. Every caller today passes a compile-time
-/// constant from `beckon_core::settings::Target::url`, so nothing can reach
-/// this with a hostile string -- and that is exactly the property that
-/// silently stops holding the day someone routes a URL through here from a
-/// config file. The guard costs one comparison and makes the safe property
-/// local rather than a fact about every present and future caller.
-///
-/// **This pumps the calling thread's message queue**, exactly like the two
-/// functions above and with the same consequence for `RefCell` borrows.
-pub fn open_url(url: &str) -> Result<(), String> {
-    if !url.starts_with("https://") {
-        return Err(format!("refusing to open `{url}`: not an https URL"));
-    }
-    let wide = HSTRING::from(url);
-    let rc = unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::w!("open"),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if rc.0 as usize <= 32 {
-        return Err(format!("ShellExecuteW failed for `{url}`"));
-    }
-    Ok(())
-}
-
-/// Open Explorer with `path` selected, rather than opening `path` itself.
-///
-/// The System page's second glyph on each file row (design §3.3). "Show" and
-/// "Open" are different questions -- one answers *where is it*, the other
-/// *what does it say* -- and a settings window that could only do the second
-/// leaves the user with a path they cannot act on.
-///
-/// **`explorer.exe /select,<path>`, not a shell verb**, because there is no
-/// verb for it: `ShellExecuteW`'s `"explore"` opens a FOLDER and selects
-/// nothing, and the documented route to a selected item is `IShellWindows` +
-/// `SHOpenFolderAndSelectItems`, which is ~60 lines of COM for what one
-/// command line does. The trade is that a malformed path becomes an Explorer
-/// window at the user's Documents rather than an error -- acceptable, since
-/// every path this is called with came from `serve`'s own `Paths`.
-///
-/// **No space after the comma, and no quotes around the path.** Explorer
-/// parses `/select,` by taking the whole remainder of the command line as the
-/// item, so a quoted argument is looked up WITH its quotes and a space after
-/// the comma is part of the name it looks for. This is the one place in
-/// beckon where the usual quoting rule is inverted, which is why it is
-/// written down here rather than left to look like an omission.
-///
-/// **This pumps the calling thread's message queue**, exactly like
-/// `open_path` above and with the same consequence for `RefCell` borrows.
-pub fn reveal_path(path: &Path) -> Result<(), String> {
-    let args = HSTRING::from(format!("/select,{}", path.display()));
-    let rc = unsafe {
-        ShellExecuteW(
-            None,
-            windows::core::w!("open"),
-            windows::core::w!("explorer.exe"),
-            PCWSTR(args.as_ptr()),
-            PCWSTR::null(),
-            SW_SHOWNORMAL,
-        )
-    };
-    if rc.0 as usize <= 32 {
-        return Err(format!("cannot show `{}` in Explorer", path.display()));
-    }
-    Ok(())
-}
-
 /// A modal error box.
 ///
 /// The GUI-subsystem binary has no stderr before its log is open and no
@@ -136,43 +53,9 @@ pub fn error_dialog(title: &str, body: &str) {
     };
 }
 
-/// What the user chose when asked whether to save before closing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SaveChoice {
-    Save,
-    Discard,
-    Cancel,
-}
-
-/// Ask before throwing away unsaved edits.
-///
-/// Three buttons rather than two on purpose: "don't close after all" and
-/// "close and lose my edits" are different answers, and collapsing them
-/// makes the safe one unreachable. An unrecognised return (the title-bar X,
-/// Esc) is `Cancel` -- the choice that changes nothing.
-pub fn ask_save(title: &str, body: &str) -> SaveChoice {
-    let title = HSTRING::from(title);
-    let body = HSTRING::from(body);
-    let r = unsafe {
-        MessageBoxW(
-            None,
-            PCWSTR(body.as_ptr()),
-            PCWSTR(title.as_ptr()),
-            MB_YESNOCANCEL | MB_ICONWARNING,
-        )
-    };
-    match r {
-        IDYES => SaveChoice::Save,
-        IDNO => SaveChoice::Discard,
-        _ => SaveChoice::Cancel,
-    }
-}
-
 /// A modal informational box: same shape as `error_dialog`, without the red
-/// error icon. For clap's own `--help` / `--version` output, which is not a
-/// failure -- the GUI-subsystem binary has no console for that text to
-/// print to, so it needs a dialog too, but not one that looks like a bug
-/// report for someone who just typed `--version`.
+/// error icon. For clap's own `--help` / `--version` output on the
+/// GUI-subsystem binary, which has no console for that text to print to.
 pub fn info_dialog(title: &str, body: &str) {
     let title = HSTRING::from(title);
     let body = HSTRING::from(body);

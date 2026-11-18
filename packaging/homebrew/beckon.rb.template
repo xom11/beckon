@@ -76,10 +76,10 @@ class Beckon < Formula
     service do
       # `--log` here is a DECLARATION, not a redirect: launchd already writes
       # this file through the two paths below, and beckon must not be a second
-      # writer on the same fd. It is passed so the tray's `Open log` and the
-      # System page's log row can be drawn at all -- without it beckon has no
-      # way to learn where launchd put the file, and both were omitted over a
-      # log that exists. Keep the three paths identical.
+      # writer on the same fd. It is passed so the menu bar's `Open Log` row
+      # can be drawn at all -- without it beckon has no way to learn where
+      # launchd put the file, and the row is omitted over a log that exists.
+      # Keep the three paths identical.
       # **The executable INSIDE the bundle, not `opt_bin/"beckon"`.** Both
       # resolve to the same file today, but only this spelling says why the
       # bundle exists -- and it does not depend on the `bin` symlink surviving a

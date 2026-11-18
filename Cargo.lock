@@ -241,7 +241,6 @@ version = "0.15.2"
 dependencies = [
  "thiserror",
  "toml",
- "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -278,7 +277,6 @@ version = "0.15.2"
 dependencies = [
  "anyhow",
  "beckon-core",
- "embed-resource",
  "tempfile",
  "windows",
 ]

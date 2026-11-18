@@ -508,37 +508,24 @@
     </div>
   </section>
 
-  <!-- CONFIG — three doors, one binding.
+  <!-- CONFIG — plain text, one binding.
        ================================================================
-       This section replaces three of the old page's: #names (96 words arguing for
-       display names), #serve (104 words introducing resident mode) and #setups
-       (170 words of compatibility tiles). It replaces them with three pictures
-       that carry the same information by being what they describe.
+       Three pictures that carry the whole configuration story without naming a
+       GUI: run the CLI directly on any OS, let `beckon serve` watch `apps.toml`
+       on macOS and Windows, or invoke `beckon` from an existing hotkey daemon /
+       window manager dotfile (sway, Hyprland, AutoHotkey, Hammerspoon).
 
-       EACH DOOR IS DRAWN IN A FIXED DESIGN LANGUAGE, not in the reader's. That is
-       the point: three grammars in one glance is the argument, and a shelf that
-       re-skinned all three together would be one grammar repeated. `data-os` here
-       is a drawing instruction on the figure, unrelated to :root[data-os].
-
-       THE CAPTIONS ARE DOOR-FIRST AND STATE AVAILABILITY, and the asymmetry
-       between the three availability lines IS the section's second argument — the
-       CLI spans all three machines, the settings window is Windows only, the file
-       is macOS and Windows. That is the whole "which parts work where" story,
-       stated as a matrix, with no compositor named anywhere on this page.
-
-       NOTHING IN A DOOR IS A CONTROL. The `C` row is marked `is-on` in all three,
-       permanently, so "the same binding, seen three ways" is a picture rather than
-       a click. An earlier draft lit the rows across doors on selection; that needs
-       JS this page's script does not have, and a row that looks selectable and is
-       not is the exact failure the rest of the page is built to avoid.
+       EACH DOOR IS DRAWN IN A FIXED DESIGN LANGUAGE, not in the reader's.
+       `data-os` here is a drawing instruction on the figure, unrelated to
+       :root[data-os].
 
        NO <pre> IN HERE, deliberately: beckon.js attaches a copy button to every
        <pre> on the page, and "Copy" on a shell transcript would copy the prompt
        and the output with it. The real, copyable commands are in #install. -->
   <section id="config" aria-labelledby="config-h">
     <div class="wrap">
-      <h2 id="config-h">Three doors. One binding.</h2>
-      <p class="lead">Type it, click it, or edit it. Same binding underneath.</p>
+      <h2 id="config-h">Plain text. One binding.</h2>
+      <p class="lead">Run it from a shell, watch a TOML file, or call it from your dotfiles.</p>
 
       <ul class="doors">
 
@@ -558,22 +545,6 @@
           <p class="door-note">The app&rsquo;s name, not an id.</p>
         </li>
 
-        <li class="door" data-os="windows">
-          <div class="door-win">
-            <div class="door-bar"><span class="door-title">beckon</span><span class="door-ctl"><i></i><i></i><i></i></span></div>
-            <div class="door-body">
-              <div class="rows" aria-hidden="true">
-                <span class="row row-head"><span>App</span><span>Shortcut</span></span>
-                <span class="row is-on" data-bind="C"><span>Chrome</span><span class="mini">Ctrl Win Alt C</span></span>
-                <span class="row" data-bind="T"><span>Terminal</span><span class="mini">Ctrl Win Alt T</span></span>
-              </div>
-              <div class="door-actions" aria-hidden="true"><span class="door-btn">Save</span></div>
-            </div>
-          </div>
-          <p class="door-cap"><b>Settings window</b> <span class="door-on">Windows</span></p>
-          <p class="door-note">A tray app holds the keys.</p>
-        </li>
-
         <li class="door" data-os="macos">
           <div class="door-win">
             <div class="door-bar"><span class="door-ctl"><i></i><i></i><i></i></span><span class="door-title">apps.toml</span></div>
@@ -586,7 +557,22 @@
             </div>
           </div>
           <p class="door-cap"><b>apps.toml</b> <span class="door-on">macOS, Windows</span></p>
-          <p class="door-note">One file, watched. Edit it anywhere.</p>
+          <p class="door-note">One file, watched. beckon holds the keys.</p>
+        </li>
+
+        <li class="door" data-os="windows">
+          <div class="door-win">
+            <div class="door-bar"><span class="door-title">dotfiles</span><span class="door-ctl"><i></i><i></i><i></i></span></div>
+            <div class="door-body">
+              <div class="toml" aria-hidden="true">
+                <span class="toml-line is-on" data-bind="C"><span class="t-k">^#!c::</span> <span class="t-o">Run(</span><span class="t-v">"beckon Chrome"</span><span class="t-o">)</span></span>
+                <span class="toml-line"><span class="t-k">bindsym</span> <span class="t-o">$mod+c exec</span> <span class="t-v">beckon Chrome</span></span>
+                <span class="toml-line"><span class="t-k">hs.hotkey.bind</span><span class="t-o">(...,</span> <span class="t-v">"beckon Chrome"</span><span class="t-o">)</span></span>
+              </div>
+            </div>
+          </div>
+          <p class="door-cap"><b>Your own hotkeys</b> <span class="door-on">Linux, Windows, macOS</span></p>
+          <p class="door-note">Keep sway, AHK, or Hammerspoon.</p>
         </li>
 
       </ul>

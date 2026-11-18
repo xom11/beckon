@@ -91,14 +91,9 @@ pub trait Backend {
 
 pub mod candidates;
 pub mod caps;
-pub mod capture;
 pub mod certainty;
 pub mod cloak;
-pub mod config_write;
+pub mod grant;
 pub mod menu;
-pub mod page_plan;
 pub mod paths;
-pub mod settings;
 pub mod shortcuts;
-pub mod theme;
-pub mod update;

@@ -2612,25 +2612,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 
 
-/* --- 5c. section: config — three doors, one binding ----------------------- */
+/* --- 5c. section: config — plain text, one binding ------------------------ */
 
-/* This section replaced three: #names (96 words arguing for display names),
-   #serve (104 introducing resident mode) and #setups (170 of compatibility
-   tiles). It replaces them with three pictures that carry the same information
-   by BEING what they describe — which is the only way a page gets shorter
-   without getting vaguer.
-
-   EACH DOOR IS DRAWN IN A FIXED LANGUAGE, not in the reader's. `.door[data-os]`
-   re-declares the §1c skin for its own subtree, so a Fluent settings window
-   renders correctly on a macOS page and a GNOME terminal renders correctly on a
-   Windows one. Three grammars in one glance is the argument; a shelf that
-   re-skinned all three together would be one grammar printed three times.
-
-   NOTHING IN A DOOR IS A CONTROL. The `C` row is marked `is-on` in all three,
-   permanently, so "the same binding, seen three ways" is a picture rather than
-   a click. An earlier draft lit the rows across doors on selection — that needs
-   JS this page's script does not have, and a row that looks selectable and is
-   not is the exact failure the rest of the page is built to avoid. */
+/* Each card depicts a real window in one OS design language (`.door[data-os]`
+   re-declares the §1c skin for its own subtree). Nothing inside is a control. */
 
 .doors {
   list-style: none; margin: 0 0 46px; padding: 0;
@@ -2640,17 +2625,9 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .door { display: flex; flex-direction: column; gap: 0; min-width: 0; }
 
-/* ONE HEIGHT FOR ALL THREE, and it is a fixed number rather than a stretch.
-   Left to their content the three windows measured 154 / 212 / 154, which put
-   the three captions on three different baselines — and the captions are where
-   the availability matrix is read, so a reader comparing "macOS, Windows,
-   Linux" against "Windows" had to hunt for the second one. The Fluent door is
-   the tall one (three rows plus a command bar); 212 is its natural height, so
-   that is the height, and the other two get the slack inside their body rather
-   than under their caption. */
 .door-win {
   display: flex; flex-direction: column;
-  height: 212px;
+  height: 184px;
   border-radius: var(--r-window);
   border: var(--stroke) solid var(--rule-hard);
   box-shadow: var(--elev-2);
@@ -2670,18 +2647,12 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 }
 .door-title { font-size: calc(12px * var(--ui-scale)); font-weight: 600; color: var(--fg-dim); }
 .door-ctl { display: flex; align-items: center; gap: 7px; }
-.door-body { flex: 1; padding: 12px; background: var(--surface); display: flex; flex-direction: column; }
-.door-actions { margin-top: auto; }
+.door-body { flex: 1; padding: 12px; background: var(--surface); display: flex; flex-direction: column; justify-content: center; }
 
-/* The three title bars, drawn the way each system draws one. This is the
-   clearest place on the page to read the difference, because here they sit side
-   by side in the same light. */
+/* The three title bars, drawn the way each system draws one. */
 .door[data-os="macos"] .door-ctl { order: -1; }
 .door[data-os="macos"] .door-title { margin-inline: auto; padding-right: 42px; }
 .door[data-os="macos"] .door-ctl i { width: 11px; height: 11px; border-radius: 50%; }
-/* Real traffic-light colour HERE and not in the page's own title bar: a door is
-   depicting an actual window, so the dots are the window's. The page is not a
-   window and does not pretend to be one. */
 .door[data-os="macos"] .door-ctl i:nth-child(1) { background: #FF5F57; }
 .door[data-os="macos"] .door-ctl i:nth-child(2) { background: #FEBC2E; }
 .door[data-os="macos"] .door-ctl i:nth-child(3) { background: #28C840; }
@@ -2707,40 +2678,13 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
   content: "\2715"; font: 400 9px/1 var(--ui-sans); color: var(--fg-dim);
 }
 
-/* Door 1 — the shell. Follows the theme rather than being unconditionally
-   black, because GNOME Console does. */
+/* Card 1 — the shell. */
 .term { display: grid; gap: 3px; font: 400 12.5px/1.6 var(--ui-mono); }
 .term-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .term-ps { color: var(--accent); font-weight: 600; margin-right: 6px; }
 .term-line.is-out { color: var(--fg-dim); padding-left: 16px; }
 
-/* Door 2 — the settings list. Fluent separates rows with a hairline and marks
-   the selected one with a fill plus a short accent bar, never with a border. */
-.rows { display: grid; }
-.row {
-  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
-  padding: 8px 10px;
-  border-bottom: var(--stroke) solid var(--rule);
-  border-radius: var(--r-ctl);
-  position: relative;
-}
-.row-head {
-  font-size: calc(11px * var(--ui-scale)); font-weight: 600;
-  letter-spacing: .04em; text-transform: uppercase;
-  color: var(--fg-dim);
-}
-.row .mini { font: 400 11.5px/1 var(--ui-mono); color: var(--fg-dim); white-space: nowrap; }
-.door-actions { display: flex; justify-content: flex-end; padding-top: 12px; }
-.door-btn {
-  padding: var(--btn-pad); border-radius: var(--r-ctl);
-  background: var(--accent); color: var(--accent-fg);
-  font-size: calc(12.5px * var(--ui-scale)); font-weight: 600;
-  box-shadow: var(--mat-rim);
-}
-
-/* Door 3 — the file. Three colours and no more: the key is the accent, the `=`
-   is dim, the value is ink. A six-colour syntax theme here would out-shout the
-   two doors beside it, which is not what this shelf is comparing. */
+/* Cards 2 & 3 — plain-text config (`apps.toml` and dotfiles). */
 .toml { display: grid; gap: 4px; font: 400 12.5px/1.7 var(--ui-mono); }
 .toml-line {
   padding: 3px 8px; border-radius: var(--r-ctl);
@@ -2749,21 +2693,10 @@ pre:hover .copy, .copy:focus-visible { opacity: 1; }
 .t-k { color: var(--accent); }
 .t-o { color: var(--fg-dim); }
 .t-v { color: var(--fg); }
-
-/* The same binding, marked identically in three languages. */
-.row.is-on, .toml-line.is-on { background: var(--accent-soft); }
-.row.is-on::before {
-  content: ""; position: absolute; left: 0; top: 20%; bottom: 20%;
-  width: 3px; border-radius: 2px; background: var(--accent);
-}
+.toml-line.is-on { background: var(--accent-soft); }
 
 .door-cap { margin: 0 0 3px; font-size: 15px; display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
 .door-cap b { font-weight: 620; }
-/* The availability line, and the asymmetry between the three IS the section's
-   second argument: the CLI spans all three machines, the settings window is
-   Windows only, the file is macOS and Windows. That is the whole "which parts
-   work where" story stated as a matrix — with no compositor named anywhere on
-   this page, which is the other thing this redesign set out to stop doing. */
 .door-on {
   font: 500 11px/1 var(--sans);
   letter-spacing: .04em; text-transform: uppercase;

@@ -149,12 +149,15 @@ pub fn starter_template() -> &'static str {
 # Check a file without starting anything:
 #   beckon check "%USERPROFILE%\.config\beckon\apps.toml"
 #
-# Prefer Caps Lock to the three-finger chord below? Tick the Caps Lock box
-# in Settings, or uncomment these two lines -- they are the same setting.
-# Holding Caps then becomes ctrl+super+alt.
+# Prefer Caps Lock to the three-finger chord below? Uncomment these two
+# lines -- holding Caps then becomes ctrl+super+alt:
 #
 #   keyboard.caps = true
 #   keyboard.caps_tap = "capslock"   # or "escape", or "none"
+#
+# Hide the tray / menu bar icon and run completely headless:
+#
+#   tray = false
 
 "ctrl+super+alt+t" = "Terminal"
 "ctrl+super+alt+e" = "File Explorer"
@@ -286,9 +289,9 @@ mod app {
         // 4. `ServeAnyway`: this binary has no console for a parse error and
         // no caller for an exit code, and a modal dialog here is a dead end
         // -- measured on a14 2026-08-11, a broken config left the process
-        // alive with NO tray icon, so the read-only settings window built for
-        // exactly this file could not be reached. It starts instead,
-        // registers nothing, writes nothing, and says so. See `BrokenConfig`.
+        // alive with NO tray icon, so the user could not open the config from
+        // the tray to repair it. It starts instead, registers nothing, writes
+        // nothing, and says so. See `BrokenConfig`.
         if let Err(e) = crate::serve::cmd_serve_app(
             &config,
             Some(log),

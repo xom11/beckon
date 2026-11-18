@@ -27,8 +27,6 @@ pub mod caps_tap;
 mod ffi;
 #[cfg(target_os = "macos")]
 pub mod hotkey;
-#[cfg(target_os = "macos")]
-pub mod settings_window;
 // One `#[cfg]` per `pub mod`, as its own complete pair, and never a `mod`
 // slipped between an existing attribute and the item it gates. That is not
 // style: `c33fcf6` did exactly that in `beckon-windows/src/lib.rs`, leaving
@@ -37,8 +35,6 @@ pub mod settings_window;
 // `cargo check --workspace --all-targets`, unexcluded — runs on this crate
 // too, so a mistake here is caught; the shape below is what keeps it from
 // being made.
-#[cfg(target_os = "macos")]
-pub mod prefs;
 #[cfg(target_os = "macos")]
 pub mod shell;
 #[cfg(target_os = "macos")]
@@ -90,42 +86,6 @@ pub fn window_server_windows() -> Vec<CgWindow> {
 #[cfg(target_os = "macos")]
 pub use ffi::CgWindow;
 
-/// Installed-app display names, for the settings window's App field.
-///
-/// Names only: the window is filling in a Name while someone authors a
-/// binding, which is the job `beckon search` already has. It never focuses
-/// or launches anything, so it has no use for a bundle id or a path.
-#[cfg(target_os = "macos")]
-pub fn installed_app_names() -> Vec<String> {
-    let mut v: Vec<String> = apps::installed_apps().into_iter().map(|a| a.name).collect();
-    // **Plus what is RUNNING, and that is a correctness fix rather than a
-    // convenience.** This list is the settings window's catalog, and
-    // `row_condition` prints `missing` beside any binding whose app is not
-    // in it. The installed scan covers `/Applications`,
-    // `/System/Applications` and `~/Applications`; `Finder` lives in
-    // `/System/Library/CoreServices`, so a perfectly good
-    // `ctrl+super+alt+f = "Finder"` came up flagged while
-    // `beckon resolve Finder` answered
-    // `resolved -- running app localizedName (exact), pid 933`. The window
-    // was calling a working binding broken. Photographed 2026-08-16.
-    //
-    // A running app is resolvable BY DEFINITION -- it is the tier `resolve`
-    // matched on -- so adding it cannot make the catalog over-claim, which
-    // is the failure that would matter. Widening the scan roots instead was
-    // rejected: `/System/Library/CoreServices` is mostly helpers no one can
-    // launch, and it would change what `beckon installed` prints, which is a
-    // different surface with a different job.
-    v.extend(apps::running_apps().into_iter().map(|a| a.name));
-    v.sort();
-    v.dedup();
-    v
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn installed_app_names() -> Vec<String> {
-    Vec::new()
-}
-
 /// Whether the current process is trusted for the Accessibility API.
 /// Used by `beckon doctor`. Returns `false` on non-macOS.
 #[cfg(target_os = "macos")]
@@ -135,6 +95,19 @@ pub fn is_accessibility_trusted() -> bool {
 
 #[cfg(not(target_os = "macos"))]
 pub fn is_accessibility_trusted() -> bool {
+    false
+}
+
+/// Whether the current process has been granted Input Monitoring permission
+/// (`IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`). Required when
+/// `keyboard.caps = true` in `apps.toml`. Used by `beckon doctor`.
+#[cfg(target_os = "macos")]
+pub fn is_input_monitoring_trusted() -> bool {
+    caps_tap::input_monitoring_granted()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_input_monitoring_trusted() -> bool {
     false
 }
 

@@ -91,8 +91,9 @@ beckon check ~/.config/beckon/apps.toml   # is the file valid?
 brew services start beckon                # start it, and start it at login
 ```
 
-A small mark appears in the menu bar. Click it to reload, pause, or open
-Settings.
+A small mark appears in the menu bar. Click it to inspect your shortcuts,
+reload, pause, or open `apps.toml` in your editor (`tray = false` in
+`apps.toml` hides the icon completely).
 
 macOS will ask for **Accessibility** permission the first time — beckon cannot
 move another app's windows without it.
@@ -106,16 +107,15 @@ brew services restart beckon
 
 Until you do, the hotkeys belong to the old build while `beckon --version`
 already reports the new one — two surfaces disagreeing with no error anywhere.
-beckon says so itself: Settings → About, the **Location** row reads *"This file
-changed after beckon started. Restart to run it."*
 
 ### Windows
 
 Open **beckon serve** from the Start Menu. The first run writes a starter
 `apps.toml` and opens it in your editor.
 
-You get a tray icon: right-click to reload, pause, open the log, or open
-**Settings**. Tick **Start with Windows** and it comes back at every logon.
+You get a tray icon: right-click to open `apps.toml`, reload, pause, or open
+the log (`tray = false` hides the icon). Tick **Start with Windows** and it
+comes back at every logon.
 
 ### Linux
 
@@ -179,36 +179,41 @@ beckon check apps.toml   # is my shortcuts file valid?
 `beckon check --resolve apps.toml` goes further and checks each name against
 what is really installed here — handy after copying a config to a new machine.
 
-## Settings window (macOS & Windows)
+## Menu bar & tray (macOS & Windows)
 
-Open it from the menu bar or tray icon.
+`beckon serve` has no GUI window — `apps.toml` is the whole configuration, and
+saving the file reloads hotkeys automatically within a second.
 
-It lists every shortcut with whether it actually registered and whether the app
-name resolves, and lets you add, edit or remove bindings. **Record** captures a
-chord by pressing it. Saving writes the same `apps.toml` you would edit by
-hand — comments and ordering survive, so both routes stay interchangeable.
-
-A row stays quiet when it is fine. When it is not, it says one word:
+By default, a small native menu bar / tray icon gives you a quick status check,
+a pause toggle, and one-click access to open `apps.toml` or the log. On macOS,
+the **Shortcuts** submenu also flags broken bindings directly:
 
 | | |
 |---|---|
 | `in use` | something else already owns that key |
 | `missing` | no app of that name on this machine |
-| `paused` | beckon is paused |
-| `other chord` | that chord does not match your Caps Lock hold |
 
-## Caps Lock as the beckon key (Windows, optional)
+Prefer a completely invisible daemon like `skhd` or `kanata`? Add `tray = false`
+at the top of `apps.toml`.
 
-`Ctrl+Super+Alt+T` is a lot of fingers. Tick the Caps Lock box in Settings and
-holding Caps stands in for that chord — `Caps+T` does what `Ctrl+Super+Alt+T`
-does. Your file does not change, so it still works on a machine without the
-box ticked.
+## Caps Lock as the beckon key (macOS & Windows, optional)
+
+`Ctrl+Super+Alt+T` is a lot of fingers. Add `keyboard.caps = true` to
+`apps.toml` and holding Caps stands in for that chord — `Caps+T` does what
+`Ctrl+Super+Alt+T` does, while every shortcut line in the file stays unchanged:
+
+```toml
+keyboard.caps = true
+keyboard.caps_tap = "capslock"   # or "escape", or "none"
+```
 
 Tapping Caps on its own still toggles Caps Lock, or you can make it Escape.
 
-Two things worth knowing: it does nothing while an elevated window has focus
-(type the full chord there instead), and it will not work alongside another
-remapper that already claims Caps Lock, such as kanata or PowerToys.
+On macOS this requires **Input Monitoring** permission (`beckon doctor` checks
+both Accessibility and Input Monitoring). On Windows it does nothing while an
+elevated window has focus (type the full chord there instead), and on either OS
+it should not be combined with another remapper that already claims Caps Lock,
+such as kanata, Karabiner, or PowerToys.
 
 ## Good to know
 

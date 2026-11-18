@@ -15,8 +15,6 @@ mod notify;
 mod serve;
 mod serve_app;
 mod stable_id;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-mod update;
 
 #[cfg(target_os = "windows")]
 pub use serve_app::serve_app_main;
@@ -166,9 +164,9 @@ enum Command {
         /// launchd already owns the file through `StandardErrorPath`, and a
         /// second writer on the same fd is how a log gets interleaved
         /// garbage. What beckon lacks is not the redirect but the PATH —
-        /// without it the tray's `Open log` and the System page's log row
-        /// cannot be drawn at all, over a file that exists. The Homebrew
-        /// formula passes the same path it gives launchd.
+        /// without it the menu bar's `Open Log` row cannot be drawn at all,
+        /// over a file that exists. The Homebrew formula passes the same path
+        /// it gives launchd.
         ///
         /// Scoped to this subcommand, so it is rejected everywhere else
         /// structurally; it used to need `requires = "serve"`.
@@ -330,8 +328,8 @@ fn run(args: &Args) -> Result<()> {
                 // No `redirect_to_log` here, and that is the whole difference
                 // from the Windows arm above: launchd already owns this file
                 // through `StandardErrorPath`. The path is threaded through
-                // only so the tray's `Open log` and the System page's log row
-                // know where it is -- see the flag's own doc.
+                // only so the menu bar's `Open Log` row knows where it is --
+                // see the flag's own doc.
                 serve::cmd_serve(config, log.clone())
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1191,6 +1189,15 @@ fn cmd_doctor() -> Result<()> {
             );
             println!("    macOS binds the permission to the binary's code signature, so a fresh");
             println!("    `cargo build` may invalidate the grant — re-add after rebuilds.");
+        }
+        println!();
+
+        let input_monitoring = beckon_macos::is_input_monitoring_trusted();
+        if input_monitoring {
+            println!("✅ Input Monitoring permission granted — Caps Lock alias (`keyboard.caps = true`) is available.");
+        } else {
+            println!("ℹ️  Input Monitoring permission not granted (only needed if `keyboard.caps = true` in apps.toml).");
+            println!("    Grant in: System Settings → Privacy & Security → Input Monitoring");
         }
         println!();
 

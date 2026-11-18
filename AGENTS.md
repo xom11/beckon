@@ -14,7 +14,6 @@ looks arbitrary, the note says why — read it before "simplifying" anything.
 | [`docs/notes/linux-backends.md`](docs/notes/linux-backends.md) | sway/i3, X11, GNOME, KDE, Hyprland; the shared algorithm; the Wayland-hotkey survey |
 | [`docs/notes/macos-backend.md`](docs/notes/macos-backend.md) | `[NSApp run]`, the Caps tap, AX/probe traps, hot-path cost |
 | [`docs/notes/windows-backend.md`](docs/notes/windows-backend.md) | window filters, catalog cost, `--log`, `beckon-serve.exe`, the LLHOOK exception |
-| [`docs/notes/settings-window.md`](docs/notes/settings-window.md) | the four doors, the status vocabulary, chord capture, what must not be re-implemented |
 | [`docs/notes/distribution.md`](docs/notes/distribution.md) | `--version` sha, the nix build breakage, packager token, the user's nix hosts |
 | [`docs/notes/site-and-assets.md`](docs/notes/site-and-assets.md) | `site/`, the share card, the README animation recorder |
 
@@ -126,34 +125,29 @@ committed on their own branches. Only the last rule below catches it.
 beckon/
 ├── Cargo.toml                # workspace root
 ├── crates/
-│   ├── beckon-core/          # Backend trait, shared types, settings contract
+│   ├── beckon-core/          # Backend trait, shared types, shortcuts TOML, menu model
 │   ├── beckon-macos/         # NSWorkspace + AX + CGWindowList — phase 2 done
 │   │   └── src/
-│   │       ├── lib.rs        # pick_backend, doctor, is/request_accessibility
+│   │       ├── lib.rs        # pick_backend, doctor, accessibility + input monitoring checks
 │   │       ├── backend.rs    # Backend trait impl: focus / launch / cycle / hide
 │   │       ├── apps.rs       # LaunchServices + .app bundle catalog, Name resolution
 │   │       ├── windows.rs    # AX window list + AXRaise (the step-5a cycle)
 │   │       ├── ffi.rs        # hand-rolled AX / CGWindowList extern "C"
 │   │       ├── hotkey.rs     # RegisterEventHotKey + [NSApp run]
-│   │       ├── caps_tap.rs   # CGEventTap: Caps alias + chord capture
-│   │       ├── tray.rs       # NSStatusItem menu (serve)
-│   │       ├── shell.rs      # /usr/bin/open: open / reveal / https-only URL
-│   │       └── settings_window/   # mod, widgets, keyboard, system, about
+│   │       ├── caps_tap.rs   # CGEventTap: Caps Lock alias
+│   │       ├── tray.rs       # NSStatusItem native menu bar item (serve)
+│   │       └── shell.rs      # /usr/bin/open: open config / log files
 │   ├── beckon-windows/       # Win32 (EnumWindows + COM IShellLinkW) — phase 3 done
-│   │   ├── build.rs          # stamps BECKON_TARGET; embeds examples' manifest
-│   │   ├── examples.rc       # resource script for the probes
 │   │   └── src/
 │   │       ├── lib.rs        # pick_backend, resolve report
 │   │       ├── backend.rs    # Backend trait impl
 │   │       ├── apps.rs       # Start Menu .lnk + AppsFolder catalog
 │   │       ├── window_ops.rs # EnumWindows / SetForegroundWindow / AttachThreadInput
 │   │       ├── hotkey.rs     # RegisterHotKey + tray icon/menu
-│   │       ├── caps_hook.rs  # WH_KEYBOARD_LL: Caps alias + chord capture
+│   │       ├── caps_hook.rs  # WH_KEYBOARD_LL: Caps Lock alias
 │   │       ├── autostart.rs  # HKCU…Run value ("Start with Windows")
-│   │       ├── prefs.rs      # HKCU\Software\beckon: DarkMode/Opacity/CapsView
 │   │       ├── shell.rs      # ShellExecuteW open path + MessageBoxW dialogs
-│   │       ├── logfile.rs    # --log redirect + console detach, size-capped
-│   │       └── settings_window/   # mod, layout, paint, theme, chrome, ids
+│   │       └── logfile.rs    # --log redirect + console detach, size-capped
 │   ├── beckon-linux/         # multi-backend, dispatch by env at runtime
 │   │   └── src/
 │   │       ├── lib.rs        # detect compositor/DE, return Box<dyn Backend>
@@ -187,7 +181,7 @@ beckon/
 │   └── beckon.icns            # macOS APP icon, generated from beckon.ico by
 │                              #   tools/make-app-icon.py — never hand-edited
 ├── extensions/beckon@xom11.github.io/   # GNOME Shell extension (GJS, ESM)
-├── testing/                   # linux_live_test.py, macos_*.sh/.lua, README
+├── testing/                   # linux_live_test.py, macos_*.sh, wlroots_live_probe.sh
 ├── site/                      # landing page (GitHub Pages)
 ├── docs/notes/                # the measurement notes this file points at
 └── docs/superpowers/          # specs, plans, dated measurement sessions
@@ -606,14 +600,13 @@ window state at all and makes a working backend look broken —
 
 **Caps Lock as the beckon key** installs a `WH_KEYBOARD_LL` hook on Windows /
 `CGEventTap` on macOS, reversing the "no event tap, no LLHOOK" decision. The
-reversal is deliberate and narrow, and there are now **two** reasons to hold
-the hook (Caps, and the settings window's chord capture) behind one refcount.
-Caps is an **alias for the configured chord**, never a fifth modifier, so the
-config file is identical with and without it. The rules that must not be
-"simplified" — one-burst injection, injecting only for bound keys, never
-calling `backend.beckon()` from the callback — are in
-[`docs/notes/windows-backend.md`](docs/notes/windows-backend.md) and
-[`docs/notes/macos-backend.md`](docs/notes/macos-backend.md).
+reversal is deliberate and narrow: the hook is installed ONLY while
+`keyboard.caps = true` and `serve` is not paused. Caps is an **alias for the
+configured chord**, never a fifth modifier, so the config file is identical with
+and without it. The rules that must not be "simplified" — one-burst injection,
+injecting only for bound keys, never calling `backend.beckon()` from the
+callback — are in [`docs/notes/windows-backend.md`](docs/notes/windows-backend.md)
+and [`docs/notes/macos-backend.md`](docs/notes/macos-backend.md).
 
 **macOS Accessibility permission** is required to focus arbitrary apps and is
 bound to the codesigned binary identity — every fresh `cargo build` invalidates
@@ -733,58 +726,24 @@ wayland-protocols-wlr = "0.3"    #   Default features ONLY -- `system` /
 
 # resident mode (check / serve)
 toml      = "0.8"    # beckon-core: parse the shortcuts file
-toml_edit = "0.22"   # beckon-core: WRITE it back, keeping comments. Already a
-                     #   transitive dep of toml 0.8, so it costs nothing.
 notify    = "6"      # beckon-cli:  watch it for live reload
 fs4       = "0.8"    # beckon-cli:  flock, one serve per config path
 ```
 
 ### What beckon reads and writes
 
-**The only *file* beckon reads is the `serve` shortcuts TOML** — and, since the
-settings window, the only file it writes. **That write resolves the path before it
-renames onto it**, because a rename onto a symlink replaces the LINK, and both of
-the author's Macs reach this file through one (`mkOutOfStoreSymlink`, itself forced
-by a plain `home.file.source` putting a read-only store path there). Do not
-"simplify" `write_config_text` back to renaming onto the path it was given —
-`saving_through_a_symlink_writes_the_target_and_keeps_the_link` is what fails, and
-only that one. There is no config for
-`beckon <id>` itself and no resolve cache; ids resolve against OS metadata on
-every call.
-
-**There is a second store on Windows, and it is deliberately not a file.** The
-settings window's System page keeps the window's own look — `DarkMode`,
-`Opacity` and **`CapsView`** — as three `REG_DWORD`s in `HKCU\Software\beckon`
-(`crates/beckon-windows/src/prefs.rs`). The count matters: **that table is the
-list of what to DELETE**, so a profile reset built from a two-value list leaves
-the caps fold behind and the Shortcuts list comes back folded on a machine the
-user believes is clean. This split is what makes a theme switch keep working
-when `apps.toml` does not parse — the one state a user most needs a GUI in.
-
-**macOS keeps the same kind of store in `NSUserDefaults`**, domain
-`com.xom11.beckon` (`crates/beckon-macos/src/prefs.rs`): `Opacity` and
-`CapsView`. As on Windows, that list is the reset list — **but it takes both
-domains**, because `prefs.rs` still reads the pre-0.9.18
-`LEGACY_DOMAIN = "beckon"` as a fallback and writes the answer forward, so a
-reset that deletes only `com.xom11.beckon` resurrects the old values on the
-next read.
-
-**One more read, and it is not a config: `current_exe()` and a `stat` of it.**
-The About page shows the RUNNING IMAGE's path and compares its mtime against
-this process's start time. It exists because a recorded failure had every
-obvious surface lying: a watchdog-started beckon on a14 ran the 0.8.0 image for
-three hours while `beckon --version` said 0.9.0 and scoop's `current` junction
-pointed at 0.9.0. The path is deliberately **not** resolved through
-`GetFinalPathNameByHandleW` — resolving reports today's junction target, which
-is the surface that lied.
+**The only *file* beckon reads is the `serve` shortcuts TOML (`apps.toml`).**
+beckon never modifies an existing `apps.toml` (only `beckon-serve.exe` writes a
+starter template on first run when the file does not exist at all). There is no
+config for `beckon <id>` itself, no preferences store in the registry or
+`NSUserDefaults`, no outbound network request, and no resolve cache; ids resolve
+against OS metadata on every call.
 
 **The config path is canonicalised once and then SIMPLIFIED**, in
 `cmd_serve_app`. `Path::canonicalize` on Windows is
 `GetFinalPathNameByHandleW` and always returns `\\?\C:\…`; that spelling
-reached the startup log, the `Open config file` tooltip, the System page's
-config row — where `SS_PATHELLIPSIS` elides from the MIDDLE, so the prefix
-never shortens — and, less visibly, `ShellExecuteW` and `explorer.exe /select,`,
-the classic non-acceptors of it. `beckon_core::paths::plain` undoes it at the
+reached the startup log, the `Open config file` tooltip, and `ShellExecuteW`,
+which is documented not to take it. `beckon_core::paths::plain` undoes it at the
 origin, conservatively: a volume GUID path, a UNC with no share, or any
 component Win32 would rewrite once unprotected (trailing dot or space, `.`/`..`,
 a DOS device name) keeps the prefix. **Deliberately NOT applied inside
@@ -793,23 +752,12 @@ hashes the result into the lock file's NAME — renaming the lock would let an
 old and a new binary both serve. Long paths are unaffected: the manifest
 declares `longPathAware`.
 
-**As of the check-for-updates feature, beckon also makes exactly one outbound
-NETWORK request** — never a file read or write — and only on a person
-pressing `Check for updates`, from `serve`'s settings window: the About
-page's own button, or the tray row, which opens the window (landing on
-About) and runs the SAME check rather than firing one of its own. There is
-no background poll, no request on startup, and nothing downloaded:
-`beckon_cli::update` spawns the system `curl` against
-`github.com/.../releases/latest`, reads the redirect's tag out of the
-`Location` header, and compares it to the running version. See
-`docs/notes/distribution.md` for the mechanism and the measurements behind
-it.
-
 ## Out of scope (explicitly)
 
 - **Config for the hot path / app aliases.** `beckon <id>` resolves against OS
   metadata directly. No `[apps.claude]` mapping, no resolve cache. The `serve`
-  TOML is a *hotkey table*, not a place to alias ids.
+  TOML is a *hotkey table* (plus `keyboard.caps` and `tray = false`), not a
+  place to alias ids.
 - **Global hotkey registration on Linux** — the compositor / WM dotfile owns
   it. Out of scope by choice, not for lack of an API.
 - **Fuzzy app launchers à la Rofi/Alfred** — beckon is for *known* hotkey-bound
@@ -818,56 +766,17 @@ it.
 - **Window tiling / layout management** — beckon only focuses and launches,
   never moves or resizes.
 - **PWA install helper** — the user installs PWAs manually via the browser.
-- **Self-update and background update polling.** The Check for updates button
-  (§ "What beckon reads and writes" above) only ever reports; it never
-  downloads or replaces anything, and there is no timer or CLI verb that
-  checks on its own. Reason: the running binary lives in a read-only nix
-  store or under a package manager's own junction (scoop's `current`,
-  Homebrew's Cellar symlink), and a process that overwrites itself there
-  breaks the install the same package manager is supposed to own.
-- **GUI / TUI — CLI only, with one exception**, which is `serve`'s control
-  surface rather than a launcher: the tray context menu (reload, pause, open
-  the log, toggle autostart, quit), and, on macOS, the whole table as a
-  `Shortcuts` submenu plus a `Needs attention` section that exists only while
-  a binding is broken -- every row opens Settings on its binding, never the
-  app -- and the settings window it opens. Four doors
-  on both macOS and Windows, against one `beckon_core::settings` contract, so
-  **the place to change a decision is `beckon-core`, never a window**.
-
-  The window shows the shortcut table with per-row registration state, edits
-  it, writes the same TOML back through `toml_edit` so hand edits and window
-  edits stay interchangeable, and lists installed apps only to fill in a Name
-  while authoring a binding. **Nothing in the shortcut table focuses or
-  launches anything.** It also pauses/resumes hotkeys, reloads the config,
-  toggles autostart, sets its own theme, opens or reveals files, copies three
-  About fields and opens three `https://` links.
-
-  Four rules that are load-bearing and cheap to break:
-
-  - **`Pause shortcuts` and `Reload` call `serve.rs`'s own `set_paused` and
-    `reload` through `SettingsCommand`, and must never be re-implemented.**
-    `set_paused` does five ordered things, one of which is CLEARING the
-    registration map — and that cleared map is what makes the `paused` status
-    word load-bearing on every row.
-  - **A capability this process does not have is omitted, not greyed** — the
-    reasoning the tray already uses. `Start with Windows` under
-    `beckon.exe serve`, the log row without `--log`, `Start at login` on macOS.
-    All decided in `beckon_core::settings::system_state`.
-  - **The status vocabulary is four words and a healthy row says nothing**:
-    `paused` > `in use` > `missing` > `other chord`. One function,
-    `row_condition`, produces the list flag AND the editor's notes, and derives
-    `mark` at the end — so the cell and the note cannot disagree by
-    construction rather than by discipline.
-  - **The availability probe asks the OS last**, from `probe_plan`: parse, the
-    F12 guard, the row's own chord, other rows, the row's saved chord, and only
-    then `RegisterHotKey`. Everything before the last step is a fact the OS
-    cannot report.
-
-  Everything else — the shape, the filter's app-column-only rule, chord
-  capture and its hook-lifetime rules, the geometry derivation — is in
-  [`docs/notes/settings-window.md`](docs/notes/settings-window.md). Design:
-  `docs/superpowers/specs/2026-08-11-windows-settings-window-and-caps-design.md`
-  and `2026-08-14-four-doors-settings-window-design.md`.
+- **Self-update and update checks** — package managers (`brew`, `scoop`, `nix`,
+  `cargo`) own updates.
+- **GUI / TUI windows** — CLI and plain-text TOML only, like Hammerspoon,
+  AeroSpace, and AutoHotkey. The previous 4-tab Settings window (`~45k` lines
+  across Win32 GDI, AppKit, chord capture, and `toml_edit` write-back) was
+  deliberately removed. The sole native UI surface is `serve`'s optional OS
+  menu bar / system tray context menu (`Open Config`, `Reload`, `Open Log`,
+  `Pause`, `Start with Windows`, `Quit`, plus macOS's read-only `Shortcuts` /
+  `Needs attention` menu rows — clicking any binding row opens `apps.toml`,
+  never launches an app), which itself can be disabled with `tray = false` in
+  `apps.toml`.
 
 ## Distribution
 
@@ -916,11 +825,11 @@ and neither re-typesets the letter — the `b` in the `.ico` is the drawn brand
 letterform, not a font glyph, so both tools lift it as an alpha mask by
 luminance. Re-typesetting would put a third `b` in the program.
 
-The two macOS files share **one corner ratio, 0.2353** — `cornerRadius(8.0)` on
-the About door's 34 pt tile — so the app icon, the menu bar mark and the settings
-window all carry the same shape. The `.icns` additionally sits on Apple's grid
-(body 824 of a 1024 canvas): `beckon.ico` is full-bleed, which is right on
-Windows where the shell applies a shape and wrong here where nothing does.
+The two macOS files share **one corner ratio, 0.2353** (`8.0 / 34.0`), so the
+app icon and the menu bar mark carry the same shape. The `.icns` additionally
+sits on Apple's grid (body 824 of a 1024 canvas): `beckon.ico` is full-bleed,
+which is right on Windows where the shell applies a shape and wrong here where
+nothing does.
 
 **The README animation goes stale in silence.** `assets/five-answers.webp` is a
 photograph of `site/#how`, and nothing in CI compares the two — re-run
@@ -939,16 +848,16 @@ Detail for all of the above:
 ## Testing
 
 Unit tests run on all three CI jobs and are where every pure decision belongs —
-that is the whole reason `beckon_core::settings`, `caps`, `capture`,
-`page_plan` and `theme` are in `beckon-core` and not in a `cfg`-gated module.
+that is the whole reason `beckon_core::caps`, `menu`, `grant`, `shortcuts`, and
+`certainty` are in `beckon-core` and not in a `cfg`-gated module.
 
 Three layers exist that unit tests structurally cannot reach:
 
 | layer | what only it can catch |
 |---|---|
 | `testing/linux_live_test.py` | `.desktop` resolution against a real machine, the class a toolkit actually advertises, whether a focus/minimize request is honoured. All five backends pass 19/19. **It kills GUI apps to build its preconditions — run it in a VM.** |
-| `crates/beckon-windows/examples/` | a tray icon, a message loop, a keyboard hook. **SSH to a14 lands in session 0**, which has no desktop, so every result there is a confident false negative — go through a scheduled task in session 1. |
-| `testing/macos_*.sh` / `macos_settings_drive.lua` | the real window driven by real events. `sudo launchctl asuser` draws, Hammerspoon injects and reads the AX tree. |
+| `crates/beckon-windows/examples/` | a message loop and a keyboard hook (`caps_probe`, `caps_live`). **SSH to a14 lands in session 0**, which has no desktop, so every result there is a confident false negative — go through a scheduled task in session 1. |
+| `testing/macos_*.sh` | menu bar status item (`macos_tray_probe.sh`), hotkey delivery (`macos_hotkey_loop_probe.sh`), and Caps tap lock ownership (`macos_caps_one_owner.sh`, `macos_two_caps_taps.sh`). |
 
 **Always run a control.** A blind detector and a clean result print the same
 thing, and this repository has lost whole sessions to that shape more than once
@@ -986,8 +895,9 @@ All three phases are done and deployed:
   and wlroots has its own `testing/wlroots_live_probe.sh` (8/8 on labwc
   0.20.2), which runs in a nested headless compositor and is safe on a
   machine somebody is using.
-- **macOS** — full focus / launch / cycle / toggle / hide, `serve` with tray and
-  four settings doors, Caps tap. Deployed on `airm3` via Hammerspoon.
+- **macOS** — full focus / launch / cycle / toggle / hide, `serve` with menu bar
+  icon + native menu (`Open Config`, `Shortcuts`, `Reload`, `Pause`, `Quit`) and
+  Caps tap. Deployed on `airm3`.
 - **Windows** — same surface plus `beckon-serve.exe`, Caps hook, autostart.
   Tested on ARM64 Windows 11.
 

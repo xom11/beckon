@@ -16,31 +16,14 @@
 //!     `on_hotkey` is still on the stack.
 //!
 //! The invariant this file enforces because of the Windows case: **no
-//! `RefCell` borrow may be held across a call to `backend.beckon()`.** The
-//! backend therefore lives OUTSIDE the `RefCell` (a separate `Rc`, cloned
-//! into the hotkey closure), and `on_hotkey` takes only a short borrow to
-//! clone what it needs, releasing it before calling the backend. Holding
-//! `state.borrow()` across that call would let a reentrant `reload()` call
-//! `state.borrow_mut()` and panic (`BorrowMutError`) while unwinding across
-//! an `extern "system"` boundary — which aborts the whole process, not just
-//! the callback. Harmless-but-cheap to apply on macOS too, since nothing
-//! there ever re-enters.
-//!
-//! `reload()` itself is *not* restructured the same way: it holds
-//! `mgr.borrow_mut()` and `state.borrow()`/`borrow_mut()` live across
-//! `register_all()`. That is sound only because of a SECOND guarantee this
-//! file does not itself provide: `beckon_windows::hotkey::dispatch_tick`
-//! takes `TICK_CBS` out (`mem::take`) before invoking any tick callback, so
-//! a nested/reentrant tick delivered while `reload()` is still running sees
-//! an *empty* callback table and is a no-op rather than a second concurrent
-//! call into `reload()`. That makes tick delivery — and therefore
-//! `reload()` — effectively non-reentrant on Windows, unlike hotkey
-//! delivery. This is a cross-crate dependency: `beckon_windows::hotkey`
-//! currently documents that take-then-run behavior as a "limitation," but
-//! for this file it is load-bearing. Changing it there (e.g. re-adding a
-//! tick to the live table before running callbacks) would reopen the same
-//! class of bug this module doc describes above, at `reload()` instead of
-//! `on_hotkey`.
+//! `RefCell` borrow may be held across a call to `backend.beckon()` or
+//! `shell::open_path`.** The backend therefore lives OUTSIDE the `RefCell`
+//! (a separate `Rc`, cloned into the hotkey closure), and `on_hotkey` takes
+//! only a short borrow to clone what it needs, releasing it before calling
+//! the backend. Holding `state.borrow()` across that call would let a
+//! reentrant `reload()` call `state.borrow_mut()` and panic
+//! (`BorrowMutError`) while unwinding across an `extern "system"` boundary —
+//! which aborts the whole process, not just the callback.
 
 use anyhow::{anyhow, Context, Result};
 #[cfg(any(target_os = "macos", test))]
@@ -50,12 +33,8 @@ use beckon_core::shortcuts::{parse_config, KeyboardConfig, Shortcut};
 use beckon_core::Backend;
 #[cfg(target_os = "macos")]
 use beckon_macos::hotkey;
-#[cfg(target_os = "macos")]
-use beckon_macos::settings_window as swin;
 #[cfg(target_os = "windows")]
 use beckon_windows::hotkey;
-#[cfg(target_os = "windows")]
-use beckon_windows::settings_window as swin;
 use hotkey::HotkeyManager;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -63,10 +42,6 @@ use std::rc::Rc;
 
 /// Publish a one-line status where the user can see it without reading the
 /// log: the tray tooltip on Windows, the menu bar item's tooltip on macOS.
-///
-/// On both, the same string is also the menu's first row, which is where it
-/// is actually readable. Linux has no resident mode -- the compositor binds
-/// the keys -- so there is nowhere to put it and nothing to put it for.
 #[cfg(target_os = "windows")]
 fn set_tray_status(text: &str) {
     hotkey::set_status(text);
@@ -78,34 +53,16 @@ fn set_tray_status(text: &str) {
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn set_tray_status(_text: &str) {}
 
-/// Dim the status item's icon while paused (spec §3.3), alongside the
-/// header's own `paused` word. macOS only: Windows' tray icon carries no
-/// such state.
 #[cfg(target_os = "macos")]
-fn set_tray_dimmed(paused: bool) {
-    beckon_macos::tray::set_dimmed(paused);
+fn set_tray_dimmed(dimmed: bool) {
+    beckon_macos::tray::set_dimmed(dimmed);
 }
 #[cfg(not(target_os = "macos"))]
-fn set_tray_dimmed(_paused: bool) {}
+fn set_tray_dimmed(_dimmed: bool) {}
 
 /// Capability + values needed to offer "Start with Windows", present only
 /// when this process is one whose own path is safe to bake into the Run
-/// key.
-///
-/// `ServeState::autostart` is `None` on the CLI path (`beckon.exe serve`):
-/// `std::env::current_exe()` there resolves to `beckon.exe`, which has no
-/// bare `serve`-with-no-argument form, so a Run value pointing at it would
-/// exit via `arg_required_else_help` at next logon and never start
-/// anything. It is `Some` only from `serve_app_main` (`beckon-serve.exe`),
-/// which knows its own exe is a valid target. The tray menu reads
-/// `Option::is_some()` to decide whether to show the row at all — see
-/// `build_entries` — never to decide whether it's *ticked*, which comes
-/// from `autostart::is_enabled()` regardless.
-///
-/// `config`/`log` are `Some` only when they differ from the defaults —
-/// see `run_key_command_line`. Set on every platform (`cmd_serve_app`
-/// takes it unconditionally) but only read by the Windows-only tray menu
-/// below, so non-Windows builds see the whole type as write-only.
+/// key (`beckon-serve.exe`).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct AutostartCapability {
     pub config: Option<PathBuf>,
@@ -113,80 +70,33 @@ pub struct AutostartCapability {
 }
 
 /// What a front door does when the config file reads but does not parse.
-///
-/// **The two front doors answer this differently on purpose.**
-///
-/// `beckon.exe serve` (`Refuse`) keeps the behaviour scripts already depend
-/// on: the parse error goes to stderr, which it has, and the process exits
-/// non-zero, which its caller can read. A Scheduled Task, a CI job or a shell
-/// that today distinguishes "config broken" by that exit code must keep
-/// doing so -- and `beckon check` is unaffected either way. Silently turning
-/// that into a process that runs forever would be a breaking change nobody
-/// asked for.
-///
-/// `beckon-serve.exe` (`ServeAnyway`) has neither: no console for the error
-/// and no caller for the code. Measured on a14 2026-08-11, a broken config
-/// there ended in a modal dialog with **no tray icon at all** -- which
-/// stranded the one thing built for this situation, the read-only settings
-/// window, behind a tray that was never installed. So it starts, registers
-/// nothing, writes nothing, and says what is wrong in the tray and in the
-/// window.
-///
-/// Both refuse a file that cannot be READ (deleted, locked, denied), on both
-/// front doors: `load_settings_model` returns `Err` for that too, so
-/// `open_settings` would refuse to open and a tray installed for its sake
-/// could do nothing at all.
-///
-/// **CORRECTED: macOS takes both arms, chosen at run time.** This doc used to
-/// end *"macOS `serve` runs under launchd with no tray and no settings window,
-/// so there would be nothing for it to rescue"*. True when written; false from
-/// `db4aabc`, which gave that platform a tray and four working doors. macOS
-/// has one binary where Windows has two, so it cannot split the decision by
-/// subsystem -- it asks whether anyone is watching stderr instead. See
-/// `macos_broken_config`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrokenConfig {
     Refuse,
-    /// Constructed by `serve_app_main` (`beckon-serve.exe`, Windows-only) and
-    /// by `cmd_serve` on macOS when stderr is not a terminal -- so the Linux
-    /// CI job is the only one that sees a variant nothing builds. The decision
-    /// it selects is tested on all three jobs; only the callers are
-    /// platform-bound.
     #[cfg_attr(not(any(target_os = "windows", target_os = "macos")), allow(dead_code))]
     ServeAnyway,
 }
 
 /// What `cmd_serve_app` starts with.
-///
-/// Split out of `cmd_serve_app` so the decision is reachable from a test:
-/// `cmd_serve_app` itself installs a hotkey manager and never returns, the
-/// same reason `acquire_lock` is its own function.
 struct Startup {
     shortcuts: Vec<Shortcut>,
     keyboard: KeyboardConfig,
-    /// The parser's own message, when the file did not parse. `Some` means
-    /// the two fields above are empty defaults and nothing will be
-    /// registered -- there is no other way to reach that combination.
+    tray: bool,
     broken: Option<String>,
 }
 
 /// Read the config text into a startup plan, or refuse.
 ///
-/// `Err` carries the parser's message unprefixed, so the caller can put the
-/// path in front of it and produce byte-for-byte the message `beckon serve`
-/// has always printed for a broken file.
-///
-/// **The `ServeAnyway` arm discards the parsed keyboard block along with the
-/// shortcuts**, and that is not laziness: a file that does not parse has no
-/// trustworthy `keyboard.caps`, and `sync_caps_hook` reads exactly that field
-/// to decide whether to install a low-level keyboard hook. Defaults keep the
-/// hook off, which is the only safe reading of a file beckon could not
-/// understand.
+/// The `ServeAnyway` arm discards the parsed keyboard block along with the
+/// shortcuts and forces `tray: true`, so a broken file never installs a
+/// low-level keyboard hook and always keeps the tray icon reachable to open
+/// and repair the config.
 fn plan_startup(text: &str, on_broken: BrokenConfig) -> Result<Startup, String> {
     match parse_config(text) {
         Ok(cfg) => Ok(Startup {
             shortcuts: cfg.shortcuts,
             keyboard: cfg.keyboard,
+            tray: cfg.tray,
             broken: None,
         }),
         Err(e) => match on_broken {
@@ -194,258 +104,46 @@ fn plan_startup(text: &str, on_broken: BrokenConfig) -> Result<Startup, String> 
             BrokenConfig::ServeAnyway => Ok(Startup {
                 shortcuts: Vec::new(),
                 keyboard: KeyboardConfig::default(),
+                tray: true,
                 broken: Some(e),
             }),
         },
     }
 }
 
-/// The status phrase while the config file does not parse.
-///
-/// Built out of the same pieces as every other status line -- `set_paused`'s
-/// "paused (N shortcuts)" is the shape, and the bracket is
-/// `registration_phrase`'s own words -- so the tray tooltip and the menu head
-/// say "beckon - cannot read the config (0 shortcuts registered)" with no new
-/// vocabulary to learn and no claim that anything is running.
-///
-/// ASCII, like every `serve` log line: Windows PowerShell 5.1's
-/// `Get-Content` defaults to ANSI.
+/// The status phrase while the config file does not parse. ASCII, like every
+/// `serve` log line: Windows PowerShell 5.1's `Get-Content` defaults to ANSI.
 fn unreadable_phrase() -> String {
     format!("cannot read the config ({})", registration_phrase(0, 0))
 }
 
 struct ServeState {
     shortcuts: Vec<Shortcut>,
-    /// The `keyboard` block. `caps`/`caps_tap`/`caps_hold` today. Both
-    /// windowed platforms act on all three — `sync_caps_hook` is written
-    /// once and feeds `caps`, `caps_tap` and `caps_hold` to the Win32 hook
-    /// and the macOS event tap alike. macOS additionally READS
-    /// `caps`/`caps_hold` a second time, from the menu bar's build closure
-    /// (`caps_view_fold`). The file is parsed identically everywhere so one
-    /// config can travel between machines.
     keyboard: KeyboardConfig,
+    tray: bool,
     config: PathBuf,
-    /// Hotkeys deliberately unregistered from the tray menu. A reload while
-    /// paused updates the table but must not re-register — a file save is
-    /// not a request to un-pause.
     paused: bool,
-    /// Where stderr went, when it went to a file. `None` leaves the menu's
-    /// "Open log" greyed out rather than lying, and is what the settings
-    /// window's `Paths::log` carries so the System page can omit the row
-    /// instead of showing a path that does not exist. Set on every platform
-    /// that compiles this module (`cmd_serve_app` takes it unconditionally)
-    /// and read on both of them: by the Windows-only tray menu below, and by
-    /// `open_settings`, which the two windowed platforms share.
-    ///
-    /// **CORRECTED 2026-08-14: no build of this struct sees the field as
-    /// write-only.** The paragraph above used to end "-- so a Linux build
-    /// sees it as write-only", and the field carried
-    /// `#[cfg_attr(not(any(target_os = "windows", target_os = "macos")),
-    /// allow(dead_code))]` to match. The shape looked right because every
-    /// neighbouring field here really is write-only somewhere and carries
-    /// the same attribute one platform narrower -- `keyboard` above is read
-    /// only by `sync_caps_hook`, and that read sits under
-    /// `#[cfg(target_os = "windows")]`, so on macOS the field genuinely is
-    /// written and never read. `log` is not in that position, on either
-    /// count. `lib.rs:12-13` is
-    /// `#[cfg(any(target_os = "macos", target_os = "windows"))] mod serve;`,
-    /// so a Linux build never compiles `ServeState` at all and the
-    /// `not(any(..))` predicate was unsatisfiable everywhere the field
-    /// exists; and `open_settings` is gated `any(windows, macos)` and reads
-    /// `s.log` when it builds `Paths`, so the field is live on both
-    /// platforms that do compile it. Falsified by deleting the attribute and
-    /// running `cargo clippy -p beckon-cli --all-targets -- -D warnings` on
-    /// macOS, which stays clean. That covers the macOS arm only -- there is
-    /// no Windows host here -- but the Windows arm is the one with the extra
-    /// reads (`install_tray_menu`, below), so it cannot be the arm that
-    /// warns.
     /// The flock that says this process owns Caps on this machine, held for
     /// exactly as long as the tap is installed.
-    ///
-    /// **A tap is machine-global and taps stack**, so two serves on two
-    /// configs both installed one and the LAST one in swallowed every Caps
-    /// event -- measured, with the install order reversed to show it. Both
-    /// logged `caps event tap active`, so neither said anything, and a user
-    /// with two serves running just saw Caps stop working.
-    ///
-    /// `None` means either "Caps is off here" or "another beckon owns it";
-    /// `sync_caps_hook` distinguishes them on the line it prints, which is
-    /// the half that actually fixes the defect.
     #[cfg(target_os = "macos")]
     caps_owner: Option<std::fs::File>,
     log: Option<PathBuf>,
-    /// The most recent `registration_phrase`, so the menu can show it
-    /// without re-running a registration pass.
     last_phrase: String,
-    /// Canonical combo -> last registration outcome. Read by the settings
-    /// window so each row can show whether its key actually took, and by the
-    /// macOS menu's build closure (`binding_rows`), for the same `in use`
-    /// word. Cleared when paused, because nothing is registered then and a
-    /// stale tick would claim otherwise. Set on every platform
-    /// (`register_all` is shared) and read on both windowed platforms.
     registered: std::collections::HashMap<String, Result<(), String>>,
-    /// See `AutostartCapability`.
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     autostart: Option<AutostartCapability>,
-    /// The settings window's model, present only while it is open. The
-    /// window itself is stateless about content — it draws whatever
-    /// `control_state` projects out of this.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    settings: Option<beckon_core::settings::Model>,
-    /// The window is open against a file that did not parse: the
-    /// explanation, already in the window's own vocabulary
-    /// (`explain_unreadable`). Computed once, where both the file text and
-    /// the parser's message are in hand, because the window is pushed on
-    /// every tick and re-deriving it there would re-read the file.
-    ///
-    /// **This and `settings` are one enum written as two fields**, and only
-    /// three of the four combinations exist:
-    ///
-    /// | `settings` | this | meaning |
-    /// |---|---|---|
-    /// | `None` | `None` | the window is closed |
-    /// | `Some` | `None` | open, editable |
-    /// | `None` | `Some` | open, read only |
-    /// | `Some` | `Some` | impossible -- `load_settings_model` sets both |
-    ///
-    /// Two fields rather than an enum because every callback in
-    /// `open_settings` reaches for `settings.as_mut()`, and a real enum
-    /// would put a match in each of them for a variant none of them can act
-    /// on.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    settings_unreadable: Option<Vec<beckon_core::settings::Note>>,
-    /// Installed app names for the window's combo box. `None` until the
-    /// worker thread reports, which is NOT the same as "nothing installed"
-    /// — `control_state` renders the two differently on purpose.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    catalog: Option<Vec<String>>,
-    /// The file changed underneath an unsaved window. Shows the banner; the
-    /// user chooses, beckon does not.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    external_change: bool,
-    /// The last availability probe, and the chord it was about. `None` until
-    /// one runs -- not-yet-probed is not the same as free -- and `None` again
-    /// after a save, because `register_all` is the authority from that moment
-    /// on and the window already hears its answer through `registered`; also
-    /// `None` again the moment the selection moves to a different row, because
-    /// a verdict is about the row it was requested for and carrying it to
-    /// another row can only ever be wrong -- see `Callbacks::on_select`.
-    ///
-    /// Written by `probe_shortcut`, read by `refresh_settings`, and only ever
-    /// on Windows: the settings window is the one thing that asks.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    probe: Option<beckon_core::settings::ProbeResult>,
-    /// The door the settings window was last showing, so the next open lands
-    /// where the user left off.
-    ///
-    /// **Outlives the window on purpose.** It is not part of the window's own
-    /// state -- the window is closed most of the time and forgets everything
-    /// when it is -- and it is not in the config file either: which page
-    /// someone was reading is a session fact, not a setting, and writing it
-    /// to disk would mark a file dirty for a mouse click.
-    ///
-    /// `Page::default()` is `Shortcuts`, which is where a fresh `serve`
-    /// opens. Written by `SettingsCommand::ShowPage`, read by
-    /// `open_settings`; both are gated `any(windows, macos)`, and macOS
-    /// currently discards the page it is handed, so this is live on Windows
-    /// and merely honest on macOS.
-    ///
-    /// **It is a MIRROR, and it is allowed to lag the window.** `ShowPage`
-    /// arrives through `with_cb`, which is take-then-run: a command raised
-    /// while the callbacks are out of the slot is silently dropped, and they
-    /// are out whenever a callback is running. `shell::ask_save` and
-    /// `shell::error_dialog` call `MessageBoxW` with **no owner**
-    /// (`shell.rs`), so the settings window stays enabled behind the box and a
-    /// pill click there is dispatched from inside `on_close_request` -- one
-    /// `ShowPage` raised into an empty slot, one door the mirror never hears
-    /// about.
-    ///
-    /// **CORRECTED 2026-08-14.** This read "it is also the CURRENT door while
-    /// the window is open, not only the last one, and `apply_settings` depends
-    /// on that", and named `apply_settings` as a second writer. Both stopped
-    /// being true when `save_press` was reverted: nothing reads this while the
-    /// window is up any more, `SettingsCommand::ShowPage` is the only writer
-    /// again, and the whole consequence of a dropped one is that the NEXT open
-    /// lands on the door before last. Left as a mirror rather than re-derived
-    /// from the window on demand, because a session's last-read page is worth
-    /// exactly that much. Anything that starts making decisions from this
-    /// field has to ask the window instead.
-    settings_page: beckon_core::settings::Page,
-    /// The update check's answer, for as long as this process runs. Session
-    /// state on purpose -- nothing persists it and nothing refreshes it, so a
-    /// reopened window starts at `Idle` again.
-    update: beckon_core::update::UpdateState,
-    /// Set by the tray's `Check for updates...` row and consumed by
-    /// `open_settings`, which is what makes that row land on About with a
-    /// check already running. Not set by the About page's own button, which
-    /// reaches `check_for_updates` directly.
-    pending_update_check: bool,
-    /// Each binding's resolution, for the macOS menu's names, icons and its
-    /// `missing` word (spec §3.5). Filled by `refresh_menu_rows` at startup
-    /// and on every reload -- **never when the menu opens**.
     #[cfg(target_os = "macos")]
     menu_rows: Vec<Resolved>,
-    /// A menu row asked Settings to open on this binding: an index into
-    /// `shortcuts`. Consumed by `open_settings`, like `pending_update_check`.
-    pending_select: Option<usize>,
-    /// Why the last auto-save did not write, or `None` when it did.
-    ///
-    /// **Scoped to ONE model, not to the process.** It answers "why did the
-    /// last write of the model currently in `settings` not happen", so
-    /// every path that replaces that model clears it -- `load_settings_model`,
-    /// `forget_settings` and `reload_settings_from_disk`. Read by the
-    /// footer's readout (`saved_readout`) and by `close_request`, whose
-    /// refusal is the only prompt auto-save leaves standing.
-    ///
-    /// **Four write sites in two functions**, and naming them is the point:
-    /// `autosave` sets it once at its end, from the plan's outcome, so every
-    /// path through it gives one answer; `undo_pressed` sets it directly on
-    /// each of its three exits (`FileMoved`, `CannotWrite`, and `None` on a
-    /// successful pop). **This doc used to say "written by `autosave`
-    /// alone", which stopped being true in Task 8** -- and the cost was not
-    /// just a wrong sentence. Both writers need a DIRTY model, so a reader
-    /// who believed the single-writer claim also believed the field
-    /// resynchronises on every edit and had no reason to check what happens
-    /// when the model goes clean. That is exactly how the stale-footer
-    /// defect (I1) survived a review that traced every reachable path.
-    ///
-    /// macOS only, and structurally so: Windows keeps its command bar and
-    /// its own Save, so nothing there ever writes without being asked and
-    /// there is no refusal to record.
-    #[cfg(target_os = "macos")]
-    last_not_saved: Option<beckon_core::settings::NotSaved>,
 }
 
-/// Take the single-instance lock, preserving the error's type.
-///
-/// Plain `?`, never `anyhow!(e)`: the error must reach `main` as a typed
-/// `AcquireError` so `is_expected` can recognise the healthy "already
-/// running" refusal and stay quiet. Flattening it to a message would put
-/// every watchdog tick back in the notification centre — silently, since
-/// nothing else in the program would change. `lock_error_keeps_its_type`
-/// below is what stops that. (Wrapping with `.context()` is fine; anyhow
-/// downcasts through context layers. Only stringifying breaks it.)
-///
-/// Extracted from `cmd_serve` purely so a test can reach it: `cmd_serve`
-/// itself goes on to install a hotkey manager and never returns.
+/// Take the single-instance lock, preserving the error's type so
+/// `is_expected` can recognise `AcquireError::AlreadyRunning`.
 fn acquire_lock(config: &Path) -> Result<std::fs::File> {
     Ok(crate::lockfile::acquire(config)?)
 }
 
 /// Which `BrokenConfig` the one macOS front door takes, from whether anyone
 /// is watching its stderr.
-///
-/// **Pure, and uncompiled-out on purpose.** The decision is testable on all
-/// three CI jobs; only the caller that samples the terminal is platform-bound.
-/// Same shape as `plan_startup`, and the same reason.
-///
-/// The `allow` is the price of that, and it is the same annotation
-/// `ServeState::log` carries for the same reason: off macOS the only caller is
-/// `mod tests`, so a `--all-targets` clippy is happy while the plain `(lib)`
-/// build is not. **A gate that runs only on this host cannot see that** — the
-/// function is live here — which is why it went out red. `cargo clippy
-/// --target aarch64-pc-windows-msvc -p beckon-cli` reproduces it from macOS in
-/// seconds.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn macos_broken_config(stderr_is_terminal: bool) -> BrokenConfig {
     if stderr_is_terminal {
@@ -455,16 +153,6 @@ pub(crate) fn macos_broken_config(stderr_is_terminal: bool) -> BrokenConfig {
     }
 }
 
-/// What `cmd_serve` does with a file that does not parse.
-///
-/// **Windows keeps `Refuse` unconditionally**, because there the question is
-/// already answered by which binary is running: `beckon.exe serve` is
-/// console-subsystem and `beckon-serve.exe` is not. Sampling the terminal
-/// there would let a redirect quietly change a documented exit code.
-///
-/// macOS has one binary for both jobs, so it asks the same question the only
-/// way it can -- see `macos_broken_config`, and `notify.rs`, which decides
-/// whether to post a desktop notification off exactly this signal.
 #[cfg(target_os = "macos")]
 fn front_door_broken_config() -> BrokenConfig {
     macos_broken_config(std::io::IsTerminal::is_terminal(&std::io::stderr()))
@@ -481,12 +169,6 @@ pub fn cmd_serve(config: &Path, log: Option<PathBuf>) -> Result<()> {
 
 /// Shared implementation for both Windows front doors (`cmd_serve`, the CLI
 /// path, and `serve_app_main`, the tray app) and for macOS `serve`.
-///
-/// `log` tells the tray menu's "Open log" where to point. `autostart` is
-/// `None` when this process cannot meaningfully offer "Start with
-/// Windows" — always true on macOS, and true for the CLI path on Windows
-/// too — or `Some` with the Run-value overrides otherwise. See
-/// `AutostartCapability`.
 pub fn cmd_serve_app(
     config: &Path,
     log: Option<PathBuf>,
@@ -494,20 +176,6 @@ pub fn cmd_serve_app(
     on_broken: BrokenConfig,
 ) -> Result<()> {
     let _lock = acquire_lock(config)?;
-    // `canonicalize` is what makes every later consumer agree about which file
-    // this is; `paths::plain` is what keeps the answer in a spelling a person
-    // and the shell both accept. On Windows `canonicalize` is
-    // `GetFinalPathNameByHandleW` and always returns `\\?\C:\...`, which leaked
-    // to the startup log, the `Open config file` tooltip and the System page's
-    // config row — and, less visibly, to `ShellExecuteW` and `explorer /select,`
-    // behind that row's two glyphs, which are documented not to take it.
-    //
-    // **This is the only site that needs it, and deliberately not the one
-    // inside `lockfile::acquire`.** The lock runs on the ORIGINAL `&Path` one
-    // line above, does its own `canonicalize`, and hashes the result into the
-    // lock file's NAME (`stable_id`). Simplifying there would rename the lock,
-    // so an old and a new binary would stop seeing each other's lock and both
-    // would serve — the exact failure `stable_id`'s module doc records.
     let config = beckon_core::paths::plain(
         config
             .canonicalize()
@@ -515,9 +183,6 @@ pub fn cmd_serve_app(
     );
     let text = std::fs::read_to_string(&config)
         .with_context(|| format!("cannot read `{}`", config.display()))?;
-    // The path prefix is applied HERE rather than inside `plan_startup`, so
-    // the refusal is byte-for-byte the message `beckon serve` has always
-    // printed for a file that does not parse.
     let plan =
         plan_startup(&text, on_broken).map_err(|e| anyhow!("{}: {}", config.display(), e))?;
     let broken = plan.broken;
@@ -529,25 +194,15 @@ pub fn cmd_serve_app(
         caps_owner: None,
         shortcuts: plan.shortcuts,
         keyboard: plan.keyboard,
+        tray: plan.tray,
         config: config.clone(),
         paused: false,
         log,
         last_phrase: String::new(),
         registered: Default::default(),
         autostart,
-        settings: None,
-        settings_unreadable: None,
-        catalog: None,
-        external_change: false,
-        probe: None,
-        settings_page: beckon_core::settings::Page::default(),
-        update: beckon_core::update::UpdateState::Idle,
-        pending_update_check: false,
         #[cfg(target_os = "macos")]
         menu_rows: Vec::new(),
-        pending_select: None,
-        #[cfg(target_os = "macos")]
-        last_not_saved: None,
     }));
 
     let mgr = {
@@ -558,12 +213,8 @@ pub fn cmd_serve_app(
     };
     let mgr = Rc::new(RefCell::new(mgr));
 
-    // **After the hotkey manager exists, before anything is registered.**
-    // `HotkeyManager::install` is what puts the process in the Accessory
-    // activation policy and gives it a window-server identity; asking before
-    // that would raise the panel from a process macOS does not yet consider a
-    // foreground-capable app. Registering hotkeys does not need the grant --
-    // FIRING them does -- so the order costs nothing.
+    // After the hotkey manager exists (which puts the process in UIElement
+    // activation policy), before anything is registered.
     #[cfg(target_os = "macos")]
     ask_for_accessibility_once();
 
@@ -574,9 +225,6 @@ pub fn cmd_serve_app(
     {
         let st = Rc::clone(&state);
         let mg = Rc::clone(&mgr);
-        // Must run after `install` above: on Windows, add_tick registers a
-        // window timer (SetTimer) against the hwnd install() creates (the
-        // tray window), which does not exist yet before that call.
         hotkey::add_tick(
             1.0,
             Box::new(move || {
@@ -589,46 +237,15 @@ pub fn cmd_serve_app(
         );
     }
 
-    // **The auto-save flush, and a third tick rather than a branch in the
-    // one above** -- for the reason the grant watcher below states: that one
-    // returns early unless the file watcher fired, and this has to run
-    // whether or not the config changed.
-    //
-    // Two things need it. The App field is debounced (four-doors 6.1.2) and
-    // macOS has no `SetTimer`, so nothing else turns "the field went quiet"
-    // into a write; and the three settings callbacks that are not built by
-    // the `edit!` macro would otherwise each have to remember to save.
-    //
-    // Four times a second, so a write lands within the debounce plus a
-    // quarter rather than plus a second. `autosave_tick` returns on its
-    // first line whenever the model is clean, which is every tick with the
-    // window shut, so the cost at rest is one `Option` test.
-    #[cfg(target_os = "macos")]
-    {
-        let st = Rc::clone(&state);
-        hotkey::add_tick(0.25, Box::new(move || autosave_tick(&st)));
-    }
-
-    // **Watch for the grant appearing, so "allow it" is the last step.**
-    //
-    // macOS hands Accessibility to a NEW process, so beckon cannot start
-    // working when the switch is flipped. Without this, a new user allows
-    // beckon, nothing happens, and the reasonable conclusion is that beckon is
-    // broken -- the restart is a second instruction nobody was given.
-    //
-    // A second tick rather than a branch inside the reload tick: that one
-    // returns early unless the watcher fired, and this has to run whether or
-    // not the config changed.
+    // Watch for Accessibility appearing so granting it restarts cleanly under
+    // launchd without a second manual step.
     #[cfg(target_os = "macos")]
     if !beckon_macos::is_accessibility_trusted() {
         hotkey::add_tick(
             1.0,
             Box::new(move || {
-                use beckon_core::settings::{grant_recovery, GrantRecovery};
+                use beckon_core::grant::{grant_recovery, GrantRecovery};
                 use std::io::IsTerminal;
-                // `was_missing` is true by construction: this tick is only
-                // installed when the grant was absent at startup, and the
-                // first transition to granted ends the process or the tick.
                 match grant_recovery(
                     true,
                     beckon_macos::is_accessibility_trusted(),
@@ -636,10 +253,6 @@ pub fn cmd_serve_app(
                 ) {
                     GrantRecovery::Nothing => {}
                     GrantRecovery::TellAndStay => {
-                        // ONCE. The condition stays true for every tick after
-                        // the grant appears, and this arm does not exit, so
-                        // without the latch it is one line per second forever
-                        // in the terminal the user is standing in.
                         static TOLD: std::sync::atomic::AtomicBool =
                             std::sync::atomic::AtomicBool::new(false);
                         if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -655,10 +268,6 @@ pub fn cmd_serve_app(
                             "beckon serve: Accessibility granted; restarting so it \
                              takes effect."
                         );
-                        // NON-ZERO on purpose. The launch agent is
-                        // `KeepAlive { SuccessfulExit: false }`, so zero would
-                        // NOT bring beckon back -- that is exactly what makes
-                        // the tray's Quit work, and must stay true.
                         std::process::exit(1);
                     }
                 }
@@ -667,15 +276,13 @@ pub fn cmd_serve_app(
     }
 
     #[cfg(target_os = "macos")]
-    refresh_menu_rows(&state);
+    if state.borrow().tray {
+        refresh_menu_rows(&state);
+    }
 
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     install_tray_menu(&state, &mgr);
 
-    // The parse error itself goes to the log first, in the same shape
-    // `reload` logs one, so the log says WHAT is wrong and not merely that
-    // something is. `broken` is `Some` only under `BrokenConfig::ServeAnyway`
-    // -- the other front door returned above.
     if let Some(e) = &broken {
         eprintln!(
             "beckon serve: config does not parse, serving no shortcuts: {}: {e}",
@@ -689,20 +296,16 @@ pub fn cmd_serve_app(
     state.borrow_mut().last_phrase = phrase.clone();
     state.borrow_mut().registered = outcome.by_canonical();
     sync_caps_hook(&state);
+    sync_tray(&state, &mgr);
     eprintln!("beckon serve: {} from {}", phrase, config.display());
     set_tray_status(&format!("beckon - {phrase}"));
     if let Some(toast) = failure_toast(&outcome.failed) {
         crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
     }
     if broken.is_some() {
-        // A tray icon is passive, and this process may have been started by
-        // the Run key rather than by a person -- so say once that the keys
-        // are gone, and where to look. `MachineRepeat` for the same reason
-        // `reload`'s failure arm uses it: a logon loop must not become a
-        // notification loop.
         crate::notify::report(
             "no hotkeys registered - beckon cannot read the config. \
-             Open Settings from the tray icon to see why.",
+             Run `beckon check` or open the config from the tray icon.",
             crate::notify::Cause::MachineRepeat,
         );
     }
@@ -710,10 +313,7 @@ pub fn cmd_serve_app(
 }
 
 fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id: u32) {
-    // Short borrow only: cloned out and dropped BEFORE calling the backend
-    // below. See the module doc — on Windows, backend.beckon() can pump
-    // this thread's message queue, letting reload() run reentrantly while
-    // this function is still on the stack.
+    // Short borrow only: cloned out and dropped BEFORE calling the backend.
     let (app, canonical) = {
         let st = state.borrow();
         match st.shortcuts.get(id as usize) {
@@ -721,32 +321,16 @@ fn on_hotkey(state: &Rc<RefCell<ServeState>>, backend: &Rc<Box<dyn Backend>>, id
             None => return,
         }
     };
-    // Through the ladder, not straight at the backend: a `serve` shortcut
-    // whose value is a chain must fall through to the next candidate exactly
-    // as a Linux compositor binding does. Same string, same rule, one
-    // implementation -- and `verbose: false` because `serve` reports through
-    // the log and the notification below, never to a terminal.
     if let Err(e) = crate::beckon_ladder(backend.as_ref().as_ref(), &app, false) {
         let msg = format!("{app} ({canonical}): {e}");
         eprintln!("beckon serve: {msg}");
-        // A key the owner just pressed. Told every time, including the fifth,
-        // because they pressed it a fifth time.
         crate::notify::report(&msg, crate::notify::Cause::HumanAction);
     }
 }
 
-/// Outcome of a registration pass: how many keys actually registered vs.
-/// how many were attempted. Incident 2026-08-09: the startup log reported
-/// the count of PARSED entries, not successful registrations — it said
-/// "20 shortcuts registered" while 0/20 had actually registered, and the
-/// outage stayed invisible for hours. Callers must report `ok`, not the
-/// length of the input slice.
 struct RegisterOutcome {
     ok: usize,
-    failed: Vec<String>, // canonical combos, in registration order
-    /// Every attempted combo by its canonical spelling, with what happened.
-    /// Canonical rather than as-written because the settings window joins
-    /// on this key and the file may spell the same combo differently.
+    failed: Vec<String>,
     results: Vec<(String, Result<(), String>)>,
 }
 
@@ -756,8 +340,6 @@ impl RegisterOutcome {
     }
 }
 
-/// "shortcut" for 1, "shortcuts" otherwise. The only pluralization this
-/// file needs, so a lookup, not a framework.
 fn shortcut_noun(n: usize) -> &'static str {
     if n == 1 {
         "shortcut"
@@ -766,16 +348,10 @@ fn shortcut_noun(n: usize) -> &'static str {
     }
 }
 
-/// "N shortcuts" / "1 shortcut" -- the count phrase `reload`'s paused
-/// branch and `set_paused` both build around "paused (...)".
 fn shortcuts_count_phrase(n: usize) -> String {
     format!("{n} {}", shortcut_noun(n))
 }
 
-/// "20 shortcuts registered" when clean; "17 of 20 shortcuts registered
-/// (3 failed)" otherwise. Singular at total == 1: "1 shortcut registered",
-/// "0 of 1 shortcut registered (1 failed)" -- the noun agrees with the
-/// total, not the leading number, so it stays singular even when `ok` is 0.
 fn registration_phrase(ok: usize, total: usize) -> String {
     let failed = total - ok;
     let noun = shortcut_noun(total);
@@ -786,11 +362,6 @@ fn registration_phrase(ok: usize, total: usize) -> String {
     }
 }
 
-/// One toast line summarizing a failure wave; `None` when nothing failed.
-/// Incident 2026-08-09: each failed key used to fire its own toast, so a
-/// bad config reload spammed 20 separate notifications. This collapses a
-/// whole wave into a single line, listing up to 5 combos by name and
-/// folding the rest into a count.
 fn failure_toast(failed: &[String]) -> Option<String> {
     if failed.is_empty() {
         return None;
@@ -821,10 +392,6 @@ fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) -> RegisterOutc
                 results.push((canon, Ok(())));
             }
             Err(e) => {
-                // One broken key loses one key, never the whole table.
-                // Per-key eprintln kept for the detailed log; the toast is
-                // collapsed into a single summary by the caller instead of
-                // firing here (see `failure_toast`).
                 eprintln!("beckon serve: cannot register `{}`: {e}", canon);
                 failed.push(canon.clone());
                 results.push((canon, Err(e)));
@@ -835,58 +402,6 @@ fn register_all(mgr: &mut HotkeyManager, shortcuts: &[Shortcut]) -> RegisterOutc
         ok,
         failed,
         results,
-    }
-}
-
-/// Write the config text, atomically, ONTO THE FILE THE PATH RESOLVES TO.
-///
-/// Temp-then-rename: a crash or a full disk must not destroy a working config,
-/// and a rename is the write shape `watch_config` was built for -- it watches
-/// the parent directory by file name precisely because editors replace files
-/// that way.
-///
-/// **The rename must land on the RESOLVED target, not on the path as given, and
-/// that is the whole reason this is a function.** `fs::rename` replaces its
-/// destination, and a destination that is a symlink is replaced by a REGULAR
-/// FILE -- measured 2026-08-17:
-///
-/// ```text
-/// before  lrwxr-xr-x  link.toml -> real.toml
-/// after   -rw-r--r--  link.toml            (readlink empty)
-///         real.toml still holds the OLD text; the new text is in link.toml
-/// ```
-///
-/// On this setup that is not hypothetical. nix-darwin links
-/// `~/.config/beckon/apps.toml` to the shortcuts file inside the user's dotfiles
-/// repo (`config.lib.file.mkOutOfStoreSymlink`, so that beckon can write back to
-/// it at all -- a plain `home.file.source` would put a READ-ONLY store path
-/// there). Renaming onto the link would have severed it, left the repo file
-/// holding the old text, and had home-manager move the orphan aside on the next
-/// switch under `backupFileExtension` -- i.e. a Save that silently vanishes one
-/// rebuild later, on the machine whose config every other host copies.
-///
-/// The temp file has to sit beside the RESOLVED target too, not beside the link:
-/// `rename` cannot cross filesystems, and a link and its target need not be on
-/// the same one.
-///
-/// Returns the path actually written, which is what an error message should name
-/// -- "cannot write ~/.config/beckon/apps.toml" for a permission problem three
-/// directories away in a dotfiles repo is a message that sends the reader to the
-/// wrong place.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn write_config_text(path: &Path, text: &str) -> std::io::Result<PathBuf> {
-    // `canonicalize` resolves every link in the chain. It needs the file to
-    // exist, which it does on every Save path -- the model was loaded from it.
-    // If it does not, writing the path as given is the honest fallback and the
-    // only thing left to try.
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let tmp = target.with_extension("toml.beckon-tmp");
-    match std::fs::write(&tmp, text).and_then(|()| std::fs::rename(&tmp, &target)) {
-        Ok(()) => Ok(target),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
     }
 }
 
@@ -921,21 +436,6 @@ fn watch_config(
     Ok(watcher)
 }
 
-/// Write or clear the `HKCU\…\Run` value, and say so if it fails.
-///
-/// **One function, two call sites**: the tray menu's `Start with Windows` row
-/// and the System page's switch (design §3.3). The command line a Run value
-/// has to carry -- the scoop `current` junction rather than a version
-/// directory, the config path, the `--log` -- is `serve_app`'s policy, and
-/// two callers building it separately is exactly how one of them ends up
-/// writing a value that starts a binary that no longer exists.
-///
-/// **`on` is the state wanted, not a toggle.** The menu row has no state of
-/// its own and passes `!is_enabled()`; the window's switch has already
-/// flipped itself and passes what it now shows. A function that toggled
-/// would make the second caller's own state a lie whenever the two
-/// disagreed -- which is the ordinary case the moment anything else writes
-/// that key, and Task Manager's Startup tab is exactly such a thing.
 #[cfg(target_os = "windows")]
 fn set_autostart(state: &Rc<RefCell<ServeState>>, on: bool) {
     let result = if !on {
@@ -959,7 +459,6 @@ fn set_autostart(state: &Rc<RefCell<ServeState>>, on: bool) {
     };
     if let Err(e) = result {
         eprintln!("beckon serve: autostart: {e}");
-        // The user just clicked this; tell them every time.
         crate::notify::report(
             &format!("could not change autostart: {e}"),
             crate::notify::Cause::HumanAction,
@@ -967,163 +466,26 @@ fn set_autostart(state: &Rc<RefCell<ServeState>>, on: bool) {
     }
 }
 
-/// macOS has no autostart to set: login lifecycle belongs to `brew services`
-/// / launchd there, and beckon must not write a competing LaunchAgent behind
-/// it (`MenuModel::autostart` is `None` for the same reason). The System page
-/// does not exist on that window either, so nothing can reach this -- it is
-/// here because `on_command`'s `match` is compiled on both platforms and an
-/// arm that only exists on one would be a `cfg` inside the callback.
-#[cfg(all(target_os = "macos", not(target_os = "windows")))]
-fn set_autostart(_state: &Rc<RefCell<ServeState>>, _on: bool) {}
-
-/// Open one of the window's files -- or one of its three links -- with
-/// whatever is registered for it.
-///
-/// **The three URL targets are handled here since 2026-08-15**, and this
-/// comment used to say the opposite: "they belong to the About page (design
-/// §3.4), which has no controls yet; answering them here would be dead code
-/// whose only test is that it compiles, and a link that opens the wrong page
-/// is worse than one that is not built ... whoever builds About owns turning
-/// it into three." About is built, so this is that turn.
-///
-/// **The addresses are `Target::url`'s, in `beckon-core`**, not three string
-/// literals here: they are checkable on all three CI jobs there, and the
-/// `None` that function returns for a file is what picks the path branch
-/// below -- so "is this a link or a file" is one decision rather than two
-/// matches that agree today.
-///
-/// **Every borrow is dropped before the call.** `ShellExecuteW` performs an
-/// out-of-process shell activation and pumps this thread's message queue, so
-/// a live `RefCell` borrow across it is the abort-across-`extern "system"`
-/// hazard this module's own doc describes. The path is cloned out first, the
-/// same discipline `install_tray_menu`'s `MENU_LOG` arm already follows -- and
-/// a URL needs no borrow at all.
+/// Open the active config file in whatever editor the OS associates with it.
+/// Every `RefCell` borrow is dropped before calling into the shell.
 #[cfg(target_os = "windows")]
-fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
-    use beckon_core::settings::Target;
-    if let Some(url) = target.url() {
-        if let Err(e) = beckon_windows::shell::open_url(url) {
-            eprintln!("beckon serve: {e}");
-        }
-        return;
-    }
-    let path = match target {
-        Target::Config => Some(state.borrow().config.clone()),
-        Target::Log => state.borrow().log.clone(),
-        // Unreachable: every target with no `url()` is one of the two above.
-        // Spelled rather than `unreachable!()`, because a panic here would be
-        // inside a settings-window callback, i.e. across an `extern "system"`
-        // boundary, where it aborts the daemon instead of unwinding.
-        _ => None,
-    };
-    if let Some(p) = path {
-        if let Err(e) = beckon_windows::shell::open_path(&p) {
-            eprintln!("beckon serve: {e}");
-        }
+fn open_config(state: &Rc<RefCell<ServeState>>) {
+    let path = state.borrow().config.clone();
+    if let Err(e) = beckon_windows::shell::open_path(&path) {
+        eprintln!("beckon serve: {e}");
     }
 }
 
-/// Show one of the window's files in Explorer, selected.
-///
-/// The second glyph on each file row. Same target set and same borrow
-/// discipline as `open_target`, and it keeps that function's OLD silence
-/// about the three URL targets even now that `open_target` has stopped
-/// keeping it: there is nothing to reveal about a URL, and no control raises
-/// `Reveal` for one -- About's links are `Open`.
-#[cfg(target_os = "windows")]
-fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
-    use beckon_core::settings::Target;
-    let path = match target {
-        Target::Config => Some(state.borrow().config.clone()),
-        Target::Log => state.borrow().log.clone(),
-        _ => None,
-    };
-    if let Some(p) = path {
-        if let Err(e) = beckon_windows::shell::reveal_path(&p) {
-            eprintln!("beckon serve: {e}");
-        }
-    }
-}
-
-/// The macOS twin.
-///
-/// **These were `{}` until the four doors landed**, with a comment saying
-/// "the macOS window has no System page, so neither command can arrive
-/// there". It does now, and both commands do arrive: the System door's two
-/// file rows raise `Open`/`Reveal`, and the About door's three links raise
-/// `Open` with a URL target.
-///
-/// Same borrow discipline as the Windows pair and for a related reason: the
-/// path is cloned out before the call, because `/usr/bin/open` is spawned
-/// from inside a settings-window callback and anything that re-entered this
-/// module with the `RefCell` still held would panic rather than unwind
-/// cleanly.
-#[cfg(all(target_os = "macos", not(target_os = "windows")))]
-fn open_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
-    use beckon_core::settings::Target;
-    if let Some(url) = target.url() {
-        if let Err(e) = beckon_macos::shell::open_url(url) {
-            eprintln!("beckon serve: {e}");
-        }
-        return;
-    }
-    let path = match target {
-        Target::Config => Some(state.borrow().config.clone()),
-        Target::Log => state.borrow().log.clone(),
-        // Unreachable: every target with no `url()` is one of the two above.
-        // Spelled out rather than `unreachable!()`, because this runs inside
-        // an Objective-C message send and a panic there aborts the daemon
-        // instead of unwinding.
-        _ => None,
-    };
-    if let Some(p) = path {
-        if let Err(e) = beckon_macos::shell::open_path(&p) {
-            eprintln!("beckon serve: {e}");
-        }
-    }
-}
-
-#[cfg(all(target_os = "macos", not(target_os = "windows")))]
-fn reveal_target(state: &Rc<RefCell<ServeState>>, target: beckon_core::settings::Target) {
-    use beckon_core::settings::Target;
-    let path = match target {
-        Target::Config => Some(state.borrow().config.clone()),
-        Target::Log => state.borrow().log.clone(),
-        // Nothing to reveal about a URL, and no control raises `Reveal` for
-        // one -- About's links are `Open`.
-        _ => None,
-    };
-    if let Some(p) = path {
-        if let Err(e) = beckon_macos::shell::reveal_path(&p) {
-            eprintln!("beckon serve: {e}");
-        }
+#[cfg(target_os = "macos")]
+fn open_config(state: &Rc<RefCell<ServeState>>) {
+    let path = state.borrow().config.clone();
+    if let Err(e) = beckon_macos::shell::open_path(&path) {
+        eprintln!("beckon serve: {e}");
     }
 }
 
 /// Re-read `config`, replace the shortcut table, and (unless paused)
 /// re-register every hotkey.
-///
-/// **Borrow safety**: the `Ok` arm below holds `mgr.borrow_mut()` live
-/// across two calls to `set_tray_status` (Windows: `hotkey::set_status`,
-/// which bottoms out in `Shell_NotifyIconW(NIM_MODIFY)`). That is sound:
-/// `NIM_MODIFY` is an in-process icon update, not the out-of-process shell
-/// activation `ShellExecuteW` performs, so it does not pump this thread's
-/// message queue and cannot let a reentrant call back into this same
-/// `RefCell` while it is already borrowed -- the `BorrowMutError`-across-
-/// `extern "system"` hazard the module doc above describes. Contrast
-/// `beckon_windows::shell::open_path` (`ShellExecuteW`), which DOES pump:
-/// see `install_tray_menu`, where every call site clones what it needs and
-/// drops its borrow first, before calling it. `set_paused` holds the same
-/// two borrows across the same non-pumping calls, for the same reason.
-///
-/// **REATTACHED 2026-08-15.** This block spent a day above `set_autostart`:
-/// the System pass inserted that function, `open_target` and `reveal_target`
-/// between this doc and its own item, so rustdoc read a borrow-safety
-/// argument about `mgr.borrow_mut()` as documentation for a registry write
-/// that takes no `mgr` at all -- while `reload`, which `set_paused`'s doc
-/// cross-references BY NAME for exactly this reasoning ("see `reload`'s doc
-/// comment"), had none. That cross-reference is what makes the orphaning a
-/// defect rather than a tidiness point: it pointed at an empty place.
 fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     let config = state.borrow().config.clone();
     let parsed = std::fs::read_to_string(&config)
@@ -1134,84 +496,83 @@ fn reload(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
             // Bad edit must not cost the user their working keys.
             let msg = format!("reload failed, keeping current shortcuts: {e}");
             eprintln!("beckon serve: {msg}");
-            // The watcher drives this, not a person: anything that keeps
-            // rewriting the config (an editor sync, a `home-manager switch`
-            // loop) would otherwise post once per tick, forever.
             crate::notify::report(&msg, crate::notify::Cause::MachineRepeat);
-            // A settings window open READ ONLY is the one thing that wants
-            // to hear about a failed reload: it is showing an explanation of
-            // exactly this, and the user is editing the file to make it go
-            // away. Restricted to that state on purpose -- calling the full
-            // external-change path from here would hand an EDITABLE window a
-            // file that does not parse, and its answer to that is an error
-            // dialog, once per watcher tick.
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            settings_retry_unreadable(state);
         }
         Ok(new) => {
             {
                 let mut s = state.borrow_mut();
                 s.shortcuts = new.shortcuts;
                 s.keyboard = new.keyboard;
+                s.tray = new.tray;
             }
-            // **The resolve runs before the manager is borrowed and before
-            // anything is unregistered, and both halves of that matter.**
-            // `refresh_menu_rows` calls `beckon_macos::resolve_reports`,
-            // measured at 60-95 ms on `airm3`
-            // (`docs/notes/macos-backend.md`): unregistering first would
-            // leave every hotkey dead for that whole window, and a press
-            // landing in it reaches the frontmost app instead of beckon.
-            // Holding `mgr.borrow_mut()` across it is separately ruled out
-            // by this module's own rule that no `RefCell` borrow is held
-            // across a resolver.
+            // Resolve before borrowing `mgr` or unregistering anything so
+            // hotkeys stay live during the catalog scan and no RefCell borrow
+            // spans the resolver.
             #[cfg(target_os = "macos")]
-            refresh_menu_rows(state);
-            let mut m = mgr.borrow_mut();
-            m.unregister_all();
+            if state.borrow().tray {
+                refresh_menu_rows(state);
+            }
             let paused = state.borrow().paused;
             if paused {
-                // A file save is not a request to un-pause. The table is
-                // updated so resuming picks up the edit; nothing registers.
+                {
+                    let mut m = mgr.borrow_mut();
+                    m.unregister_all();
+                }
                 let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
                 state.borrow_mut().last_phrase = phrase.clone();
-                // unregister_all() above means nothing is registered; a
-                // leftover map would show ticks for keys that are not live.
                 state.borrow_mut().registered.clear();
-                // Paused means paused: the hook stays off even though the
-                // edit may have turned `keyboard.caps` on. Resuming picks
-                // it up.
                 sync_caps_hook(state);
+                sync_tray(state, mgr);
                 eprintln!("beckon serve: reloaded while paused - {phrase}");
                 set_tray_status(&format!("beckon - paused ({phrase})"));
                 return;
             }
-            let outcome = register_all(&mut m, &state.borrow().shortcuts);
+            let outcome = {
+                let mut m = mgr.borrow_mut();
+                m.unregister_all();
+                register_all(&mut m, &state.borrow().shortcuts)
+            };
             let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
             state.borrow_mut().last_phrase = phrase.clone();
             state.borrow_mut().registered = outcome.by_canonical();
             sync_caps_hook(state);
+            sync_tray(state, mgr);
             eprintln!("beckon serve: reloaded - {phrase}");
             set_tray_status(&format!("beckon - {phrase}"));
             if let Some(toast) = failure_toast(&outcome.failed) {
                 crate::notify::report(&toast, crate::notify::Cause::MachineRepeat);
             }
-            // The file on disk just changed. A clean settings window follows
-            // it silently; a dirty one raises a banner and lets the user
-            // choose. No-op when the window is closed.
-            #[cfg(any(target_os = "windows", target_os = "macos"))]
-            settings_saw_external_change(state);
         }
+    }
+}
+
+fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>, paused: bool) {
+    let mut m = mgr.borrow_mut();
+    if paused {
+        m.unregister_all();
+        state.borrow_mut().paused = true;
+        let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
+        state.borrow_mut().last_phrase = phrase.clone();
+        state.borrow_mut().registered.clear();
+        sync_caps_hook(state);
+        eprintln!("beckon serve: paused - {phrase}");
+        set_tray_status(&format!("beckon - paused ({phrase})"));
+        set_tray_dimmed(true);
+    } else {
+        state.borrow_mut().paused = false;
+        let outcome = register_all(&mut m, &state.borrow().shortcuts);
+        let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
+        state.borrow_mut().last_phrase = phrase.clone();
+        state.borrow_mut().registered = outcome.by_canonical();
+        sync_caps_hook(state);
+        eprintln!("beckon serve: resumed - {phrase}");
+        set_tray_status(&format!("beckon - {phrase}"));
+        set_tray_dimmed(false);
     }
 }
 
 // ---------------------------------------------------------------------------
 // Tray / menu bar menu.
-//
-// Composition lives here and is compiled by all three CI jobs; only the
-// drawing is per-OS (`beckon_windows::hotkey`, `beckon_macos::tray`). Linux
-// has no resident mode at all -- the compositor binds the keys -- so it
-// builds this code without ever calling it, which is exactly what makes the
-// tests below run there.
 // ---------------------------------------------------------------------------
 
 const MENU_STATUS: u32 = 1;
@@ -1219,60 +580,24 @@ const MENU_EDIT: u32 = 2;
 const MENU_RELOAD: u32 = 3;
 const MENU_LOG: u32 = 4;
 const MENU_PAUSE: u32 = 5;
-/// Read only by `build_entries` (Windows' menu) and its own `on_click` arm,
-/// now that the macOS menu builds `build_mac_entries` instead and never
-/// offers this row -- `brew services` owns the launch agent there.
 #[cfg(any(target_os = "windows", test))]
 const MENU_AUTOSTART: u32 = 6;
 const MENU_QUIT: u32 = 7;
-const MENU_UPDATE: u32 = 8;
 
-/// Everything the Windows menu needs to draw itself, snapshotted out of
-/// `ServeState` so the drawing is a pure function and can be tested without a
-/// tray, a message loop or a registry. macOS builds `MacMenu` instead.
-///
-/// The three `Option`/`bool` fields are all "does this row exist at all",
-/// not "is it greyed". A permanently greyed row invites "why is this
-/// greyed?" with no answer available in the menu itself, so a capability
-/// this process does not have is omitted instead.
 #[cfg(any(target_os = "windows", test))]
 #[derive(Clone)]
 struct MenuModel {
     phrase: String,
     paused: bool,
-    /// `None`: omit "Start with Windows" -- this process cannot offer it
-    /// (see `AutostartCapability`), which is always the case on macOS.
-    /// `Some(checked)`: show it, ticked per `checked`.
     autostart: Option<bool>,
-    /// `None`: omit "Open log". macOS has no `--log` (the flag is
-    /// `#[cfg(target_os = "windows")]`) and does not own its log there --
-    /// launchd writes it -- so the row could only ever be dead.
-    /// `Some(enabled)`: show it, greyed when this run has no log file,
-    /// which is Windows' way of not lying about where the log is.
     log: Option<bool>,
-    /// Whether a settings window exists to open. False on macOS until that
-    /// window is built; a row that opens nothing is worse than no row.
-    settings: bool,
-    /// Which spelling the update row gets. Passed in rather than read from
-    /// `cfg!` here so `build_entries` can be tested for both -- the same
-    /// reason `log` arrives already decided by `menu_log_row`.
-    macos: bool,
 }
 
 /// Whether the tray draws `Open log`, and whether it is enabled.
 ///
-/// The two platforms answer differently because they own different things,
-/// and `MenuModel::log` cannot say which without being told.
-///
-/// **Windows owns its log**, so the row is always meaningful: shown, and
-/// greyed when this run has no `--log`. A missing row would be the lie there
-/// -- see the `MenuModel::log` doc, which this function replaces the `cfg` in.
-///
-/// **macOS does not.** launchd owns the file through `StandardErrorPath`, so
-/// beckon knows a path only when one was handed to it. With none, a greyed
-/// `Open log` would ask "why is this greyed?" with no answer in the row --
-/// the same reasoning that omits `Start with Windows` under `beckon.exe
-/// serve` rather than greying it.
+/// Windows owns its log, so the row is always shown (greyed when no `--log`
+/// was supplied). macOS does not (launchd writes `StandardErrorPath`), so the
+/// row is omitted unless `--log` declared where it lives.
 pub(crate) fn menu_log_row(has_log_path: bool, beckon_owns_the_log: bool) -> Option<bool> {
     if beckon_owns_the_log {
         Some(has_log_path)
@@ -1281,24 +606,14 @@ pub(crate) fn menu_log_row(has_log_path: bool, beckon_owns_the_log: bool) -> Opt
     }
 }
 
-/// What config load resolved for one binding (spec §3.5), cached in
-/// `ServeState::menu_rows` so the macOS menu never resolves when it opens.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Resolved {
-    /// The candidate the key will open, as the file spells it. When every
-    /// candidate misses, the FIRST one: the app the user thinks of the key as.
     name: String,
-    /// The winner's canonical id, for its icon. `None` when nothing resolved.
     bundle_id: Option<String>,
-    /// Every candidate is a `NoMatch`, or the chain does not split: the key
-    /// will error and launch nothing.
     missing: bool,
 }
 
-/// One `Resolved` per binding, in file order, graded by
-/// `certainty::chain_winner` -- the rule `check --resolve` uses, so the menu
-/// and the check cannot disagree about a key.
 #[cfg(any(target_os = "macos", test))]
 fn resolve_rows(shortcuts: &[Shortcut], reports: &[NameReport]) -> Vec<Resolved> {
     use beckon_core::certainty::{chain_winner, Certainty};
@@ -1323,7 +638,6 @@ fn resolve_rows(shortcuts: &[Shortcut], reports: &[NameReport]) -> Vec<Resolved>
                     bundle_id: None,
                     missing: true,
                 },
-                // Not answered: unknown, which is not missing.
                 None => Resolved {
                     name: cands[0].to_string(),
                     bundle_id: None,
@@ -1334,14 +648,9 @@ fn resolve_rows(shortcuts: &[Shortcut], reports: &[NameReport]) -> Vec<Resolved>
         .collect()
 }
 
-/// Re-resolve every binding for the macOS menu (spec §3.5): one batch, one
-/// catalog scan, on config load and reload -- the same call `check
-/// --resolve` makes. A failure leaves an empty cache, which `binding_rows`
-/// draws as rows named as written that claim nothing.
 #[cfg(target_os = "macos")]
 fn refresh_menu_rows(state: &Rc<RefCell<ServeState>>) {
     let started = std::time::Instant::now();
-    // Cloned out so no borrow is held across the resolver.
     let shortcuts = state.borrow().shortcuts.clone();
     let mut names: Vec<&str> = shortcuts
         .iter()
@@ -1358,10 +667,6 @@ fn refresh_menu_rows(state: &Rc<RefCell<ServeState>>) {
         }
     };
     if beckon_core::verbose() {
-        // Milliseconds spelled out, not `{:?}`: `Duration`'s Debug renders a
-        // sub-millisecond value as `537.25µs`, and every `serve` log line is
-        // ASCII by rule (Windows PowerShell 5.1's `Get-Content` defaults to
-        // ANSI).
         eprintln!(
             "beckon serve: resolved {} menu rows in {} ms",
             rows.len(),
@@ -1371,24 +676,16 @@ fn refresh_menu_rows(state: &Rc<RefCell<ServeState>>) {
     state.borrow_mut().menu_rows = rows;
 }
 
-/// One binding as the macOS menu draws it.
 #[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BindingRow {
     name: String,
-    /// `combo_glyphs`: `⇪C`, `⌃⌥⇧⌘M`.
     chord: String,
-    /// The same row in words, for the tooltip and VoiceOver.
     spoken: String,
     flag: Option<&'static str>,
     bundle_id: Option<String>,
 }
 
-/// Every binding, in file order, as a menu row.
-///
-/// `resolved` is indexed like `shortcuts`. A shorter cache -- a resolve that
-/// failed outright -- leaves the tail named as written and claiming nothing.
-/// `hold` is `settings::caps_view_fold`'s answer.
 #[cfg(any(target_os = "macos", test))]
 fn binding_rows(
     shortcuts: &[Shortcut],
@@ -1425,10 +722,7 @@ fn binding_rows(
         .collect()
 }
 
-/// Windows' menu (spec §8: "Windows keeps today's menu and window this
-/// round"). `build_mac_entries` is the macOS composer; this one changes only
-/// by `..MenuEntry::default()` in its struct literals, so its existing tests
-/// pin the Windows menu byte-for-byte.
+/// Windows' tray context menu.
 #[cfg(any(target_os = "windows", test))]
 fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
     let head = if m.paused {
@@ -1445,18 +739,9 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
             ..MenuEntry::default()
         },
         MenuEntry::separator(),
+        MenuEntry::item(MENU_EDIT, "Open config file"),
+        MenuEntry::item(MENU_RELOAD, "Reload now"),
     ];
-    if m.settings {
-        entries.push(MenuEntry::item(MENU_EDIT, "Settings..."));
-        // Directly after Settings: both rows open the same window, while
-        // `Reload now` below is about the config file rather than about
-        // beckon itself.
-        entries.push(MenuEntry::item(
-            MENU_UPDATE,
-            beckon_core::menu::update_label(m.macos),
-        ));
-    }
-    entries.push(MenuEntry::item(MENU_RELOAD, "Reload now"));
     if let Some(enabled) = m.log {
         entries.push(MenuEntry {
             id: MENU_LOG,
@@ -1500,28 +785,15 @@ fn build_entries(m: &MenuModel) -> Vec<MenuEntry> {
 const MENU_SHORTCUTS: u32 = 9;
 #[cfg(any(target_os = "macos", test))]
 const MENU_EDIT_SHORTCUTS: u32 = 10;
-/// A binding row's id is this plus its index into `ServeState::shortcuts`.
-///
-/// The menu is rebuilt on every open (`menuNeedsUpdate:`), but that is not
-/// enough to make the id stable: the 1 Hz reload tick runs in
-/// `kCFRunLoopCommonModes`, so a reload WHILE the menu is open re-points
-/// every id at a different table. What makes it safe is the consumer --
-/// `select_binding` looks the index up with `.get(i)` and returns on `None`,
-/// so a stale id selects a different row or no row at all. Never a panic, and
-/// never a launch: no path from a binding id does anything but move the
-/// settings window's selection.
 #[cfg(any(target_os = "macos", test))]
 const MENU_BINDING_BASE: u32 = 1000;
 
-/// What the macOS menu needs, snapshotted out of `ServeState` like
-/// `MenuModel`, so the composition is a pure function.
 #[cfg(any(target_os = "macos", test))]
 struct MacMenu {
     phrase: String,
     paused: bool,
     accessibility: bool,
     failed: usize,
-    /// `menu_log_row`'s answer. Only `Some(true)` draws on macOS.
     log: Option<bool>,
     rows: Vec<BindingRow>,
 }
@@ -1540,8 +812,8 @@ fn binding_entry(i: usize, r: &BindingRow) -> MenuEntry {
     }
 }
 
-/// The macOS menu (spec §3.1). Nine rows when nothing is broken, whatever
-/// the file holds; the table itself is a submenu.
+/// The macOS menu bar menu: eight rows when nothing is broken, whatever the
+/// config holds; the shortcut table sits in a submenu.
 #[cfg(any(target_os = "macos", test))]
 fn build_mac_entries(m: &MacMenu) -> Vec<MenuEntry> {
     use beckon_core::menu::{
@@ -1560,8 +832,6 @@ fn build_mac_entries(m: &MacMenu) -> Vec<MenuEntry> {
         MenuEntry {
             id: MENU_STATUS,
             label: "beckon".into(),
-            // No `enabled`: the view-based row never reads it (`header_item`
-            // takes the `Header`, not the entry's flags).
             kind: EntryKind::Header(Header {
                 title: "beckon".into(),
                 subtitle: head.text,
@@ -1611,12 +881,8 @@ fn build_mac_entries(m: &MacMenu) -> Vec<MenuEntry> {
 
     e.push(MenuEntry {
         key: Some(','),
-        ..MenuEntry::item(MENU_EDIT, "Settings...")
+        ..MenuEntry::item(MENU_EDIT, "Open Config")
     });
-    e.push(MenuEntry::item(
-        MENU_UPDATE,
-        beckon_core::menu::update_label(true),
-    ));
     e.push(MenuEntry {
         key: Some('r'),
         ..MenuEntry::item(MENU_RELOAD, "Reload Config")
@@ -1640,101 +906,44 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
         build_entries(&MenuModel {
             phrase: s.last_phrase.clone(),
             paused: s.paused,
-            // `is_enabled()` is the ticked state; whether the row shows AT
-            // ALL is a different question, answered by `autostart.is_some()`
-            // (see `AutostartCapability`) -- capability, not registry state.
             autostart: s
                 .autostart
                 .as_ref()
                 .map(|_| beckon_windows::autostart::is_enabled()),
-            // Shown-but-greyed when this run has no log, rather than
-            // omitted: on Windows beckon DOES own its log, so the row is
-            // always meaningful and a missing one would be the lie. That
-            // clause is the `true` below; `menu_log_row` holds both readings
-            // so the two platforms cannot drift apart silently.
             log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
-            settings: true,
-            macos: cfg!(target_os = "macos"),
         })
     });
 
     let st = Rc::clone(state);
     let mg = Rc::clone(mgr);
-    let on_click = Box::new(move |id: u32| {
-        match id {
-            // ShellExecuteW pumps this thread's queue, so the path is cloned
-            // out and every borrow is dropped BEFORE the call -- the same
-            // rule the module doc states for backend.beckon().
-            MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
-            // The row opens the window rather than answering here: the answer
-            // needs a Copy button beside it, which a menu row cannot carry.
-            MENU_UPDATE => {
-                st.borrow_mut().pending_update_check = true;
-                open_settings(&st, &mg);
-            }
-            MENU_LOG => {
-                let path = st.borrow().log.clone();
-                if let Some(path) = path {
-                    if let Err(e) = beckon_windows::shell::open_path(&path) {
-                        eprintln!("beckon serve: {e}");
-                    }
+    let on_click = Box::new(move |id: u32| match id {
+        MENU_EDIT | hotkey::MENU_ID_DOUBLE_CLICK => open_config(&st),
+        MENU_LOG => {
+            let path = st.borrow().log.clone();
+            if let Some(path) = path {
+                if let Err(e) = beckon_windows::shell::open_path(&path) {
+                    eprintln!("beckon serve: {e}");
                 }
             }
-            // No `refresh_settings` here and that is not an omission: the
-            // `Ok` arm of `reload` ends in `settings_saw_external_change`,
-            // which is the RIGHT answer for a reload -- the file may have
-            // moved under an open window, and a plain re-projection would
-            // redraw a stale model against a fresh registration map. The
-            // `Err` arm reaches `settings_retry_unreadable`. Both directions
-            // are covered; see the two arms.
-            MENU_RELOAD => reload(&st, &mg),
-            // **The push back to an open settings window, added 2026-08-15.**
-            // Pause and autostart are now on TWO surfaces -- this menu and
-            // design §3.3's switches -- so without it the window goes on
-            // showing the state the switch had before the tray changed it,
-            // and the two disagree on screen with no way to tell which is
-            // real. Pushed from here rather than pulled by the window: the
-            // window has nothing to pull on (it runs no timer, and Windows
-            // broadcasts nothing when beckon's own flag moves), so a pull
-            // would mean a timer ticking for the ~always that the window is
-            // closed. `refresh_settings` already returns immediately when
-            // there is no window, so the push costs a `RefCell` read.
-            //
-            // AFTER the mutator and never inside it: `set_paused` returns
-            // holding no borrow, and a `refresh_settings` called while
-            // `mgr.borrow_mut()` was still live would put a `SendMessageW`
-            // fan-out inside that borrow -- the shape this module's own doc
-            // rules out. This is the same order `on_command`'s two arms use.
-            MENU_PAUSE => {
-                let now = !st.borrow().paused;
-                set_paused(&st, &mg, now);
-                refresh_settings(&st);
-            }
-            // The menu row is a TOGGLE with no state of its own, so what it
-            // wants is the opposite of what the registry currently says. The
-            // settings window's switch knows its own new state and passes it
-            // straight through; both end in `set_autostart`, which is what
-            // keeps "what a Run value looks like" a single answer.
-            MENU_AUTOSTART => {
-                set_autostart(&st, !beckon_windows::autostart::is_enabled());
-                refresh_settings(&st);
-            }
-            MENU_QUIT => {
-                eprintln!("beckon serve: quit requested from the tray menu");
-                hotkey::request_quit();
-            }
-            _ => {}
         }
+        MENU_RELOAD => reload(&st, &mg),
+        MENU_PAUSE => {
+            let now = !st.borrow().paused;
+            set_paused(&st, &mg, now);
+        }
+        MENU_AUTOSTART => {
+            set_autostart(&st, !beckon_windows::autostart::is_enabled());
+        }
+        MENU_QUIT => {
+            eprintln!("beckon serve: quit requested from the tray menu");
+            hotkey::request_quit();
+        }
+        _ => {}
     });
 
     hotkey::set_menu(build, on_click);
 }
 
-/// The macOS menu bar item: `build_mac_entries`' short menu (spec
-/// `2026-09-22-macos-ui-redesign-design.md` §3). Failure is logged and
-/// swallowed: hotkeys are the feature and this is the control surface, so
-/// losing the icon must not take the daemon with it -- the same rule Windows
-/// applies to a config that will not parse (`BrokenConfig::ServeAnyway`).
 #[cfg(target_os = "macos")]
 fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
     use beckon_macos::tray;
@@ -1742,16 +951,10 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let st_build = Rc::clone(state);
     let build = Box::new(move || {
         let s = st_build.borrow();
-        let hold = beckon_core::settings::caps_view_fold(
-            beckon_macos::prefs::caps_view(),
-            s.keyboard.caps,
-            s.keyboard.caps_hold,
-        );
+        let hold = s.keyboard.caps.then_some(s.keyboard.caps_hold);
         build_mac_entries(&MacMenu {
             phrase: s.last_phrase.clone(),
             paused: s.paused,
-            // Read on every open, never cached: every rebuild of the binary
-            // invalidates the grant (spec §6).
             accessibility: beckon_macos::is_accessibility_trusted(),
             failed: s.registered.values().filter(|r| r.is_err()).count(),
             log: menu_log_row(s.log.is_some(), cfg!(target_os = "windows")),
@@ -1762,40 +965,14 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     let st = Rc::clone(state);
     let mg = Rc::clone(mgr);
     let on_click = Box::new(move |id: u32| match id {
-        MENU_EDIT | beckon_core::menu::MENU_ID_DOUBLE_CLICK => open_settings(&st, &mg),
-        // The row opens the window rather than answering here: the answer
-        // needs a Copy button beside it, which a menu row cannot carry.
-        MENU_UPDATE => {
-            st.borrow_mut().pending_update_check = true;
-            open_settings(&st, &mg);
+        MENU_EDIT | MENU_EDIT_SHORTCUTS | beckon_core::menu::MENU_ID_DOUBLE_CLICK => {
+            open_config(&st);
         }
         MENU_RELOAD => reload(&st, &mg),
-        MENU_EDIT_SHORTCUTS => {
-            st.borrow_mut().settings_page = beckon_core::settings::Page::Shortcuts;
-            open_settings(&st, &mg);
-        }
-        // Three doors, one toggle: the header's switch (it carries the
-        // header's id), the old checkbox id, and option-click on the icon.
-        // The push back to an open settings window, added 2026-08-15, earns
-        // its place here for exactly the Windows arm's reason since the four
-        // doors landed: this window HAS a System page with a pause switch,
-        // so without the push that switch goes on showing the state it had
-        // before the menu bar changed it. It would earn its place without
-        // one anyway -- every Shortcuts row's status word is derived from
-        // `RuntimeStatus::paused`, and `set_paused` clears `registered`, so a
-        // pause from the menu bar leaves an open window claiming nineteen
-        // rows are registered. `settings_saw_external_change` is about the
-        // FILE, so it does not cover this on either platform.
         MENU_STATUS | MENU_PAUSE | beckon_core::menu::MENU_ID_ALT_CLICK => {
             let now = !st.borrow().paused;
             set_paused(&st, &mg, now);
-            refresh_settings(&st);
         }
-        // Reached only when `--log` gave this run a path, because that is
-        // exactly when `menu_log_row` draws the row. The borrow is dropped
-        // before `open_path` for the reason the module doc gives about
-        // `backend.beckon()`: the open goes through LaunchServices and may
-        // re-enter this module.
         MENU_LOG => {
             let path = st.borrow().log.clone();
             if let Some(path) = path {
@@ -1804,27 +981,15 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
                 }
             }
         }
-        // **The flush is C1's sibling and is not optional here.**
-        // `request_quit` is `process::exit(0)` and, as its own comment
-        // says, Quit never reaches a window delegate -- so `close_request`
-        // and the flush it does are not on this path. Without this line, a
-        // keystroke still inside the App field's debounce dies with the
-        // process, exactly as it died on close before C1. The borrow ends
-        // inside `quit_flush`, before the exit below.
         MENU_QUIT => {
             eprintln!("beckon serve: quit requested from the menu bar");
-            quit_flush(&st);
             tray::request_quit();
         }
-        // A binding row, in the attention section or the submenu. It opens
-        // Settings on that binding and NEVER launches it -- "Nothing in the
-        // shortcut table focuses or launches anything" (AGENTS.md).
+        // Clicking any binding row in the menu opens the config file —
+        // nothing in the shortcut menu launches or focuses an app.
         id if (MENU_BINDING_BASE..beckon_core::menu::MENU_ID_ALT_CLICK).contains(&id) => {
-            st.borrow_mut().pending_select = Some((id - MENU_BINDING_BASE) as usize);
-            open_settings(&st, &mg);
+            open_config(&st);
         }
-        // MENU_AUTOSTART never reaches here: that row is not built on macOS
-        // at all, because `brew services` owns the launch agent.
         _ => {}
     });
 
@@ -1833,34 +998,33 @@ fn install_tray_menu(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyMan
     }
 }
 
+#[cfg(target_os = "windows")]
+fn sync_tray(state: &Rc<RefCell<ServeState>>, _mgr: &Rc<RefCell<HotkeyManager>>) {
+    let show = state.borrow().tray;
+    hotkey::set_tray_visible(show);
+}
+
+#[cfg(target_os = "macos")]
+fn sync_tray(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
+    let (show, paused) = {
+        let s = state.borrow();
+        (s.tray, s.paused)
+    };
+    if show {
+        install_tray_menu(state, mgr);
+        set_tray_dimmed(paused);
+    } else {
+        beckon_macos::tray::remove();
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn sync_tray(_state: &Rc<RefCell<ServeState>>, _mgr: &Rc<RefCell<HotkeyManager>>) {}
+
 // ---------------------------------------------------------------------------
-// Caps hook (Windows only)
+// Caps hook / event tap
 // ---------------------------------------------------------------------------
 
-/// Install, refresh or remove the Caps hook so it matches the current
-/// config. Called at startup, after every reload, and on both edges of
-/// pause.
-///
-/// Measured on a14 2026-08-11, which is what makes the alias design safe:
-/// an injected `ctrl+win+alt+<key>` burst does fire our own
-/// `RegisterHotKey`; the burst does not open the Start menu (verified
-/// against a control that proved a bare Win tap does); and the injection
-/// costs 5-13 ms against a 300 ms `LowLevelHooksTimeout`.
-/// **Windows deliberately does NOT take the Caps lock, and that is a scope
-/// decision rather than an oversight.**
-///
-/// The macOS arm takes it because a `CGEventTap` was MEASURED to be
-/// machine-global and stacking: two serves, two configs, the last tap in
-/// swallows every Caps event while both processes log success. A
-/// `WH_KEYBOARD_LL` hook chains too and the same failure looks likely here --
-/// but likely is not measured, and today's lesson in this repo is exactly
-/// that a result on one OS is data about that OS, not about the design.
-/// `caps_tap = "capslock"` shipped broken on macOS for precisely this reason:
-/// the port inherited a true Windows sentence as a premise.
-///
-/// To close it, measure it: two `beckon.exe serve` on two configs, one Caps
-/// binding each, and press both. If the second one's chord is dead, lift the
-/// three lines from the macOS arm.
 #[cfg(target_os = "windows")]
 fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     use beckon_windows::caps_hook;
@@ -1876,29 +1040,9 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     };
 
     if !want {
-        // Forget the key set BEFORE giving up the reason, and unconditionally
-        // -- dropping the reason is not enough to stop Caps aliasing.
-        //
-        // The hook is shared. A chord capture installs it too, and
-        // `hook_proc`'s capture arm is gated on `armed() &&
-        // GetForegroundWindow() == hwnd`, so a capture armed while the
-        // settings window is not frontmost falls through to `caps::decide`
-        // with whatever `CONFIG` was last handed it. Without this line the
-        // set the user just switched off stays loaded, and `Caps+T` starts
-        // aliasing again -- seconds at a time, whenever a shortcut is
-        // recorded -- under a config that says Caps is off. Same for pause,
-        // which reaches this branch by the same `want`.
-        //
-        // `clear_bindings` resets `tap` to `capslock` as well, so a
-        // configured `caps_tap = "escape"` stops remapping the key the
-        // moment the feature it belongs to is off.
         caps_hook::clear_bindings();
-        // Drop the Caps reason unconditionally. `is_installed()` reports the
-        // HHOOK, which a chord capture may also be holding, so it cannot
-        // stand in for "Caps holds it"; the before/after pair is only for
-        // the log line, which is about the hook going away.
         let was_installed = caps_hook::is_installed();
-        caps_hook::uninstall_for(caps_hook::HookReason::Caps);
+        caps_hook::uninstall();
         if was_installed && !caps_hook::is_installed() {
             eprintln!("beckon serve: caps hook removed");
         }
@@ -1907,13 +1051,8 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 
     let keys = bound.len();
     caps_hook::set_bindings(bound, hold, tap);
-    // Deliberately NOT `if is_installed() { return; }`. A capture may be
-    // holding the hook, and returning there would leave the Caps reason
-    // unregistered -- so when the capture ended it would take the hook away
-    // from a Caps feature that is switched on. `install_for` is idempotent;
-    // only the log line needs to know whether this call did the installing.
     let was_installed = caps_hook::is_installed();
-    match caps_hook::install_for(caps_hook::HookReason::Caps) {
+    match caps_hook::install() {
         Ok(()) => {
             if !was_installed {
                 eprintln!("beckon serve: caps hook active, {keys} keys reachable through Caps");
@@ -1921,38 +1060,15 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
         }
         Err(e) => {
             eprintln!("beckon serve: {e}");
-            // The user just ticked this; tell them every time.
             crate::notify::report(
                 &format!("could not enable Caps Lock: {e}"),
                 crate::notify::Cause::HumanAction,
             );
-            // Do not leave the config claiming a feature that is not
-            // running. The file still says `caps = true`; this only stops
-            // the in-memory state from lying to the settings window.
             state.borrow_mut().keyboard.caps = false;
         }
     }
 }
 
-/// Ask for Accessibility once, at startup, when it is missing.
-///
-/// **Without the grant beckon cannot focus anything** -- the single largest
-/// cause of "beckon does nothing" on this platform -- and until now nothing in
-/// beckon ever ASKED for it. `AXIsProcessTrusted` reads a recorded answer; it
-/// does not raise the dialog, so a binary with no TCC row could never acquire
-/// one through any path a user could find. Finding the pane by hand means
-/// typing a path that carries a nix hash or a Homebrew version and changes on
-/// every update.
-///
-/// **Once, and only when missing**, which is what keeps this from being the
-/// unprompted-dialog-from-the-hot-path that `ffi::ax_is_process_trusted_prompt`
-/// was written to avoid: macOS shows the panel only for a process with no
-/// answer recorded, so a user who has answered -- either way -- never sees it
-/// again, and `beckon <id>` never reaches this code at all.
-///
-/// At startup rather than on the first failed hotkey, because a hotkey that
-/// does nothing gives no hint that a dialog is what is owed, and because
-/// startup is when a person has just installed or updated something.
 #[cfg(target_os = "macos")]
 fn ask_for_accessibility_once() {
     if beckon_macos::is_accessibility_trusted() {
@@ -1967,6 +1083,18 @@ fn ask_for_accessibility_once() {
     }
 }
 
+/// Ask macOS for Input Monitoring at most once per process when the user
+/// enables `keyboard.caps = true`. `IOHIDCheckAccess` alone never creates a
+/// TCC row, leaving the user with nothing to toggle in System Settings.
+#[cfg(target_os = "macos")]
+fn ask_for_input_monitoring_once() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static ASKED: AtomicBool = AtomicBool::new(false);
+    if !ASKED.swap(true, Ordering::Relaxed) {
+        let _ = beckon_macos::caps_tap::request_input_monitoring();
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
     use beckon_macos::caps_tap;
@@ -1977,31 +1105,14 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
             s.keyboard.caps && !s.paused,
             s.keyboard.caps_tap,
             s.keyboard.caps_hold,
-            // The macOS projection of the same set: Carbon keycodes rather
-            // than Win32 virtual keys. `bound_keys_mac` selects exactly the
-            // bindings `bound_keys` does -- pinned by
-            // `the_two_projections_select_the_same_bindings`.
             beckon_core::caps::bound_keys_mac(&s.registered, s.keyboard.caps_hold),
         )
     };
 
     if !want {
-        // Forget the key set BEFORE giving up the tap, and unconditionally.
-        // An empty set makes the callback pass every event through whatever
-        // else is true, so the window between disabling and the run loop
-        // noticing cannot eat a keystroke. `clear_bindings` resets `tap` to
-        // `capslock` too, so a configured `caps_tap = "escape"` stops
-        // remapping the key the moment the feature it belongs to is off.
         caps_tap::clear_bindings();
         let was = caps_tap::is_installed();
-        // **Drop only the Caps reason.** The tap survives if a recording is
-        // holding it -- the same rule `sync_caps_hook` follows on Windows, and
-        // what makes `clear_bindings` above the thing that actually keeps a
-        // paused tap from eating a keystroke rather than the teardown.
-        caps_tap::uninstall_for(beckon_core::capture::HookReason::Caps);
-        // Hand Caps back. Held any longer, a paused beckon would keep every
-        // other beckon on the machine from ever installing a tap -- the same
-        // silence this lock exists to end, with the roles swapped.
+        caps_tap::uninstall();
         state.borrow_mut().caps_owner = None;
         if was && !caps_tap::is_installed() {
             eprintln!("beckon serve: caps event tap removed");
@@ -2011,21 +1122,12 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
 
     let keys = bound.len();
 
-    // **One tap per machine, and say so when it is not ours.** Taps stack and
-    // the last one in sits upstream, so a second beckon installing one takes
-    // Caps away from the first while both log success. The refusal below is
-    // the fix; the lock is only how it is detected.
-    //
-    // Re-taken on every `sync_caps_hook`, so a beckon that lost the race gets
-    // Caps the moment the owner pauses, reloads with `caps = false`, or exits
-    // -- no timer, because every one of those already calls this function.
     if state.borrow().caps_owner.is_none() {
         match crate::lockfile::acquire_caps() {
             Some(f) => state.borrow_mut().caps_owner = Some(f),
             None => {
                 if caps_tap::is_installed() {
-                    caps_tap::clear_bindings();
-                    caps_tap::uninstall_for(beckon_core::capture::HookReason::Caps);
+                    caps_tap::uninstall();
                 }
                 eprintln!(
                     "beckon serve: another beckon owns Caps on this machine; \
@@ -2036,9 +1138,13 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
         }
     }
 
+    if !caps_tap::input_monitoring_granted() {
+        ask_for_input_monitoring_once();
+    }
+
     caps_tap::set_bindings(bound, hold, tap);
     let was = caps_tap::is_installed();
-    match caps_tap::install_for(beckon_core::capture::HookReason::Caps) {
+    match caps_tap::install() {
         Ok(()) => {
             if !was {
                 eprintln!(
@@ -2048,1797 +1154,23 @@ fn sync_caps_hook(state: &Rc<RefCell<ServeState>>) {
         }
         Err(e) => {
             eprintln!("beckon serve: {e}");
-            // The user just ticked this; tell them every time.
             crate::notify::report(
                 &format!("could not enable Caps Lock: {e}"),
                 crate::notify::Cause::HumanAction,
             );
-            // Do not leave the in-memory state claiming a feature that is not
-            // running. The file still says `caps = true`; this only stops the
-            // settings window being lied to.
             state.borrow_mut().keyboard.caps = false;
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Settings window
-//
-// The window itself is per-OS (`beckon_windows::settings_window`,
-// `beckon_macos::settings_window`), aliased to `swin`. Everything below is
-// shared, because it is all policy and `beckon_core::settings` already owns
-// the decisions. Four calls genuinely differ, and each gets a shim here
-// rather than a `cfg` in the middle of `open_settings`.
-// ---------------------------------------------------------------------------
-
-/// What the user chose when asked about unsaved edits on close.
-///
-/// **Windows only, since Task 10 (G-j).** macOS auto-saves, so its close
-/// question is no longer this one at all -- see `close_request` below,
-/// which never raises this three-way prompt. Windows still gates every
-/// write behind Save (G-i is out of scope this branch), so it keeps asking
-/// exactly what it always asked.
-#[cfg(target_os = "windows")]
-enum SaveChoice {
-    Save,
-    Discard,
-    Cancel,
-}
-
-#[cfg(target_os = "windows")]
-fn ask_save_changes() -> SaveChoice {
-    use beckon_windows::shell;
-    match shell::ask_save("beckon", "Save your changes to the shortcuts file?") {
-        shell::SaveChoice::Save => SaveChoice::Save,
-        shell::SaveChoice::Discard => SaveChoice::Discard,
-        shell::SaveChoice::Cancel => SaveChoice::Cancel,
-    }
-}
-
-/// Should the window be allowed to close right now? `on_close_request`'s
-/// whole body, moved out so the two platforms can answer a genuinely
-/// different question rather than sharing one closure with a `cfg` cut
-/// through the middle of it.
-///
-/// **Windows: unchanged.** It still gates every write behind Save (G-i is
-/// out of scope this branch), so a dirty model still raises the three-way
-/// `ask_save_changes` prompt, exactly as it did before this branch.
-#[cfg(target_os = "windows")]
-fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
-    // A read-only window has no model, so `dirty` is false and this is the
-    // arm it leaves by: no save prompt for changes that could not have been
-    // made.
-    let dirty = st
-        .borrow()
-        .settings
-        .as_ref()
-        .map(|m| m.dirty())
-        .unwrap_or(false);
-    if !dirty {
-        forget_settings(st);
-        return true;
-    }
-    match ask_save_changes() {
-        SaveChoice::Save => {
-            apply_settings(st);
-            // Only leave if the write actually succeeded -- apply_settings
-            // clears `dirty` by reseeding the model, so a still-dirty model
-            // means it failed and the user's edits are only in memory.
-            //
-            // **CORRECTED 2026-08-14: back to one way, not two.** This read
-            // "there are now two ways for it not to have written" -- a
-            // failed write, and a Save refused because the file had moved
-            // while the user was behind a door that hid the announcement
-            // (`save_press`, `aa9fbd6`). That refusal is gone and stayed
-            // gone: the window guarantees the warning is on screen from
-            // every door -- the banner on `BANNER_PAGE`, the Shortcuts
-            // pill's warn dot on the other three -- so there is no door to
-            // be behind and `apply_settings` writes or fails. The test
-            // itself never depended on which, which is why it is unchanged
-            // either time.
-            let still_dirty = st
-                .borrow()
-                .settings
-                .as_ref()
-                .map(|m| m.dirty())
-                .unwrap_or(false);
-            if !still_dirty {
-                forget_settings(st);
-            }
-            !still_dirty
-        }
-        SaveChoice::Discard => {
-            forget_settings(st);
-            true
-        }
-        SaveChoice::Cancel => false,
-    }
-}
-
-/// Write what the debounce is still holding, if anything (C1).
-///
-/// **One body, two session ends.** The App field is the one debounced input:
-/// `edit!` and `autosave_tick` both decline to write while
-/// `autosave_is_deferred()`, so for up to `AUTOSAVE_QUIET_MS` plus one tick
-/// after a keystroke the model is dirty and the file does not have the edit.
-/// Anything that ends the model's session inside that window must run this
-/// first or the keystroke is gone, and there are two such things on macOS:
-/// closing the window (`close_verdict`, which then decides whether to refuse)
-/// and Quit from the menu bar (`quit_flush`, which cannot refuse anything).
-/// They share this function rather than each spelling it, for the reason
-/// `app_lookup` and `base_moved` were extracted: two spellings of a rule are
-/// two chances to change only one of them.
-///
-/// **It ignores the debounce deliberately.** The deadline exists to avoid
-/// writing on every keystroke, not to withhold a write that has nowhere left
-/// to go, so this calls `autosave` directly -- which has no deferral check of
-/// its own. The check lives in the two callers that fire repeatedly; these
-/// two fire once, at the end.
-///
-/// **It is a last chance, not a licence.** `autosave` runs the whole plan, so
-/// a base that moved still holds, an unrenderable row still writes nothing,
-/// and `Keep mine` is still the only clobber. What the caller does with a
-/// hold is the caller's business: the close refuses on `CannotWrite` and
-/// proceeds otherwise (G-j), while Quit always proceeds.
-///
-/// Gated on `dirty`, so a session that ends with a clean model touches no
-/// file at all -- and so a `CannotWrite` recorded over a model the user has
-/// since undone is not re-tried on the way out.
-#[cfg(target_os = "macos")]
-fn flush_pending_write(s: &mut ServeState) {
-    if s.settings.as_ref().is_some_and(|m| m.dirty()) {
-        autosave(s, false);
-    }
-}
-
-/// Everything Quit must do before the process ends (C1's sibling).
-///
-/// **`Quit` never reaches a window delegate** -- `tray::request_quit` says so
-/// in its own comment, and it is `std::process::exit(0)` -- so
-/// `windowShouldClose:` and `close_request` are not on this path, and the
-/// flush they do would never happen. A pending keystroke died here exactly
-/// the way it died on close before C1, and for the same reason: the process
-/// ends while the debounce is still holding the write.
-///
-/// **The write completes before the exit rather than being merely started,
-/// and that is sequencing rather than luck.** `process::exit` runs no
-/// destructors, so it would drop a buffered writer's contents -- but there is
-/// no buffering to lose: `write_config_text` calls `std::fs::write` (which
-/// does `write_all` and closes the file before it returns) and then
-/// `std::fs::rename`, both synchronous syscalls, both complete when they
-/// return. This function returns only after they do, and the menu arm calls
-/// `request_quit()` only after this function returns. Nothing is spawned,
-/// queued or deferred in between. (Durability against a power cut would need
-/// an `fsync` that `write_config_text` has never done -- the same guarantee
-/// every other beckon write has, including the close.)
-///
-/// **Split from the exit so a test can reach it.** `request_quit` is
-/// divergent and would take the test process with it; this half is the same
-/// `&mut ServeState` shape the driver tests already drive, and the one line
-/// left untested is the call from the menu arm -- the same residual
-/// `close_request`'s call to `close_verdict` has.
-///
-/// No `refresh_settings`: the process is about to end, so there is nobody
-/// left to draw for, and the call would touch AppKit for no reason.
-#[cfg(target_os = "macos")]
-fn quit_flush(st: &Rc<RefCell<ServeState>>) {
-    let mut s = st.borrow_mut();
-    flush_pending_write(&mut s);
-}
-
-/// Flush what is still pending, then say whether the window may close
-/// (G-j, and the flush is C1).
-///
-/// **The flush comes first** -- `flush_pending_write` above, which is where
-/// the reasoning lives and which Quit shares. Closing inside the App
-/// field's debounce used to drop the model with `forget_settings` and lose
-/// the keystroke silently, with the footer reading `Saved just now` because
-/// `last_not_saved` was `None` throughout. Four-doors design §6's G-i names
-/// exactly that loss, scoped to logoff; on macOS the close ends the model's
-/// session just as finally, and since Task 11 it is the only way out of the
-/// window.
-///
-/// What is decided HERE is what to do with the flush's outcome. A flush
-/// that HOLDS leaves `last_not_saved` set with its own footer phrase and
-/// the close then proceeds -- G-j's recorded ruling, with its recorded
-/// cost: a user who closes on an `AppWentMissing` hold loses one valid edit
-/// that the footer had been naming the whole time. A flush that FAILS
-/// leaves `CannotWrite`, and the line below reads it back, so the refusal
-/// is about this attempt rather than an older one.
-///
-/// **The decision half of `close_request`, split out so it has somewhere a
-/// test can reach it (I6).** The other half raises an `NSAlert` and drops
-/// the model, neither of which a unit test can be near; this half takes
-/// `&mut ServeState` like every other driver function the tests drive, and
-/// the refusal itself is `beckon_core::settings::close_is_refused` --
-/// where the policy lives, with its own tests, `remove_needs_confirm`'s
-/// reason.
-///
-/// A read-only window has no model, so there is nothing to flush,
-/// `dirty` is false and this answers `true`.
-#[cfg(target_os = "macos")]
-fn close_verdict(s: &mut ServeState) -> bool {
-    flush_pending_write(s);
-    let dirty = s.settings.as_ref().map(|m| m.dirty()).unwrap_or(false);
-    !beckon_core::settings::close_is_refused(dirty, s.last_not_saved)
-}
-
-/// Should the window be allowed to close right now (G-j)?
-///
-/// **The only prompt auto-save keeps.** Under auto-save a dirty model is
-/// the routine state -- the debounce window before a keystroke's write
-/// lands, and every reason `autosave` holds one (`FileMoved` behind its own
-/// banner, `FinishTheRow` and `AppWentMissing` on the row itself). Gating
-/// the close on `dirty` alone, the way the old three-way Save/Cancel/
-/// Discard prompt did, would raise a save prompt on nearly every close and
-/// train it away -- the exact failure four-doors design 6's G-j names.
-///
-/// The one case nothing else on screen is already saying is
-/// `NotSaved::CannotWrite`: auto-save tried, `write_config_text` refused,
-/// and closing now would discard an edit with no other door offering to
-/// save it. That is the only refusal left, and it is a single ASCII alert
-/// naming the problem -- not a choice, because there is nothing to choose
-/// between here that `Undo` and a second attempt do not already cover.
-///
-/// Everything this function still owns is the part that touches AppKit or
-/// the model's lifetime: the alert, and `forget_settings`. The answer
-/// itself -- including the flush that C1 added -- is `close_verdict`
-/// above. The borrow is scoped to a block that ends before either, which
-/// is this module's rule for any call that can re-enter `ServeState`.
-/// `autosave` runs inside that borrow, as it already does from `edit!` and
-/// `autosave_tick`: it does file I/O and an `eprintln!`, never a dialog,
-/// which is the reason its failure arm is a log line.
-///
-/// **`refresh_settings` before the alert, and that ordering is the point.**
-/// The flush may have just turned `Saved just now` into `Not saved -
-/// cannot write the file`; pushing it first means the footer behind the
-/// box already says what the box is about, rather than contradicting it.
-#[cfg(target_os = "macos")]
-fn close_request(st: &Rc<RefCell<ServeState>>) -> bool {
-    let may_close = {
-        let mut s = st.borrow_mut();
-        close_verdict(&mut s)
-    };
-    if !may_close {
-        refresh_settings(st);
-        swin::error(
-            "Cannot close: your last change could not be saved.\n\n\
-             Use Undo, or fix the problem, then close again.",
-        );
-        return false;
-    }
-    forget_settings(st);
-    true
-}
-
-/// Open the config file in the user's editor.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn open_config_file(p: &Path) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        beckon_windows::shell::open_path(p)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        swin::open_path(p)
-    }
-}
-
-/// Scan the installed-app catalog off the UI thread.
-///
-/// `scan_installed_apps` was measured at ~370-500 ms on Windows and the
-/// macOS bundle walk is the same order; the run loop that would stall is
-/// the one dispatching hotkeys, so this never runs inline.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn spawn_catalog_scan() {
-    #[cfg(target_os = "windows")]
-    {
-        // The Windows window is told through a posted message, which needs
-        // its handle. `None` means it closed between opening and here.
-        if let Some(h) = swin::hwnd() {
-            let target = swin::WindowHandle(h);
-            std::thread::spawn(move || {
-                let names: Vec<String> = beckon_windows::apps::scan_installed_apps()
-                    .into_iter()
-                    .map(|a| a.name)
-                    .collect();
-                swin::post_catalog(target, names);
-            });
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Deliberately synchronous for now. The macOS window has no
-        // main-queue hop yet (see `tray.rs`'s module doc), and AppKit may
-        // only be touched from the main thread -- so a worker here would
-        // have nowhere to deliver its answer. Scanning inline costs the
-        // window-open, not the hot path: `beckon <id>` never reaches this
-        // code, and hotkeys are not dispatched while a menu action runs.
-        //
-        // This is the first caller that will actually need that hop, and
-        // it is why the hop is specified rather than built: it lands here.
-        let names: Vec<String> = beckon_macos::installed_app_names();
-        swin::post_catalog(names);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Settings model plumbing
-// ---------------------------------------------------------------------------
-
-/// Recompute what the window should show and push it. Every callback ends
-/// here; nothing else touches the controls.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn refresh_settings(state: &Rc<RefCell<ServeState>>) {
-    let s = state.borrow();
-    // Two projections, one push. The read-only one has no `Model` behind it
-    // -- `Model::from_text` failed -- which is exactly why `unreadable_state`
-    // exists: the window is given a `ControlState` either way and never
-    // learns that there are two ways to arrive at one.
-    let cs = if let Some(model) = s.settings.as_ref() {
-        let rt = beckon_core::settings::RuntimeStatus {
-            registered: s.registered.clone(),
-            catalog: s.catalog.clone(),
-            // Pausing CLEARS `registered`, so without this the window would
-            // show every row as "not registered yet" and never say why.
-            paused: s.paused,
-            // `row_condition` shows this on the selected row only, and only
-            // while that row still spells the chord it was about -- so a
-            // verdict the user has typed past disappears rather than being
-            // shown against its replacement.
-            probe: s.probe.clone(),
-            // macOS only: Windows keeps its command bar and its own Save, so
-            // there is no `last_not_saved` field there to read -- see both
-            // fields' own docs.
-            #[cfg(target_os = "macos")]
-            last_not_saved: s.last_not_saved,
-            #[cfg(not(target_os = "macos"))]
-            last_not_saved: None,
-        };
-        beckon_core::settings::control_state(model, &rt)
-    } else if let Some(notes) = s.settings_unreadable.as_ref() {
-        beckon_core::settings::unreadable_state(notes.clone())
-    } else {
-        // The window is closed.
-        return;
-    };
-    let external = s.external_change;
-    let catalog = s.catalog.clone();
-    // The System page's two facts, read in the SAME borrow as everything
-    // above and used after it is dropped. `paused` is the flag `set_paused`
-    // owns; `autostart` is capability first and state second -- `None` omits
-    // the row entirely, and `is_enabled()` only decides the tick, which is
-    // `MenuModel::autostart`'s own distinction and the reason it is spelled
-    // the same way here.
-    #[cfg(target_os = "windows")]
-    let autostart = s
-        .autostart
-        .as_ref()
-        .map(|_| beckon_windows::autostart::is_enabled());
-    let paused = s.paused;
-    let update = s.update;
-    drop(s);
-    swin::apply_state(&cs, external, catalog.as_deref());
-    // **A second push, and design §1's split by store is why.** The System
-    // page writes `HKCU\Software\beckon`, the Run key, or nothing -- never
-    // `apps.toml` -- so it must keep working in the one state
-    // `unreadable_state` describes, where there is no `Model` to project a
-    // `ControlState` out of at all. Riding on the projection above would have
-    // made a theme switch hostage to a TOML error.
-    //
-    // **Both platforms now.** This read "Windows only, and not through a
-    // `swin` alias: the macOS settings window has no System page, so a no-op
-    // there would be a function whose only purpose is to be called." The
-    // macOS window has all four doors as of the four-doors port, so the call
-    // is real on both and the alias is the right way to reach it.
-    //
-    // `autostart` is the one argument that still differs, and it differs in
-    // core rather than here: it is gathered only on Windows and is therefore
-    // `None` on macOS, which is `SystemState::autostart`'s documented way of
-    // saying "this process cannot offer autostart at all" -- so the row is
-    // omitted rather than greyed. On macOS that is not a shortfall: the
-    // Homebrew formula's `service do` block owns the launch agent, and a
-    // switch here would be a second writer for a file beckon did not create.
-    #[cfg(not(target_os = "windows"))]
-    let autostart: Option<bool> = None;
-    swin::apply_system_state(paused, autostart);
-    // The About page's second push, and the System page's reason exactly:
-    // About must keep working in the `unreadable_state` case, where there is
-    // no `Model` to project a `ControlState` out of.
-    swin::set_update_state(update);
-    // **A third push, and it takes no arguments at all.** Every string on the
-    // About page is something only the settings window's own process can know
-    // -- its compiled-in version, its target triple, its `current_exe()` and
-    // the two timestamps behind the stale-image verdict -- so there is
-    // nothing here to hand over, and anything this function did pass would be
-    // a copy of a fact that crate reads directly.
-    //
-    // Called on every refresh rather than once at open, because one of those
-    // strings genuinely moves: the file at the launch path can be replaced
-    // while the window is up, which is the whole subject of the `Location`
-    // row.
-    //
-    // Both platforms, for `apply_system_state`'s reason: the macOS window has
-    // an About door now.
-    swin::apply_about_state();
-}
-
-/// Decide whether `combo` is free for the row being edited, asking the OS
-/// only when nothing beckon already knows can settle it, and keep the
-/// verdict for the next push.
-///
-/// **Order, and why there is no `refresh_settings` here.** The window sends
-/// this BEFORE `on_edit_combo` (see `Callbacks::on_probe_shortcut`), so the
-/// model still holds the row's previous chord -- which is what makes
-/// `probe_plan`'s `Unchanged` mean "this row already uses it" instead of
-/// "the model was updated a moment ago". The push that draws the verdict is
-/// therefore the one `on_edit_combo` does immediately afterwards, by which
-/// time the row spells the probed chord and `row_condition` folds the note
-/// in. Pushing here as well would draw a state where the two disagree.
-///
-/// **Every borrow is dropped before `probe_chord`.** `RegisterHotKey` is a
-/// call into the OS from a wndproc callback, and a second `RefCell` borrow
-/// taken across an `extern "system"` boundary aborts the process rather than
-/// unwinding -- the rule this module's doc states for `backend.beckon()`.
-///
-/// **Known false alarm, from reading MSDN rather than from hardware --
-/// narrowed, not gone.** `RegisterHotKey` refuses a chord that is *already
-/// registered anywhere on this desktop*, and that includes beckon's own live
-/// table on `tray_hwnd` -- the separate HWND only rules out an `(hWnd, id)`
-/// identity collision, never a chord collision. The live table is the SAVED
-/// file while `probe_plan` reads the EDITED model, so a chord `serve` holds
-/// and no model row currently spells reaches the OS and comes back `Taken` --
-/// "Another program already has this shortcut" -- about beckon itself.
-///
-/// `probe_plan` now settles two of the three cases without asking: a chord
-/// another row still spells (step 4) and the edited row's OWN saved chord
-/// (step 4b, which is what the edit-away-and-back sequence hits, since the
-/// probe runs before `on_edit_combo` and the row therefore still holds its
-/// previous chord). What remains is a chord some OTHER row was saved with and
-/// has since been edited away from -- or whose row was deleted outright,
-/// which leaves no `orig_key` anywhere in `m.rows` for step 4b to find at
-/// all. Closing that needs the probe to read `ServeState::shortcuts`, which
-/// is a policy §F.6 has no verdict or string for; it stays written up in the
-/// task 2 report rather than guessed at here.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn probe_shortcut(state: &Rc<RefCell<ServeState>>, combo: String) {
-    use beckon_core::settings::{ProbePlan, ProbeResult};
-
-    // One borrow, taken and dropped before anything below touches the OS.
-    let plan = {
-        let s = state.borrow();
-        let Some(m) = s.settings.as_ref() else {
-            return; // read-only window, or no window at all
-        };
-        let Some(row) = m.selected else {
-            return; // nothing is being edited, so there is nothing to ask about
-        };
-        beckon_core::settings::probe_plan(m, row, &combo)
-    };
-    let verdict = match plan {
-        ProbePlan::Verdict(v) => v,
-        #[cfg(target_os = "macos")]
-        ProbePlan::AskTheOs => {
-            // **No macOS probe, and this is now MEASURED rather than
-            // cautious.** The comment here used to say the behaviour was
-            // unmeasured and that assuming Carbon matched `RegisterHotKey`
-            // was the kind of claim this repo has had to retract. It was
-            // right, and `examples/hotkey_conflict_probe.rs` is why it can
-            // stop being a hedge -- run in an Aqua session on 2026-08-16,
-            // with the control first:
-            //
-            //   Ctrl+Cmd+Opt+F19            ACCEPTED   <- control: it works
-            //   Ctrl+Cmd+Opt+F19 (again)    REFUSED    <- OSStatus -9878
-            //   Cmd+Space   (Spotlight)     ACCEPTED
-            //   Ctrl+Up     (Mission Ctrl)  ACCEPTED
-            //
-            // So `RegisterEventHotKey` refuses a duplicate **from the same
-            // process** (`eventHotKeyExistsErr`) and accepts a chord another
-            // application already owns. It cannot answer the question the
-            // probe asks, and a successful registration would be a guess
-            // dressed as a measurement -- the exact failure `probe_plan`
-            // exists to prevent by asking the OS last.
-            //
-            // The same-process refusal is not a second-best signal either:
-            // "another row in this file already uses it" is step four, which
-            // core answers before this arm is ever reached.
-            //
-            // Leaving `probe` as it is renders "not yet probed", which
-            // `row_condition` already distinguishes from "free". The five
-            // steps BEFORE this one -- parse, the F12 guard, the row's own
-            // chord, other rows in the file, the row's saved chord -- all
-            // still run, and they are the ones that catch real mistakes.
-            //
-            // Do not re-open this without re-running that probe.
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        ProbePlan::AskTheOs => {
-            // The SETTINGS window's handle, never the tray's -- see
-            // `hotkey::probe_chord`, which is where that rule and its reason
-            // live. `None` means the window closed between the notification
-            // and here, which leaves nothing to ask on and nobody to tell.
-            let Some(h) = swin::hwnd() else {
-                return;
-            };
-            // `AskTheOs` is only reachable for a chord `probe_plan` parsed,
-            // so this cannot fail -- but a control is not a proof, and an
-            // `expect` here would abort `serve` for a bad shortcut string.
-            let Ok(c) = beckon_core::shortcuts::Combo::parse(&combo) else {
-                return;
-            };
-            beckon_windows::hotkey::probe_chord(h, &c)
-        }
-    };
-    state.borrow_mut().probe = Some(ProbeResult { combo, verdict });
-}
-
-/// Read the config file into whichever of the window's two states it
-/// deserves: a `Model` when it parses, the read-only explanation when it
-/// does not.
-///
-/// **A file that does not parse is not an error here, and that is the whole
-/// point of this function.** `open_settings` used to refuse outright --
-/// *"Fix it in a text editor first"* -- which told someone who has never
-/// seen TOML to go and do the thing the window exists to save them from.
-/// beckon still never writes over a file it cannot read; it just says so
-/// with the file open in front of them.
-///
-/// `Err` is reserved for a file that could not be READ at all -- deleted,
-/// locked, permission denied. There is nothing to show for that, so the
-/// caller reports it and does not open.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn load_settings_model(state: &Rc<RefCell<ServeState>>) -> Result<(), String> {
-    let path = state.borrow().config.clone();
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("Cannot read {}:\n\n{e}", path.display()))?;
-    let parsed = beckon_core::settings::Model::from_text(&text);
-    let mut s = state.borrow_mut();
-    match parsed {
-        Ok(m) => {
-            s.settings = Some(m);
-            s.settings_unreadable = None;
-        }
-        Err(e) => {
-            s.settings = None;
-            s.settings_unreadable = Some(beckon_core::settings::explain_unreadable(&text, &e));
-        }
-    }
-    s.external_change = false;
-    // **The verdict is about a model, and this is a different one.**
-    // `last_not_saved` answers "why did the last auto-save not write THIS
-    // model", so a model that has just been read off disk starts with no
-    // answer at all -- see the field's own doc. Without this the first frame
-    // of a reopened window reads a refusal about the previous session.
-    #[cfg(target_os = "macos")]
-    {
-        s.last_not_saved = None;
-    }
-    Ok(())
-}
-
-/// The window is closing, or failed to open. Both halves of the
-/// `settings` / `settings_unreadable` pair go, together: leaving the
-/// explanation behind would make `settings_saw_external_change` believe a
-/// window is still open and push into a destroyed one.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn forget_settings(state: &Rc<RefCell<ServeState>>) {
-    let mut s = state.borrow_mut();
-    s.settings = None;
-    s.settings_unreadable = None;
-    // The model the verdict was about is gone, so the verdict goes with it.
-    // Belt and braces beside `load_settings_model`'s own clear: between a
-    // close and the next open there is no model for a stale answer to be
-    // wrong about, and this is the half that runs first.
-    #[cfg(target_os = "macos")]
-    {
-        s.last_not_saved = None;
-    }
-}
-
-/// Write the model to disk, atomically.
-///
-/// Deliberately no direct `reload()` call afterwards: `watch_config` fires
-/// on the rename and the 1 Hz tick reloads within a second. A shortcut path
-/// here would buy under a second at the cost of a second code path, and the
-/// watcher would run anyway.
-///
-/// **This function is the ONE funnel every Save goes through.** There are two
-/// routes to it and only one is a button: `on_apply` (the Save press and the
-/// `Ctrl+S` accelerator pointed at it), and `on_close_request`'s
-/// `SaveChoice::Save` -- the prompt raised on the way out, which reaches this
-/// without going near `IDC_APPLY`.
-///
-/// **REVERTED 2026-08-14: there is no external-change guard here any more.**
-/// `aa9fbd6` put one in -- `save_press` refused the press once and switched the
-/// window to the door the banner was drawn on -- because Task 4 had made the
-/// announcement Shortcuts-only while Save stayed on all four pages. The
-/// protection is real and is still owed; what changed is where it is paid. It
-/// is paid in the WINDOW, by there being no door from which Save can be pressed
-/// with nothing on screen saying the file moved -- so the funnel needs no
-/// opinion about which door is open. That is one page-switch route removed
-/// rather than one added, and the two defects the added route carried -- a
-/// switch that moves no focus, and a switch that changes card geometry -- go
-/// with it.
-///
-/// **AMENDED 2026-08-14, Task 6**, because the mechanism changed under this
-/// paragraph and the conclusion did not. It read "`banner_shown` now draws the
-/// announcement on EVERY page", which was the wide holding position. The
-/// announcement is back on `BANNER_PAGE` alone, and what covers the other three
-/// doors is the warn dot on the Shortcuts pill: `banner_shown` and
-/// `warn_dot_shown` partition `external_change`, so exactly one of them is up
-/// on any door and never neither. `settings::the_warning_is_on_screen_from_
-/// every_door` is the assertion, and it is the reason this function still needs
-/// no guard.
-///
-/// **WINDOWS ONLY as of 2026-09-23 (I2), and the `cfg` now says so.** Two
-/// amendments used to stand here. The first (auto-save) added a
-/// `#[cfg(target_os = "macos")]` compare-and-swap immediately before the
-/// write, because the macOS close prompt's `Save` could reach this function
-/// with an edit `autosave` had just refused. The second (Task 10, G-j)
-/// recorded that the close prompt was gone and that `on_apply` -- the Save
-/// press and its `Ctrl+S` accelerator -- was "the ONLY door left onto this
-/// function" on macOS. One commit later Task 11 deleted that door too:
-/// `beckonSave:`, the button views and the accelerator are all gone from
-/// `beckon-macos`, and `cb.on_apply` is raised from exactly one place in
-/// the program, `beckon-windows`' `IDC_APPLY` handler.
-///
-/// So the guard was standing on a bricked door while its own comment told
-/// the next reader the door was open -- and a reader auditing macOS's write
-/// paths would have counted three where there are two (`autosave` and
-/// `undo_pressed`). Both are gone with the function's macOS half: the `cfg`
-/// is `windows`, the compare-and-swap it carried went with it, and
-/// `open_settings` fills macOS's `on_apply` with a closure that does
-/// nothing. **`base_moved` is unaffected** -- it still has two callers,
-/// both macOS, both tested.
-///
-/// The two paragraphs above (REVERTED / AMENDED 2026-08-14) are the
-/// unchanged Windows story and are why this function still needs no guard
-/// there: the banner or the warn dot is on screen from every door, so no
-/// Save is pressed without the warning having been visible. Windows' close
-/// prompt still offers `SaveChoice::Save`, which is still the second route
-/// the opening paragraph names.
-#[cfg(target_os = "windows")]
-fn apply_settings(state: &Rc<RefCell<ServeState>>) {
-    let rendered = {
-        let s = state.borrow();
-        let Some(model) = s.settings.as_ref() else {
-            return;
-        };
-        model.render().map(|t| (t, s.config.clone()))
-    };
-    let (text, path) = match rendered {
-        Ok(v) => v,
-        Err(e) => {
-            swin::error(&format!("Cannot save:\n\n{e}"));
-            return;
-        }
-    };
-    // **There was a `#[cfg(target_os = "macos")]` compare-and-swap here,
-    // and it is gone with the platform (I2).** It guarded a door Task 11
-    // bricked: macOS's Save press. What it protected against -- a prompt
-    // offering `Save` as the way out of a refusal `autosave` had just made
-    // -- cannot happen on Windows, where `Keep mine` has no write behind it
-    // and a refusal here would leave no way at all to save over an external
-    // edit. Windows keeps its documented protection instead, stated in this
-    // function's doc: the banner or the warn dot is on screen from every
-    // door, so no Save is pressed without the warning having been visible.
-    if let Err(e) = write_config_text(&path, &text) {
-        swin::error(&format!("Cannot write {}:\n\n{e}", path.display()));
-        return;
-    }
-    // The model is now what is on disk, so re-seed it from the text we just
-    // wrote: that clears `dirty` and gives every row a fresh `orig_key`.
-    let mut s = state.borrow_mut();
-    if let Ok(m) = beckon_core::settings::Model::from_text(&text) {
-        let selected = s.settings.as_ref().and_then(|old| old.selected);
-        s.settings = Some(m);
-        if let Some(m) = s.settings.as_mut() {
-            m.selected = selected.filter(|i| *i < m.rows.len());
-        }
-    }
-    s.external_change = false;
-    // The probe is superseded the moment the file is saved: the watcher and
-    // the 1 Hz tick bring `reload` along in under a second, and
-    // `register_all` is the authority on whether a chord took -- an answer
-    // the window already receives through `registered`. Another process may
-    // also have claimed the chord since the probe ran (the TOCTOU §F.6 names),
-    // so a green "Available" that outlived the thing which would disprove it
-    // is exactly the claim beckon must not make.
-    s.probe = None;
-    drop(s);
-    refresh_settings(state);
-    eprintln!("beckon serve: settings saved");
-}
-
-/// Copy the config beside itself as `<name>.bak`, once, when the window
-/// opens.
-///
-/// **This does not protect against the stale-base clobber.** The
-/// compare-and-swap guard in `autosave` refuses a write whose base moved;
-/// this is the net for everything else, including a whole session of
-/// auto-saved edits the user wants out of wholesale. Session-level rollback,
-/// one file, overwritten on the next open.
-///
-/// Best effort: a failure is not worth refusing to open the window over, and
-/// there is nothing a user could do about it from here anyway.
-///
-/// **Beside the RESOLVED target, like `write_config_text`'s temp file** --
-/// the config reaches this author's Macs through a `mkOutOfStoreSymlink`, and
-/// a backup written beside the LINK would sit in a different directory from
-/// the file it is a backup of. `with_extension` replaces the extension, so
-/// `apps.toml` becomes `apps.toml.bak`; `watch_config` compares by file NAME,
-/// so the copy cannot be mistaken for a config write.
-#[cfg(target_os = "macos")]
-fn backup_config(path: &Path) {
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let bak = target.with_extension("toml.bak");
-    let _ = std::fs::copy(&target, &bak);
-}
-
-/// Move the undo stack from a model being replaced onto its replacement,
-/// oldest entry first.
-///
-/// A reseed builds a NEW `Model` -- that is what clears `dirty` and gives
-/// every row a fresh `orig_key` -- and the stack lives inside it, so without
-/// this every successful write would empty the history it had just added to
-/// and Undo would never reach further back than one step. `take_undo` pops
-/// newest-first, so the drained vector goes back in reversed.
-#[cfg(target_os = "macos")]
-fn carry_undo(from: &mut beckon_core::settings::Model, to: &mut beckon_core::settings::Model) {
-    let mut stack = Vec::new();
-    while let Some(t) = from.take_undo() {
-        stack.push(t);
-    }
-    for t in stack.into_iter().rev() {
-        to.push_undo(t);
-    }
-}
-
-/// Is a keystroke in the App field still pending, so the write should WAIT?
-///
-/// The App field is the one debounced input (four-doors 6.1.2): writing from
-/// inside a keystroke handler would rename the config once per character
-/// typed. macOS has no `SetTimer`, so the deadline is
-/// `swin::app_field_quiet_for` compared against
-/// `beckon_core::settings::AUTOSAVE_QUIET_MS`, and `autosave_tick` is what
-/// turns "the field went quiet" into a write.
-///
-/// **`None` means "no keystroke to wait for", never "nothing to write", and
-/// the difference is a data-loss shape.** `beckonApp:` still fires on Enter
-/// and on a PICK from the combo box's list, and that path does not go
-/// through `controlTextDidChange:` -- so a user who chooses a name from the
-/// dropdown and never types a character leaves the model dirty with
-/// `app_last_typed` still `None`. Reading `None` as "skip" would lose that
-/// edit silently, and no test that types could ever see it. `Model::dirty`
-/// is what says there is something to write; this only says whether it is
-/// safe to write it yet.
-#[cfg(target_os = "macos")]
-fn autosave_is_deferred() -> bool {
-    match swin::app_field_quiet_for() {
-        Some(since) => {
-            since < std::time::Duration::from_millis(beckon_core::settings::AUTOSAVE_QUIET_MS)
-        }
-        None => false,
-    }
-}
-
-/// Run the auto-save plan after an edit, and perform the write it asks for
-/// (G-a).
-///
-/// **The read is immediately before the write** -- that pairing IS the
-/// compare-and-swap guard, and anything inserted between them widens the
-/// window in which somebody else's edit lands unseen. Nothing may move
-/// between the `read_to_string` below and `write_config_text`.
-///
-/// Three orderings are load-bearing and each one is data loss if it is got
-/// wrong:
-///
-/// 1. **The undo entry is pushed BEFORE the write**, never after. An entry
-///    pushed after a write that failed halfway describes a file state that
-///    never existed, and Undo would then restore it over a good file. The
-///    failure arm takes it straight back off, which is the same rule from
-///    the other side.
-/// 2. **The reseed comes from the text that was WRITTEN**, never from a
-///    second read of the file. Re-reading invites exactly the race the guard
-///    just closed -- a write landing between our rename and our read would be
-///    adopted as our own base and silently overwritten by the next keystroke.
-/// 3. **`FileMoved` clears the undo stack.** Every entry's base is this
-///    model's `original`; once somebody else owns the file, restoring one
-///    would clobber their edit -- the same loss the guard exists to prevent,
-///    arriving through the Undo button.
-///
-/// `keep_mine` is the banner's own button and the one deliberate clobber in
-/// the program: it tells the guard the base did not move, because the user
-/// has just said the other party's text is not their base any more. It does
-/// NOT change what goes on the undo stack -- that is always the text really
-/// on disk -- so the clobber is one press away from being reversed, and
-/// `<config>.bak` still holds where the session started.
-///
-/// Returns the refusal, if any, and records it in
-/// `ServeState::last_not_saved` so the footer and the close prompt read one
-/// answer rather than re-running the plan.
-#[cfg(target_os = "macos")]
-fn autosave(s: &mut ServeState, keep_mine: bool) -> Option<beckon_core::settings::NotSaved> {
-    use beckon_core::settings::{AutosavePlan, NotSaved};
-
-    // No model: the window is open READ ONLY over a file that does not
-    // parse. There is nothing to write and nothing to claim -- `saved_readout`
-    // draws `Blank` for that state without being told.
-    if s.settings.is_none() {
-        return s.last_not_saved;
-    }
-
-    let path = s.config.clone();
-    // **Worked out BEFORE the read, on purpose.** It depends on the model
-    // and the catalog and not on the file at all, and it can parse -- so
-    // leaving it inside the read/write pair below would put a TOML parse in
-    // the one window this function exists to keep narrow.
-    let missing = beckon_core::settings::selected_app_went_missing(
-        s.settings.as_ref().expect("checked above"),
-        s.catalog.as_deref(),
-    );
-
-    // THE READ. Everything from here to `write_config_text` is pure --
-    // a comparison, a render, a `ViewState` clone and a `push_undo`. No I/O
-    // and nothing that can block or re-enter: that is what makes this pair a
-    // compare-and-swap rather than two separate decisions.
-    let disk = std::fs::read_to_string(&path).ok();
-    let plan = {
-        let model = s.settings.as_ref().expect("checked above");
-        // **Two questions, and `keep_mine` is the gesture that separates
-        // them** -- see `autosave_plan`. `base` is what the model's edits
-        // are relative to, and pressing `Keep mine` is the user saying the
-        // other party's text is no longer that. `on_disk` is what is really
-        // in the file, and NOTHING overrides it: it is what decides whether
-        // this write would change anything, and substituting the base there
-        // is what made `Keep mine` silently do nothing.
-        //
-        // On every ordinary edit the two are the same string. That is why
-        // one parameter answering both survived as long as it did.
-        let base = if keep_mine {
-            Some(model.original())
-        } else {
-            disk.as_deref()
-        };
-        let on_disk = disk.as_deref();
-        beckon_core::settings::autosave_plan(model, base, on_disk, missing)
-    };
-
-    let outcome = match plan {
-        AutosavePlan::Nothing => None,
-        AutosavePlan::Hold(NotSaved::FileMoved) => {
-            // The banner comes up, and the stack goes with it -- rule 3.
-            s.external_change = true;
-            if let Some(m) = s.settings.as_mut() {
-                m.clear_undo();
-            }
-            Some(NotSaved::FileMoved)
-        }
-        AutosavePlan::Hold(other) => Some(other),
-        AutosavePlan::Write(text) => {
-            // One short borrow: what the user is looking at, and the undo
-            // entry, both taken before the rename.
-            let view = {
-                // Checked on this function's first line, and nothing
-                // between there and here writes `settings`.
-                let model = s.settings.as_mut().expect("checked above");
-                let view = model.view_state();
-                // **Rule 1.** The entry is the text really on disk, which is
-                // the model's base except under `keep_mine`, where it is the
-                // other party's text and is exactly what Undo has to be able
-                // to put back.
-                let entry = match disk {
-                    Some(t) => t,
-                    // **Reached, and `Keep mine` is what reaches it (I3).**
-                    // This said "unreachable: an unreadable file took the
-                    // `Hold` arm above", which was true for one commit --
-                    // while `autosave_plan` had a single parameter for both
-                    // of its questions. Task 7's round 2 split them so this
-                    // case could exist: under `keep_mine` the base is
-                    // `model.original()`, so `base_moved` is false however
-                    // unreadable the file is, and a config somebody deleted
-                    // falls through to a `Write` that recreates it --
-                    // `autosave_plan`'s own doc says so in terms.
-                    //
-                    // The model's base is the right entry here because
-                    // there is no disk text to put back: Undo restores the
-                    // file to what this session started from, which is the
-                    // last state that really existed.
-                    None => model.original().to_string(),
-                };
-                model.push_undo(entry);
-                view
-            };
-            match write_config_text(&path, &text) {
-                Err(e) => {
-                    // **A log line, never a dialog**, and that is the
-                    // difference from `apply_settings`. That one answers a
-                    // button press, where a box is the only way to report.
-                    // This one answers a keystroke, and it runs under the
-                    // caller's `borrow_mut` -- a modal `MessageBoxW`/NSAlert
-                    // here would fire per character AND re-enter
-                    // `ServeState` from inside a live borrow. The footer's
-                    // readout is where the user hears about it.
-                    eprintln!("beckon serve: cannot write {}: {e}", path.display());
-                    // Rule 1 from the other side: that entry describes a
-                    // file state this write did not produce.
-                    if let Some(m) = s.settings.as_mut() {
-                        let _ = m.take_undo();
-                    }
-                    Some(NotSaved::CannotWrite)
-                }
-                Ok(_) => {
-                    // **Rule 2**: reseeded from the text that WAS written.
-                    // `autosave_plan` rendered it through `parse_config`, so
-                    // this cannot fail; if it somehow did, the model keeps
-                    // its old base and the next edit answers `FileMoved`,
-                    // which raises the banner rather than losing anything.
-                    if let Ok(mut fresh) = beckon_core::settings::Model::from_text(&text) {
-                        fresh.restore_view_state(&view);
-                        if let Some(old) = s.settings.as_mut() {
-                            carry_undo(old, &mut fresh);
-                        }
-                        s.settings = Some(fresh);
-                    }
-                    s.external_change = false;
-                    // **The probe is deliberately NOT cleared here, and
-                    // `apply_settings` clearing it is not a precedent.**
-                    // There the user pressed Save, so a verdict older than
-                    // the file is stale. Here the write IS the keystroke:
-                    // `on_probe_shortcut` runs immediately before
-                    // `on_edit_combo`, so clearing would delete the verdict
-                    // the same gesture just asked for, every time, and the
-                    // window would never show one. `row_condition` already
-                    // drops a verdict whose chord the user has typed past,
-                    // and `reload` re-registers within the second and
-                    // overrides it through `registered`.
-                    None
-                }
-            }
-        }
-    };
-    s.last_not_saved = outcome;
-    outcome
-}
-
-/// The footer's `Undo` button (four-doors §6.4): put the file back to what
-/// the undo stack's top entry says it used to hold.
-///
-/// **Pops, and does NOT push.** Recording the text this call is replacing
-/// would turn the stack into a two-state toggle -- press Undo twice and land
-/// back where the first press started -- rather than a walk back through
-/// history. The remaining entries carry onto the reseeded model exactly the
-/// way a successful `autosave` write carries them (`carry_undo`), so a
-/// second press keeps reaching further back.
-///
-/// **Guarded by the same compare-and-swap `autosave` makes before every
-/// write, and for the identical reason.** The file watcher can raise
-/// `external_change` on its own 1 Hz tick (see its own call site) WITHOUT
-/// touching the undo stack -- a dirty model with unsaved edits and a file
-/// that just moved under it, caught before any edit reached `autosave` at
-/// all. Skipping the check here would let Undo overwrite that external
-/// edit with a stack entry whose base is `model.original()` as it stood
-/// before the drift, which is exactly the silent clobber this whole branch
-/// exists to refuse. `base_moved` is the same function `autosave` and
-/// `apply_settings` already answer this question with -- reused, not
-/// reimplemented, for `app_lookup`'s reason.
-///
-/// On a moved file every remaining entry is stale (each one's base is the
-/// SAME `model.original()`), so the whole stack is cleared -- `autosave`'s
-/// rule 3, verbatim -- rather than only declining the one press.
-///
-/// A no-op when there is no model (`settings.is_none()`, the read-only
-/// state) or nothing left to pop -- both `saved_readout`'s `undo` flag and
-/// the button's own `apply_enabled`-style gating already keep the control
-/// from being reachable then, but a stray `SettingsCommand::Undo` must still
-/// do nothing rather than panic.
-///
-/// On a write failure the popped entry goes straight back on the stack --
-/// `autosave`'s rule 1 from the other side -- so a retry does not quietly
-/// cost one step of history, and `last_not_saved` records `CannotWrite` for
-/// the same reason `autosave` does: the footer and the close prompt read one
-/// answer.
-#[cfg(target_os = "macos")]
-fn undo_pressed(s: &mut ServeState) {
-    use beckon_core::settings::NotSaved;
-
-    if !s.settings.as_ref().is_some_and(|m| m.can_undo()) {
-        return;
-    }
-    let path = s.config.clone();
-    // THE READ, immediately before either the pop or the write below --
-    // `autosave`'s own compare-and-swap pairing, and for the same reason:
-    // nothing may move between this and `write_config_text`.
-    let disk = std::fs::read_to_string(&path).ok();
-    let moved = {
-        let model = s.settings.as_ref().expect("checked above");
-        beckon_core::settings::base_moved(model, disk.as_deref())
-    };
-    if moved {
-        s.external_change = true;
-        if let Some(m) = s.settings.as_mut() {
-            m.clear_undo();
-        }
-        s.last_not_saved = Some(NotSaved::FileMoved);
-        return;
-    }
-    // Safe to pop now: the CAS above already confirmed nobody else owns the
-    // file this entry's base describes.
-    let Some(text) = s.settings.as_mut().and_then(|m| m.take_undo()) else {
-        return;
-    };
-    let view = s.settings.as_ref().expect("checked above").view_state();
-    match write_config_text(&path, &text) {
-        Err(e) => {
-            eprintln!("beckon serve: cannot write {}: {e}", path.display());
-            if let Some(m) = s.settings.as_mut() {
-                m.push_undo(text);
-            }
-            s.last_not_saved = Some(NotSaved::CannotWrite);
-        }
-        Ok(_) => {
-            // Reseeded from the text that was WRITTEN, never from a second
-            // read -- `autosave`'s rule 2, for the same reason.
-            if let Ok(mut fresh) = beckon_core::settings::Model::from_text(&text) {
-                fresh.restore_view_state(&view);
-                if let Some(old) = s.settings.as_mut() {
-                    carry_undo(old, &mut fresh);
-                }
-                s.settings = Some(fresh);
-            }
-            s.external_change = false;
-            s.last_not_saved = None;
-        }
-    }
-}
-
-/// The App field's debounce has no timer of its own, so this is what turns
-/// "the field has gone quiet" into a write.
-///
-/// **It is also what makes `edit!` not the only funnel.** `on_add`,
-/// `on_remove` and `on_mark` take two arguments or none and are written out
-/// rather than built by the macro; a tick that fires on any dirty model
-/// covers them, and covers a mutator added later that forgets to save.
-///
-/// Cheap at rest by construction: a clean model returns on the first line
-/// and touches no file. The push is skipped when nothing about the answer
-/// changed, because a refusal that is already on screen must not rebuild the
-/// table under the user's hands several times a second.
-#[cfg(target_os = "macos")]
-fn autosave_tick(state: &Rc<RefCell<ServeState>>) {
-    if !state.borrow().settings.as_ref().is_some_and(|m| m.dirty()) {
-        return;
-    }
-    if autosave_is_deferred() {
-        return;
-    }
-    let (before, after) = {
-        let mut s = state.borrow_mut();
-        let before = s.last_not_saved;
-        (before, autosave(&mut s, false))
-    };
-    let still_dirty = state.borrow().settings.as_ref().is_some_and(|m| m.dirty());
-    if before != after || !still_dirty {
-        refresh_settings(state);
-    }
-}
-
-/// Load the model from disk into the window, discarding in-memory edits.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn reload_settings_from_disk(state: &Rc<RefCell<ServeState>>) {
-    let path = state.borrow().config.clone();
-    let text = match std::fs::read_to_string(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            swin::error(&format!("Cannot read {}:\n\n{e}", path.display()));
-            return;
-        }
-    };
-    match beckon_core::settings::Model::from_text(&text) {
-        Ok(mut m) => {
-            let mut s = state.borrow_mut();
-            // **The file wins, but it does not also cost the user their
-            // view** -- four-doors G-b, which is the whole reason
-            // `ViewState` exists. Carried by IDENTITY: this rebuild can
-            // reorder the rows, and a raw index would then point the editor
-            // at a different binding while the user is still typing into it.
-            // Rows the file no longer has drop out silently, which is the
-            // file winning.
-            if let Some(old) = s.settings.as_ref() {
-                m.restore_view_state(&old.view_state());
-            }
-            s.settings = Some(m);
-            // Keeps the pair's invariant unconditional rather than relying
-            // on this path being unreachable from the read-only state (the
-            // banner that owns `Reload` is hidden there).
-            s.settings_unreadable = None;
-            s.external_change = false;
-            // **The refusal was about the model this line just replaced.**
-            // Nothing else clears it -- `autosave` and `undo_pressed` are
-            // the only writers and both need a dirty model -- so without
-            // this the footer keeps reading `Not saved - the file changed
-            // on disk` over a file the model now matches byte for byte,
-            // permanently, until the user makes another edit. The banner
-            // one line up is cleared for the same reason and was already
-            // right; this field was missed because its own doc claimed a
-            // single writer that runs on every edit.
-            #[cfg(target_os = "macos")]
-            {
-                s.last_not_saved = None;
-            }
-        }
-        // Deliberately NOT the read-only state: `Reload` means "discard my
-        // in-memory edits", and there IS a model here to discard. Dropping
-        // it for a file that no longer parses would throw away work the user
-        // can still save once they fix the file. The dialog says so and the
-        // model stays.
-        Err(e) => {
-            swin::error(&format!("{} is not valid:\n\n{e}", path.display()));
-            return;
-        }
-    }
-    refresh_settings(state);
-}
-
-/// The file changed while the window is open READ ONLY: try it again.
-///
-/// There is no model here, so there is nothing to lose and nothing to ask
-/// about -- which is why this needs neither the banner nor a prompt. It is
-/// what makes the read-only notes' own advice true: fix the file in a text
-/// editor and the window turns editable by itself, with no reopen.
-///
-/// Silent either way, deliberately. On success the window simply becomes
-/// editable; on a second failure the notes are replaced with the new
-/// explanation. A dialog per write, from an editor that saves as you type,
-/// would be unusable.
-///
-/// Returns `false` when the window is not in that state, so callers that
-/// have their own answer for the editable window can carry on.
-///
-/// **WIDENED 2026-08-16: both platforms.** This and
-/// `settings_saw_external_change` were the last two `windows`-only items in a
-/// run of `any(windows, macos)` siblings -- the gate outlived the fact it
-/// rested on, which was that macOS had no settings window. It has all four
-/// doors, so a read-only macOS window promised the user it would turn
-/// editable once they fixed the file and never did.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn settings_retry_unreadable(state: &Rc<RefCell<ServeState>>) -> bool {
-    if state.borrow().settings_unreadable.is_none() {
-        return false;
-    }
-    let _ = load_settings_model(state);
-    refresh_settings(state);
-    true
-}
-
-/// Called from `reload()` after the file changed on disk. A clean window
-/// follows the file silently; a dirty one raises the banner and lets the
-/// user choose. beckon never picks for them.
-///
-/// A read-only window is neither: it has no model to follow the file WITH
-/// and no edits to protect, so it goes through `settings_retry_unreadable`
-/// and never reaches the dirty test below.
-///
-/// **WIDENED 2026-08-16: both platforms**, for the reason
-/// `settings_retry_unreadable` records. Without it, editing `apps.toml` in
-/// another editor while the macOS window was open and then pressing Save
-/// overwrote the external edit SILENTLY -- the banner this function raises is
-/// the whole protection, and it could never appear there.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn settings_saw_external_change(state: &Rc<RefCell<ServeState>>) {
-    if settings_retry_unreadable(state) {
-        return;
-    }
-    // **beckon's own write is not an external change, and under auto-save
-    // that distinction is what keeps the banner honest.** `watch_config`
-    // fires on every rename including the one `autosave` just did, and by
-    // the time the 1 Hz tick gets here the user has very likely typed again
-    // -- so the dirty test below would raise `the file changed on disk`
-    // about beckon's own keystroke, once per word. The model's `original` IS
-    // the text auto-save last wrote, so comparing it against the file
-    // settles it: equal means nothing external happened, and there is no
-    // BANNER to raise and no reload-from-disk to run.
-    let ours = {
-        let s = state.borrow();
-        match (s.settings.as_ref(), std::fs::read_to_string(&s.config)) {
-            (Some(m), Ok(text)) => text == m.original(),
-            _ => false,
-        }
-    };
-    if ours {
-        // **There is still something to follow, and this is it.** `reload`
-        // called this AFTER re-registering and writing the fresh outcome
-        // into `ServeState::registered` -- which is the one thing that made
-        // the write worth catching in the first place, and the window has
-        // not heard about it yet. `refresh_settings` was already called once
-        // this edit, synchronously, right after the write, by the callback
-        // that made it -- against the OLD `registered`, because the OS
-        // hadn't finished re-registering yet. Skipping this push leaves the
-        // service line reading whatever that first push drew (`19 of 20`
-        // for a chord edit -- the old chord's entry is gone from the row's
-        // lookup key and the new one is not in the map yet) until the window
-        // is closed and reopened, sitting a `Saved just now` readout right
-        // beside a count that looks like the edit broke a binding it did
-        // not. Measured 2026-09-23: `serve.log` said `reloaded - 20
-        // shortcuts registered` three times over while the open window kept
-        // showing `19 of 20`.
-        //
-        // **CORRECTED 2026-09-23: this is a regression `67ab70c` introduced,
-        // not a gap that predates auto-save.** Before that commit `ours`
-        // did not exist here: a clean model -- exactly the state right
-        // after Save reseeds -- took the `else` branch below
-        // unconditionally and called `reload_settings_from_disk`, which
-        // always ends in `refresh_settings`. `67ab70c` added the self-write
-        // suppression this branch IS (a banner firing about beckon's own
-        // write on every keystroke would have been worse, and that
-        // acceptance still stands), and in doing so dropped the refresh the
-        // old path had. This line is the missing half of that trade.
-        //
-        // Save shows the same stale count TODAY, present tense, for a
-        // separate and simpler reason: `apply_settings` never touches
-        // `s.registered` at all -- only `reload()` does -- so a chord edit
-        // followed by Save reaches this same branch with the same stale
-        // map. **That is a WINDOWS sentence now (I2)**: this function is
-        // `any(windows, macos)`, but `apply_settings` is `windows` since
-        // Task 11 deleted macOS's Save press, so on macOS there is no
-        // gesture left that reaches this branch by that route -- only
-        // auto-save's own write does.
-        //
-        // Safe regardless of whether the model is dirty by the time this
-        // runs. `original()` is a fixed base and `dirty()` is an independent
-        // flag, so `ours == true` (disk text still equals the base) can
-        // coexist with the user having typed again during the debounce --
-        // "the model always mirrors the file" is not literally true here.
-        // The push is safe anyway: `refresh_settings` redraws from whatever
-        // `s.settings` CURRENTLY holds, dirty or not, which is exactly what
-        // `autosave_tick` already does on a dirty model several times a
-        // second. Nothing about this call site makes a dirty model unsafe
-        // to redraw.
-        refresh_settings(state);
-        return;
-    }
-    let dirty = match state.borrow().settings.as_ref() {
-        Some(m) => m.dirty(),
-        None => return,
-    };
-    if dirty {
-        state.borrow_mut().external_change = true;
-        refresh_settings(state);
-    } else {
-        reload_settings_from_disk(state);
-    }
-}
-
-/// Point the settings model's selection at `shortcuts[i]`, found by CHORD
-/// rather than position, and drop any probe verdict -- a verdict is about the
-/// row it was asked for (`Callbacks::on_select`'s rule).
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn select_binding(state: &Rc<RefCell<ServeState>>, i: usize) {
-    let mut s = state.borrow_mut();
-    let Some(canon) = s.shortcuts.get(i).map(|x| x.combo.canonical()) else {
-        return;
-    };
-    if let Some(m) = s.settings.as_mut() {
-        if let Some(row) = m.row_for_combo(&canon) {
-            m.selected = Some(row);
-        }
-    }
-    s.probe = None;
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn open_settings(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>) {
-    use beckon_core::settings::SettingsCommand;
-
-    // Hoisted out of the `if` on purpose. A `RefCell` borrow inside an `if`
-    // CONDITION lives until the end of the whole `if` statement, so
-    // `if std::mem::take(&mut state.borrow_mut().pending_update_check) { .. }`
-    // would hold the borrow across `check_for_updates` and panic on its first
-    // `borrow_mut`.
-    let wanted_check = std::mem::take(&mut state.borrow_mut().pending_update_check);
-    if wanted_check {
-        // Where the NEXT open lands -- which is this one.
-        state.borrow_mut().settings_page = beckon_core::settings::Page::About;
-    }
-
-    // A menu row asked for its own binding. Hoisted out of any `if` for the
-    // reason `wanted_check` is.
-    let wanted_row = state.borrow_mut().pending_select.take();
-    if wanted_row.is_some() {
-        state.borrow_mut().settings_page = beckon_core::settings::Page::Shortcuts;
-    }
-
-    // Already open: raise it, do not build a second model.
-    if swin::is_open() {
-        let _ = swin::open_existing();
-        // **Known limitation, and it is deliberate.** `settings_page` is
-        // "where the NEXT open lands", so a window that is ALREADY open is
-        // raised without moving to About. The check still runs and the
-        // About row still updates; the user may have to click About to see
-        // it. Adding a page-switch API to both window crates to close this
-        // is scope this row does not justify -- the row exists mostly for
-        // when the window is shut.
-        // Selection reaches an open window through the model; the PAGE does
-        // not, for the same known limitation the comment above records.
-        if let Some(i) = wanted_row {
-            select_binding(state, i);
-            refresh_settings(state);
-        }
-        if wanted_check {
-            check_for_updates(state);
-        }
-        return;
-    }
-
-    // **G-h, and before the model is built on purpose**: the copy has to be
-    // of the file as the session found it, not of anything the window has
-    // since done to it.
-    #[cfg(target_os = "macos")]
-    {
-        // Cloned out and the borrow dropped before the copy, like every
-        // other file operation in this module.
-        let cfg = state.borrow().config.clone();
-        backup_config(&cfg);
-    }
-
-    // A file that does not parse opens READ ONLY rather than being refused.
-    // Only a file that cannot be read at all stops us here.
-    if let Err(e) = load_settings_model(state) {
-        swin::error(&e);
-        return;
-    }
-    if let Some(i) = wanted_row {
-        select_binding(state, i);
-    }
-
-    // One helper per callback so the borrow discipline is written once:
-    // mutate under a short borrow_mut, drop it, then refresh.
-    macro_rules! edit {
-        ($st:expr, $body:expr) => {{
-            let st = Rc::clone($st);
-            move |arg| {
-                {
-                    let mut s = st.borrow_mut();
-                    if let Some(m) = s.settings.as_mut() {
-                        #[allow(clippy::redundant_closure_call)]
-                        ($body)(m, arg);
-                    }
-                    // **Every mutator funnels through here, so a new one
-                    // cannot forget to save** -- and `autosave_tick` covers
-                    // the three callbacks below that are written out rather
-                    // than built by this macro.
-                    //
-                    // macOS only: Windows keeps its command bar and its own
-                    // Save (G-i, out of scope for this branch), so nothing
-                    // there writes without being asked.
-                    //
-                    // An App-field keystroke that has not gone quiet defers
-                    // the write to that tick; it never skips it. See
-                    // `autosave_is_deferred`.
-                    #[cfg(target_os = "macos")]
-                    if !autosave_is_deferred() {
-                        autosave(&mut s, false);
-                    }
-                }
-                refresh_settings(&st);
-            }
-        }};
-    }
-
-    let cb = beckon_core::settings::Callbacks {
-        // Not `edit!`: a probe verdict is about the row it was requested
-        // for, and `row_condition` only re-checks the COMBO, not which row
-        // asked -- two rows sharing a chord means a verdict stored for row A
-        // still passes row B's `same_chord` gate once B is selected, and B
-        // would be told about its own chord as though it belonged to
-        // someone else. Clearing here, on every selection change, is what
-        // keeps a verdict from ever outliving the row it answered for.
-        on_select: Box::new({
-            let st = Rc::clone(state);
-            move |i: usize| {
-                {
-                    let mut s = st.borrow_mut();
-                    if let Some(m) = s.settings.as_mut() {
-                        m.selected = Some(i);
-                    }
-                    s.probe = None;
-                }
-                refresh_settings(&st);
-            }
-        }),
-        // Two arguments, so not `edit!` -- same discipline written out:
-        // mutate under a short borrow_mut, drop it, then refresh.
-        on_mark: Box::new({
-            let st = Rc::clone(state);
-            move |i: usize, on: bool| {
-                {
-                    let mut s = st.borrow_mut();
-                    if let Some(m) = s.settings.as_mut() {
-                        // `set_marked` indexes `rows` directly. The window
-                        // has already mapped the view row to a model row, so
-                        // this guards a stale push rather than a filter.
-                        if i < m.rows.len() {
-                            m.set_marked(i, on);
-                        }
-                    }
-                }
-                refresh_settings(&st);
-            }
-        }),
-        on_edit_combo: Box::new(edit!(
-            state,
-            |m: &mut beckon_core::settings::Model, t: String| {
-                if let Some(i) = m.selected {
-                    m.set_combo(i, &t);
-                }
-            }
-        )),
-        // Not `edit!`: this one must run OUTSIDE a `settings` borrow (it
-        // calls into the OS) and must not refresh (the model has not caught
-        // up with the chord yet). See `probe_shortcut`.
-        on_probe_shortcut: Box::new({
-            let st = Rc::clone(state);
-            move |t: String| probe_shortcut(&st, t)
-        }),
-        on_edit_app: Box::new(edit!(
-            state,
-            |m: &mut beckon_core::settings::Model, t: String| {
-                if let Some(i) = m.selected {
-                    m.set_app(i, &t);
-                }
-            }
-        )),
-        on_filter: Box::new(edit!(
-            state,
-            |m: &mut beckon_core::settings::Model, t: String| m.set_filter(&t)
-        )),
-        on_caps: Box::new(edit!(
-            state,
-            |m: &mut beckon_core::settings::Model, on: bool| m.set_caps(on)
-        )),
-        on_caps_tap: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, t| m
-            .set_caps_tap(t))),
-        // The return value says whether the model took the chord, and it is
-        // deliberately dropped: `set_caps_hold` refuses one with no
-        // modifiers, so unticking the last chip leaves the previous chord in
-        // place and the `apply_state` that follows re-ticks the box. The
-        // window needs no separate answer to hear that.
-        on_caps_hold: Box::new(edit!(state, |m: &mut beckon_core::settings::Model, c| {
-            m.set_caps_hold(c);
-        })),
-        on_add: Box::new({
-            let st = Rc::clone(state);
-            move || {
-                {
-                    let mut s = st.borrow_mut();
-                    if let Some(m) = s.settings.as_mut() {
-                        m.add_row();
-                    }
-                }
-                refresh_settings(&st);
-            }
-        }),
-        on_remove: Box::new({
-            let st = Rc::clone(state);
-            move || {
-                {
-                    let mut s = st.borrow_mut();
-                    if let Some(m) = s.settings.as_mut() {
-                        // Ticks first, selection as the fallback -- the whole
-                        // decision is `Model::remove_pressed`, in beckon-core
-                        // where all three CI jobs test it.
-                        m.remove_pressed();
-                    }
-                }
-                refresh_settings(&st);
-            }
-        }),
-        // **Windows raises this; macOS has nothing left that can (I2).**
-        // `IDC_APPLY` and its `Ctrl+S` accelerator are the only things in
-        // the program that call `cb.on_apply`, and both are Win32. Task 11
-        // deleted macOS's `beckonSave:` and its views, so the macOS arm is
-        // a closure the window never runs -- spelled as one here rather
-        // than as a call into a function no macOS door can reach, which is
-        // what left a guard standing on a bricked door for two commits.
-        #[cfg(target_os = "windows")]
-        on_apply: Box::new({
-            let st = Rc::clone(state);
-            move || apply_settings(&st)
-        }),
-        #[cfg(target_os = "macos")]
-        on_apply: Box::new(|| {}),
-        on_catalog: Box::new({
-            let st = Rc::clone(state);
-            move |names: Vec<String>| {
-                st.borrow_mut().catalog = Some(names);
-                refresh_settings(&st);
-            }
-        }),
-        on_open_file: Box::new({
-            let st = Rc::clone(state);
-            move || {
-                // ShellExecuteW pumps this thread's queue, so the path is
-                // cloned out and the borrow dropped BEFORE the call -- the
-                // rule this module's doc states for backend.beckon().
-                let p = st.borrow().config.clone();
-                if let Err(e) = open_config_file(&p) {
-                    eprintln!("beckon serve: {e}");
-                }
-            }
-        }),
-        on_reload_from_disk: Box::new({
-            let st = Rc::clone(state);
-            move || reload_settings_from_disk(&st)
-        }),
-        on_keep_mine: Box::new({
-            let st = Rc::clone(state);
-            move || {
-                {
-                    let mut s = st.borrow_mut();
-                    s.external_change = false;
-                    // **Under auto-save, dismissing the banner is not enough
-                    // -- the button would promise something the guard then
-                    // refuses forever.** The compare-and-swap holds every
-                    // write whose base has moved, so a model left on a stale
-                    // base can never reach disk again and the readout sticks
-                    // on `Not saved - the file changed on disk` with the
-                    // banner gone. `Keep mine` is the user saying the other
-                    // party's text is not their base any more, so the write
-                    // is performed with that said.
-                    //
-                    // It is the one deliberate clobber in the program, and
-                    // it is paid for twice: the other party's text goes onto
-                    // the undo stack first (`autosave`'s rule 1 uses the
-                    // text really on disk, not the model's base), and
-                    // `<config>.bak` still holds where the session started.
-                    #[cfg(target_os = "macos")]
-                    autosave(&mut s, true);
-                }
-                refresh_settings(&st);
-            }
-        }),
-        // The two platforms answer a genuinely different question here
-        // (G-j) -- see `close_request`'s two `cfg`-gated bodies above,
-        // Windows' unchanged three-way prompt and macOS's single refusal --
-        // so the shim is the whole closure, not a branch inside it.
-        on_close_request: Box::new({
-            let st = Rc::clone(state);
-            move || close_request(&st)
-        }),
-        // An exhaustive `match`, not a `_ => {}`: every variant added later
-        // is a compile error at this one site, which is the site that has to
-        // handle it. Phase 0 made the channel exist with every arm empty;
-        // the tab strip fills the first of them, and the three workstreams
-        // that follow fill the rest.
-        on_command: Box::new({
-            let st = Rc::clone(state);
-            let mg = Rc::clone(mgr);
-            move |c| match c {
-                // Remembered, not acted on: the window has already switched
-                // itself by the time this arrives, and what the caller owns
-                // is where the NEXT open lands. Cheap enough to store
-                // unconditionally -- a page switch is a mouse click, not a
-                // keystroke.
-                SettingsCommand::ShowPage(p) => st.borrow_mut().settings_page = p,
-                // **The tray's own two, and that is the point of routing
-                // them through here rather than letting the window act.**
-                // `set_paused` does five ordered things -- unregister, set
-                // the flag, rewrite the status phrase, CLEAR `registered`,
-                // sync the Caps hook -- and the cleared map is what makes the
-                // `paused` status word load-bearing on every Shortcuts row.
-                // A parallel implementation in the window would flip a flag
-                // and leave nineteen rows claiming to be registered.
-                //
-                // Both end in `refresh_settings`, which is what puts the
-                // consequence back on screen: the switch's own state, the
-                // status words on the Shortcuts list, and the pill's count.
-                SettingsCommand::SetPaused(on) => {
-                    set_paused(&st, &mg, on);
-                    refresh_settings(&st);
-                }
-                SettingsCommand::ReloadNow => {
-                    reload(&st, &mg);
-                    // The file may have changed under the window as well as
-                    // under `serve`, so the model is re-read rather than
-                    // merely re-projected. This is the same call the banner's
-                    // `Reload` makes, and here it is safe without a prompt
-                    // for a different reason: the user pressed a button
-                    // captioned `Reload` on a page about the service, not one
-                    // that appeared to warn them.
-                    reload_settings_from_disk(&st);
-                }
-                // The Run value, written by the same code the tray menu's
-                // own row writes -- `set_autostart` is that shared function,
-                // and both call sites report a failure the same way.
-                SettingsCommand::SetAutostart(on) => {
-                    set_autostart(&st, on);
-                    refresh_settings(&st);
-                }
-                // **Applied by the window, recorded by nobody here yet.**
-                // Both are the settings window's own look, stored in
-                // `HKCU\Software\beckon` by the window itself -- see
-                // `beckon_windows::prefs`. The commands exist so the caller
-                // CAN react (a tray that follows the same theme is the
-                // obvious next reader) and so the channel is exercised by
-                // the control that raises it; there is nothing for `serve`
-                // to do about either today, and inventing a second store for
-                // them here would be a second place they could disagree.
-                SettingsCommand::SetDarkMode(_) | SettingsCommand::SetOpacity(_) => {}
-                SettingsCommand::Open(t) => open_target(&st, t),
-                SettingsCommand::Reveal(t) => reveal_target(&st, t),
-                // **`Copy` is a notification, not a request**, and the empty
-                // arm is the design rather than a gap. The window has already
-                // put the text on the clipboard by the time this arrives --
-                // it has to, because `SettingsCommand` is `Copy + Eq` and
-                // carries no `String` (see its own doc), so answering here
-                // would mean rebuilding `AboutState` in this file and having
-                // two authors for one page. What the command buys is a caller
-                // that CAN react, and the exercise of the channel by the
-                // control that raises it.
-                //
-                // Keyboard's shorthand toggle (§3.2) is the other one, and it
-                // genuinely has no control yet. Left as an empty arm rather
-                // than folded into a `_`, so the day one needs answering the
-                // compiler names this site.
-                SettingsCommand::SetCapsShorthand(_) | SettingsCommand::Copy(_) => {}
-                // Auto-save's own undo (§6.4). macOS only: Windows never
-                // pushes anything onto the stack (`autosave` is the one
-                // writer and it is macOS-only), so `can_undo()` is always
-                // false there and this arm has nothing to do.
-                SettingsCommand::Undo => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        {
-                            let mut s = st.borrow_mut();
-                            undo_pressed(&mut s);
-                        }
-                        refresh_settings(&st);
-                    }
-                }
-                SettingsCommand::CheckForUpdates => check_for_updates(&st),
-            }
-        }),
-    };
-
-    // The paths are what name the window (`beckon - shortcuts.toml`) and what
-    // the System page's two file rows show. Handed over once, at open:
-    // `ServeState::config` is what nothing can repoint while the window is
-    // up, and `log` is `None` exactly when `serve` was started without
-    // `--log`.
-    //
-    // The borrow is scoped and dropped before `swin::open`, which re-enters
-    // `ServeState` through the callbacks above. A live `borrow()` across that
-    // is the failure `settings_window::layout`'s `LayoutHandles` documents:
-    // the second borrow panics inside an `extern "system"` wndproc, where a
-    // panic aborts the process instead of unwinding, so it surfaces as
-    // neither a panic nor a test failure.
-    let (paths, page) = {
-        let s = state.borrow();
-        (
-            beckon_core::settings::Paths {
-                config: s.config.clone(),
-                log: s.log.clone(),
-            },
-            // Where the user left off, which is `Shortcuts` until they move.
-            // Read in the same borrow as the paths, and both are read BEFORE
-            // `swin::open` for the reason the comment above gives.
-            s.settings_page,
-        )
-    };
-    if let Err(e) = swin::open(cb, &paths, page) {
-        eprintln!("beckon serve: cannot open settings: {e}");
-        swin::error(&format!("Cannot open settings:\n\n{e}"));
-        forget_settings(state);
-        return;
-    }
-    spawn_catalog_scan();
-    refresh_settings(state);
-    if wanted_check {
-        check_for_updates(state);
-    }
-}
-
-/// Unregister or re-register every hotkey, and say so in the tooltip.
-///
-/// Neither `unregister_all` nor `register_all` pumps the message queue, and
-/// neither does the `set_tray_status` call below -- see `reload`'s doc
-/// comment for why holding `state`/`mgr` borrows across a tooltip update is
-/// sound while holding them across `beckon_windows::shell::open_path`
-/// (`ShellExecuteW`) is not.
-///
-/// Shared with macOS since the menu bar item arrived: the Caps hook it
-/// syncs is a no-op off Windows, and the status call is the cross-platform
-/// one. `Pause` means the same thing on both -- the hotkeys go away and the
-/// head row says so.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn set_paused(state: &Rc<RefCell<ServeState>>, mgr: &Rc<RefCell<HotkeyManager>>, paused: bool) {
-    let mut m = mgr.borrow_mut();
-    if paused {
-        m.unregister_all();
-        state.borrow_mut().paused = true;
-        // Not `last_phrase` verbatim: that string is a *registration*
-        // phrase ("N shortcuts registered") left over from before this
-        // unregister_all, and reusing it here would claim registration
-        // while nothing is registered. Match reload()'s honest "N
-        // shortcuts" spelling for the paused case instead, and update
-        // `last_phrase` to it so the menu head (`build_entries`) agrees.
-        let phrase = shortcuts_count_phrase(state.borrow().shortcuts.len());
-        state.borrow_mut().last_phrase = phrase.clone();
-        state.borrow_mut().registered.clear();
-        // Pausing MUST unhook. Leaving it installed would keep swallowing
-        // Caps while nothing acts on it -- the worst available state.
-        sync_caps_hook(state);
-        eprintln!("beckon serve: paused - {phrase}");
-        set_tray_status(&format!("beckon - paused ({phrase})"));
-        set_tray_dimmed(true);
-    } else {
-        state.borrow_mut().paused = false;
-        let outcome = register_all(&mut m, &state.borrow().shortcuts);
-        let phrase = registration_phrase(outcome.ok, state.borrow().shortcuts.len());
-        state.borrow_mut().last_phrase = phrase.clone();
-        state.borrow_mut().registered = outcome.by_canonical();
-        sync_caps_hook(state);
-        eprintln!("beckon serve: resumed - {phrase}");
-        set_tray_status(&format!("beckon - {phrase}"));
-        set_tray_dimmed(false);
-    }
-}
-
-/// Ask GitHub, and put the answer on the About page.
-///
-/// **Synchronous, and that is a decision.** `ServeState` is `Rc<RefCell<..>>`
-/// and cannot cross a thread boundary, so a worker would mean `Arc`, a
-/// channel, and a per-OS wake. On Windows that wake lands in the hazard at
-/// `beckon-windows/src/settings_window/mod.rs`: the chain
-/// `apply_state -> on_select -> refresh_settings -> apply_state` recurses
-/// across an `extern "system"` boundary where a second `RefCell` borrow
-/// ABORTS the process instead of unwinding, and a `PostMessageW` arriving
-/// mid-`apply_state` is that exact shape. Three seconds of worst case on a
-/// button the user just pressed is the cheaper trade. Measured 196 ms.
-///
-/// Every borrow is dropped before the spawn -- the discipline
-/// `on_probe_shortcut` states in this file and `MENU_LOG` follows before
-/// `open_path`.
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn check_for_updates(state: &Rc<RefCell<ServeState>>) {
-    use beckon_core::update::{self, CheckError, UpdateState};
-
-    // A version string this build cannot parse is a fact about beckon, not
-    // about the network -- so it never reaches curl. This arm borrows
-    // `CheckError::Unreadable` for that unrelated failure rather than adding
-    // a fourth variant: `env!("BECKON_VERSION")` is stamped by beckon-cli's
-    // own build script, so a compiled build reaching this branch is close to
-    // impossible, and a variant that ripples through core, its tests and
-    // both windows is not worth it for a case this near-unreachable.
-    let Some(current) = update::parse_current(env!("BECKON_VERSION")) else {
-        state.borrow_mut().update = UpdateState::Failed(CheckError::Unreadable);
-        refresh_settings(state);
-        return;
-    };
-
-    state.borrow_mut().update = UpdateState::Checking;
-    refresh_settings(state);
-    // The frame must reach the screen BEFORE the block, or the window shows
-    // the previous one for the whole call and reads as frozen.
-    swin::flush_paint();
-
-    let outcome = crate::update::fetch(current);
-    state.borrow_mut().update = outcome;
-    refresh_settings(state);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use beckon_core::certainty::{Certainty, NameReport};
+    use beckon_core::menu::EntryKind;
+    use beckon_core::shortcuts::{parse_shortcuts, Chord};
+    use std::collections::HashMap;
     use std::ffi::OsStr;
-
-    // Incident 2026-08-09: the startup log said "20 shortcuts registered"
-    // while 0/20 keys had actually registered, because the count came from
-    // the parsed list, not from `HotkeyManager::register`'s outcome. These
-    // two pure helpers turn `RegisterOutcome` into the strings the log and
-    // the toast use, so the phrasing itself is unit-testable without a real
-    // `HotkeyManager`.
 
     #[test]
     fn registration_phrase_all_ok() {
@@ -3860,8 +1192,6 @@ mod tests {
 
     #[test]
     fn registration_phrase_singular_total_failed() {
-        // The noun agrees with the total (1), not the leading number (0):
-        // this must read as real English, not "0 of 1 shortcuts".
         assert_eq!(
             registration_phrase(0, 1),
             "0 of 1 shortcut registered (1 failed)"
@@ -3874,1125 +1204,6 @@ mod tests {
         assert_eq!(shortcuts_count_phrase(5), "5 shortcuts");
     }
 
-    /// **A Save must not sever a symlinked config**, and this is the test that
-    /// stops it. Measured 2026-08-17: `fs::rename` onto a symlink replaces the
-    /// LINK with a regular file, leaving the real file holding the old text.
-    ///
-    /// It is not a hypothetical shape. `~/.config/beckon/apps.toml` on this
-    /// author's Macs is a `mkOutOfStoreSymlink` into their dotfiles repo -- which
-    /// is itself the workaround for a plain `home.file.source` putting a
-    /// read-only store path there -- so the naive rename would break the one
-    /// setup the config is shared through, one rebuild after the Save.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    #[test]
-    fn saving_through_a_symlink_writes_the_target_and_keeps_the_link() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("apps.shared.toml");
-        std::fs::write(&real, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
-        let link = dir.path().join("apps.toml");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&real, &link).unwrap();
-
-        let wrote = write_config_text(&link, "\"ctrl+alt+t\" = \"new\"\n").expect("write");
-
-        assert!(
-            std::fs::symlink_metadata(&link)
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "the link itself must survive the write, or home-manager moves the \
-             orphan aside on the next switch and the Save disappears"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&real).unwrap(),
-            "\"ctrl+alt+t\" = \"new\"\n",
-            "the text has to land in the REAL file, not beside it"
-        );
-        assert_eq!(
-            std::fs::canonicalize(&wrote).unwrap(),
-            std::fs::canonicalize(&real).unwrap(),
-            "the returned path is what an error message should name"
-        );
-        assert!(
-            !dir.path().join("apps.shared.toml.beckon-tmp").exists(),
-            "the temp file is consumed by the rename"
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // The auto-save driver (G-a, G-h)
-    // -----------------------------------------------------------------
-
-    /// A `ServeState` with nothing in it but a config path, so the driver
-    /// can be exercised without a hotkey manager, a tray or a window.
-    ///
-    /// Every field is named rather than spread from a `Default`: a field
-    /// added later is then a compile error here, at the one place that has
-    /// to decide what the driver should see.
-    #[cfg(target_os = "macos")]
-    fn test_state(config: &Path) -> ServeState {
-        ServeState {
-            caps_owner: None,
-            shortcuts: Vec::new(),
-            keyboard: Default::default(),
-            config: config.to_path_buf(),
-            paused: false,
-            log: None,
-            last_phrase: String::new(),
-            registered: Default::default(),
-            autostart: None,
-            settings: None,
-            settings_unreadable: None,
-            catalog: None,
-            external_change: false,
-            probe: None,
-            settings_page: beckon_core::settings::Page::default(),
-            update: beckon_core::update::UpdateState::Idle,
-            pending_update_check: false,
-            menu_rows: Vec::new(),
-            pending_select: None,
-            last_not_saved: None,
-        }
-    }
-
-    /// Open a window over `config` with one edit already made: the shape
-    /// every test below starts from.
-    #[cfg(target_os = "macos")]
-    fn state_with_an_edit(config: &Path, app: &str) -> ServeState {
-        let mut st = test_state(config);
-        let text = std::fs::read_to_string(config).unwrap();
-        let mut m = beckon_core::settings::Model::from_text(&text).unwrap();
-        m.selected = Some(0);
-        m.set_app(0, app);
-        st.settings = Some(m);
-        st
-    }
-
-    /// **The compare-and-swap, end to end.** A model whose base has moved
-    /// must abandon its write -- not report a failure and write anyway, and
-    /// not write a merged guess.
-    ///
-    /// **Asserted on the FILE's bytes, not on the return value**, because
-    /// the whole claim is that nothing was written. A driver that returned
-    /// `FileMoved` and renamed anyway would pass an assertion on the plan
-    /// alone and lose the other party's edit.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_write_is_abandoned_when_the_file_moved_under_us() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        // Somebody else edits the file behind the model's back.
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        let outcome = autosave(&mut st, false);
-
-        // **The bytes first, deliberately.** This is the assertion the whole
-        // guard exists for, and it is the one that has to be reached: a
-        // driver that reported `FileMoved` and renamed anyway would be
-        // caught here and nowhere else.
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            theirs,
-            "the other party's text must still be on disk, byte for byte"
-        );
-        assert_eq!(outcome, Some(beckon_core::settings::NotSaved::FileMoved));
-        assert!(
-            st.external_change,
-            "the banner is what tells the user their edit is not going in"
-        );
-        assert!(
-            !st.settings.as_ref().unwrap().can_undo(),
-            "every undo entry's base is the model's `original`, so restoring \
-             one would clobber the edit the guard just refused to clobber"
-        );
-    }
-
-    /// The control for the test above: with the file where the model left
-    /// it, the same edit reaches disk. Without this, a driver that never
-    /// writes at all would pass.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn an_edit_over_an_unchanged_file_is_written() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        assert_eq!(autosave(&mut st, false), None);
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "the edit has to reach the file"
-        );
-        let m = st.settings.as_ref().unwrap();
-        assert!(!m.dirty(), "the reseed is what clears dirty");
-        assert_eq!(
-            m.original(),
-            std::fs::read_to_string(&config).unwrap(),
-            "the model's new base is the text that was written"
-        );
-        assert!(
-            m.can_undo(),
-            "the text from before the write is what Undo puts back"
-        );
-    }
-
-    /// **The undo entry is pushed BEFORE the write and describes the file as
-    /// it was**, so Undo restores a state that really existed.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_undo_entry_is_the_text_from_before_the_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None);
-
-        assert_eq!(
-            st.settings.as_mut().unwrap().take_undo().as_deref(),
-            Some(before),
-            "Undo has to reach the file as it was, not as it became"
-        );
-    }
-
-    /// The stack survives a reseed. It lives inside the `Model`, and a
-    /// successful write replaces that `Model` -- so without `carry_undo`
-    /// Undo could never reach back further than the last write.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_undo_stack_survives_the_reseed_after_a_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None);
-
-        // A second edit, on the model the first write reseeded.
-        st.settings.as_mut().unwrap().set_app(0, "Anki");
-        assert_eq!(autosave(&mut st, false), None);
-
-        let m = st.settings.as_mut().unwrap();
-        assert!(m.take_undo().unwrap().contains("Brave"), "newest first");
-        assert!(m.take_undo().unwrap().contains("Anki"), "then the original");
-        assert_eq!(m.take_undo(), None);
-    }
-
-    /// **C1, at the level the defect was found: `Add` must survive the next
-    /// tick.** `add_row` dirties the model and `render` drops the
-    /// unfinished row, so the plan used to answer `Write` with bytes
-    /// identical to the file -- and the reseed then threw the new row away.
-    /// Probed before the fix: `rows 2 -> 1`, `selected Some(1) -> None`.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn adding_a_row_survives_the_autosave_that_follows_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        let mut st = test_state(&config);
-        let mut m = beckon_core::settings::Model::from_text(before).unwrap();
-        m.add_row();
-        let added = m.rows.len() - 1;
-        m.selected = Some(added);
-        st.settings = Some(m);
-
-        assert_eq!(autosave(&mut st, false), None);
-
-        let m = st.settings.as_ref().unwrap();
-        assert_eq!(
-            m.rows.len(),
-            2,
-            "the row the user just added is still there"
-        );
-        assert_eq!(m.selected, Some(added), "and is still the row being edited");
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "and nothing was written, because nothing would have changed"
-        );
-        assert!(
-            !m.can_undo(),
-            "a no-op write must not leave a no-op entry on the stack"
-        );
-    }
-
-    /// **C2, at the level the defect was found.** Editing a chord rewrites
-    /// the row's key; a `ViewState` keyed on the pre-write `orig_key`
-    /// matched nothing afterwards and the selection vanished on the
-    /// keystroke that moved it.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn editing_a_chord_keeps_the_selection_through_the_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(
-            &config,
-            "\"ctrl+alt+a\" = \"Anki\"\n\"ctrl+alt+b\" = \"Brave\"\n",
-        )
-        .unwrap();
-
-        let mut st = test_state(&config);
-        let text = std::fs::read_to_string(&config).unwrap();
-        let mut m = beckon_core::settings::Model::from_text(&text).unwrap();
-        m.selected = Some(1);
-        m.set_combo(1, "ctrl+alt+c");
-        st.settings = Some(m);
-
-        assert_eq!(autosave(&mut st, false), None);
-
-        let m = st.settings.as_ref().unwrap();
-        let i = m
-            .selected
-            .expect("the selection must survive its own keystroke");
-        assert_eq!(m.rows[i].app, "Brave", "and stay on the SAME binding");
-        assert!(std::fs::read_to_string(&config).unwrap().contains("alt+c"));
-    }
-
-    /// **Rule 1's other half: a write that FAILED must leave no undo entry**
-    /// (I2). The entry is pushed before the rename, so if the rename never
-    /// happens the entry describes a file state that never existed -- and
-    /// Undo would then write that state over a file nobody asked it to
-    /// touch.
-    ///
-    /// The failure is made by taking write permission off the directory, so
-    /// `fs::write` of the temp file cannot succeed. Restored afterwards or
-    /// `TempDir`'s own cleanup fails.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_failed_write_leaves_no_undo_entry() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let outcome = autosave(&mut st, false);
-        std::fs::set_permissions(dir.path(), perms).unwrap();
-
-        // The control: the write really did fail, so this test is about a
-        // failed write and not about a write that quietly worked.
-        assert_eq!(
-            outcome,
-            Some(beckon_core::settings::NotSaved::CannotWrite),
-            "precondition: the directory must really have refused the write"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "and nothing reached the file"
-        );
-
-        assert!(
-            !st.settings.as_ref().unwrap().can_undo(),
-            "an entry left behind here describes a file state that never \
-             existed, and Undo would write it over a file nobody touched"
-        );
-        assert!(
-            st.settings.as_ref().unwrap().dirty(),
-            "the edit is still only in memory, so the model must still say so"
-        );
-    }
-
-    /// `Keep mine` is the one deliberate clobber, and the other party's text
-    /// is on the stack before it happens -- so the press is one Undo away
-    /// from being reversed.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keep_mine_writes_and_leaves_the_other_text_on_the_undo_stack() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        assert_eq!(autosave(&mut st, true), None);
-        assert!(std::fs::read_to_string(&config).unwrap().contains("Brave"));
-        assert_eq!(
-            st.settings.as_mut().unwrap().take_undo().as_deref(),
-            Some(theirs),
-            "the clobbered text is what Undo has to be able to put back"
-        );
-    }
-
-    /// **R7, at the level the defect was found: `Keep mine` must not
-    /// silently do nothing.** The user edits, then undoes their edits by
-    /// hand, so the model still says dirty while rendering back to its own
-    /// base -- and the file holds somebody else's text. With one parameter
-    /// answering both of `autosave_plan`'s questions, the driver's
-    /// substituted base reached the no-op check, the plan answered
-    /// `Nothing`, and the other party's text stayed. Nothing on screen said
-    /// so, because `external_change` is cleared either way -- and Task 8's
-    /// readout would have called it `Saved`.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keep_mine_writes_when_the_edits_net_back_to_the_base() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, mine).unwrap();
-
-        let mut st = test_state(&config);
-        let mut m = beckon_core::settings::Model::from_text(mine).unwrap();
-        m.selected = Some(0);
-        m.set_app(0, "Brave");
-        m.set_app(0, "Anki"); // undone by hand: dirty, but nets to the base
-        st.settings = Some(m);
-
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        assert_eq!(autosave(&mut st, true), None);
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            mine,
-            "Keep mine means the user's text reaches the file, or the button lies"
-        );
-        assert_eq!(
-            st.settings.as_mut().unwrap().take_undo().as_deref(),
-            Some(theirs),
-            "and the clobbered text is still one Undo away"
-        );
-    }
-
-    /// **`Keep mine` over a config that is no longer there recreates it
-    /// (I3 / M3).** The behaviour was ruled correct by reading in Task 7's
-    /// second fix round and nothing pinned it, while the driver's own
-    /// comment two functions away called the branch unreachable.
-    ///
-    /// Both halves are asserted: the file comes back with the model's text,
-    /// and the undo entry is the model's BASE rather than a disk text there
-    /// is none of -- so one press of Undo puts back the state the session
-    /// started from.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn keep_mine_recreates_a_config_that_was_deleted() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let mine = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, mine).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        // Somebody deletes the file out from under the open window.
-        std::fs::remove_file(&config).unwrap();
-        assert!(
-            !config.exists(),
-            "precondition: there is no file to write over"
-        );
-
-        assert_eq!(
-            autosave(&mut st, true),
-            None,
-            "`Keep mine` over a deleted file is a write, not a hold"
-        );
-
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "the config has to come back, with the user's edit in it"
-        );
-        assert_eq!(
-            st.settings.as_mut().unwrap().take_undo().as_deref(),
-            Some(mine),
-            "with no disk text to record, the entry is the model's base -- \
-             the last state that really existed"
-        );
-    }
-
-    /// A model that does not render writes nothing and says which of the two
-    /// silences it is.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_half_typed_row_writes_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        let mut st = test_state(&config);
-        let mut m = beckon_core::settings::Model::from_text(before).unwrap();
-        m.selected = Some(0);
-        m.set_combo(0, "not a chord");
-        st.settings = Some(m);
-
-        assert_eq!(
-            autosave(&mut st, false),
-            Some(beckon_core::settings::NotSaved::FinishTheRow)
-        );
-        assert_eq!(std::fs::read_to_string(&config).unwrap(), before);
-    }
-
-    // -----------------------------------------------------------------
-    // The footer's Undo button (`undo_pressed`, four-doors §6.4, G-g)
-    // -----------------------------------------------------------------
-
-    /// **The Undo button's own compare-and-swap.** The file watcher can
-    /// raise `external_change` on a dirty model WITHOUT touching the undo
-    /// stack (see its own call site), so a bare pop-and-write here would
-    /// silently overwrite an edit somebody else just made -- every stack
-    /// entry's base is the SAME `model.original()`, so once that no longer
-    /// matches the file, none of them are safe, not just the top one.
-    ///
-    /// **Asserted on the FILE's bytes, not on the return value**, the same
-    /// discipline `a_write_is_abandoned_when_the_file_moved_under_us` uses:
-    /// the whole claim is that nothing was written.
-    ///
-    /// **Mutation proved this test can fail.** Commenting out the `return;`
-    /// on the `moved` branch in `undo_pressed` (falling through into the pop
-    /// and write below) turned this red: `theirs` was replaced by `Brave`'s
-    /// text and `can_undo()` came back `true`. Reverted before committing.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn undo_is_abandoned_when_the_file_moved_under_us() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None);
-        assert!(
-            st.settings.as_ref().unwrap().can_undo(),
-            "precondition: there is an entry for Undo to reach for"
-        );
-
-        // Somebody else edits the file behind the model's back.
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        undo_pressed(&mut st);
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            theirs,
-            "the other party's text must still be on disk, byte for byte"
-        );
-        assert!(
-            st.external_change,
-            "the banner is what tells the user their Undo did not go in"
-        );
-        assert!(
-            !st.settings.as_ref().unwrap().can_undo(),
-            "every remaining entry's base is stale too, so the whole stack \
-             goes -- not just a decline of the one press"
-        );
-        assert_eq!(
-            st.last_not_saved,
-            Some(beckon_core::settings::NotSaved::FileMoved)
-        );
-    }
-
-    /// The success path, end to end: pop the top entry, write it, reseed
-    /// from what was written, and carry what is LEFT of the stack onto the
-    /// fresh model -- `carry_undo` is what makes a second Undo possible, and
-    /// this is the assertion that would catch its removal.
-    ///
-    /// The selection assertion is what proves `restore_view_state` actually
-    /// ran: `Model::from_text` (what a bare reseed would leave behind)
-    /// starts every model at `selected: None`, so a `Some(0)` here can only
-    /// come from the view being carried across the write.
-    ///
-    /// **Mutation proved this test can fail.** Commenting out the
-    /// `carry_undo(old, &mut fresh)` call in `undo_pressed`'s success arm
-    /// turned this red: the second `take_undo()` returned `None` instead of
-    /// `Some(original)`. Reverted before committing.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn undo_pops_writes_and_carries_the_rest_of_the_stack() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let original = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, original).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None); // stack: [original]
-
-        st.settings.as_mut().unwrap().set_app(0, "Zed");
-        assert_eq!(autosave(&mut st, false), None); // stack: [original, ..Brave..]
-
-        assert!(std::fs::read_to_string(&config).unwrap().contains("Zed"));
-
-        undo_pressed(&mut st);
-
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "Undo restores the text from just before the LAST write, not \
-             the original"
-        );
-        assert_eq!(
-            st.last_not_saved, None,
-            "a successful Undo clears any earlier refusal"
-        );
-        assert!(!st.external_change);
-
-        let m = st.settings.as_mut().unwrap();
-        assert_eq!(
-            m.selected,
-            Some(0),
-            "the view survives the write -- see this test's own doc"
-        );
-        assert_eq!(
-            m.take_undo().as_deref(),
-            Some(original),
-            "the OLDER entry must have carried onto the reseeded model, or \
-             a second Undo has nowhere left to go"
-        );
-        assert_eq!(m.take_undo(), None, "and that really was the last one");
-    }
-
-    /// Rule 1's other half, for Undo: a write that FAILS must leave the
-    /// popped entry back on the stack, or one failed write silently costs
-    /// the user a level of history. Same technique as
-    /// `a_failed_write_leaves_no_undo_entry` (I2): write permission is taken
-    /// off the directory so `write_config_text`'s temp file cannot be
-    /// created.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_failed_undo_write_pushes_the_entry_back() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let original = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, original).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None);
-        assert!(st.settings.as_ref().unwrap().can_undo());
-
-        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        undo_pressed(&mut st);
-        std::fs::set_permissions(dir.path(), perms).unwrap();
-
-        // The control: the write really did fail, so this test is about a
-        // failed write and not about one that quietly worked.
-        assert_eq!(
-            st.last_not_saved,
-            Some(beckon_core::settings::NotSaved::CannotWrite),
-            "precondition: the directory must really have refused the write"
-        );
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "and nothing reached the file"
-        );
-        assert_eq!(
-            st.settings.as_mut().unwrap().take_undo().as_deref(),
-            Some(original),
-            "the popped entry must go straight back, or a retry has \
-             nothing left to pop"
-        );
-    }
-
-    /// A no-op when there is nothing to pop. `saved_readout`'s `undo` flag
-    /// and the button's own `apply_enabled`-style gating already keep this
-    /// from being reachable from the UI, but a stray `SettingsCommand::Undo`
-    /// must still do nothing rather than touch the file or panic.
-    ///
-    /// **Its kill radius is smaller than its name, which is why the test
-    /// below exists (M2).** Gutting `undo_pressed`'s top-level `can_undo()`
-    /// guard does not redden this one: the file here has not moved, so the
-    /// `base_moved` arm falls through and `take_undo()`'s own let-else
-    /// catches the empty stack one line later. What the top-level guard
-    /// actually protects is the case this test cannot reach -- an empty
-    /// stack AND a moved base.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn undo_with_an_empty_stack_does_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        // Dirty, but never autosaved -- so there is no entry yet.
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert!(!st.settings.as_ref().unwrap().can_undo());
-
-        undo_pressed(&mut st);
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "untouched"
-        );
-        assert_eq!(st.last_not_saved, None);
-        assert!(!st.external_change);
-        assert!(
-            st.settings.as_ref().unwrap().dirty(),
-            "the in-memory edit survives too -- Undo did nothing at all"
-        );
-    }
-
-    /// **The empty stack AND a moved base: what the top-level `can_undo()`
-    /// guard is really for (M2).** Without it, pressing a greyed-out `Undo`
-    /// over a file somebody else has edited takes the `base_moved` arm --
-    /// which sets `external_change`, clears the (empty) stack and records
-    /// `FileMoved`. That is a banner, and a `Not saved` footer, raised by a
-    /// button the window has disabled, about a press that had nothing to
-    /// put back.
-    ///
-    /// The sibling above cannot reach this: its file has not moved, so
-    /// `take_undo()`'s let-else catches the empty stack whether or not the
-    /// guard is there.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn undo_with_an_empty_stack_is_silent_even_when_the_file_moved() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        // Dirty, but never autosaved -- so there is no entry yet.
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert!(
-            !st.settings.as_ref().unwrap().can_undo(),
-            "precondition: nothing to pop"
-        );
-
-        // And somebody else owns the file now.
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        undo_pressed(&mut st);
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            theirs,
-            "untouched, as in the sibling above"
-        );
-        assert!(
-            !st.external_change,
-            "a press with nothing to undo must not raise the banner"
-        );
-        assert_eq!(
-            st.last_not_saved, None,
-            "nor put `Not saved - the file changed on disk` in the footer \
-             for a button that is greyed out"
-        );
-    }
-
-    /// **G-j's refusal arm, which nothing covered (I6).** Eight of the nine
-    /// guards this branch added redden a named test when removed; this one
-    /// had neither a test nor an on-screen run of the refusal -- every
-    /// session drove the close that was ALLOWED.
-    ///
-    /// The failure is made the way `a_failed_write_leaves_no_undo_entry`
-    /// makes it, by taking write permission off the directory, so the
-    /// `CannotWrite` this test refuses over is one `write_config_text`
-    /// really produced rather than a field set by hand.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_close_over_a_write_that_failed_is_refused() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        let perms = std::fs::metadata(dir.path()).unwrap().permissions();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
-        let outcome = autosave(&mut st, false);
-        // The close FLUSHES first (C1), so this retries the write and fails
-        // again -- the refusal is about the attempt just made, not about an
-        // older verdict left lying in the field.
-        let verdict = close_verdict(&mut st);
-        std::fs::set_permissions(dir.path(), perms).unwrap();
-
-        // The control: the write really did fail, so this is a test about a
-        // refused close and not about a state that never arose.
-        assert_eq!(
-            outcome,
-            Some(beckon_core::settings::NotSaved::CannotWrite),
-            "precondition: the directory must really have refused the write"
-        );
-        assert!(
-            st.settings.as_ref().unwrap().dirty(),
-            "precondition: the edit is still only in memory"
-        );
-        assert!(
-            !verdict,
-            "closing here discards an edit with no other door offering to \
-             save it -- the one case G-j exists for"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "and the file is still what it was"
-        );
-        // **The footer may not say `Saved just now` over an edit that has
-        // not reached the file (C1's second condition).** The readout is a
-        // projection of the same field the refusal reads, so this is the
-        // one place both can be checked against one state.
-        assert_eq!(
-            beckon_core::settings::saved_readout(
-                true,
-                st.last_not_saved,
-                st.settings.as_ref().unwrap().can_undo()
-            ),
-            beckon_core::settings::SavedReadout::NotSaved(
-                beckon_core::settings::NotSaved::CannotWrite
-            ),
-            "the footer has to name the failure the alert is about"
-        );
-    }
-
-    /// The control for the test above, and the close every on-screen
-    /// session has driven: the write went in, so there is nothing to refuse
-    /// and nothing to say. Without this, a `close_verdict` that refused
-    /// everything would pass.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_close_over_a_write_that_worked_is_allowed() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(autosave(&mut st, false), None);
-
-        assert!(close_verdict(&mut st));
-    }
-
-    /// **C1: closing inside the App field's debounce must not lose the
-    /// keystroke.** `edit!` and `autosave_tick` both decline to write while
-    /// `autosave_is_deferred()`, so between a keystroke and the first tick
-    /// at or after `t + AUTOSAVE_QUIET_MS` the model is dirty and the file
-    /// does not have the edit. The close used to drop the model there --
-    /// with the footer reading `Saved just now`, because `last_not_saved`
-    /// is `None` throughout.
-    ///
-    /// **What this test reproduces is the STATE, not the timer**, and the
-    /// distinction is worth being explicit about. The deadline itself lives
-    /// in `beckon-macos`' `UI` thread-local (`app_last_typed`, read through
-    /// `swin::app_field_quiet_for`), which exists only while a real window
-    /// does -- so `autosave_is_deferred()` is always `false` in a unit test
-    /// and no test here can be inside the debounce. What the debounce
-    /// PRODUCES is a dirty model whose edit has not reached the file, which
-    /// is exactly what `state_with_an_edit` builds and what the first
-    /// assertion pins. That the close's flush cannot be deferred is true by
-    /// construction rather than by this test: it calls `autosave`, which
-    /// has no deferral check in it.
-    ///
-    /// Asserted on the FILE's bytes, the discipline
-    /// `a_write_is_abandoned_when_the_file_moved_under_us` set: the whole
-    /// claim is about what is on disk once the window is gone.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn closing_writes_an_edit_that_was_still_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        // The debounce state: typed, dirty, and nothing written yet.
-        let mut st = state_with_an_edit(&config, "Brave");
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "precondition: the edit is only in memory"
-        );
-        assert!(st.settings.as_ref().unwrap().dirty());
-
-        assert!(
-            close_verdict(&mut st),
-            "the flush succeeded, so there is nothing to refuse"
-        );
-
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "the pending keystroke has to reach the file before the model \
-             is dropped -- there is no later tick to write it"
-        );
-        assert!(
-            !st.settings.as_ref().unwrap().dirty(),
-            "the reseed is what clears dirty, so this is the write's own \
-             receipt rather than a second read of the file"
-        );
-        assert_eq!(
-            st.last_not_saved, None,
-            "and `Saved just now` is now true instead of merely displayed"
-        );
-    }
-
-    /// **C1's sibling: Quit is a session end too, and a more final one.**
-    /// `tray::request_quit` is `process::exit(0)` and its own comment
-    /// records that Quit never reaches a window delegate, so
-    /// `close_request`'s flush is not on this path. Without `quit_flush` a
-    /// keystroke still inside the App field's debounce dies with the
-    /// process.
-    ///
-    /// **What stands in for driving the real menu item.** The arm itself
-    /// cannot be reached from a test: it lives in a closure handed to
-    /// `tray::set_menu`, and it ends in a divergent `process::exit(0)` that
-    /// would take the test process with it. So the arm was split, and this
-    /// drives the half that does the work -- leaving exactly one untested
-    /// line, the `quit_flush(&st)` call in the arm, which is the same
-    /// residual as `close_request`'s call to `close_verdict`.
-    ///
-    /// **It also pins the sequencing that `process::exit` makes matter.**
-    /// The file is read back at the point the arm calls `request_quit()`,
-    /// and the bytes are there -- because `write_config_text` uses
-    /// `fs::write` (write_all plus close, before it returns) and
-    /// `fs::rename`, both synchronous, with nothing buffered in this
-    /// process for a skipped destructor to lose.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn quitting_writes_an_edit_that_was_still_pending() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        let before = "\"ctrl+alt+a\" = \"Anki\"\n";
-        std::fs::write(&config, before).unwrap();
-
-        // The debounce state, as in the close test: typed, dirty, nothing
-        // written yet.
-        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            before,
-            "precondition: the edit is only in memory"
-        );
-
-        quit_flush(&st);
-
-        assert!(
-            std::fs::read_to_string(&config).unwrap().contains("Brave"),
-            "the pending keystroke has to be on disk by the instant \
-             `request_quit` is called -- `process::exit(0)` runs no \
-             destructors and there is no later tick"
-        );
-        assert!(
-            !st.borrow().settings.as_ref().unwrap().dirty(),
-            "the reseed is the write's own receipt"
-        );
-        assert_eq!(st.borrow().last_not_saved, None);
-    }
-
-    /// The flush on Quit is a last chance, not a licence: a stale base still
-    /// refuses. Same claim as the close's own control, asserted through the
-    /// Quit door because that is the door with no refusal behind it -- if
-    /// this one wrote, nothing anywhere would stop it.
-    ///
-    /// Quit then proceeds regardless, which is the cost: the in-memory edit
-    /// goes. What told the user is the footer, which had been reading `Not
-    /// saved - the file changed on disk` for as long as the state lasted,
-    /// and the banner beside it.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_flush_on_quit_still_obeys_the_compare_and_swap() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
-
-        // Somebody else edits the file behind the model's back.
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        quit_flush(&st);
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            theirs,
-            "a last chance is still not a licence to clobber"
-        );
-        assert_eq!(
-            st.borrow().last_not_saved,
-            Some(beckon_core::settings::NotSaved::FileMoved)
-        );
-    }
-
-    /// The other half of C1's flush, and the reason it goes through
-    /// `autosave` rather than writing directly: a flush whose plan HOLDS
-    /// must not write. Here the file moved under the model, so the close
-    /// leaves the other party's text exactly where it is.
-    ///
-    /// The close is still ALLOWED, which is G-j's recorded ruling and its
-    /// recorded cost: `FileMoved` has been in the footer and behind the
-    /// banner the whole time, so closing over it is an informed act. Only
-    /// `CannotWrite` stops the close.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_flush_on_close_still_obeys_the_compare_and_swap() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let mut st = state_with_an_edit(&config, "Brave");
-
-        // Somebody else edits the file behind the model's back.
-        let theirs = "\"ctrl+alt+z\" = \"Zed\"\n";
-        std::fs::write(&config, theirs).unwrap();
-
-        assert!(close_verdict(&mut st), "a hold does not refuse the close");
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            theirs,
-            "the flush is a write with all the guards on it, not a write \
-             that skips them because the window is closing"
-        );
-        assert_eq!(
-            st.last_not_saved,
-            Some(beckon_core::settings::NotSaved::FileMoved),
-            "and the footer names the hold rather than claiming a save"
-        );
-    }
-
-    /// **A refusal must not outlive the model it was about (I1).** `Reload
-    /// from disk` builds a fresh model that matches the file byte for byte;
-    /// a `last_not_saved` carried across it leaves the footer reading `Not
-    /// saved - the file changed on disk` over a file nothing is wrong with,
-    /// and it stays there: `autosave` and `undo_pressed` are the field's
-    /// only writers and both need a dirty model, so a clean one never
-    /// reaches either again.
-    ///
-    /// Asserted on `last_not_saved` itself rather than on the rendered
-    /// footer, because the footer is `saved_readout`'s projection of this
-    /// field and core already pins that projection.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn reloading_from_disk_clears_the_refusal_it_replaces() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
-
-        // Somebody else edits the file, so the next edit is held.
-        std::fs::write(&config, "\"ctrl+alt+z\" = \"Zed\"\n").unwrap();
-        {
-            let mut s = st.borrow_mut();
-            autosave(&mut s, false);
-        }
-        // The control: this test is about a refusal that was really
-        // recorded, not about a field that was never set.
-        assert_eq!(
-            st.borrow().last_not_saved,
-            Some(beckon_core::settings::NotSaved::FileMoved),
-            "precondition: the hold must have been recorded"
-        );
-        assert!(st.borrow().external_change);
-
-        reload_settings_from_disk(&st);
-
-        let s = st.borrow();
-        assert_eq!(
-            s.settings.as_ref().unwrap().original(),
-            std::fs::read_to_string(&config).unwrap(),
-            "precondition: the model is now the file, byte for byte"
-        );
-        assert!(!s.settings.as_ref().unwrap().dirty());
-        assert!(!s.external_change, "the banner goes, and it already did");
-        assert_eq!(
-            s.last_not_saved, None,
-            "and so does the sentence beside it, or the footer complains \
-             about a file it matches exactly -- for the rest of the session"
-        );
-    }
-
-    /// The same rule across a close and a reopen, which is the form the
-    /// ledger recorded: `forget_settings` and `load_settings_model` each
-    /// replace the model, so neither may leave the previous model's verdict
-    /// behind for the reopened window's first frame to draw.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn a_reopened_window_does_not_inherit_the_last_sessions_refusal() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+a\" = \"Anki\"\n").unwrap();
-
-        let st = Rc::new(RefCell::new(state_with_an_edit(&config, "Brave")));
-        st.borrow_mut().last_not_saved = Some(beckon_core::settings::NotSaved::CannotWrite);
-
-        forget_settings(&st);
-        assert_eq!(
-            st.borrow().last_not_saved,
-            None,
-            "the model the verdict was about is gone"
-        );
-
-        st.borrow_mut().last_not_saved = Some(beckon_core::settings::NotSaved::CannotWrite);
-        load_settings_model(&st).unwrap();
-        assert_eq!(
-            st.borrow().last_not_saved,
-            None,
-            "and a model read off disk starts with no verdict at all"
-        );
-    }
-
-    /// **The `.bak` is a copy of the file, not of the resolved-away link.**
-    /// It has to land beside the REAL file for the same reason
-    /// `write_config_text`'s temp file does -- a backup in a different
-    /// directory from the thing it backs up is not a backup anyone will
-    /// find.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn the_backup_is_written_beside_the_resolved_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("apps.shared.toml");
-        std::fs::write(&real, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
-        let link = dir.path().join("apps.toml");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-
-        backup_config(&link);
-
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("apps.shared.toml.bak")).unwrap(),
-            "\"ctrl+alt+t\" = \"old\"\n"
-        );
-        assert!(
-            !dir.path().join("apps.toml.bak").exists(),
-            "beside the link is the wrong directory once the link points \
-             into a dotfiles repo"
-        );
-    }
-
-    /// The control: with no link in the way the behaviour is unchanged, so the
-    /// test above is about SYMLINKS and not about the write in general.
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    #[test]
-    fn saving_a_plain_file_still_replaces_it_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("apps.toml");
-        std::fs::write(&config, "\"ctrl+alt+t\" = \"old\"\n").unwrap();
-
-        write_config_text(&config, "\"ctrl+alt+t\" = \"new\"\n").expect("write");
-
-        assert_eq!(
-            std::fs::read_to_string(&config).unwrap(),
-            "\"ctrl+alt+t\" = \"new\"\n"
-        );
-        assert!(!std::fs::symlink_metadata(&config)
-            .unwrap()
-            .file_type()
-            .is_symlink());
-    }
-
-    /// The load-bearing `?` in `acquire_lock`.
-    ///
-    /// Swap it for `map_err(|e| anyhow!("{e}"))` and everything still
-    /// compiles, every other test still passes, and the watchdog storm comes
-    /// straight back — the type is the only thing carrying "this is expected".
     #[test]
     fn lock_error_keeps_its_type_through_anyhow() {
         let dir = tempfile::tempdir().unwrap();
@@ -5007,10 +1218,6 @@ mod tests {
             "the refusal must still be recognisable as a designed outcome, \
              got `{err:#}`"
         );
-        // Against the *canonical* spelling: that is what `acquire` hashes and
-        // what it reports, and on Windows canonicalizing turns `C:\...` into
-        // the extended-length `\\?\C:\...` form, so comparing with the path as
-        // written passes on Unix and fails there.
         let canonical = config.canonicalize().unwrap();
         assert!(
             format!("{err:#}").contains(&canonical.display().to_string()),
@@ -5044,22 +1251,9 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Starting on a config that does not parse
-    //
-    // Measured on a14 2026-08-11: `beckon-serve <broken.toml>` ended in a
-    // modal dialog with NO tray icon, so the read-only settings window --
-    // which exists precisely for a file that does not parse -- was
-    // unreachable from the one starting condition that most needs it. These
-    // tests pin the decision half of the fix, and they run on all three CI
-    // jobs; the tray and the window compile on one.
-    // -----------------------------------------------------------------
-
-    const GOOD: &str = "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\n";
-    /// Broken the way a real config breaks -- a value the user had not
-    /// finished typing -- and carrying `keyboard.caps = true` so the test
-    /// below can prove nothing in it is honoured.
-    const BROKEN: &str = "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\n\"ctrl+alt+e\" = \n";
+    const GOOD: &str = "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\ntray = false\n";
+    const BROKEN: &str =
+        "\"ctrl+alt+t\" = \"Terminal\"\nkeyboard.caps = true\ntray = false\n\"ctrl+alt+e\" = \n";
 
     #[test]
     fn a_file_that_parses_is_served_whatever_the_policy_says() {
@@ -5067,127 +1261,55 @@ mod tests {
             let plan = plan_startup(GOOD, policy).expect("this file parses");
             assert_eq!(plan.shortcuts.len(), 1);
             assert!(plan.keyboard.caps, "the keyboard block is carried through");
+            assert!(!plan.tray, "the tray flag is carried through");
             assert_eq!(plan.broken, None, "nothing is wrong with this file");
         }
     }
 
-    /// macOS has ONE front door, so it cannot split the decision by binary
-    /// the way Windows does, and answering `Refuse` for both callers costs
-    /// something on each.
-    ///
-    /// Under launchd nobody reads stderr and nobody reads the exit code, so
-    /// refusing loses the tray and the settings window -- the only thing that
-    /// can fix the file -- in exactly the situation that needs them. That is
-    /// the same finding `4f82b94` recorded for `beckon-serve.exe` on a14,
-    /// where refusing ended in a dialog with **no tray icon at all**.
-    ///
-    /// `BrokenConfig`'s own doc still said *"macOS `serve` runs under launchd
-    /// with no tray and no settings window, so there would be nothing for it
-    /// to rescue"*. That was true when it was written and stopped being true
-    /// at `db4aabc`: the window has four working doors now.
-    ///
-    /// Worse than losing the window: the launch agent on this machine is
-    /// `KeepAlive { SuccessfulExit: false }` with `ThrottleInterval 60`, so a
-    /// deterministic exit 1 is an **infinite restart loop**, once a minute,
-    /// on a file only a human can repair. Windows caps that at three
-    /// (`<RestartOnFailure> PT1M x 3`) and gives up; launchd never does.
     #[test]
     fn macos_serve_under_launchd_starts_on_a_broken_file() {
-        assert_eq!(
-            macos_broken_config(false),
-            BrokenConfig::ServeAnyway,
-            "no terminal means launchd: nobody reads stderr, nobody reads the \
-             exit code, and refusing strands the window that fixes the file"
-        );
+        assert_eq!(macos_broken_config(false), BrokenConfig::ServeAnyway);
     }
 
-    /// The other half, and it is what keeps the change from being a
-    /// regression: run by hand there IS a console for the parse error and a
-    /// shell that can read `$?`, which is the contract `beckon.exe serve`
-    /// documents and scripts already depend on.
     #[test]
     fn macos_serve_from_a_terminal_still_refuses() {
-        assert_eq!(
-            macos_broken_config(true),
-            BrokenConfig::Refuse,
-            "a person watching the output gets the error and a non-zero exit"
-        );
+        assert_eq!(macos_broken_config(true), BrokenConfig::Refuse);
     }
 
-    /// A greyed row must be able to answer "why?", and on macOS it cannot.
-    ///
-    /// Windows owns its log file, so `Open log` greyed means "this run had no
-    /// `--log`" -- a fact about the command line, which the reader controls.
-    /// launchd owns the macOS log through `StandardErrorPath`, so with no path
-    /// handed in beckon does not know where the file is; a greyed row there
-    /// says nothing and offers nothing. Omit it, for the same reason
-    /// `Start with Windows` is omitted rather than greyed under
-    /// `beckon.exe serve`.
     #[test]
     fn the_log_row_is_omitted_where_beckon_does_not_own_the_log() {
-        assert_eq!(
-            menu_log_row(false, false),
-            None,
-            "no path and not ours: nothing truthful to draw"
-        );
-        assert_eq!(
-            menu_log_row(true, false),
-            Some(true),
-            "a path was handed in, so the row opens something real"
-        );
-
-        // Control: Windows is unchanged, and that is the half that would be a
-        // regression. Greyed is the right answer there because beckon owns the
-        // file and the reader owns the flag.
-        assert_eq!(menu_log_row(false, true), Some(false), "shown but greyed");
+        assert_eq!(menu_log_row(false, false), None);
+        assert_eq!(menu_log_row(true, false), Some(true));
+        assert_eq!(menu_log_row(false, true), Some(false));
         assert_eq!(menu_log_row(true, true), Some(true));
     }
 
     #[test]
     fn the_console_front_door_still_refuses_a_broken_file() {
-        // `beckon.exe serve` must keep exiting non-zero for scripts. The
-        // message is the parser's own, unprefixed, so `cmd_serve_app` can put
-        // the path in front of it and print exactly what it always printed.
         let err = plan_startup(BROKEN, BrokenConfig::Refuse)
             .err()
             .expect("a broken file must be refused on this front door");
-        assert_eq!(
-            err,
-            parse_config(BROKEN).unwrap_err(),
-            "the refusal must carry the parser's own words, unprefixed"
-        );
+        assert_eq!(err, parse_config(BROKEN).unwrap_err());
     }
 
     #[test]
-    fn the_gui_front_door_starts_with_nothing_registered() {
+    fn the_gui_front_door_starts_with_nothing_registered_and_keeps_tray_on() {
         let plan =
             plan_startup(BROKEN, BrokenConfig::ServeAnyway).expect("this front door must start");
-        assert!(
-            plan.shortcuts.is_empty(),
-            "a file beckon cannot read binds no keys"
-        );
-        assert!(plan.broken.is_some(), "the reason travels with the plan");
+        assert!(plan.shortcuts.is_empty());
+        assert!(plan.tray, "a broken file must not hide the tray icon");
+        assert!(plan.broken.is_some());
         assert_eq!(
             plan.broken.as_deref(),
             Some(parse_config(BROKEN).unwrap_err()).as_deref()
         );
     }
 
-    /// The safety property, not a formatting one: `sync_caps_hook` reads
-    /// `keyboard.caps` to decide whether to install a `WH_KEYBOARD_LL` hook.
-    /// A half-parsed file must never arm one.
     #[test]
     fn a_broken_start_cannot_arm_the_caps_hook() {
-        assert!(
-            BROKEN.contains("keyboard.caps = true"),
-            "precondition: the broken file asks for the hook"
-        );
+        assert!(BROKEN.contains("keyboard.caps = true"));
         let plan = plan_startup(BROKEN, BrokenConfig::ServeAnyway).unwrap();
-        assert_eq!(
-            plan.keyboard,
-            KeyboardConfig::default(),
-            "nothing in a file that does not parse is honoured"
-        );
+        assert_eq!(plan.keyboard, KeyboardConfig::default());
         assert!(!plan.keyboard.caps);
     }
 
@@ -5195,35 +1317,11 @@ mod tests {
     fn the_unreadable_phrase_is_honest_and_ascii() {
         let p = unreadable_phrase();
         assert_eq!(p, "cannot read the config (0 shortcuts registered)");
-        // What the tray tooltip and the menu head become. Neither may claim
-        // a registration that did not happen.
         assert_eq!(
             format!("beckon - {p}"),
             "beckon - cannot read the config (0 shortcuts registered)"
         );
-        assert!(
-            p.is_ascii(),
-            "serve status lines are read through ANSI tools"
-        );
-    }
-
-    /// Both halves of the external-change path exist on both windowed
-    /// platforms.
-    ///
-    /// **It asserts nothing at run time and that is the point.** Until
-    /// 2026-08-16 `settings_saw_external_change` and
-    /// `settings_retry_unreadable` were `#[cfg(target_os = "windows")]` while
-    /// every sibling around them was `any(windows, macos)` -- so on macOS an
-    /// external edit never reached an open window, the banner that exists to
-    /// stop Save overwriting it could not appear, and a read-only window
-    /// never became editable once the file was fixed. A missing function is
-    /// not a runtime fact, so naming the two here is the only layer that can
-    /// see the gate: put the old `cfg` back and this test does not compile on
-    /// the macOS job (E0425), which is the failure it is for.
-    #[test]
-    fn both_windowed_platforms_carry_the_external_change_path() {
-        let _: fn(&Rc<RefCell<ServeState>>) = settings_saw_external_change;
-        let _: fn(&Rc<RefCell<ServeState>>) -> bool = settings_retry_unreadable;
+        assert!(p.is_ascii());
     }
 
     #[test]
@@ -5233,8 +1331,6 @@ mod tests {
             &[PathBuf::from("/x/y/apps.macos.toml")],
             name
         ));
-        // Editors that write via a temp file + rename report sibling paths —
-        // those must NOT trigger, the rename onto our name does.
         assert!(!event_touches(
             &[PathBuf::from("/x/y/.apps.macos.toml.swp")],
             name
@@ -5253,27 +1349,18 @@ mod tests {
             paused: false,
             autostart: Some(false),
             log: Some(true),
-            settings: true,
-            macos: false,
         };
         let rows = build_entries(&m);
         assert_eq!(rows[0].label, "beckon - 5 shortcuts registered");
-        assert!(!rows[0].enabled, "the status row is a label, not a button");
+        assert!(!rows[0].enabled);
         let pause = rows.iter().find(|r| r.id == MENU_PAUSE).unwrap();
         assert_eq!(pause.checked, Some(false));
 
-        // `..m.clone()`, not `..m`: Task 5 appends another case to this test
-        // and needs `m` to still be alive.
         let paused = MenuModel {
             paused: true,
             ..m.clone()
         };
         let rows = build_entries(&paused);
-        // Previously unverified despite the test's name: only the un-paused
-        // head format was asserted above, so a regression in the paused
-        // spelling (e.g. losing the "beckon - " prefix, or reusing a
-        // registration phrase here -- see `set_paused`) would not have
-        // been caught.
         assert_eq!(rows[0].label, "beckon - paused (5 shortcuts registered)");
         assert_eq!(
             rows.iter().find(|r| r.id == MENU_PAUSE).unwrap().checked,
@@ -5282,7 +1369,7 @@ mod tests {
 
         let on = MenuModel {
             autostart: Some(true),
-            ..m.clone()
+            ..m
         };
         assert_eq!(
             build_entries(&on)
@@ -5294,50 +1381,35 @@ mod tests {
         );
     }
 
-    /// A menu must never end on a separator or show two in a row: AppKit
-    /// draws both, so the bug is visible rather than inert. Checked for
-    /// every combination of the three capability flags, because the
-    /// omissions interact — dropping `Settings...` while keeping
-    /// `Open log` is a different row list from dropping both.
     #[test]
     fn no_capability_combination_produces_a_stray_separator() {
-        for settings in [true, false] {
-            for log in [None, Some(true), Some(false)] {
-                for autostart in [None, Some(true), Some(false)] {
-                    let rows = build_entries(&MenuModel {
-                        phrase: "p".into(),
-                        paused: false,
-                        autostart,
-                        log,
-                        settings,
-                        macos: false,
-                    });
-                    let case = format!("settings={settings} log={log:?} autostart={autostart:?}");
-                    assert!(
-                        !rows.last().unwrap().is_separator(),
-                        "{case}: menu ends on a separator"
-                    );
-                    assert!(
-                        !rows.first().unwrap().is_separator(),
-                        "{case}: menu starts with a separator"
-                    );
-                    assert!(
-                        !rows
-                            .windows(2)
-                            .any(|w| w[0].is_separator() && w[1].is_separator()),
-                        "{case}: two separators in a row"
-                    );
-                }
+        for log in [None, Some(true), Some(false)] {
+            for autostart in [None, Some(true), Some(false)] {
+                let rows = build_entries(&MenuModel {
+                    phrase: "p".into(),
+                    paused: false,
+                    autostart,
+                    log,
+                });
+                let case = format!("log={log:?} autostart={autostart:?}");
+                assert!(
+                    !rows.last().unwrap().is_separator(),
+                    "{case}: menu ends on a separator"
+                );
+                assert!(
+                    !rows.first().unwrap().is_separator(),
+                    "{case}: menu starts with a separator"
+                );
+                assert!(
+                    !rows
+                        .windows(2)
+                        .any(|w| w[0].is_separator() && w[1].is_separator()),
+                    "{case}: two separators in a row"
+                );
             }
         }
     }
 
-    /// Fix for the CRITICAL bug: the CLI path (`beckon.exe serve`) used to
-    /// show "Start with Windows" unconditionally, and ticking it there
-    /// wrote a Run value that could never start anything (see
-    /// `AutostartCapability`). The row must not exist at all when the
-    /// capability is absent -- disabled-and-unexplained is not an
-    /// acceptable substitute for omitted.
     #[test]
     fn autostart_row_exists_only_when_the_capability_does() {
         let base = MenuModel {
@@ -5345,13 +1417,8 @@ mod tests {
             paused: false,
             autostart: None,
             log: Some(true),
-            settings: true,
-            macos: false,
         };
-        assert!(
-            build_entries(&base).iter().all(|r| r.id != MENU_AUTOSTART),
-            "no row may exist when this process cannot offer autostart"
-        );
+        assert!(build_entries(&base).iter().all(|r| r.id != MENU_AUTOSTART));
 
         let with_capability = MenuModel {
             autostart: Some(true),
@@ -5359,15 +1426,10 @@ mod tests {
         };
         let rows = build_entries(&with_capability);
         let hits: Vec<_> = rows.iter().filter(|r| r.id == MENU_AUTOSTART).collect();
-        assert_eq!(hits.len(), 1, "exactly one Start with Windows row");
+        assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].checked, Some(true));
     }
 
-    /// Moved here from Task 3, where the same intent could only be written
-    /// as an assertion about a constant. Here it runs against the real
-    /// entry list, so adding a menu row that collides with the reserved
-    /// double-click id fails the build instead of silently making
-    /// double-click fire that row.
     #[test]
     fn no_real_entry_collides_with_the_reserved_double_click_id() {
         let m = MenuModel {
@@ -5375,16 +1437,9 @@ mod tests {
             paused: false,
             autostart: Some(false),
             log: Some(true),
-            settings: true,
-            macos: false,
         };
         for row in build_entries(&m) {
-            assert_ne!(
-                row.id,
-                beckon_core::menu::MENU_ID_DOUBLE_CLICK,
-                "entry {:?} shadows the reserved double-click id",
-                row.label
-            );
+            assert_ne!(row.id, beckon_core::menu::MENU_ID_DOUBLE_CLICK);
         }
     }
 
@@ -5404,9 +1459,6 @@ mod tests {
         assert_eq!(map.len(), 2);
     }
 
-    /// `register_all` is what actually fills `results`, and the settings
-    /// window joins on the canonical spelling -- not on how the file wrote
-    /// it. Pin that the key really is canonicalized.
     #[test]
     fn results_are_keyed_by_canonical_spelling_not_by_how_the_file_wrote_it() {
         let shortcuts =
@@ -5414,22 +1466,17 @@ mod tests {
         assert_eq!(shortcuts[0].combo.canonical(), "ctrl+alt+t");
     }
 
-    /// The row used to open Notepad; it now opens the settings window, and
-    /// the label has to say so. Same id on purpose -- renaming the id would
-    /// have broken the double-click alias that shares it.
     #[test]
-    fn the_first_action_row_opens_settings_not_notepad() {
+    fn the_first_action_row_opens_the_config_file() {
         let m = MenuModel {
             phrase: "2 shortcuts registered".into(),
             paused: false,
             autostart: Some(false),
             log: Some(true),
-            settings: true,
-            macos: false,
         };
         let rows = build_entries(&m);
         let edit = rows.iter().find(|r| r.id == MENU_EDIT).unwrap();
-        assert_eq!(edit.label, "Settings...");
+        assert_eq!(edit.label, "Open config file");
     }
 
     #[test]
@@ -5439,49 +1486,10 @@ mod tests {
             paused: false,
             autostart: Some(false),
             log: Some(false),
-            settings: true,
-            macos: false,
         };
         let rows = build_entries(&m);
         assert!(!rows.iter().find(|r| r.id == MENU_LOG).unwrap().enabled);
     }
-
-    #[test]
-    fn the_update_row_appears_next_to_settings() {
-        let rows = build_entries(&MenuModel {
-            phrase: "19 shortcuts".into(),
-            paused: false,
-            autostart: None,
-            log: None,
-            settings: true,
-            macos: true,
-        });
-        let edit = rows.iter().position(|r| r.id == MENU_EDIT).unwrap();
-        let update = rows.iter().position(|r| r.id == MENU_UPDATE).unwrap();
-        assert_eq!(update, edit + 1, "the two window-opening rows sit together");
-        assert_eq!(rows[update].label, "Check for Updates...");
-        assert!(rows[update].enabled);
-        assert_eq!(rows[update].checked, None);
-    }
-
-    /// The row opens the settings window, so a build without one must not
-    /// draw it -- it would be a lie, and clicking it would do nothing.
-    #[test]
-    fn no_settings_window_means_no_update_row() {
-        let rows = build_entries(&MenuModel {
-            phrase: "19 shortcuts".into(),
-            paused: false,
-            autostart: None,
-            log: None,
-            settings: false,
-            macos: false,
-        });
-        assert!(rows.iter().all(|r| r.id != MENU_UPDATE));
-    }
-
-    use beckon_core::certainty::{Certainty, NameReport};
-    use beckon_core::shortcuts::{parse_shortcuts, Chord};
-    use std::collections::HashMap;
 
     fn nr(id: &str, certainty: Certainty, target: Option<&str>) -> NameReport {
         NameReport {
@@ -5516,8 +1524,6 @@ mod tests {
         );
     }
 
-    /// Named by the FIRST candidate: that is the app the user thinks of the
-    /// key as, even though `check --resolve` reports the last.
     #[test]
     fn a_row_whose_every_candidate_misses_is_missing_under_its_first_name() {
         let s =
@@ -5550,8 +1556,6 @@ mod tests {
         assert_eq!(r[0].bundle_id.as_deref(), Some("com.brave.Browser"));
     }
 
-    /// Not answered is not the same as not installed -- the same distinction
-    /// as "not yet probed is not free".
     #[test]
     fn an_unanswered_name_is_unknown_not_missing() {
         let s = parse_shortcuts("\"ctrl+alt+b\" = \"Brave\"\n").unwrap();
@@ -5565,8 +1569,6 @@ mod tests {
         );
     }
 
-    /// A chain that does not split can never launch anything, which is what
-    /// `missing` means. `beckon_ladder` refuses it before any backend.
     #[test]
     fn a_chain_that_does_not_split_is_missing_under_its_whole_text() {
         let s = parse_shortcuts("\"ctrl+alt+b\" = \"Brave ||\"\n").unwrap();
@@ -5641,8 +1643,6 @@ mod tests {
         assert!(rows.iter().all(|r| r.flag.is_none()));
     }
 
-    /// A resolve that failed outright leaves an empty cache. The rows still
-    /// draw, named as written, and claim nothing.
     #[test]
     fn an_empty_cache_still_draws_every_row_and_claims_nothing() {
         let rows = binding_rows(&table(), &[], &HashMap::new(), false, None);
@@ -5653,8 +1653,6 @@ mod tests {
             .all(|r| r.flag.is_none() && r.bundle_id.is_none()));
         assert_eq!(rows[0].chord, "⌃⌥⌘C");
     }
-
-    use beckon_core::menu::EntryKind;
 
     fn mac(rows: Vec<BindingRow>) -> MacMenu {
         MacMenu {
@@ -5681,10 +1679,8 @@ mod tests {
         v.iter().map(|e| e.label.as_str()).collect()
     }
 
-    /// Spec §3.1: nine rows when nothing is broken, whatever the file holds.
-    /// That was round 1's objection: 19 inline rows, one more per binding.
     #[test]
-    fn the_healthy_macos_menu_is_nine_rows_and_does_not_grow_with_the_file() {
+    fn the_healthy_macos_menu_is_eight_rows_and_does_not_grow_with_the_file() {
         let small = build_mac_entries(&mac(vec![brow("kitty", None)]));
         let big = build_mac_entries(&mac((0..19)
             .map(|i| brow(&format!("app{i}"), None))
@@ -5697,8 +1693,7 @@ mod tests {
                 "",
                 "Shortcuts",
                 "",
-                "Settings...",
-                "Check for Updates...",
+                "Open Config",
                 "Reload Config",
                 "",
                 "Quit beckon"
@@ -5753,7 +1748,6 @@ mod tests {
         assert_eq!(e[i + 4].id, MENU_BINDING_BASE + 3);
     }
 
-    /// `paused` outranks every word, and the header already says it.
     #[test]
     fn pausing_hides_needs_attention() {
         let e = build_mac_entries(&MacMenu {
@@ -5764,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn every_binding_is_in_the_submenu_in_file_order_and_opens_its_own_row() {
+    fn every_binding_is_in_the_submenu_in_file_order() {
         let e = build_mac_entries(&mac(vec![brow("kitty", None), brow("Claude", None)]));
         let sub = e.iter().find(|x| x.id == MENU_SHORTCUTS).unwrap();
         assert_eq!(sub.kind, EntryKind::Submenu);
@@ -5798,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_rows_keep_their_command_key_equivalents() {
+    fn the_menu_rows_keep_their_command_key_equivalents() {
         let e = build_mac_entries(&mac(vec![]));
         let key = |id| e.iter().find(|x| x.id == id).unwrap().key;
         assert_eq!(
@@ -5856,10 +1850,6 @@ mod tests {
             {
                 assert_ne!(x.id, beckon_core::menu::MENU_ID_DOUBLE_CLICK);
                 assert_ne!(x.id, beckon_core::menu::MENU_ID_ALT_CLICK);
-                // A binding appears twice (attention + submenu) on purpose;
-                // it must be the SAME binding both times.
-                // `and N more...` deliberately shares the id of the first
-                // binding it folds, so it opens that one.
                 if let Some(prev) = seen.insert(x.id, x.label.clone()) {
                     let folded = prev.starts_with("and ") || x.label.starts_with("and ");
                     assert!(prev == x.label || folded, "id {} is two rows", x.id);

@@ -20,52 +20,11 @@ features = [
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",
-    # The clipboard, for the About page's three copy buttons (`clipboard.rs`).
-    # `Win32_System_DataExchange` is the API and `Win32_System_Memory` is the
-    # `HGLOBAL` it takes ownership of -- neither is avoidable by picking a
-    # narrower call, unlike the `Win32_Security` feature `prefs.rs` declined
-    # to enable in order to pass `None` to one parameter. `Win32_System_Memory`
-    # was already a DEV-dependency feature for `settings_probe`; features are
-    # additive, so promoting it here changes nothing for the probes.
-    "Win32_System_DataExchange",
-    "Win32_System_Memory",
-    # `MessageBeep`, which spec F.3 names for a refused chord. Windows files
-    # it under Diagnostics::Debug rather than WindowsAndMessaging, where its
-    # `MESSAGEBOX_STYLE` argument lives. Not a new dependency: this feature
-    # was already enabled below for the examples, and is promoted here rather
-    # than added.
-    "Win32_System_Diagnostics_Debug",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
-    # `OSVERSIONINFOW`, the struct `RtlGetVersion` (below) fills in. Its own
-    # feature, separate from `Wdk_System_SystemServices`, because the struct
-    # lives under `Win32::System::SystemInformation` while the function that
-    # fills it is generated under the Wdk namespace -- see the comment there.
-    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
-    # `RtlGetVersion` (`theme::os_build`). `GetVersionExW` (the Win32 function
-    # actually named for this) lies about the build number to any process
-    # without a manifest asserting compatibility with the Windows version
-    # running -- this binary ships none -- so it would report a stale build on
-    # every real Windows 10/11 machine. `RtlGetVersion` reads the true value
-    # regardless. windows-rs generates it under the driver-kit (`Wdk`)
-    # namespace rather than `Win32`, because that is where Microsoft's own
-    # `um`/`km` headers declare it, even though every caller here is ordinary
-    # user-mode code -- pulling in `Wdk_System_SystemServices` does not pull
-    # in anything else from the WDK surface.
-    "Wdk_System_SystemServices",
-    # `HIGHCONTRASTW` / `HCF_HIGHCONTRASTON`, which the Shortcut column's
-    # keycaps read once per theme change to decide their SHAPE -- rounded box
-    # or hard rectangle. Every colour is `GetSysColor` and already correct in
-    # high contrast without asking; what is not correct there is a soft bottom
-    # edge. Windows files the struct under Accessibility even though
-    # `SPI_GETHIGHCONTRAST` lives in WindowsAndMessaging. A feature of a
-    # dependency already present, not a new dependency.
-    "Win32_UI_Accessibility",
-    "Win32_UI_Controls",
-    "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
@@ -75,25 +34,3 @@ features = [
 
 [dev-dependencies]
 tempfile = "3"
-
-# `settings_probe` reads a comctl32 control that lives in ANOTHER process.
-# comctl32 messages are not marshalled across the process boundary the way
-# `WM_GETTEXT` is (only user32's own controls get that), so `LVM_GETITEMRECT`
-# with a local `RECT*` would have the target write through our pointer into
-# its own address space -- garbage back, and a live `beckon-serve` corrupted.
-# The buffer therefore has to be allocated inside the target. Dev-only: the
-# library itself must never need to poke another process's memory.
-#
-# `Win32_System_Diagnostics_Debug` -- `ReadProcessMemory` -- used to be here
-# too. It is in the library's own list now, because `MessageBeep` lives in
-# the same module; features are additive, so the probes still have it.
-[target.'cfg(target_os = "windows")'.dev-dependencies.windows]
-version = "0.61"
-features = ["Win32_System_Memory"]
-
-# Windows-only, and only to give the EXAMPLES a manifest -- see build.rs. The
-# target gate matches beckon-cli's: `embed-resource` shells out to a resource
-# compiler that a macOS host does not have, and the local Windows gate
-# cross-checks a -gnu target where it would also fail.
-[target.'cfg(windows)'.build-dependencies]
-embed-resource = "2"

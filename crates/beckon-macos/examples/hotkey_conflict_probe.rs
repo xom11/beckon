@@ -83,13 +83,10 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use beckon_core::shortcuts::{key_table, KeyDef};
+    use beckon_core::shortcuts::{lookup_key, KeyDef};
 
     fn key(name: &str) -> &'static KeyDef {
-        key_table()
-            .iter()
-            .find(|k| k.name == name)
-            .unwrap_or_else(|| panic!("no key named `{name}` in key_table()"))
+        lookup_key(name).unwrap_or_else(|| panic!("no key named `{name}`"))
     }
 
     /// One registration attempt, reported whichever way it goes.

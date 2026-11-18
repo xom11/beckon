@@ -32,8 +32,7 @@
 //! ShellExecuteW) letting a second menu open and resolve before the first
 //! handler returns — not, any more, the modal loop's own delivery.
 
-use beckon_core::settings::Availability;
-use beckon_core::shortcuts::{Combo, KeyDef};
+use beckon_core::shortcuts::KeyDef;
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use windows::core::w;
@@ -119,6 +118,10 @@ thread_local! {
     // reverting to the startup placeholder — the icon coming back with a
     // stale tooltip would be a worse signal than no icon at all.
     static TRAY_TIP: RefCell<String> = RefCell::new(String::from("beckon serve"));
+    // Whether the user wants the tray icon shown (`tray = true` in apps.toml),
+    // and whether `NIM_ADD` has currently placed it in the notification area.
+    static TRAY_VISIBLE: Cell<bool> = const { Cell::new(false) };
+    static TRAY_ADDED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn dispatch_hotkey(id: u32) {
@@ -314,9 +317,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESUL
     let taskbar_created = TASKBAR_CREATED_MSG.with(|c| c.get());
     if taskbar_created != 0 && msg == taskbar_created {
         // Explorer (re)created the notification area — logon race or an
-        // Explorer restart both land here. Re-add; hotkeys were never
-        // affected, only the icon.
-        tray_add(hwnd);
+        // Explorer restart both land here. Re-add only if the tray icon is
+        // enabled; hotkeys were never affected.
+        if TRAY_VISIBLE.with(|v| v.get()) {
+            tray_add(hwnd);
+        }
         return LRESULT(0);
     }
     unsafe { DefWindowProcW(hwnd, msg, w, l) }
@@ -387,10 +392,41 @@ fn tray_add(hwnd: HWND) {
     // taskbar exists yet (logon race, explorer.exe not up), or no taskbar
     // exists at all (non-interactive window station — see the session check
     // in `install`).
-    if !unsafe { Shell_NotifyIconW(NIM_ADD, &nid) }.as_bool() {
+    if unsafe { Shell_NotifyIconW(NIM_ADD, &nid) }.as_bool() {
+        TRAY_ADDED.with(|a| a.set(true));
+    } else {
+        TRAY_ADDED.with(|a| a.set(false));
         eprintln!(
             "hotkey: Shell_NotifyIconW(NIM_ADD) failed - no tray icon; hotkeys are unaffected"
         );
+    }
+}
+
+fn tray_delete(hwnd: HWND) {
+    if !TRAY_ADDED.with(|a| a.replace(false)) {
+        return;
+    }
+    let nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: 1,
+        ..Default::default()
+    };
+    let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+}
+
+/// Show or hide the tray icon while keeping the underlying hidden window
+/// alive for `RegisterHotKey` and `SetTimer`.
+pub fn set_tray_visible(visible: bool) {
+    let was = TRAY_VISIBLE.with(|v| v.replace(visible));
+    let hwnd = TRAY_HWND.with(|c| c.get());
+    if hwnd.0.is_null() {
+        return;
+    }
+    if visible && !was {
+        tray_add(hwnd);
+    } else if !visible && was {
+        tray_delete(hwnd);
     }
 }
 
@@ -476,7 +512,9 @@ impl HotkeyManager {
         TASKBAR_CREATED_MSG.with(|c| {
             c.set(unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) });
         });
-        tray_add(hwnd);
+        if TRAY_VISIBLE.with(|v| v.get()) {
+            tray_add(hwnd);
+        }
         Ok(Self {
             ids: Vec::new(),
             tray_hwnd: hwnd,
@@ -572,11 +610,7 @@ impl HotkeyManager {
             match ret {
                 -1 => {
                     eprintln!("hotkey: GetMessageW failed - message queue is broken, exiting");
-                    // Same reason as the WM_QUIT arm below, and it matters
-                    // more here: this exit is not orderly, and a settings
-                    // window recording a chord when the queue broke is
-                    // holding a hook that swallows every keystroke.
-                    crate::caps_hook::disarm_capture();
+                    crate::caps_hook::uninstall();
                     std::process::exit(1);
                 }
                 0 => {
@@ -585,61 +619,20 @@ impl HotkeyManager {
                     // Scheduler-run daemon has, and std::process::exit
                     // skips Drop entirely, so the cleanup Drop would have
                     // done has to happen here explicitly.
-                    //
-                    // The capture hook is part of that cleanup, and this is
-                    // the one window-death path that never reaches a
-                    // `WM_DESTROY`: Quit from the tray posts WM_QUIT and
-                    // exits from right here, so the settings window is torn
-                    // down by process exit rather than by `DestroyWindow`.
-                    // Spec F.4 declines to CLAIM that win32k reclaims an
-                    // orphaned `WH_KEYBOARD_LL` -- MSDN does not promise it
-                    // -- so the one exit beckon controls does not rely on
-                    // the promise it does not have. A no-op unless a chord
-                    // was being recorded at that instant.
-                    crate::caps_hook::disarm_capture();
+                    crate::caps_hook::uninstall();
                     let tray_hwnd = TRAY_HWND.with(|c| c.get());
                     for id in REGISTERED_IDS.with(|c| std::mem::take(&mut *c.borrow_mut())) {
                         let _ = unsafe { UnregisterHotKey(Some(tray_hwnd), id as i32) };
                     }
-                    let nid = NOTIFYICONDATAW {
-                        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                        hWnd: tray_hwnd,
-                        uID: 1,
-                        ..Default::default()
-                    };
-                    let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+                    tray_delete(tray_hwnd);
                     std::process::exit(0);
                 }
                 _ => {
-                    // Fast path: handle WM_HOTKEY/WM_TIMER here before
-                    // DispatchMessageW — but only when the message is
-                    // addressed to OUR window. This thread becomes an STA
-                    // once the backend calls CoInitializeEx, and COM/shell
-                    // machinery (ShellExecuteW, an out-of-process
-                    // IApplicationActivationManager call) can create hidden
-                    // windows on this same thread whose own WM_TIMERs must
-                    // still reach their wndprocs via DispatchMessageW —
-                    // matching on msg.message alone would silently steal
-                    // those instead of routing them. The wndproc branches
-                    // (module doc) exist for exactly the case this loop
-                    // ISN'T the one pumping.
                     let ours = msg.hwnd == TRAY_HWND.with(|c| c.get());
                     match msg.message {
                         WM_HOTKEY if ours => dispatch_hotkey(msg.wParam.0 as u32),
                         WM_TIMER if ours => dispatch_tick(msg.wParam.0),
                         _ => {
-                            // Give the settings window (modeless, on this
-                            // thread) first refusal so Tab, Esc and arrow
-                            // navigation work inside it. It only claims
-                            // messages addressed to itself or its children,
-                            // and WM_HOTKEY is not a dialog message -- the
-                            // two arms above have already taken ours
-                            // anyway. This is what lets the window be
-                            // modeless: hotkeys keep firing while it is
-                            // open.
-                            if crate::settings_window::filter_dialog_message(&msg) {
-                                continue;
-                            }
                             let _ = unsafe { TranslateMessage(&msg) };
                             unsafe { DispatchMessageW(&msg) };
                         }
@@ -652,84 +645,7 @@ impl HotkeyManager {
 
 impl Drop for HotkeyManager {
     fn drop(&mut self) {
-        let nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            hWnd: self.tray_hwnd,
-            uID: 1,
-            ..Default::default()
-        };
-        let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
-    }
-}
-
-/// The availability probe's hotkey id, and there is exactly one of it.
-///
-/// A hotkey is identified by the `(hWnd, id)` PAIR, and the probe's half of
-/// that pair is the settings window -- never `tray_hwnd`, where the live
-/// table's ids are row indices. That is why the value here does not have to
-/// be "high enough" to clear the config: it shares a window with nothing.
-/// Any value in Windows' 0x0000..=0xBFFF application range would do; what
-/// matters is that it is fixed, that it lives here, and that no other call
-/// in this process ever passes it.
-const PROBE_HOTKEY_ID: i32 = 0xBEC0;
-
-/// Ask Windows whether `c` is free to bind, by registering it and giving it
-/// straight back.
-///
-/// Four rules, all of them structural (spec §F.6):
-///
-/// 1. **`hwnd` is the SETTINGS WINDOW's, never `tray_hwnd`.** A hotkey is
-///    identified by the `(hWnd, id)` pair, so a different window makes an
-///    identity collision with the live table impossible by construction.
-///    MSDN: *"If a hot key already exists with the same hWnd and id
-///    parameters, it is maintained along with the new hot key"* -- so a probe
-///    that reused `tray_hwnd` and guessed an unused id wrong would leave two
-///    registrations under one id, and its `UnregisterHotKey` would remove an
-///    unspecified one of the two. That is a silently dead hotkey, the same
-///    class as the "20 shortcuts registered" incident.
-/// 2. **Every exit path gives the chord back.** There are three, and the two
-///    that reach `UnregisterHotKey` share one call site above them; the third
-///    is the failure return, where nothing was ever claimed. Nothing between
-///    the register and the unregister can return early, panic by
-///    construction, or pump.
-/// 3. **Called on the thread that owns `hwnd`.** `RegisterHotKey` is
-///    thread-affine, and the settings window lives on `serve`'s message-loop
-///    thread -- the same one that runs the wndproc this is reached from.
-/// 4. **Never from inside a hook callback.** The only caller is a settings
-///    window notification; `caps_hook`'s `WH_KEYBOARD_LL` callback must stay
-///    at a hash lookup plus one `SendInput` (see AGENTS.md), and a global
-///    registration round trip has no business there.
-///
-/// It deliberately pumps NOTHING -- no `PeekMessageW` drain of a `WM_HOTKEY`
-/// the probe itself might have generated, the way `unregister_all` drains
-/// one. Such a message could only be addressed to the settings window, whose
-/// wndproc ignores it, whereas a pump here could re-enter the wndproc, reach
-/// this function a second time, and register the same `(hWnd, id)` pair --
-/// rule 1's hazard, introduced by the cleanup meant to be tidy. No pump, no
-/// re-entry.
-///
-/// **A failure is reported as `Taken` and nothing else.** Windows does not
-/// say which program holds a chord, so decoding the error into the note would
-/// be inventing detail the API cannot support. The success side is just as
-/// narrow: `Free` means *nothing else is holding this right now*, never
-/// "this shortcut works" -- see `probe_notes`.
-pub fn probe_chord(hwnd: HWND, c: &Combo) -> Availability {
-    let mods = hotkey_modifiers(c.ctrl, c.super_, c.alt, c.shift);
-    if unsafe { RegisterHotKey(Some(hwnd), PROBE_HOTKEY_ID, mods, c.key.win) }.is_err() {
-        // Nothing was claimed, so there is nothing to release: MSDN gives
-        // RegisterHotKey no partial-success state.
-        return Availability::Taken;
-    }
-    if let Err(e) = unsafe { UnregisterHotKey(Some(hwnd), PROBE_HOTKEY_ID) } {
-        // Should be unreachable -- the pair was accepted a line ago and only
-        // this thread can touch it. Say so if it ever is: beckon would then
-        // be holding a chord the user never bound, until the process exits.
-        eprintln!("hotkey: probe UnregisterHotKey failed: {e} - beckon still holds that shortcut");
-    }
-    if c.super_ {
-        Availability::FreeWithWin
-    } else {
-        Availability::Free
+        tray_delete(self.tray_hwnd);
     }
 }
 
@@ -767,9 +683,12 @@ pub fn add_tick(seconds: f64, cb: Box<dyn FnMut()>) {
 /// how many keys does it hold".
 pub fn set_status(text: &str) {
     TRAY_TIP.with(|t| *t.borrow_mut() = text.to_string());
+    if !TRAY_ADDED.with(|a| a.get()) {
+        return; // tray is hidden or install() has not placed it yet
+    }
     let hwnd = TRAY_HWND.with(|c| c.get());
     if hwnd.0.is_null() {
-        return; // install() has not run yet; tray_add will pick the text up
+        return;
     }
     let mut nid = NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,

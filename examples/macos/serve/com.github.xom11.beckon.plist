@@ -14,9 +14,9 @@
          the two Standard*Path keys below, and a second writer on the same
          fd is how a log gets interleaved garbage. The flag is the only way
          beckon learns WHERE launchd put the file, and it has to know
-         because the tray's "Open log" row and the settings window's System
-         page log row are both OMITTED when no path was supplied. Drop it
-         and launchd still captures stderr, to a file the tray cannot name.
+         because the menu bar's "Open Log" row is OMITTED when no path was
+         supplied. Drop it and launchd still captures stderr, to a file the
+         menu cannot name.
          So: keep the path in the array and the two below identical. The
          Homebrew formula's `service do` block passes the same three.
          (This comment spells the flag out rather than writing it, because

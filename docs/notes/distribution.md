@@ -187,7 +187,9 @@ means the repo is missing from the token's list. `gh api rate_limit --include`
 also returns a `github-authentication-token-expiration` header, which is where
 the expiry above came from.
 
-## Check for updates: a 302, no HTTP crate, and the a14 probe
+## RETIRED: Check for updates: a 302, no HTTP crate, and the a14 probe
+
+> **RETIRED 2026-11-18:** The Settings window and its `Check for updates` feature (`update.rs`) were removed — package managers (`brew`, `scoop`, `nix`, `cargo`) own updates. The `CREATE_NO_WINDOW` measurement on Windows 11 ARM64 below still applies directly to `notify.rs`'s PowerShell toast spawn.
 
 `beckon`'s Check for updates button (`crates/beckon-cli/src/update.rs`) asks
 GitHub whether a newer release exists by spawning the system `curl`, once, on

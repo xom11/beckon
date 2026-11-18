@@ -1,6 +1,5 @@
 #!/bin/bash
-# Does beckon's menu bar item appear, and under which run loop? And does the
-# settings window draw?
+# Does beckon's menu bar item appear, and under which run loop?
 #
 #   ./testing/macos_tray_probe.sh
 #
@@ -55,9 +54,8 @@ fi
 system_profiler SPDisplaysDataType 2>/dev/null | grep -iE 'Resolution|UI Looks like' | sed 's/^ */display : /'
 
 say "build"
-cargo build -p beckon-macos --examples || exit 1
+cargo build -p beckon-macos --example tray_probe || exit 1
 PROBE=target/debug/examples/tray_probe
-PROBE_SETTINGS=target/debug/examples/settings_probe
 
 # Spend the SIGKILL-on-first-exec on a run whose result nobody reads.
 warm() {
@@ -68,7 +66,6 @@ warm() {
   wait "$p" 2>/dev/null
 }
 warm "$PROBE"
-warm "$PROBE_SETTINGS"
 
 # Capture the whole screen, then crop the menu bar strip if sips can. The
 # full frame is the artifact; the crop is only for legibility.
@@ -190,10 +187,9 @@ THE ANSWERS YOU GAVE ARE THE MEASUREMENT -- see the block above.
 
 The "window server report" blocks are NOT the answer for the tray -- a
 visible status item does not appear in them. They are there for the
-enumeration control window and for the settings window, both of which are
-ordinary windows and do appear.
+enumeration control window, which is an ordinary window and does appear.
 
-Each tray probe now also opens a plain titled window, "ENUMERATION CONTROL".
+Each tray probe opens a plain titled window, "ENUMERATION CONTROL".
 That window is the control for the report: if it is listed and no status-item
 window is, the report has told you all it can, and the remaining question --
 is the item on screen, or does NSStatusItem simply not produce an enumerable
@@ -202,16 +198,4 @@ window here? -- is settled by looking, not by this script.
 So while each probe holds: LOOK AT THE MENU BAR. Then click the item if it is
 there; stdout must print "menu click". A drawn-but-dead menu looks identical
 to a working one until something is clicked.
-
-settings-full.png is the settings window. Nothing it does touches a config
-file -- Save prints the TOML it would have written. Worth doing by hand,
-because no screenshot and no unit test can reach them:
-
-  * type a filter, THEN click a row -- stdout must print the model index,
-    which is only distinguishable from the view index once a filter is on.
-  * type a whole app name into the App field. The model must receive the
-    whole name, not its last character. That is the Windows data-loss bug
-    this window claims to be structurally immune to, and this is the only
-    place the claim gets tested.
-  * change a modifier box: "probe" must print BEFORE "edit".
 EOF

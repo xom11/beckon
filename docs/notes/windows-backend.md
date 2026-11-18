@@ -280,14 +280,10 @@ documents, which is a live confirmation that note is still accurate.
 
 `keyboard.caps = true` installs a `WH_KEYBOARD_LL` hook. That **reverses** the
 "RegisterEventHotKey / RegisterHotKey: no event tap, no LLHOOK" decision. The
-reversal is deliberate and narrow: off by default, on one OS.
-
-**Since 2026-08-12 there are TWO reasons to hold that hook, not one**: Caps,
-and a settings-window chord capture. There is still exactly one hook —
-`capture::HookOwners` refcounts the two reasons, and `hook_proc` consults the
-capture arm **first** — but the exception is now reachable on a machine where
-the user left `keyboard.caps = false`, for the seconds a recording lasts. The
-capture arm's own rules are in `docs/notes/settings-window.md`.
+reversal is deliberate and narrow: off by default, installed only while
+`keyboard.caps = true` and `serve` is not paused. *(RETIRED 2026-11-18: the
+second hook owner — settings-window chord capture — was removed along with the
+Settings window.)*
 
 Caps is an **alias for the configured chord** — `ctrl+super+alt` by default,
 `keyboard.caps_hold` to change it — not a fifth modifier. The hook injects the

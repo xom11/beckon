@@ -1283,7 +1283,9 @@ in the live session. The line exists so the next reader recognises it as the
 price of the ⌥ path rather than as a bug to be fixed by moving the action
 back to mouse-down.
 
-## The settings window's new shell, measured (2026-09-23, UI redesign phase 2)
+## RETIRED: The settings window's new shell, measured (2026-09-23, UI redesign phase 2)
+
+> **RETIRED 2026-11-18:** The Settings window (`crates/beckon-macos/src/settings_window/`, `prefs.rs`, chord capture, and `docs/notes/settings-window.md`) was removed in favour of plain-text `apps.toml` + CLI + native menu bar menu. The AppKit / TCC measurements below remain valid as platform observations.
 
 Branch `macos-settings-shell`, `airm3`, 2026-09-23, five fix rounds against
 `docs/superpowers/specs/2026-09-22-macos-ui-redesign-design.md` §5-§7: a real

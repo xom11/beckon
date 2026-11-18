@@ -140,7 +140,7 @@ fn main() {
                 MenuEntry::separator(),
                 MenuEntry {
                     key: Some(','),
-                    ..MenuEntry::item(2, "Settings...")
+                    ..MenuEntry::item(2, "Open Config")
                 },
                 MenuEntry::separator(),
                 MenuEntry {

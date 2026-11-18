@@ -59,21 +59,10 @@ pub mod autostart;
 mod backend;
 #[cfg(target_os = "windows")]
 pub mod caps_hook;
-/// Put text on the clipboard -- the About page's three copy buttons, and
-/// nothing else. See its module header for why it sits beside `shell.rs`.
-#[cfg(target_os = "windows")]
-pub mod clipboard;
 #[cfg(target_os = "windows")]
 pub mod hotkey;
 #[cfg(target_os = "windows")]
 pub mod logfile;
-/// The settings window's own look, in `HKCU\Software\beckon` -- the one file
-/// beckon writes that is not the shortcuts TOML. See its module header for
-/// why it is a separate store from `apps.toml`.
-#[cfg(target_os = "windows")]
-pub mod prefs;
-#[cfg(target_os = "windows")]
-pub mod settings_window;
 #[cfg(target_os = "windows")]
 pub mod shell;
 #[cfg(target_os = "windows")]

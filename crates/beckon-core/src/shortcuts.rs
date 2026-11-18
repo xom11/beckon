@@ -134,91 +134,6 @@ pub fn lookup_key(name: &str) -> Option<&'static KeyDef> {
     all_keys().iter().find(|k| k.name == name)
 }
 
-/// The reverse of `lookup_key`: the key a Windows virtual-key code belongs
-/// to, or `None` for one no binding can name (numpad, media, IME,
-/// `VK_PROCESSKEY`).
-///
-/// Linear, like `lookup_key`, over 81 entries. It runs once per captured
-/// key-down, not per keystroke, so a map would buy nothing and cost a
-/// second source of truth.
-pub fn lookup_win_vk(vk: u32) -> Option<&'static KeyDef> {
-    all_keys().iter().find(|k| k.win == vk)
-}
-
-/// The whole key list, in the order the settings window shows it.
-///
-/// Public so the window can fill its key list without a second copy of the
-/// names. Index into it is what `ComboView::key` means, and the two must
-/// stay the same slice — which is why this returns `all_keys()` rather
-/// than building anything.
-pub fn key_table() -> &'static [KeyDef] {
-    all_keys()
-}
-
-/// A combo as the five controls that show it: four modifier check boxes and
-/// one index into `key_table`.
-///
-/// `key` is `None` when the string does not parse — a row that has never
-/// been given a shortcut, or one whose stored text is not a valid combo.
-/// The window shows that as "nothing selected" rather than guessing, and
-/// `Model::problems` is what tells the user why.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ComboView {
-    pub ctrl: bool,
-    pub super_: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub key: Option<usize>,
-}
-
-impl ComboView {
-    /// What these control values spell, or `None` when no key is chosen.
-    ///
-    /// **`None` is not an error and must not be turned into one.** A
-    /// modifier set with no main key is not a combo: writing `ctrl+` into
-    /// the model would make the row invalid on a keystroke the user has not
-    /// finished, and flag it for a mistake it is halfway through not
-    /// making. Callers send nothing instead, so the row keeps whatever it
-    /// had until a key is chosen.
-    ///
-    /// Spelled through `Combo::canonical` rather than by joining strings,
-    /// so the order a window writes and the order the parser prints cannot
-    /// drift apart. `key` is looked up with `get` rather than indexed,
-    /// because a control is not a proof.
-    ///
-    /// The exact inverse of `combo_view` for every string `combo_view`
-    /// resolves a key from — pinned by
-    /// `spell_round_trips_through_combo_view`.
-    pub fn spell(&self) -> Option<String> {
-        let key = key_table().get(self.key?)?;
-        Some(
-            Combo {
-                ctrl: self.ctrl,
-                super_: self.super_,
-                alt: self.alt,
-                shift: self.shift,
-                key,
-            }
-            .canonical(),
-        )
-    }
-}
-
-/// Render a combo string as control values. Never fails: an unparseable
-/// string is `ComboView::default()`, i.e. nothing ticked and no key chosen.
-pub fn combo_view(s: &str) -> ComboView {
-    let Ok(c) = Combo::parse(s) else {
-        return ComboView::default();
-    };
-    ComboView {
-        ctrl: c.ctrl,
-        super_: c.super_,
-        alt: c.alt,
-        shift: c.shift,
-        key: key_table().iter().position(|k| k.name == c.key.name),
-    }
-}
-
 /// One key's label as it appears on the keyboard, for display only.
 ///
 /// **ASCII, exhaustively.** The settings window's faces are Segoe UI
@@ -864,23 +779,38 @@ pub struct KeyboardConfig {
 pub struct Config {
     pub shortcuts: Vec<Shortcut>,
     pub keyboard: KeyboardConfig,
+    /// Whether `serve` shows the menu bar / system tray icon. Defaults to
+    /// `true`; setting `tray = false` runs headless like `skhd` / `kanata`.
+    pub tray: bool,
 }
 
-/// The one top-level key that is a settings block rather than a combo.
+/// Top-level keys that configure `serve` rather than binding a combo.
 pub const KEYBOARD_KEY: &str = "keyboard";
+pub const TRAY_KEY: &str = "tray";
 
 /// Parse a shortcuts TOML file: every top-level key is a combo bound to one
-/// app-name string, except `keyboard`, which is the settings block. First
-/// error wins. Iteration order follows `toml::Table` (BTreeMap, sorted by
-/// key) — registration order is irrelevant to hotkey behavior.
+/// app-name string, except `keyboard` (the Caps Lock settings block) and
+/// `tray` (whether `serve` shows its menu bar / tray icon). First error wins.
+/// Iteration order follows `toml::Table` (BTreeMap, sorted by key) —
+/// registration order is irrelevant to hotkey behavior.
 pub fn parse_config(text: &str) -> Result<Config, String> {
     let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
     let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut out = Vec::with_capacity(table.len());
     let mut keyboard = KeyboardConfig::default();
+    let mut tray = true;
     for (raw_key, value) in &table {
         if raw_key == KEYBOARD_KEY {
             keyboard = parse_keyboard(value)?;
+            continue;
+        }
+        if raw_key == TRAY_KEY {
+            tray = value.as_bool().ok_or_else(|| {
+                format!(
+                    "`{TRAY_KEY}` must be true or false, got {}",
+                    value.type_str()
+                )
+            })?;
             continue;
         }
         let combo = Combo::parse(raw_key)?;
@@ -920,6 +850,7 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     Ok(Config {
         shortcuts: out,
         keyboard,
+        tray,
     })
 }
 
@@ -958,9 +889,15 @@ fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
             }
             other => {
                 // TOML puts every bare key-value pair written after a
-                // `[keyboard]` header INSIDE that table. A shortcut appended
-                // to the bottom of such a file is silently nested here and
-                // never registers, with no error anywhere. Say so.
+                // `[keyboard]` header INSIDE that table. A shortcut or
+                // top-level setting appended to the bottom of such a file is
+                // silently nested here unless named explicitly.
+                if other == TRAY_KEY {
+                    return Err("`tray` is a top-level setting, not under `[keyboard]`. \
+                         Move `tray = ...` above the `[keyboard]` header, or write the \
+                         settings as `keyboard.caps = ...` instead of a `[keyboard]` section."
+                        .to_string());
+                }
                 if Combo::parse(other).is_ok() {
                     return Err(format!(
                         "`{other}` is a shortcut but it is nested under `[keyboard]`. \
@@ -978,7 +915,7 @@ fn parse_keyboard(value: &toml::Value) -> Result<KeyboardConfig, String> {
     Ok(kb)
 }
 
-/// Shortcuts only. Kept because `check` and `serve` want exactly this.
+/// Shortcuts only. Kept because `check` wants exactly this.
 pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
     parse_config(text).map(|c| c.shortcuts)
 }
@@ -986,9 +923,8 @@ pub fn parse_shortcuts(text: &str) -> Result<Vec<Shortcut>, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_keys, combo_caps, combo_caps_folded, combo_display, combo_display_folded, combo_view,
-        key_label, key_table, lookup_key, lookup_win_vk, parse_config, parse_shortcuts, CapsTap,
-        Chord, Combo, ComboView, KeyboardConfig, CAPS_CAP,
+        all_keys, combo_caps, combo_caps_folded, combo_display, combo_display_folded, key_label,
+        lookup_key, parse_config, parse_shortcuts, CapsTap, Chord, Combo, KeyboardConfig, CAPS_CAP,
     };
 
     #[test]
@@ -1369,28 +1305,42 @@ mod tests {
         assert!(parse_config("keyboard.caps_hold = \"ctrl+super+alt\"\n").is_ok());
     }
 
-    // ---------- lookup_win_vk ----------
+    // ---------- tray setting ----------
 
     #[test]
-    fn a_vk_maps_back_to_the_key_that_owns_it() {
-        // 0x41 is VK_A; 0x1B is VK_ESCAPE.
-        assert_eq!(lookup_win_vk(0x41).map(|k| k.name.as_str()), Some("a"));
-        assert_eq!(lookup_win_vk(0x1B).map(|k| k.name.as_str()), Some("escape"));
+    fn tray_defaults_to_true() {
+        let c = parse_config("\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert!(c.tray);
     }
 
     #[test]
-    fn a_vk_no_key_claims_maps_to_nothing() {
-        // 0xFC is VK_NONAME, which `caps` uses precisely because nothing
-        // reaches it. 0x00 is not a virtual key at all.
-        assert_eq!(lookup_win_vk(0xFC).map(|k| k.name.as_str()), None);
-        assert_eq!(lookup_win_vk(0x00).map(|k| k.name.as_str()), None);
+    fn tray_parses_true_and_false() {
+        let off = parse_config("tray = false\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert!(!off.tray);
+        assert_eq!(off.shortcuts.len(), 1);
+
+        let on = parse_config("tray = true\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert!(on.tray);
     }
 
-    /// The reverse lookup is only well defined if the forward table is
-    /// injective on `win`. If two keys ever share a VK, `lookup_win_vk`
-    /// silently starts returning whichever the iteration order reaches
-    /// first -- so pin it here rather than discovering it through a
-    /// mis-captured chord.
+    #[test]
+    fn tray_must_be_a_boolean() {
+        let e = parse_config("tray = \"off\"\n").unwrap_err();
+        assert!(e.contains("`tray` must be true or false"), "{e}");
+    }
+
+    #[test]
+    fn tray_nested_under_keyboard_is_a_named_error() {
+        let e = parse_config("[keyboard]\ncaps = true\ntray = false\n").unwrap_err();
+        assert!(e.contains("top-level setting"), "{e}");
+    }
+
+    #[test]
+    fn parse_shortcuts_ignores_tray() {
+        let s = parse_shortcuts("tray = false\n\"ctrl+alt+t\" = \"Terminal\"\n").unwrap();
+        assert_eq!(s.len(), 1);
+    }
+
     #[test]
     fn no_two_keys_share_a_windows_vk() {
         let mut seen: std::collections::HashMap<u32, &str> = std::collections::HashMap::new();
@@ -1398,87 +1348,6 @@ mod tests {
             if let Some(prev) = seen.insert(k.win, k.name.as_str()) {
                 panic!("`{prev}` and `{}` both claim VK {:#04x}", k.name, k.win);
             }
-        }
-    }
-
-    /// Every key the user can type must survive the round trip, or capture
-    /// can record a chord that `Combo::parse` then rejects.
-    #[test]
-    fn every_key_round_trips_through_its_vk() {
-        for k in all_keys() {
-            let back = lookup_win_vk(k.win).unwrap_or_else(|| panic!("{} lost", k.name));
-            assert_eq!(back.name, k.name);
-        }
-    }
-
-    // ---------- key_table / combo_view ----------
-
-    #[test]
-    fn the_key_table_is_the_whole_key_list() {
-        assert_eq!(key_table().len(), all_keys().len());
-        assert!(key_table().iter().any(|k| k.name == "t"));
-        assert!(key_table().iter().any(|k| k.name == "escape"));
-    }
-
-    #[test]
-    fn a_combo_becomes_five_control_values() {
-        let v = combo_view("ctrl+super+alt+t");
-        assert!(v.ctrl && v.super_ && v.alt);
-        assert!(!v.shift);
-        assert_eq!(key_table()[v.key.expect("a key")].name, "t");
-    }
-
-    #[test]
-    fn shift_is_a_modifier_here_unlike_in_a_hold_chord() {
-        let v = combo_view("ctrl+shift+a");
-        assert!(v.ctrl && v.shift);
-        assert!(!v.super_ && !v.alt);
-        assert_eq!(key_table()[v.key.unwrap()].name, "a");
-    }
-
-    /// A row that has never been given a shortcut, and a row whose stored
-    /// text does not parse, must both render as "nothing chosen" rather
-    /// than panicking or inventing a key.
-    #[test]
-    fn an_unparseable_combo_selects_nothing() {
-        for s in ["", "ctrl+", "ctrl+nosuchkey", "banana"] {
-            let v = combo_view(s);
-            assert_eq!(v.key, None, "{s:?} must select no key");
-            assert!(!(v.ctrl || v.super_ || v.alt || v.shift), "{s:?}");
-        }
-    }
-
-    /// The round trip the window depends on: whatever the controls show,
-    /// rebuilding the canonical string from them must mean the same thing.
-    #[test]
-    fn a_view_rebuilds_the_same_canonical_combo() {
-        for s in [
-            "ctrl+t",
-            "ctrl+super+alt+shift+f1",
-            "alt+escape",
-            "super+space",
-        ] {
-            let v = combo_view(s);
-            let mut parts: Vec<&str> = Vec::new();
-            if v.ctrl {
-                parts.push("ctrl");
-            }
-            if v.super_ {
-                parts.push("super");
-            }
-            if v.alt {
-                parts.push("alt");
-            }
-            if v.shift {
-                parts.push("shift");
-            }
-            let key = &key_table()[v.key.unwrap()].name;
-            parts.push(key);
-            assert_eq!(
-                parts.join("+"),
-                Combo::parse(s).unwrap().canonical(),
-                "{s:?}"
-            );
         }
     }
 
@@ -1591,7 +1460,7 @@ mod tests {
     #[test]
     fn no_key_in_the_table_prints_the_folded_cap() {
         assert_eq!(CAPS_CAP, "Caps");
-        for k in key_table() {
+        for k in all_keys() {
             assert_ne!(
                 key_label(&k.name),
                 CAPS_CAP,
@@ -1619,12 +1488,10 @@ mod tests {
     }
 
     /// Exhaustive over the 81-key table: every key must produce a non-empty,
-    /// ASCII label. ASCII on purpose: the window's faces are text fonts, not
-    /// symbol fonts, and a missing glyph reads as a rendering bug rather than
-    /// as a key. That is why the arrow keys are words and not arrows.
+    /// ASCII label.
     #[test]
     fn every_key_in_the_table_has_an_ascii_label() {
-        for k in key_table() {
+        for k in all_keys() {
             let l = key_label(&k.name);
             assert!(!l.is_empty(), "no label for `{}`", k.name);
             assert!(l.is_ascii(), "label for `{}` is not ASCII: {l}", k.name);
@@ -1632,18 +1499,9 @@ mod tests {
     }
 
     /// Two keys must never wear the same cap.
-    ///
-    /// `every_key_in_the_table_has_an_ascii_label` proves each label is
-    /// non-empty and ASCII; neither of those notices a COLLISION. Adding
-    /// `enter` beside `return`, or `esc` beside `escape`, would hand two rows
-    /// of the settings window an identical Shortcut cell -- two different
-    /// chords that read the same on screen, with nothing in the window able
-    /// to tell the user which is which. `key_table_has_no_duplicates` guards
-    /// the names, the mac keycodes and the win VKs; this guards the fourth
-    /// column, the one the user actually reads.
     #[test]
     fn no_two_keys_share_a_label() {
-        let mut seen: Vec<(String, &str)> = key_table()
+        let mut seen: Vec<(String, &str)> = all_keys()
             .iter()
             .map(|k| (key_label(&k.name), k.name.as_str()))
             .collect();
@@ -1660,76 +1518,12 @@ mod tests {
     /// **The display path must never reach the file.** `Combo::canonical` is the
     /// serialiser; if these two ever merge, beckon writes `Win` into a TOML it
     /// then cannot parse -- a config the user did not break and cannot obviously
-    /// fix. Spec §B.4.
+    /// fix.
     #[test]
     fn display_never_reaches_the_serialiser() {
         let c = Combo::parse("ctrl+super+alt+t").expect("valid combo");
         assert_eq!(c.canonical(), "ctrl+super+alt+t");
         assert!(c.canonical().contains("super"));
         assert!(!c.canonical().contains("Win"));
-    }
-
-    /// `spell` is the inverse of `combo_view`, and both settings windows
-    /// depend on that being exact: `commit_fields` compares the live
-    /// controls against the stored string as `ComboView`s precisely so a
-    /// file written `"super+ctrl+alt+t"` does not read back as an edit.
-    /// If the round trip drifted, every window open would mark rows dirty
-    /// that nobody touched.
-    #[test]
-    fn spell_round_trips_through_combo_view() {
-        for key in key_table() {
-            for mods in 0u8..16 {
-                let v = ComboView {
-                    ctrl: mods & 1 != 0,
-                    super_: mods & 2 != 0,
-                    alt: mods & 4 != 0,
-                    shift: mods & 8 != 0,
-                    key: key_table().iter().position(|k| k.name == key.name),
-                };
-                let spelled = v.spell().expect("a key is selected");
-                assert_eq!(
-                    combo_view(&spelled),
-                    v,
-                    "{spelled:?} did not read back as the controls that wrote it"
-                );
-            }
-        }
-    }
-
-    /// Modifier order in the input is free but `spell` always prints
-    /// canonically, which is the property that makes the `ComboView`
-    /// comparison in `commit_fields` see reordering as "no change".
-    #[test]
-    fn spell_is_canonical_regardless_of_how_the_file_wrote_it() {
-        assert_eq!(
-            combo_view("super+ctrl+alt+t").spell().unwrap(),
-            combo_view("ctrl+super+alt+t").spell().unwrap()
-        );
-    }
-
-    /// A modifier set with no key is not a half-combo to be repaired -- it
-    /// is nothing to send. Turning this into `"ctrl+"` would flag a row for
-    /// a mistake the user is halfway through not making.
-    #[test]
-    fn spell_declines_when_no_key_is_chosen() {
-        let v = ComboView {
-            ctrl: true,
-            super_: true,
-            alt: true,
-            shift: false,
-            key: None,
-        };
-        assert_eq!(v.spell(), None);
-    }
-
-    /// `key` is an index into `key_table()`, and a control is not a proof --
-    /// an out-of-range index must decline rather than panic.
-    #[test]
-    fn spell_declines_on_an_index_no_key_table_entry_has() {
-        let v = ComboView {
-            key: Some(usize::MAX),
-            ..ComboView::default()
-        };
-        assert_eq!(v.spell(), None);
     }
 }

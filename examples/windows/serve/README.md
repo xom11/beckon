@@ -241,15 +241,10 @@ Run key — ticking it here would write a value that can never fire at next
 logon. Use `beckon-serve.exe`'s own tray for that. Right-click for a
 disabled status row (`beckon - 5 shortcuts registered`, `beckon - 3 of 5
 shortcuts registered (2 failed)`, or `beckon - paused (...)`), plus
-`Settings...`, `Reload now`, `Open log`, `Pause hotkeys` and `Quit`.
-Hovering the icon shows the same registration count in the tooltip.
-
-`Settings...` was `Edit shortcuts...`, and it changed job as well as
-caption: it used to hand `apps.toml` to whatever opens a `.toml`, and now
-opens beckon's own settings window. Four pages — Shortcuts, Keyboard,
-System, About — which edit the shortcut table, the Caps Lock row and this
-window's own look, and write the file back through `toml_edit`, so hand
-edits and window edits stay interchangeable.
+`Open config file`, `Reload now`, `Open log`, `Pause hotkeys` and `Quit`
+(double-clicking the icon also opens `apps.toml` in your default editor).
+Hovering the icon shows the same registration count in the tooltip, and
+`tray = false` in `apps.toml` hides the icon completely.
 
 So the icon is no longer a bare one-way liveness light — hovering or
 opening the menu answers "is it alive and how many keys does it hold" the

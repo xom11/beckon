@@ -915,15 +915,21 @@ pub fn set_dimmed(dimmed: bool) {
     }
 }
 
+/// Remove the menu bar item if one is installed.
+pub fn remove() {
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let old = TRAY.with(|t| t.borrow_mut().take());
+    if let Some(tray) = old {
+        NSStatusBar::systemStatusBar().removeStatusItem(&tray.item);
+    }
+}
+
 /// Leave the run loop. `hotkey::run_forever` never returns, so quitting is
 /// an exit, matching what the Windows tray's Quit ends up doing.
 pub fn request_quit() -> ! {
-    // **`Quit` never reaches a window delegate**, so this is the only place
-    // that can end a recording on the way out -- the same gap
-    // `hotkey::run_forever`'s two `process::exit` arms cover on Windows. A
-    // tap left armed past `exit` is not a leak the OS cleans up quietly: it
-    // is a process that swallowed the user's keyboard and then vanished.
-    crate::caps_tap::end_capture();
+    crate::caps_tap::uninstall();
     std::process::exit(0)
 }
 

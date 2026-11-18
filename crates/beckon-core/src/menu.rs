@@ -29,7 +29,7 @@ pub struct MenuEntry {
     pub kind: EntryKind,
     /// Right-aligned secondary text: the binding's chord, in glyphs.
     pub detail: Option<String>,
-    /// One word from `settings::FLAGS`, drawn beside the label.
+    /// One status word (`FLAG_IN_USE` or `FLAG_MISSING`), drawn beside the label.
     pub flag: Option<&'static str>,
     /// A bundle id whose application icon leads the row.
     pub icon: Option<String>,
@@ -116,23 +116,6 @@ pub const MENU_ID_DOUBLE_CLICK: u32 = u32::MAX;
 /// the menu; `serve` toggles pause on it.
 pub const MENU_ID_ALT_CLICK: u32 = u32::MAX - 1;
 
-/// The `Check for updates` row's label, which differs by platform in case
-/// only.
-///
-/// macOS title-cases menu items and Windows does not. **ASCII dots, not an
-/// ellipsis**, like every other display string this program draws.
-///
-/// The platform arrives as a parameter rather than as a `cfg!` inside, for
-/// the reason `menu_log_row` takes one: both readings are then compiled and
-/// tested by all three CI jobs, not only by the one that ships them.
-pub fn update_label(macos: bool) -> &'static str {
-    if macos {
-        "Check for Updates..."
-    } else {
-        "Check for updates..."
-    }
-}
-
 /// What the macOS header says, and the colour of its dot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Headline {
@@ -189,17 +172,19 @@ pub fn menu_headline(i: HeadlineInputs) -> Headline {
     Headline { text, dot: Dot::Ok }
 }
 
-/// The one word a binding row carries in the menu, from `settings::FLAGS`,
-/// in `row_condition`'s precedence.
+/// Status words a binding row can carry in the menu.
+pub const FLAG_IN_USE: &str = "in use";
+pub const FLAG_MISSING: &str = "missing";
+
+/// The one word a binding row carries in the menu.
 ///
 /// `paused` is absent on purpose -- the header says it once, instead of every
-/// row saying it. `other chord` is absent because it is a view fact about the
-/// list, not a fault (`docs/notes/settings-window.md`).
+/// row saying it.
 pub fn row_flag(in_use: bool, missing: bool) -> Option<&'static str> {
     if in_use {
-        Some(crate::settings::FLAGS[1])
+        Some(FLAG_IN_USE)
     } else if missing {
-        Some(crate::settings::FLAGS[2])
+        Some(FLAG_MISSING)
     } else {
         None
     }
@@ -235,23 +220,6 @@ pub fn attention(flags: &[Option<&str>], max: usize) -> Attention {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Two spellings, one table. Platform strings are tables here, not
-    /// literals -- and this is the shape `menu_log_row` already uses: the
-    /// platform arrives as a parameter so both readings are testable on every
-    /// CI job, not just on the machine that ships them.
-    #[test]
-    fn the_update_row_is_title_case_on_macos_only() {
-        assert_eq!(update_label(true), "Check for Updates...");
-        assert_eq!(update_label(false), "Check for updates...");
-    }
-
-    /// ASCII dots, not an ellipsis -- like every other display string here.
-    #[test]
-    fn both_update_labels_are_ascii() {
-        assert!(update_label(true).is_ascii());
-        assert!(update_label(false).is_ascii());
-    }
 
     /// The whole Windows-safety claim of this change: the rows Windows draws
     /// are built exactly as before.
@@ -406,11 +374,12 @@ mod tests {
         }
     }
 
-    /// The indices into FLAGS are what `row_flag` depends on; pin the words.
+    /// `in use` outranks `missing`: if the key itself could not register, the
+    /// press never reaches beckon to resolve anything.
     #[test]
-    fn row_flag_speaks_the_settings_vocabulary_in_its_precedence() {
-        assert_eq!(crate::settings::FLAGS[1], "in use");
-        assert_eq!(crate::settings::FLAGS[2], "missing");
+    fn row_flag_orders_in_use_ahead_of_missing() {
+        assert_eq!(FLAG_IN_USE, "in use");
+        assert_eq!(FLAG_MISSING, "missing");
         assert_eq!(row_flag(true, true), Some("in use"));
         assert_eq!(row_flag(false, true), Some("missing"));
         assert_eq!(row_flag(false, false), None);
